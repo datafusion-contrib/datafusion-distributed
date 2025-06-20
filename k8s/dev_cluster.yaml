@@ -1,0 +1,122 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-dfray-proxy
+  labels:
+    app: dfray-proxy
+spec:
+  type: ClusterIP
+  ports:
+    - name: dfray-proxy
+      port: 20200
+      targetPort: 20200
+  selector:
+    app: dfray-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-dfray-proxy
+  labels:
+    app: dfray-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dfray-proxy
+  template:
+    metadata:
+      labels:
+        app: dfray-proxy
+        service: dfray-proxy
+    spec:
+      containers:
+        - name: dfray-proxy
+          image: registry.ddbuild.io/dfray:2025-06-16-e
+          env:
+            - name: DATAFUSION_RAY_LOG_LEVEL
+              value: debug
+            - name: DFRAY_WORKER_DEPLOYMENT
+              value: deployment-dfray-worker
+            - name: DFRAY_WORKER_DEPLOYMENT_PORT
+              value: "20201"
+            - name: DFRAY_WORKER_DEPLOYMENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUST_LOG
+              value: datafusion_bindings=info,cs3_query=info
+            - name: HDQ_URL
+              value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
+            - name: MEM_THRESHOLD
+              value: "12_000_000_000"
+            - name: MEM_THRESHOLD_RATE
+              value: "100_000_000"
+          command:
+            - sh
+            - "-c"
+            - "/dfray --mode proxy --port 20200"
+          ports:
+            - containerPort: 20200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-dfray-worker
+  labels:
+    app: dfray-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dfray-worker
+  template:
+    metadata:
+      labels:
+        app: dfray-worker
+        service: service-dfray-worker
+    spec:
+      containers:
+        - name: dfray-worker
+          image: registry.ddbuild.io/dfray:2025-06-16-e
+          env:
+            - name: DATAFUSION_RAY_LOG_LEVEL
+              value: debug
+            - name: RUST_LOG
+              value: datafusion_bindings=info,cs3_query=info
+            - name: HDQ_URL
+              value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
+            - name: MEM_THRESHOLD
+              value: "12_000_000_000"
+            - name: MEM_THRESHOLD_RATE
+              value: "100_000_000"
+          command:
+            - sh
+            - "-c"
+            - "/dfray --mode worker --port 20201"
+          ports:
+            - containerPort: 20201
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-reader
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["pods", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"] # For Deployments, StatefulSets, etc.
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: default
+roleRef:
+  kind: Role
+  name: api-reader
+  apiGroup: rbac.authorization.k8s.io
