@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package distributed_datafusion.protobuf;
+
+import "datafusion.proto";
+import "datafusion_common.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "DistributedDataFusionProto";
+option java_package = "distributed_datafusion.protobuf";
+
+message DDStageReaderExecNode {
+  // schema of the stage we will consume
+  datafusion_common.Schema schema = 1;
+  // properties of the stage we will consume
+  datafusion.Partitioning partitioning = 2;
+  // stage to read from
+  uint64 stage_id = 3;
+}
+
+message MaxRowsExecNode {
+  uint64 max_rows = 1;
+}
+
+message PartitionIsolatorExecNode {
+  uint64 partition_count = 2;
+}
+
+message DistributedAnalyzeExecNode {
+  // how much data to show
+  bool verbose = 1;
+  // if statistics should be displayed
+  bool show_statistics = 2;
+}
+
+message DistributedAnalyzeRootExecNode {
+  // how much data to show
+  bool verbose = 1;
+  // if statistics should be displayed
+  bool show_statistics = 2;
+}
+
+message RecordBatchExecNode {
+  bytes batch = 1;
+}
+
+message DDExecNode {
+  oneof payload {
+    DDStageReaderExecNode stage_reader_exec = 1;
+    MaxRowsExecNode max_rows_exec = 2;
+    PartitionIsolatorExecNode isolator_exec = 3;
+    DistributedAnalyzeExecNode distributed_analyze_exec = 4;
+    DistributedAnalyzeRootExecNode distributed_analyze_root_exec = 5;
+    RecordBatchExecNode record_batch_exec = 6;
+  }
+}
+
+message AnnotatedTaskOutput {
+  // the output of the explain analyze
+  string plan = 1;
+  // the host who executed this stage
+  Host host = 2;
+  // the stage id that was executed
+  uint64 stage_id = 3;
+  // the partitions that were executed by this stage
+  repeated uint64 partition_group = 4;
+}
+
+message AnnotatedTaskOutputs {
+  repeated AnnotatedTaskOutput outputs = 1;
+}
+
+message FlightDataMetadata {
+  AnnotatedTaskOutputs annotated_task_outputs = 1;
+}
+
+message FlightTicketData {
+  string query_id = 1;
+  uint64 stage_id = 2;
+  uint64 partition = 3;
+  // name of the requestor, useful in logs for debugging
+  string requestor_name = 4;
+}
+
+message TicketStatementData {
+  // identity of the query we want to consume
+  string query_id = 1;
+  // the stage id of the final stage
+  uint64 stage_id = 2;
+  // host holding the final stage, the root of the query plan
+  StageAddrs stage_addrs = 3;
+  // the schema of the final stage
+  datafusion_common.Schema schema = 4;
+}
+
+message Host {
+  string addr = 1;
+  string name = 2;
+}
+
+message Hosts {
+  repeated Host hosts = 1;
+}
+
+message PartitionAddrs {
+  map<uint64, Hosts> partition_addrs = 1;
+}
+
+message StageAddrs {
+  // map of stage id to stage address
+  map<uint64, PartitionAddrs> stage_addrs = 1;
+}
+
+message DDTask {
+  string query_id = 1;
+
+  uint64 stage_id = 2;
+
+  repeated uint64 partition_group = 3;
+
+  bytes plan_bytes = 4;
+
+  repeated uint64 child_stage_ids = 5;
+
+  StageAddrs stage_addrs = 6;
+
+  uint64 num_output_partitions = 7;
+
+  bool full_partitions = 8;
+
+  Host assigned_host = 9;
+}

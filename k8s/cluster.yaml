@@ -1,0 +1,220 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-dd-proxy
+  labels:
+    app: dd-proxy
+spec:
+  type: ClusterIP
+  ports:
+    - name: dd-proxy
+      port: 20200
+      targetPort: 20200
+  selector:
+    app: dd-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-dd-proxy
+  labels:
+    app: dd-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dd-proxy
+  template:
+    metadata:
+      labels:
+        app: dd-proxy
+        service: dd-proxy
+        team: mint
+        admission.datadoghq.com/enabled: "true"
+      annotations:
+        emissary.datadoghq.com/inject-lifecycle: "inject"
+    spec:
+      serviceAccount: mint
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          effect: "NoSchedule"
+          value: "nodeless"
+        - key: kubernetes.io/arch
+          operator: Equal
+          value: arm64
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "node-role.kubernetes.io/nodeless"
+                    operator: Exists
+      containers:
+        - name: dd-proxy
+          image: registry.ddbuild.io/dd-amd64:2025-06-17-b
+          env:
+            - name: DD_WORKER_DEPLOYMENT
+              value: deployment-dd-worker
+            - name: DD_WORKER_DEPLOYMENT_PORT
+              value: "20201"
+            - name: DD_WORKER_DEPLOYMENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUST_LOG
+              value: datafusion_bindings=info,cs3_query=info
+            - name: HDQ_URL
+              value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
+            - name: MEM_THRESHOLD
+              value: "12_000_000_000"
+            - name: MEM_THRESHOLD_RATE
+              value: "100_000_000"
+          command:
+            - sh
+            - "-c"
+            - "/dd --mode proxy --port 20200"
+          ports:
+            - containerPort: 20200
+          resources:
+            limits:
+              cpu: "8"
+              memory: "16G"
+            requests:
+              cpu: "8"
+              memory: "16G"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-dd-worker
+  labels:
+    app: dd-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dd-worker
+  template:
+    metadata:
+      labels:
+        app: dd-worker
+        service: service-dd-worker
+        team: mint
+        admission.datadoghq.com/enabled: "true"
+      annotations:
+        emissary.datadoghq.com/inject-lifecycle: "inject"
+    spec:
+      serviceAccount: mint
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          effect: "NoSchedule"
+          value: "nodeless"
+        - key: kubernetes.io/arch
+          operator: Equal
+          value: arm64
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "node-role.kubernetes.io/nodeless"
+                    operator: Exists
+      containers:
+        - name: dd-worker
+          image: registry.ddbuild.io/dd-amd64:2025-06-17-b
+          env:
+            - name: RUST_LOG
+              value: distributed_datafusion=trace,datafusion_bindings=info,cs3_query=info
+            - name: HDQ_URL
+              value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
+            - name: MEM_THRESHOLD
+              value: "12_000_000_000"
+            - name: MEM_THRESHOLD_RATE
+              value: "100_000_000"
+          command:
+            - sh
+            - "-c"
+            - "/dd --mode worker --port 20201"
+          ports:
+            - containerPort: 20201
+          resources:
+            limits:
+              cpu: "8"
+              memory: "16G"
+            requests:
+              cpu: "8"
+              memory: "16G"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-reader
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["pods", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"] # For Deployments, StatefulSets, etc.
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: mint
+roleRef:
+  kind: Role
+  name: api-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toolbox
+  labels:
+    app: toolbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: toolbox
+  template:
+    metadata:
+      labels:
+        app: toolbox
+        service: toolbox
+        team: mint
+        admission.datadoghq.com/enabled: "true"
+      annotations:
+        emissary.datadoghq.com/inject-lifecycle: "inject"
+    spec:
+      serviceAccount: mint
+      tolerations:
+        - key: "node"
+          operator: "Equal"
+          effect: "NoSchedule"
+          value: "nodeless"
+        - key: kubernetes.io/arch
+          operator: Equal
+          value: arm64
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "node-role.kubernetes.io/nodeless"
+                    operator: Exists
+      containers:
+        - name: toolbox
+          image: registry.ddbuild.io/busybox:1.34.0
+          command:
+            - sh
+            - "-c"
+            - "while true; do sleep 30; done;"
