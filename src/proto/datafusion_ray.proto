@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package datafusion_ray.protobuf;
+
+import "datafusion.proto";
+import "datafusion_common.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "RayDataFusionProto";
+option java_package = "datafusion_ray.protobuf";
+
+message DFRayStageReaderExecNode {
+  // schema of the stage we will consume
+  datafusion_common.Schema schema = 1;
+  // properties of the stage we will consume
+  datafusion.Partitioning partitioning = 2;
+  // stage to read from
+  uint64 stage_id = 3;
+}
+
+// the simplicity of the decoder in src/codec.rs currently requires a different byte
+// representation per message.  Hence the dummy fields.
+//
+// I'll come back to this and sort it out.  Its not super critical as the plans are
+// only exchanged at the start of queries, not during execution.
+
+message MaxRowsExecNode {
+  uint64 max_rows = 1;
+}
+
+message PartitionIsolatorExecNode {
+  float dummy = 1;
+  uint64 partition_count = 2;
+}
+
+message NumpangScanExecNode {
+  datafusion.FileScanExecConf base_conf = 1;
+}
+
+message ContextScanExecNode {
+  datafusion.FileScanExecConf base_conf = 1;
+  repeated datafusion.LogicalExprNode filters = 2;
+  datafusion_common.Schema schema = 3;
+}
+
+message DFRayExecNode {
+  oneof payload {
+    DFRayStageReaderExecNode stage_reader_exec = 1;
+    MaxRowsExecNode max_rows_exec = 2;
+    PartitionIsolatorExecNode isolator_exec = 3;
+    NumpangScanExecNode numpang_exec = 4;
+    ContextScanExecNode context_exec = 5;
+  }
+}
+
+message FlightTicketData {
+  string query_id = 1;
+  uint64 stage_id = 2;
+  uint64 partition = 3;
+  // name of the requestor, useful in logs for debugging
+  string requestor_name = 4;
+}
+
+message TicketStatementData {
+  // identity of the query we want to consume
+  string query_id = 1;
+  // the stage id of the final stage
+  uint64 stage_id = 2;
+  // host holding the final stage, the root of the query plan
+  StageAddrs stage_addrs = 3;
+  // the schema of the final stage
+  datafusion_common.Schema schema = 4;
+}
+
+message Host {
+  string addr = 1;
+  string name = 2;
+}
+
+message Hosts {
+  repeated Host hosts = 1;
+}
+
+message PartitionAddrs {
+  map<uint64, Hosts> partition_addrs = 1;
+}
+
+message StageAddrs {
+  // map of stage id to stage address
+  map<uint64, PartitionAddrs> stage_addrs = 1;
+}
+
+message StageData {
+  string query_id = 1;
+
+  uint64 stage_id = 2;
+
+  repeated uint64 partition_group = 3;
+
+  bytes plan_bytes = 4;
+
+  repeated uint64 child_stage_ids = 5;
+
+  StageAddrs stage_addrs = 6;
+
+  uint64 num_output_partitions = 7;
+
+  bool full_partitions = 8;
+
+  Host assigned_addr = 9;
+}
