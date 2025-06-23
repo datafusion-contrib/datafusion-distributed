@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "datafusion-distributed"
-description = "DataFusion distributed execution framework"
+name = "distributed-datafusion"
+description = "Distributed DataFusion execution framework"
 homepage = "https://github.com/datafusion-contrib/datafusion-distributed"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 authors = ["DataFusion Contributors <dev@datafusion.apache.org>"]
@@ -29,7 +29,7 @@ rust-version = "1.70"
 build = "build.rs"
 
 [[bin]]
-name = "datafusion-distributed"
+name = "distributed-datafusion"
 path = "src/main.rs"
 
 [dependencies]

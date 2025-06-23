@@ -67,7 +67,7 @@ if [ "$NUM_WORKERS" -lt 1 ]; then
 fi
 
 # Check if the binary exists, build if not
-if [ ! -f "./target/release/datafusion-distributed" ]; then
+if [ ! -f "./target/release/distributed-datafusion" ]; then
     echo "Binary not found, building release version..."
     echo "This may take a few minutes on first run..."
     if [ -f "./build.sh" ]; then
@@ -77,8 +77,8 @@ if [ ! -f "./target/release/datafusion-distributed" ]; then
     fi
     
     # Verify the build was successful
-    if [ ! -f "./target/release/datafusion-distributed" ]; then
-        echo "Error: Failed to build datafusion-distributed binary"
+    if [ ! -f "./target/release/distributed-datafusion" ]; then
+        echo "Error: Failed to build distributed-datafusion binary"
         exit 1
     fi
     echo "✅ Build completed successfully!"
@@ -146,7 +146,7 @@ for ((i=0; i<NUM_WORKERS; i++)); do
     WORKER_NAME="worker$((i+1))"
     LOG_FILE="${LOG_DIR}/${WORKER_NAME}.log"
     echo "  Starting $WORKER_NAME on port $PORT..."
-    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/datafusion-distributed --mode worker --port $PORT > "$LOG_FILE" 2>&1 &
+    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT > "$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
     WORKER_ADDRESSES[$i]="${WORKER_NAME}/localhost:${PORT}"
 done
@@ -162,7 +162,7 @@ WORKER_ADDRESSES_STR=$(IFS=,; echo "${WORKER_ADDRESSES[*]}")
 echo "Starting proxy on port 20200..."
 echo "Connecting to workers: $WORKER_ADDRESSES_STR"
 PROXY_LOG="${LOG_DIR}/proxy.log"
-env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/datafusion-distributed --mode proxy --port 20200 > "$PROXY_LOG" 2>&1 &
+env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 > "$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 
 echo

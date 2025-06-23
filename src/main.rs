@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use datafusion_distributed::{
+use distributed_datafusion::{
     friendly::new_friendly_name,
     processor_service::DFRayProcessorService,
     proxy_service::DFRayProxyService,
@@ -8,7 +8,7 @@ use datafusion_distributed::{
 };
 
 #[derive(Parser)]
-#[command(name = "datafusion-distributed")]
+#[command(name = "distributed-datafusion")]
 #[command(about = "A distributed execution engine for DataFusion", long_about = None)]
 struct Args {
     /// Port number for the service to listen on
