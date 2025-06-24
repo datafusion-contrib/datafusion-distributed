@@ -7,7 +7,6 @@ use datafusion::{
     execution::FunctionRegistry,
     physical_plan::{ExecutionPlan, displayable},
 };
-// DataDog-specific dependencies removed for open source version
 use datafusion_proto::{
     physical_plan::{
         DefaultPhysicalExtensionCodec,
@@ -96,7 +95,6 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
-                // DataDog-specific NumpangExec and ContextExec removed for open source version
                 Payload::NumpangExec(_) => {
                     Err(internal_datafusion_err!(
                         "NumpangExec not supported in open source version"
@@ -146,7 +144,6 @@ impl PhysicalExtensionCodec for DFRayCodec {
             };
             Payload::MaxRowsExec(pb)
         } else if let Some(_exec) = node.as_any().downcast_ref::<DataSourceExec>() {
-            // DataDog-specific DataSourceExec encoding removed for open source version
             return internal_err!("DataSourceExec encoding not supported in open source version");
         } else {
             return internal_err!("Not supported node to encode to proto");
@@ -175,7 +172,6 @@ mod test {
         physical_plan::{Partitioning, displayable},
         prelude::SessionContext,
     };
-    // DataDog-specific NumpangFileSource removed for open source version
     use datafusion_proto::physical_plan::AsExecutionPlan;
 
     use super::*;
@@ -251,8 +247,6 @@ mod test {
 
         verify_round_trip(exec);
     }
-
-    // DataDog-specific numpang tests removed for open source version
 
     #[test]
     fn max_rows_and_reader_round_trip() {

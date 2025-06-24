@@ -57,7 +57,7 @@ fn setup_logging() {
     let dfr_env = env::var("DATAFUSION_RAY_LOG_LEVEL").unwrap_or("WARN".to_string());
     let rust_log_env = env::var("RUST_LOG").unwrap_or("WARN".to_string());
 
-    let combined_env = format!("{rust_log_env},datafusion_distributed={dfr_env}");
+    let combined_env = format!("{rust_log_env},distributed_datafusion={dfr_env}");
 
     env_logger::Builder::new()
         .parse_filters(&combined_env)

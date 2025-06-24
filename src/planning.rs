@@ -28,7 +28,6 @@ use datafusion::{
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
-// DataDog-specific table functions removed for open source version
 use futures::TryStreamExt;
 use itertools::Itertools;
 use prost::Message;
@@ -128,8 +127,6 @@ async fn make_state() -> Result<SessionState> {
         .with_default_features()
         .with_config(config)
         .build();
-
-    // DataDog-specific table functions registration removed for open source version
 
     add_tables_from_env(&mut state)
         .await

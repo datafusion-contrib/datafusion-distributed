@@ -1,4 +1,4 @@
-# DataFusion Distributed
+# Distributed DataFusion
 
 [![Apache licensed][license-badge]][license-url]
 
@@ -7,7 +7,7 @@
 
 ## Overview
 
-DataFusion Distributed is a distributed execution framework that enables DataFusion DataFrame and SQL queries to run in a distributed fashion. This project provides the infrastructure to scale DataFusion workloads across multiple nodes in a cluster.
+Distributed DataFusion is a distributed execution framework that enables DataFusion DataFrame and SQL queries to run in a distributed fashion. This project provides the infrastructure to scale DataFusion workloads across multiple nodes in a cluster.
 
 This is an open source version of the distributed DataFusion prototype, extracted from DataDog's internal implementation and made available to the community.
 
@@ -100,19 +100,41 @@ protoc --version
 ./build.sh --release
 ```
 
-#### Using Cargo Directly
-
-To build the project in debug mode:
+**Clean Rebuild**: If you need to completely clean and rebuild (removes all build artifacts):
 
 ```bash
+# Clean rebuild in debug mode
+./clean_and_build.sh
+
+# Clean rebuild in release mode (optimized)
+./clean_and_build.sh --release
+```
+
+#### Using Cargo Directly
+
+You can also build the project directly with Cargo (the build.rs script will automatically handle Protocol Buffer compilation):
+
+```bash
+# Build in debug mode
 cargo build
 ```
 
-To build the project in release mode (optimized):
-
 ```bash
+# Build in release mode (optimized)  
 cargo build --release
 ```
+
+**Clean Build Artifacts**: To clean previous build artifacts before rebuilding:
+
+```bash
+# Clean all build artifacts (removes target/ directory contents)
+cargo clean
+
+# Then rebuild
+cargo build --release
+```
+
+**Note**: Both commands, `build.sh` script and `cargo` automatically invoke `build.rs`, which handles Protocol Buffer compilation before building the main crate. The main advantage of using `./build.sh` is the user-friendly output and usage examples it provides.
 
 ### Running Tests
 
@@ -203,10 +225,10 @@ In separate terminal windows, start two workers:
 
 ```bash
 # Terminal 1 - Start first worker
-DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/datafusion-distributed --mode worker --port 20201
+DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20201
 
 # Terminal 2 - Start second worker  
-DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/datafusion-distributed --mode worker --port 20202
+DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20202
 ```
 
 **Step 2: Start Proxy**
@@ -215,17 +237,17 @@ In another terminal, start the proxy connecting to both workers:
 
 ```bash
 # Terminal 3 - Start proxy connected to workers
-DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/datafusion-distributed --mode proxy --port 20200
+DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/distributed-datafusion --mode proxy --port 20200
 ```
 
 To make your cluster aware of specific table schemas, you’ll need to define a new environment variable, DFRAY_TABLES, when starting each worker and proxy. This variable should specify tables whose data is stored in Parquet files.For example, the following setup registers two tables—customer and nation—along with their corresponding data sources.
 
 ```bash
-DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/datafusion-distributed --mode worker --port 20201
+DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20201
 
-DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/datafusion-distributed --mode worker --port 20202
+DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20202
 
-DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/datafusion-distributed --mode proxy --port 20200
+DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/distributed-datafusion --mode proxy --port 20200
 ```
 
 #### Manual Client Setup
@@ -271,16 +293,16 @@ For development or testing, you can run individual components:
 
 ```bash
 # Single worker (no distributed queries)
-./target/release/datafusion-distributed --mode worker --port 20201
+./target/release/distributed-datafusion --mode worker --port 20201
 
 # Proxy without workers (limited functionality)
-./target/release/datafusion-distributed --mode proxy --port 20200
+./target/release/distributed-datafusion --mode proxy --port 20200
 ```
 
 View Available Options
 
 ```bash
-./target/release/datafusion-distributed --help
+./target/release/distributed-datafusion --help
 ```
 
 The system supports various configuration options through environment variables:
