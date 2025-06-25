@@ -58,7 +58,7 @@ DataFusion Distributed implements a master-worker architecture for distributed S
 
 ### Prerequisites
 
-- Rust 1.70 or later
+- Rust 1.82 or later
 - Protocol Buffers compiler (protoc)
 - (Optional) Kubernetes cluster for distributed execution
 
