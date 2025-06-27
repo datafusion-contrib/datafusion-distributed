@@ -23,6 +23,7 @@ mod proto;
 pub use proto::generated::protobuf;
 
 pub mod codec;
+pub mod explain;
 pub mod flight;
 pub mod friendly;
 pub mod isolator;

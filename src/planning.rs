@@ -45,6 +45,7 @@ use crate::{
     vocab::{Addrs, CtxName, CtxPartitionGroup, CtxStageAddrs},
 };
 
+#[derive(Debug)]
 pub struct DFRayStage {
     /// our stage id
     pub stage_id: u64,
@@ -239,11 +240,12 @@ pub async fn physical_planning(
     Ok(physical_plan)
 }
 
+/// Returns distributed plan and execution stages for both query execution and EXPLAIN display
 pub async fn execution_planning(
     physical_plan: Arc<dyn ExecutionPlan>,
     batch_size: usize,
     partitions_per_worker: Option<usize>,
-) -> Result<Vec<DFRayStage>> {
+) -> Result<(Arc<dyn ExecutionPlan>, Vec<DFRayStage>)> {
     let mut stages = vec![];
 
     let mut partition_groups = vec![];
@@ -336,9 +338,11 @@ pub async fn execution_planning(
     // a carry over from when it was done in a physical optimizer seperate
     // step
     let optimizer = DFRayStageOptimizerRule::new();
-    let physical_plan = optimizer.optimize(physical_plan, &ConfigOptions::default())?;
+    let distributed_plan = optimizer.optimize(physical_plan, &ConfigOptions::default())?;
 
-    physical_plan.transform_up(up)?;
+    // Clone the distributed plan before transformation since we need to return it
+    let distributed_plan_clone = Arc::clone(&distributed_plan);
+    distributed_plan.transform_up(up)?;
 
     // add coalesce and max rows to last stage
     let mut last_stage = stages.pop().ok_or(anyhow!("No stages found"))?;
@@ -363,7 +367,7 @@ pub async fn execution_planning(
         .join(",\n");
     trace!("stages:{}", txt);
 
-    Ok(stages)
+    Ok((distributed_plan_clone, stages))
 }
 
 /// Distribute the stages to the workers, assigning each stage to a worker
