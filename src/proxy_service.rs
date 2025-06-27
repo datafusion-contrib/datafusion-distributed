@@ -46,7 +46,7 @@ use tokio::{
 use tonic::{Request, Response, Status, async_trait, transport::Server};
 
 use crate::{
-    explain::DistributedExplainExec,
+    explain::{DistributedExplainExec, is_explain_query},
     protobuf::DistributedExplainExecNode,
     flight::{FlightSqlHandler, FlightSqlServ},
     k8s::get_worker_addresses,
@@ -169,7 +169,7 @@ impl DfRayProxyHandler {
     /// This method only handles EXPLAIN queries (plan only). EXPLAIN ANALYZE queries are handled as regular queries because they need to be executed.
     pub async fn prepare_explain(&self, sql: &str) -> Result<QueryPlan> {
         // Validate that this is actually an EXPLAIN query (not EXPLAIN ANALYZE)
-        if !self.is_explain_query(sql) {
+        if !is_explain_query(sql) {
             return Err(anyhow!("prepare_explain called with non-EXPLAIN query or EXPLAIN ANALYZE query: {}", sql).into());
         }
         
@@ -217,16 +217,6 @@ impl DfRayProxyHandler {
             schema,
             explain_data: Some(explain_data),
         })
-    }
-
-    /// Check if this is an EXPLAIN query (but not EXPLAIN ANALYZE)
-    fn is_explain_query(&self, query: &str) -> bool {
-        let query_upper = query.trim().to_uppercase();
-        // Must start with "EXPLAIN" followed by whitespace or end of string
-        let is_explain = query_upper.starts_with("EXPLAIN") && 
-            (query_upper.len() == 7 || query_upper.chars().nth(7).is_some_and(|c| c.is_whitespace()));
-        let is_explain_analyze = query_upper.starts_with("EXPLAIN ANALYZE");
-        is_explain && !is_explain_analyze
     }
 
     /// Create a FlightInfo response with the given ticket data
@@ -480,7 +470,7 @@ impl FlightSqlHandler for DfRayProxyHandler {
         query: arrow_flight::sql::CommandStatementQuery,
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let is_explain = self.is_explain_query(&query.query);
+        let is_explain = is_explain_query(&query.query);
 
         if is_explain {
             self.handle_explain_request(&query.query).await
@@ -661,35 +651,6 @@ mod tests {
     // //////////////////////////////////////////////////////////////
     // Unit tests for helper functions
     // //////////////////////////////////////////////////////////////
-
-    #[test]
-    fn test_is_explain_query() {
-        let handler = create_test_handler();
-
-        // Test EXPLAIN queries (should return true)
-        assert!(handler.is_explain_query("EXPLAIN SELECT * FROM table"));
-        assert!(handler.is_explain_query("explain select * from table"));
-        assert!(handler.is_explain_query("  EXPLAIN  SELECT 1"));
-        assert!(handler.is_explain_query("EXPLAIN\nSELECT * FROM test"));
-
-        // Test EXPLAIN ANALYZE queries (should return false)
-        assert!(!handler.is_explain_query("EXPLAIN ANALYZE SELECT * FROM table"));
-        assert!(!handler.is_explain_query("explain analyze SELECT * FROM table"));
-        assert!(!handler.is_explain_query("  EXPLAIN ANALYZE  SELECT 1"));
-
-        // Test regular queries (should return false)
-        assert!(!handler.is_explain_query("SELECT * FROM table"));
-        assert!(!handler.is_explain_query("INSERT INTO table VALUES (1)"));
-        assert!(!handler.is_explain_query("UPDATE table SET col = 1"));
-        assert!(!handler.is_explain_query("DELETE FROM table"));
-        assert!(!handler.is_explain_query("CREATE TABLE test (id INT)"));
-
-        // Test edge cases
-        assert!(!handler.is_explain_query(""));
-        assert!(!handler.is_explain_query("   "));
-        assert!(!handler.is_explain_query("EXPLAINSELECT"));  // No space
-        assert!(handler.is_explain_query("EXPLAIN")); // Just EXPLAIN
-    }
 
     #[test]
     fn test_validate_single_stage_addrs_success() {

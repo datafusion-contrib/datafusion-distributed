@@ -180,3 +180,50 @@ impl ExecutionPlan for DistributedExplainExec {
         self.schema.clone()
     }
 }
+
+/// Check if this is an EXPLAIN query (but not EXPLAIN ANALYZE)
+/// 
+/// This function distinguishes between:
+/// - EXPLAIN queries (returns true) - show plan information only
+/// - EXPLAIN ANALYZE queries (returns false) - execute and show runtime stats
+/// - Regular queries (returns false) - normal query execution
+pub fn is_explain_query(query: &str) -> bool {
+    let query_upper = query.trim().to_uppercase();
+    // Must start with "EXPLAIN" followed by whitespace or end of string
+    let is_explain = query_upper.starts_with("EXPLAIN") && 
+        (query_upper.len() == 7 || query_upper.chars().nth(7).is_some_and(|c| c.is_whitespace()));
+    let is_explain_analyze = query_upper.starts_with("EXPLAIN ANALYZE");
+    is_explain && !is_explain_analyze
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_explain_query() {
+        // Test EXPLAIN queries (should return true)
+        assert!(is_explain_query("EXPLAIN SELECT * FROM table"));
+        assert!(is_explain_query("explain select * from table"));
+        assert!(is_explain_query("  EXPLAIN  SELECT 1"));
+        assert!(is_explain_query("EXPLAIN\nSELECT * FROM test"));
+
+        // Test EXPLAIN ANALYZE queries (should return false)
+        assert!(!is_explain_query("EXPLAIN ANALYZE SELECT * FROM table"));
+        assert!(!is_explain_query("explain analyze SELECT * FROM table"));
+        assert!(!is_explain_query("  EXPLAIN ANALYZE  SELECT 1"));
+
+        // Test regular queries (should return false)
+        assert!(!is_explain_query("SELECT * FROM table"));
+        assert!(!is_explain_query("INSERT INTO table VALUES (1)"));
+        assert!(!is_explain_query("UPDATE table SET col = 1"));
+        assert!(!is_explain_query("DELETE FROM table"));
+        assert!(!is_explain_query("CREATE TABLE test (id INT)"));
+
+        // Test edge cases
+        assert!(!is_explain_query(""));
+        assert!(!is_explain_query("   "));
+        assert!(!is_explain_query("EXPLAINSELECT"));  // No space
+        assert!(is_explain_query("EXPLAIN")); // Just EXPLAIN
+    }
+}
