@@ -615,6 +615,21 @@ impl DFRayProxyService {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    
+    // Test-specific imports
+    use arrow_flight::{
+        FlightDescriptor,
+        Ticket,
+        decode::FlightRecordBatchStream,
+        sql::{CommandStatementQuery, TicketStatementQuery},
+    };
+    use futures::StreamExt;
+    use prost::Message;
+    use tonic::Request;
+
+    // //////////////////////////////////////////////////////////////
+    // Test helper functions
+    // //////////////////////////////////////////////////////////////
 
     /// Create a test handler for testing - bypasses worker discovery initialization
     fn create_test_handler() -> DfRayProxyHandler {
@@ -646,6 +661,70 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         std::env::set_var("DFRAY_WORKER_ADDRESSES", &mock_env_value);
+    }
+
+    /// Create TicketStatementData for EXPLAIN testing from QueryPlan
+    fn create_explain_ticket_statement_data(plans: QueryPlan) -> TicketStatementData {
+        let explain_data = plans.explain_data.map(|data| {
+            DistributedExplainExecNode {
+                schema: data.schema().as_ref().try_into().ok(),
+                logical_plan: data.logical_plan().to_string(),
+                physical_plan: data.physical_plan().to_string(),
+                distributed_plan: data.distributed_plan().to_string(),
+                distributed_stages: data.distributed_stages().to_string(),
+            }
+        });
+        
+        TicketStatementData {
+            query_id: plans.query_id,
+            stage_id: plans.final_stage_id,
+            stage_addrs: Some(plans.worker_addresses.into()),
+            schema: Some(plans.schema.as_ref().try_into().unwrap()),
+            explain_data,
+        }
+    }
+
+    /// Consume a DoGetStream and verify it contains expected EXPLAIN results
+    async fn verify_explain_stream_results(stream: crate::flight::DoGetStream) {
+        
+        // Convert the stream to a FlightRecordBatchStream and consume it
+        // Map Status errors to FlightError to match the expected stream type
+        let mapped_stream = stream.map(|result| {
+            result.map_err(|status| arrow_flight::error::FlightError::from(status))
+        });
+        let mut flight_stream = FlightRecordBatchStream::new_from_flight_data(mapped_stream);
+        
+        let mut batches = Vec::new();
+        while let Some(batch_result) = flight_stream.next().await {
+            let batch = batch_result.expect("Failed to get batch from stream");
+            batches.push(batch);
+        }
+        
+        // Verify we got exactly one batch with EXPLAIN results
+        assert_eq!(batches.len(), 1);
+        let batch = &batches[0];
+        
+        // Verify schema: should have 2 columns (plan_type, plan)
+        assert_eq!(batch.num_columns(), 2);
+        assert_eq!(batch.schema().field(0).name(), "plan_type");
+        assert_eq!(batch.schema().field(1).name(), "plan");
+        
+        // Verify we have 4 rows (logical_plan, physical_plan, distributed_plan, distributed_stages)
+        assert_eq!(batch.num_rows(), 4);
+        
+        // Verify the plan_type column contains the expected values
+        let plan_type_column = batch.column(0).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        assert_eq!(plan_type_column.value(0), "logical_plan");
+        assert_eq!(plan_type_column.value(1), "physical_plan");
+        assert_eq!(plan_type_column.value(2), "distributed_plan");
+        assert_eq!(plan_type_column.value(3), "distributed_stages");
+        
+        // Verify the plan column contains actual plan content
+        let plan_column = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        assert!(plan_column.value(0).contains("Projection: Int64(1) AS test_col"));
+        assert!(plan_column.value(1).contains("ProjectionExec"));
+        assert!(plan_column.value(2).contains("RayStageExec"));
+        assert!(plan_column.value(3).contains("Stage 0:"));
     }
 
     // //////////////////////////////////////////////////////////////
@@ -845,5 +924,184 @@ mod tests {
                 println!("✓ prepare_query failed with expected worker discovery error: {}", error_msg);
             }
         }
+    }
+
+    // //////////////////////////////////////////////////////////////
+    // EXPLAIN Flow Integration Tests
+    // //////////////////////////////////////////////////////////////
+
+    #[tokio::test]
+    async fn test_handle_explain_request() {
+        let handler = create_test_handler();
+        let query = "EXPLAIN SELECT 1 as test_col, 'hello' as text_col";
+        
+        let result = handler.handle_explain_request(query).await;
+        assert!(result.is_ok());
+        
+        let response = result.unwrap();
+        let flight_info = response.into_inner();
+        
+        // Verify FlightInfo structure
+        assert!(!flight_info.schema.is_empty());
+        assert_eq!(flight_info.endpoint.len(), 1);
+        assert!(flight_info.endpoint[0].ticket.is_some());
+        
+        // Verify that ticket has content (encoded TicketStatementData)
+        let ticket = flight_info.endpoint[0].ticket.as_ref().unwrap();
+        assert!(!ticket.ticket.is_empty());
+        
+        println!("✓ FlightInfo created successfully with {} schema bytes and ticket with {} bytes", 
+                 flight_info.schema.len(), ticket.ticket.len());
+    }
+
+    #[tokio::test]
+    async fn test_handle_explain_request_invalid_query() {
+        let handler = create_test_handler();
+        
+        // Test with EXPLAIN ANALYZE (should fail)
+        let query = "EXPLAIN ANALYZE SELECT 1";
+        let result = handler.handle_explain_request(query).await;
+        assert!(result.is_err());
+        
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert!(error.message().contains("Could not prepare EXPLAIN query"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_explain_statement_execution() {
+        let handler = create_test_handler();
+        
+        // First prepare an EXPLAIN query to get the ticket data structure
+        let query = "EXPLAIN SELECT 1 as test_col";
+        let plans = handler.prepare_explain(query).await.unwrap();
+        
+        // Create the TicketStatementData that would be sent to do_get_statement
+        let tsd = create_explain_ticket_statement_data(plans);
+        
+        // Test the execution
+        let result = handler.handle_explain_statement_execution(tsd, "test_remote").await;
+        assert!(result.is_ok());
+        
+        let response = result.unwrap();
+        let stream = response.into_inner();
+        
+        // Use shared verification function
+        verify_explain_stream_results(stream).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_explain_statement_execution_missing_explain_data() {
+        let handler = create_test_handler();
+        
+        // Create TicketStatementData without explain_data (should fail)
+        let tsd = TicketStatementData {
+            query_id: "test_query".to_string(),
+            stage_id: 0,
+            stage_addrs: None,
+            schema: None,
+            explain_data: None,
+        };
+        
+        let result = handler.handle_explain_statement_execution(tsd, "test_remote").await;
+        assert!(result.is_err());
+        
+        if let Err(error) = result {
+            assert_eq!(error.code(), tonic::Code::Internal);
+            assert!(error.message().contains("No explain_data in TicketStatementData"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_flight_info_statement_explain() {
+        
+        let handler = create_test_handler();
+        
+        // Test EXPLAIN query
+        let command = CommandStatementQuery {
+            query: "EXPLAIN SELECT 1 as test_col".to_string(),
+            transaction_id: None,
+        };
+        
+        let request = Request::new(FlightDescriptor::new_cmd(vec![]));
+        let result = handler.get_flight_info_statement(command, request).await;
+        
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        let flight_info = response.into_inner();
+        
+        // Verify FlightInfo structure
+        assert!(!flight_info.schema.is_empty());
+        assert_eq!(flight_info.endpoint.len(), 1);
+        assert!(flight_info.endpoint[0].ticket.is_some());
+        
+        // Verify that ticket has content (encoded TicketStatementData)
+        let ticket = flight_info.endpoint[0].ticket.as_ref().unwrap();
+        assert!(!ticket.ticket.is_empty());
+        
+        println!("✓ FlightInfo created successfully with {} schema bytes and ticket with {} bytes", 
+                 flight_info.schema.len(), ticket.ticket.len());
+    }
+
+    #[tokio::test]
+    async fn test_do_get_statement_explain() {
+        
+        let handler = create_test_handler();
+        
+        // First prepare an EXPLAIN query to get proper ticket data
+        let query = "EXPLAIN SELECT 1 as test_col";
+        let plans = handler.prepare_explain(query).await.unwrap();
+        
+        let tsd = create_explain_ticket_statement_data(plans);
+        
+        // Create the ticket
+        let ticket_query = TicketStatementQuery {
+            statement_handle: tsd.encode_to_vec().into(),
+        };
+        
+        let request = Request::new(Ticket::new(vec![]));
+        let result = handler.do_get_statement(ticket_query, request).await;
+        
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        let stream = response.into_inner();
+        
+        // Use shared verification function
+        verify_explain_stream_results(stream).await;
+    }
+
+    #[tokio::test]
+    async fn test_compare_explain_flight_info_responses() {
+        let handler = create_test_handler();
+        let query = "EXPLAIN SELECT 1 as test_col";
+        
+        // Get FlightInfo from handle_explain_request
+        let result1 = handler.handle_explain_request(query).await.unwrap();
+        let flight_info1 = result1.into_inner();
+        
+        // Get FlightInfo from get_flight_info_statement
+        let command = CommandStatementQuery {
+            query: query.to_string(),
+            transaction_id: None,
+        };
+        let request = Request::new(FlightDescriptor::new_cmd(vec![]));
+        let result2 = handler.get_flight_info_statement(command, request).await.unwrap();
+        let flight_info2 = result2.into_inner();
+        
+        // Compare FlightInfo responses (structure should be identical)
+        assert_eq!(flight_info1.schema.len(), flight_info2.schema.len()); // Same schema size
+        assert_eq!(flight_info1.endpoint.len(), flight_info2.endpoint.len()); // Same number of endpoints
+        assert_eq!(flight_info1.endpoint.len(), 1); // Both should have exactly one endpoint
+        
+        // Both should have tickets with content
+        let ticket1 = flight_info1.endpoint[0].ticket.as_ref().unwrap();
+        let ticket2 = flight_info2.endpoint[0].ticket.as_ref().unwrap();
+        assert!(!ticket1.ticket.is_empty());
+        assert!(!ticket2.ticket.is_empty());
+        
+        println!("✓ Both tests produce FlightInfo with identical structure:");
+        println!("  - Schema bytes: {} vs {}", flight_info1.schema.len(), flight_info2.schema.len());
+        println!("  - Endpoints: {} vs {}", flight_info1.endpoint.len(), flight_info2.endpoint.len());
+        println!("  - Ticket bytes: {} vs {}", ticket1.ticket.len(), ticket2.ticket.len());
     }
 }
