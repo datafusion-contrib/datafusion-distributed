@@ -47,7 +47,7 @@ use tonic::{Request, Response, Status, async_trait, transport::Server};
 
 use crate::{
     explain::DistributedExplainExec,
-    protobuf::DistributedExplainExecNode as ProtoDistributedExplainExec,
+    protobuf::DistributedExplainExecNode,
     flight::{FlightSqlHandler, FlightSqlServ},
     k8s::get_worker_addresses,
     logging::{debug, info, trace},
@@ -110,7 +110,10 @@ impl DfRayProxyHandler {
         Self {}
     }
 
-    /// common planning steps shared by both query and its EXPLAIN
+    /// Common planning steps shared by both query and its EXPLAIN
+    ///
+    /// Prepare a query by parsing the SQL, planning it, and distributing the
+    /// physical plan into stages that can be executed by workers.
     async fn prepare_query_base(&self, sql: &str, query_type: &str) -> Result<QueryPlanBase> {
         debug!("prepare_query_base: {} SQL = {}", query_type, sql);
 
@@ -162,7 +165,7 @@ impl DfRayProxyHandler {
         })
     }
 
-    /// Prepare an EXPLAIN query - handles parsing, planning, and generating all plan representations
+    /// Prepare an EXPLAIN query
     /// This method only handles EXPLAIN queries (plan only). EXPLAIN ANALYZE queries are handled as regular queries because they need to be executed.
     pub async fn prepare_explain(&self, sql: &str) -> Result<QueryPlan> {
         // Validate that this is actually an EXPLAIN query (not EXPLAIN ANALYZE)
@@ -268,15 +271,15 @@ impl DfRayProxyHandler {
     /// EXPLAIN queries return comprehensive plan information including logical, physical, 
     /// distributed plan, and execution stages for analysis and debugging purposes.
     async fn handle_explain_request(&self, query: &str) -> Result<Response<FlightInfo>, Status> {
-        let explain_plan = self
+        let plans = self
             .prepare_explain(query)
             .await
             .map_err(|e| Status::internal(format!("Could not prepare EXPLAIN query {e:?}")))?;
 
-        debug!("get flight info: EXPLAIN query id {}", explain_plan.query_id);
+        debug!("get flight info: EXPLAIN query id {}", plans.query_id);
 
-        let proto_explain_data = explain_plan.explain_data.map(|data| {
-            ProtoDistributedExplainExec {
+        let explain_data = plans.explain_data.map(|data| {
+            DistributedExplainExecNode {
                 schema: data.schema().as_ref().try_into().ok(),
                 logical_plan: data.logical_plan().to_string(),
                 physical_plan: data.physical_plan().to_string(),
@@ -286,11 +289,11 @@ impl DfRayProxyHandler {
         });
 
         let flight_info = self.create_flight_info_response(
-            explain_plan.query_id,
-            explain_plan.worker_addresses,
-            explain_plan.final_stage_id,
-            explain_plan.schema,
-            proto_explain_data
+            plans.query_id,
+            plans.worker_addresses,
+            plans.final_stage_id,
+            plans.schema,
+            explain_data
         )?;
 
         trace!("get_flight_info_statement done for EXPLAIN");
@@ -626,7 +629,7 @@ mod tests {
     /// Create a test handler for testing - bypasses worker discovery initialization
     fn create_test_handler() -> DfRayProxyHandler {
         // Create the handler directly without calling new() to avoid worker discovery
-        // during test initialization. The init_test_env() function handles mock setup.
+        // during test initialization.
         DfRayProxyHandler {}
     }
 
@@ -642,17 +645,12 @@ mod tests {
         addrs
     }
 
-    /// Mock worker addresses for testing - bypasses worker discovery
-    fn setup_mock_worker_addresses() -> Vec<(String, String)> {
-        vec![
-            ("mock_worker_1".to_string(), "localhost:9001".to_string()),
-            ("mock_worker_2".to_string(), "localhost:9002".to_string()),
-        ]
-    }
-
     /// Set up mock worker environment for testing
     fn setup_mock_worker_env() {
-        let mock_addrs = setup_mock_worker_addresses();
+        let mock_addrs = vec![
+            ("mock_worker_1".to_string(), "localhost:9001".to_string()),
+            ("mock_worker_2".to_string(), "localhost:9002".to_string()),
+        ];
         let mock_env_value = mock_addrs.iter()
             .map(|(name, addr)| format!("{}/{}", name, addr))
             .collect::<Vec<_>>()
