@@ -42,6 +42,19 @@ pub struct ContextScanExecNode {
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedExplainExecNode {
+    #[prost(message, optional, tag = "1")]
+    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    #[prost(string, tag = "2")]
+    pub logical_plan: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub physical_plan: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub distributed_plan: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub distributed_stages: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DfRayExecNode {
     #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5")]
     pub payload: ::core::option::Option<df_ray_exec_node::Payload>,
@@ -88,6 +101,9 @@ pub struct TicketStatementData {
     /// the schema of the final stage
     #[prost(message, optional, tag = "4")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    /// For EXPLAIN queries, store the explain plan data directly
+    #[prost(message, optional, tag = "5")]
+    pub explain_data: ::core::option::Option<DistributedExplainExecNode>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Host {

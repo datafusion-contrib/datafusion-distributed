@@ -247,14 +247,6 @@ def explain_sql(sql_query):
             print("No explain plan returned")
             return
         
-        # Debug: show raw results
-        print("DEBUG: Raw results from EXPLAIN:")
-        print(f"DEBUG: Total rows returned: {len(results)}")
-        for i, row in enumerate(results):
-            row_content = str(row[1])[:200] + "..." if len(str(row[1])) > 200 else str(row[1])
-            print(f"DEBUG: Row {i}: [{row[0]}] = {row_content}")
-        print("DEBUG: " + "="*50)
-        
         logical_plan = None
         physical_plan = None
         distributed_plan = None
@@ -321,14 +313,6 @@ def explain_analyze_sql(sql_query):
         if not results:
             print("No explain analyze plan returned")
             return
-        
-        # Debug: show raw results
-        print("DEBUG: Raw results from EXPLAIN ANALYZE:")
-        print(f"DEBUG: Total rows returned: {len(results)}")
-        for i, row in enumerate(results):
-            row_content = str(row[1])[:200] + "..." if len(str(row[1])) > 200 else str(row[1])
-            print(f"DEBUG: Row {i}: [{row[0]}] = {row_content}")
-        print("DEBUG: " + "="*50)
         
         plan_with_metrics = None
         

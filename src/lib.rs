@@ -23,7 +23,9 @@ mod proto;
 pub use proto::generated::protobuf;
 
 pub mod codec;
+pub mod explain;
 pub mod flight;
+pub mod flight_handlers;
 pub mod friendly;
 pub mod isolator;
 pub mod k8s;
@@ -33,9 +35,11 @@ pub mod physical;
 pub mod planning;
 pub mod processor_service;
 pub mod proxy_service;
+pub mod query_planner;
 pub mod result;
 pub mod stage;
 pub mod stage_reader;
+pub mod test_utils;
 pub mod util;
 pub mod vocab;
 

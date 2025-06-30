@@ -21,7 +21,18 @@ static WORKER_DISCOVERY: OnceLock<Result<WorkerDiscovery>> = OnceLock::new();
 
 pub fn get_worker_addresses() -> Result<Vec<(String, String)>> {
     match WORKER_DISCOVERY.get_or_init(WorkerDiscovery::new) {
-        Ok(wd) => Ok(wd.get_addresses()),
+        Ok(wd) => {
+            let worker_addrs = wd.get_addresses();
+            debug!(
+                "Worker addresses found:\n{}",
+                worker_addrs
+                    .iter()
+                    .map(|(name, addr)| format!("{}: {}", name, addr))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            Ok(worker_addrs)
+        },
         Err(e) => Err(anyhow!("Failed to initialize WorkerDiscovery: {}", e).into()),
     }
 }
