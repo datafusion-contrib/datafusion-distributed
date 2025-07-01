@@ -125,6 +125,9 @@ partsupp:parquet:${TPCH_DATA_DIR}/partsupp.parquet,\
 region:parquet:${TPCH_DATA_DIR}/region.parquet,\
 supplier:parquet:${TPCH_DATA_DIR}/supplier.parquet"
 
+# Define views required for TPC-H queries (e.g., q15)
+export DFRAY_VIEWS="create view revenue0 (supplier_no, total_revenue) as select l_suppkey, sum(l_extendedprice * (1 - l_discount)) from lineitem where l_shipdate >= date '1996-08-01' and l_shipdate < date '1996-08-01' + interval '3' month group by l_suppkey"
+
 # Array to store worker PIDs and addresses
 declare -a WORKER_PIDS
 declare -a WORKER_ADDRESSES
@@ -146,7 +149,7 @@ for ((i=0; i<NUM_WORKERS; i++)); do
     WORKER_NAME="worker$((i+1))"
     LOG_FILE="${LOG_DIR}/${WORKER_NAME}.log"
     echo "  Starting $WORKER_NAME on port $PORT..."
-    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT > "$LOG_FILE" 2>&1 &
+    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_VIEWS="$DFRAY_VIEWS" ./target/release/distributed-datafusion --mode worker --port $PORT > "$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
     WORKER_ADDRESSES[$i]="${WORKER_NAME}/localhost:${PORT}"
 done
@@ -162,7 +165,7 @@ WORKER_ADDRESSES_STR=$(IFS=,; echo "${WORKER_ADDRESSES[*]}")
 echo "Starting proxy on port 20200..."
 echo "Connecting to workers: $WORKER_ADDRESSES_STR"
 PROXY_LOG="${LOG_DIR}/proxy.log"
-env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 > "$PROXY_LOG" 2>&1 &
+env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_VIEWS="$DFRAY_VIEWS" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 > "$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 
 echo

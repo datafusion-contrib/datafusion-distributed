@@ -250,6 +250,18 @@ DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/
 DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/distributed-datafusion --mode proxy --port 20200
 ```
 
+**Using Views:**
+
+To pre-create views that queries can reference (such as for TPC-H q15), you can use the `DFRAY_VIEWS` environment variable:
+
+```bash
+# Example: Create a view for TPC-H q15 revenue calculation
+DFRAY_VIEWS="CREATE VIEW revenue0 (supplier_no, total_revenue) AS SELECT l_suppkey, sum(l_extendedprice * (1 - l_discount)) FROM lineitem WHERE l_shipdate >= date '1996-08-01' AND l_shipdate < date '1996-08-01' + interval '3' month GROUP BY l_suppkey"
+
+# Use both tables and views in your cluster
+DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,lineitem:parquet:/tmp/tpch_s1/lineitem.parquet,supplier:parquet:/tmp/tpch_s1/supplier.parquet DFRAY_VIEWS="$DFRAY_VIEWS" DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20201
+```
+
 #### Manual Client Setup
 
 You can now connect a client to the proxy at `localhost:20200` to execute queries across the distributed cluster.
@@ -309,6 +321,7 @@ The system supports various configuration options through environment variables:
 
 - `DATAFUSION_RAY_LOG_LEVEL`: Set logging level (default: WARN)
 - `DFRAY_TABLES`: Comma-separated list of tables in format `name:format:path`
+- `DFRAY_VIEWS`: Semicolon-separated list of CREATE VIEW SQL statements
 
 ## TPC-H Query Validation
 

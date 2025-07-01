@@ -10,7 +10,7 @@ set -euo pipefail
 # between a non-distributed system (datafusion-cli) and the distributed system.
 #
 # Usage:
-#   ./scripts/validate_tpch_correctness.sh [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH] [query_path=PATH] [proxy_port=PORT]
+#   ./scripts/validate_tpch_correctness.sh [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH] [query_path=PATH] [proxy_port=PORT] [maxrows=N]
 #
 # Arguments:
 #   num_workers      Number of worker nodes for distributed system (default: 2)
@@ -18,13 +18,14 @@ set -euo pipefail
 #   log_file_path    Directory for log files (default: current directory)
 #   query_path       Path to TPC-H query files (default: ./tpch/queries/)
 #   proxy_port       Port number for the distributed system proxy (default: 20200)
+#   maxrows          Maximum rows to display in DataFusion CLI (default: 100000)
 #
 # Examples:
 #   # Run with all defaults
 #   ./scripts/validate_tpch_correctness.sh
 #
 #   # Run with custom parameters
-#   ./scripts/validate_tpch_correctness.sh num_workers=3 tpch_file_path=/tmp/tpch_s1 log_file_path=./logs query_path=./tpch/queries/ proxy_port=20200
+#   ./scripts/validate_tpch_correctness.sh num_workers=3 tpch_file_path=/tmp/tpch_s1 log_file_path=./logs query_path=./tpch/queries/ proxy_port=20200 maxrows=100000
 #
 # Features:
 #   - Automatically checks and installs datafusion-cli if needed
@@ -54,6 +55,7 @@ DEFAULT_TPCH_PATH="/tmp/tpch_s1"
 DEFAULT_LOG_PATH="."
 DEFAULT_QUERY_PATH="./tpch/queries/"
 DEFAULT_PROXY_PORT=20200
+DEFAULT_MAXROWS=100000
 
 # Parse named arguments
 for arg in "$@"; do
@@ -73,9 +75,12 @@ for arg in "$@"; do
         proxy_port=*)
             PROXY_PORT="${arg#*=}"
             ;;
+        maxrows=*)
+            MAXROWS="${arg#*=}"
+            ;;
         *)
             echo "Error: Unknown argument '$arg'"
-            echo "Usage: $0 [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH] [query_path=PATH] [proxy_port=PORT]"
+            echo "Usage: $0 [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH] [query_path=PATH] [proxy_port=PORT] [maxrows=N]"
             exit 1
             ;;
     esac
@@ -87,6 +92,7 @@ TPCH_DATA_DIR=${TPCH_DATA_DIR:-$DEFAULT_TPCH_PATH}
 LOG_DIR=${LOG_DIR:-$DEFAULT_LOG_PATH}
 QUERY_PATH=${QUERY_PATH:-$DEFAULT_QUERY_PATH}
 PROXY_PORT=${PROXY_PORT:-$DEFAULT_PROXY_PORT}
+MAXROWS=${MAXROWS:-$DEFAULT_MAXROWS}
 
 # Global variables
 CLUSTER_LAUNCHED_BY_SCRIPT=false
@@ -103,6 +109,7 @@ echo "  - TPC-H Data Directory: $TPCH_DATA_DIR"
 echo "  - Log Directory: $LOG_DIR"
 echo "  - Query Path: $QUERY_PATH"
 echo "  - Proxy Port: $PROXY_PORT"
+echo "  - Max Rows: $MAXROWS"
 echo
 
 # Function to print colored messages
@@ -361,6 +368,12 @@ validate_inputs() {
         exit 1
     fi
     
+    # Check maxrows
+    if [ "$MAXROWS" -lt 1 ]; then
+        print_error "Maximum rows must be at least 1"
+        exit 1
+    fi
+    
     # Check/create TPC-H data directory
     if [ ! -d "$TPCH_DATA_DIR" ]; then
         print_warning "TPC-H data directory not found: $TPCH_DATA_DIR"
@@ -414,6 +427,19 @@ CREATE EXTERNAL TABLE part STORED AS PARQUET LOCATION '${TPCH_DATA_DIR}/part.par
 CREATE EXTERNAL TABLE partsupp STORED AS PARQUET LOCATION '${TPCH_DATA_DIR}/partsupp.parquet';
 CREATE EXTERNAL TABLE region STORED AS PARQUET LOCATION '${TPCH_DATA_DIR}/region.parquet';
 CREATE EXTERNAL TABLE supplier STORED AS PARQUET LOCATION '${TPCH_DATA_DIR}/supplier.parquet';
+
+-- Setup TPC-H views (required for q15)
+CREATE VIEW revenue0 (supplier_no, total_revenue) AS
+SELECT
+    l_suppkey,
+    sum(l_extendedprice * (1 - l_discount))
+FROM
+    lineitem
+WHERE
+    l_shipdate >= date '1996-08-01'
+    AND l_shipdate < date '1996-08-01' + interval '3' month
+GROUP BY
+    l_suppkey;
 EOF
     
     print_success "DataFusion CLI configuration created"
@@ -430,8 +456,8 @@ run_query_datafusion_cli() {
     echo "" >> "$temp_script"
     cat "$query_file" >> "$temp_script"
     
-    # Run with datafusion-cli (with large row limit to avoid inf bug)
-    datafusion-cli --maxrows 1000000 --file "$temp_script" > "$output_file" 2>&1
+    # Run with datafusion-cli (with configurable row limit to avoid inf bug)
+    datafusion-cli --maxrows "$MAXROWS" --file "$temp_script" > "$output_file" 2>&1
     local exit_code=$?
     
     # Clean up temp file
