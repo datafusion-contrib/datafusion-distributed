@@ -310,6 +310,54 @@ The system supports various configuration options through environment variables:
 - `DATAFUSION_RAY_LOG_LEVEL`: Set logging level (default: WARN)
 - `DFRAY_TABLES`: Comma-separated list of tables in format `name:format:path`
 
+## TPC-H Query Validation
+
+To validate that your distributed cluster is working correctly, you can use the automated validation script that compares results between DataFusion CLI (single-node) and the distributed system:
+
+```bash
+# Run validation with default settings (2 workers, /tmp/tpch_s1 data)
+./scripts/validate_tpch_correctness.sh
+
+# Run validation with custom settings
+./scripts/validate_tpch_correctness.sh num_workers=3 tpch_file_path=/path/to/tpch/data log_file_path=./logs query_path=./tpch/queries/
+```
+
+**Key Features:**
+- **Automated Setup**: Installs `datafusion-cli` and `tpchgen-cli` if missing
+- **Data Generation**: Creates TPC-H data automatically if not found
+- **Smart Validation**: Compares all 22 TPC-H queries with floating-point tolerance
+- **Cluster Detection**: Uses existing cluster or launches a new one
+- **Detailed Reporting**: Generates comprehensive validation reports
+
+**Example Output:**
+```
+==============================================================================
+TPC-H Correctness Validation
+==============================================================================
+Configuration:
+  - Workers: 2
+  - TPC-H Data Directory: /tmp/tpch_s1
+  - Query Path: ./tpch/queries/
+  - Proxy Port: 20200
+
+[SUCCESS] q1: Results match ✓ (within floating-point tolerance)
+[SUCCESS] q6: Results match ✓ (within floating-point tolerance)
+...
+
+==============================================================================
+Validation Summary
+==============================================================================
+Total queries tested: 22
+Passed: 20
+Failed: 2
+Success rate: 90%
+
+Detailed report: ./logs/validation_results/validation_report.txt
+Result files: ./logs/validation_results
+```
+
+The script will warn you if the running cluster has a different number of workers than requested, and automatically handles missing dependencies and data generation.
+
 ## Development
 
 ### Project Structure
