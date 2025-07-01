@@ -40,6 +40,7 @@ pub mod result;
 pub mod stage;
 pub mod stage_reader;
 pub mod test_utils;
+pub mod tpch_tests;
 pub mod util;
 pub mod vocab;
 
