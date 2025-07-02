@@ -21,43 +21,40 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use arrow::array::RecordBatch;
 use arrow_flight::{
-    Action,
-    Ticket,
-    encode::FlightDataEncoderBuilder,
-    error::FlightError,
-    flight_service_server::FlightServiceServer,
+    encode::FlightDataEncoderBuilder, error::FlightError,
+    flight_service_server::FlightServiceServer, Action, FlightData, Ticket,
 };
 use async_stream::stream;
 use datafusion::{
-    physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable},
+    physical_plan::{displayable, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties},
     prelude::SessionContext,
 };
-use futures::{Stream, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use parking_lot::{Mutex, RwLock};
 use prost::Message;
 use tokio::{
     net::TcpListener,
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::mpsc::{channel, Receiver, Sender},
 };
-use tonic::{Request, Response, Status, async_trait, transport::Server};
+use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
+    analyze::DistributedAnalyzeExec,
     flight::{FlightHandler, FlightServ},
     logging::{debug, error, info, trace},
     planning::{add_ctx_extentions, get_ctx},
-    protobuf::{FlightTicketData, StageData},
+    protobuf::{
+        AnnotatedTaskOutput, AnnotatedTaskOutputs, FlightDataMetadata, FlightTicketData, StageData,
+    },
     result::{DFRayError, Result},
     util::{
-        bytes_to_physical_plan,
-        display_plan_with_partition_counts,
-        get_addrs,
-        register_object_store_for_paths_in_plan,
-        reporting_stream,
+        bytes_to_physical_plan, display_plan_with_partition_counts, get_addrs,
+        register_object_store_for_paths_in_plan, reporting_stream,
     },
-    vocab::{Addrs, CtxName},
+    vocab::{Addrs, CtxAnnotatedOutputs, CtxName},
 };
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
@@ -231,12 +228,12 @@ impl DfRayProcessorHandler {
         Ok(ctx)
     }
 
-    fn make_stream(
+    fn get_ctx_and_plan(
         &self,
         query_id: &str,
         stage_id: u64,
         partition: u64,
-    ) -> Result<impl Stream<Item = Result<RecordBatch, FlightError>> + Send + 'static, Status> {
+    ) -> Result<(SessionContext, Arc<dyn ExecutionPlan>)> {
         let key = PlanKey {
             query_id: query_id.to_string(),
             stage_id,
@@ -245,22 +242,10 @@ impl DfRayProcessorHandler {
 
         let (ctx, plan) = {
             let mut _guard = self.plans.write();
-            let (plan_key, mut plan_vec) = _guard
-                .remove_entry(&key)
-                .ok_or_else(|| {
-                    Status::internal(format!(
-                        "{}, No plan found for plan key {:?}",
-                        self.name, key,
-                    ))
-                })
-                .inspect_err(|e| {
-                    error!(
-                        "{}, No plan found for plan key {:?},{e:?} have keys {:?}",
-                        self.name,
-                        key,
-                        _guard.keys().map(|k| format!("{k:?}"))
-                    );
-                })?;
+            let (plan_key, mut plan_vec) = _guard.remove_entry(&key).context(format!(
+                "{}, No plan found for plan key {:?}",
+                self.name, key,
+            ))?;
             trace!(
                 "{} found {} plans for plan key {:?}",
                 self.name,
@@ -273,32 +258,123 @@ impl DfRayProcessorHandler {
             }
             (ctx, plan)
         };
-        trace!(
-            "make_stream for plan {}",
-            displayable(plan.as_ref()).indent(true)
-        );
+        Ok((ctx, plan))
+    }
 
+    /// we want to send any additional FlightDataMetadata that we discover while
+    /// executing the plan further downstream to consumers of our stream.
+    ///
+    /// We may discover a FlightDataMetadata as an additional payload incoming
+    /// on streming requests.   The [`RayStageReader`] will look for these and add
+    /// them to an extension on the context.
+    ///
+    /// Our job is to send all record batches from our stream over our flight response
+    /// but when the stream is exhausted, we'll send an additional message containing the
+    /// metadata.
+    ///
+    /// The reason we have to do it at the end is that the metadata may include an annodated
+    /// plan with metrics which will only be available after the stream has been
+    /// fully consumed.
+
+    fn make_stream(
+        &self,
+        ctx: SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+        stage_id: u64,
+        partition: u64,
+    ) -> Result<crate::flight::DoGetStream> {
         let task_ctx = ctx.task_ctx();
 
-        let ctx_name = task_ctx
-            .session_config()
-            .get_extension::<CtxName>()
-            .ok_or_else(|| {
-                Status::internal(format!("{}, CtxName not set in session config", self.name))
-            })?
-            .0
-            .clone();
-
+        // the RecordBatchStream from our plan
         let stream = plan
             .execute(partition as usize, task_ctx)
-            .inspect_err(|e| error!("Could not get partition stream from plan {e:?}"))
-            .map(|s| reporting_stream(&format!("{ctx_name} s:{stage_id} p:{partition}"), s))
-            .map_err(|e| Status::internal(format!("Could not get partition stream from plan {e}")))?
+            .inspect_err(|e| error!("Could not get partition stream from plan {e:#?}"))?
             .map_err(|e| FlightError::from_external_error(Box::new(e)));
 
         info!("{} plans held {}", self.name, self.plans.read().len());
 
-        Ok(stream)
+        let mut flight_data_stream = FlightDataEncoderBuilder::new().build(stream);
+        let name = self.name.clone();
+
+        #[allow(unused_assignments)] // clippy can't understand our assignment to done in the macro
+        let out_stream = async_stream::stream! {
+            let mut done = false;
+            while !done {
+
+                match (done, flight_data_stream.next().await) {
+                    (false, None) => {
+                                // no more data so now we yield our additional FlightDataMetadata if required
+                                debug!("stream exhausted, yielding FlightDataMetadata");
+                                let task_outputs = ctx.state().config()
+                                    .get_extension::<CtxAnnotatedOutputs>()
+                                    .unwrap_or(Arc::new(CtxAnnotatedOutputs::default()))
+                                    .0
+                                    .clone();
+
+
+                                if let Some(analyze) = plan.as_any().downcast_ref::<DistributedAnalyzeExec>() {
+                                    let annotated_plan = analyze.annotated_plan();
+                                    debug!("sending annotated plan: {}", annotated_plan);
+
+                                    let output = AnnotatedTaskOutput {
+                                        plan: annotated_plan,
+                                        host: None,
+                                        stage_id,
+                                        partition_group: vec![partition],
+                                    };
+                                    task_outputs.lock().push(output);
+                                }
+
+                                let meta = FlightDataMetadata {
+                                    annotated_task_outputs: Some(AnnotatedTaskOutputs {
+                                        outputs: task_outputs.lock().clone(),
+                                    }),
+                                };
+
+
+                                let fake_batch = RecordBatch::new_empty(plan.schema());
+
+
+                                let mut fde = FlightDataEncoderBuilder::new()
+                                    //.with_schema(plan.schema())
+                                    .with_metadata(meta.encode_to_vec().into()).build(futures::stream::once(async {Ok(fake_batch)})).map_err(|e| {
+                                        FlightError::from_external_error(Box::new(e))
+                                    });
+
+                                let flight_data = fde
+                                    .next()
+                                    .await
+                                    .ok_or_else(|| {
+                                        Status::internal(format!(
+                                            "{}, No FlightDataMetadata from our fde",
+                                            name
+                                        ))
+                                    })??;
+
+                                yield Ok(flight_data);
+                                done = true;
+
+                            },
+                    (false, Some(Err(e))) => {
+                                yield Err(Status::internal(format!(
+                                    "Unexpected error getting flight data stream: {e:?}",
+                                )));
+                                done = true;
+                            },
+                    (false, Some(Ok(flight_data))) => {
+                                // we have a flight data, so we yield it
+                                // decode this data for output
+                                yield Ok(flight_data);
+                            },
+                    (true, _) => {
+                                // we are done, so we don't yield anything
+                                debug!("{} stream done for stage {} partition {}", name, stage_id, partition);
+                            },
+                }
+            }
+        };
+
+        Ok(Box::pin(out_stream))
     }
 }
 
@@ -334,19 +410,25 @@ impl FlightHandler for DfRayProcessorHandler {
         );
 
         let name = self.name.clone();
-        let stream = self
-            .make_stream(&ftd.query_id, ftd.stage_id, ftd.partition)
+        let (ctx, plan) = self
+            .get_ctx_and_plan(&ftd.query_id, ftd.stage_id, ftd.partition)
             .map_err(|e| {
-                Status::internal(format!("{name} Unexpected error making stream {e:?}"))
+                Status::internal(format!(
+                    "{name} Could not find plan for query_id {} stage {} partition {}: {e:?}",
+                    ftd.query_id, ftd.stage_id, ftd.partition
+                ))
             })?;
 
-        let out_stream = FlightDataEncoderBuilder::new()
-            .build(stream)
-            .map_err(move |e| {
-                Status::internal(format!("{name} Unexpected error building stream {e:?}"))
-            });
+        let do_get_stream = self
+            .make_stream(ctx, plan, ftd.stage_id, ftd.partition)
+            .map_err(|e| {
+                Status::internal(format!(
+                    "{name} Could not make stream for query_id {} stage {} partition {}: {e:?}",
+                    ftd.query_id, ftd.stage_id, ftd.partition
+                ))
+            })?;
 
-        Ok(Response::new(Box::pin(out_stream)))
+        Ok(Response::new(do_get_stream))
     }
 
     async fn do_action(

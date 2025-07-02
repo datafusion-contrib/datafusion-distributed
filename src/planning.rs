@@ -4,13 +4,13 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use arrow_flight::Action;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     config::ConfigOptions,
     datasource::{
-        file_format::{FileFormat, csv::CsvFormat, json::JsonFormat, parquet::ParquetFormat},
+        file_format::{csv::CsvFormat, json::JsonFormat, parquet::ParquetFormat, FileFormat},
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
@@ -18,13 +18,9 @@ use datafusion::{
     logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan,
+        coalesce_batches::CoalesceBatchesExec, displayable, joins::NestedLoopJoinExec,
+        repartition::RepartitionExec, sorts::sort::SortExec, ExecutionPlan,
         ExecutionPlanProperties,
-        coalesce_batches::CoalesceBatchesExec,
-        displayable,
-        joins::NestedLoopJoinExec,
-        repartition::RepartitionExec,
-        sorts::sort::SortExec,
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
@@ -42,7 +38,7 @@ use crate::{
     stage::DFRayStageExec,
     stage_reader::{DFRayStageReaderExec, QueryId},
     util::{display_plan_with_partition_counts, get_client, physical_plan_to_bytes, wait_for},
-    vocab::{Addrs, CtxName, CtxPartitionGroup, CtxStageAddrs},
+    vocab::{Addrs, CtxAnnotatedOutputs, CtxName, CtxPartitionGroup, CtxStageAddrs},
 };
 
 #[derive(Debug)]
@@ -150,6 +146,7 @@ pub fn add_ctx_extentions(
     config.set_extension(Arc::new(CtxStageAddrs(stage_addrs)));
     config.set_extension(Arc::new(QueryId(query_id.to_owned())));
     config.set_extension(Arc::new(CtxName(ctx_name.to_owned())));
+    config.set_extension(Arc::new(CtxAnnotatedOutputs::default()));
 
     if let Some(pg) = partition_group {
         // this only matters if the plan includes an PartitionIsolatorExec, which looks
@@ -419,7 +416,9 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
     for stage_data in stage_datas {
         trace!(
             "Distributing stage_id {}, pg: {:?} to worker: {:?}",
-            stage_data.stage_id, stage_data.partition_group, stage_data.assigned_addr
+            stage_data.stage_id,
+            stage_data.partition_group,
+            stage_data.assigned_addr
         );
 
         // populate its child stages

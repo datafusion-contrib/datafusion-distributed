@@ -18,30 +18,22 @@ message DFRayStageReaderExecNode {
   uint64 stage_id = 3;
 }
 
-// the simplicity of the decoder in src/codec.rs currently requires a different byte
-// representation per message.  Hence the dummy fields.
-//
-// I'll come back to this and sort it out.  Its not super critical as the plans are
-// only exchanged at the start of queries, not during execution.
-
 message MaxRowsExecNode {
   uint64 max_rows = 1;
 }
 
 message PartitionIsolatorExecNode {
-  float dummy = 1;
   uint64 partition_count = 2;
 }
 
-message NumpangScanExecNode {
-  datafusion.FileScanExecConf base_conf = 1;
+message DistributedAnalyzeExecNode {
+  // how much data to show
+  bool verbose = 1;
+  // if statistics should be displayed
+  bool show_statistics = 2;
 }
 
-message ContextScanExecNode {
-  datafusion.FileScanExecConf base_conf = 1;
-  repeated datafusion.LogicalExprNode filters = 2;
-  datafusion_common.Schema schema = 3;
-}
+message DistributedAnalyzeRootExecNode {}
 
 message DistributedExplainExecNode {
   datafusion_common.Schema schema = 1;
@@ -56,9 +48,28 @@ message DFRayExecNode {
     DFRayStageReaderExecNode stage_reader_exec = 1;
     MaxRowsExecNode max_rows_exec = 2;
     PartitionIsolatorExecNode isolator_exec = 3;
-    NumpangScanExecNode numpang_exec = 4;
-    ContextScanExecNode context_exec = 5;
+    DistributedAnalyzeExecNode distributed_analyze_exec = 4;
+    //DistributedAnalyzeRootExecNode distributed_analyze_root_exec = 5;
   }
+}
+
+message AnnotatedTaskOutput {
+  // the output of the explain analyze
+  string plan = 1;
+  // the host who executed this stage
+  Host host = 2;
+  // the stage id that was executed
+  uint64 stage_id = 3;
+  // the partitions that were executed by this stage
+  repeated uint64 partition_group = 4;
+}
+
+message AnnotatedTaskOutputs {
+  repeated AnnotatedTaskOutput outputs = 1;
+}
+
+message FlightDataMetadata {
+  AnnotatedTaskOutputs annotated_task_outputs = 1;
 }
 
 message FlightTicketData {
@@ -79,7 +90,7 @@ message TicketStatementData {
   // the schema of the final stage
   datafusion_common.Schema schema = 4;
   // For EXPLAIN queries, store the explain plan data directly
-  optional DistributedExplainExecNode explain_data = 5;
+  DistributedExplainExecNode explain_data = 5;
 }
 
 message Host {

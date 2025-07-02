@@ -18,21 +18,9 @@
 use std::sync::Arc;
 
 use arrow_flight::{
-    Action,
-    ActionType,
-    Criteria,
-    Empty,
-    FlightData,
-    FlightDescriptor,
-    FlightInfo,
-    HandshakeRequest,
-    HandshakeResponse,
-    PollInfo,
-    PutResult,
-    SchemaResult,
-    Ticket,
-    flight_service_server::FlightService,
-    sql::server::FlightSqlService,
+    flight_service_server::FlightService, sql::server::FlightSqlService, Action, ActionType,
+    Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
+    PollInfo, PutResult, SchemaResult, Ticket,
 };
 use futures::stream::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -46,7 +34,7 @@ pub type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status
 pub trait FlightHandler: Send + Sync {
     async fn do_get(&self, request: Request<Ticket>) -> Result<Response<DoGetStream>, Status>;
     async fn do_action(&self, request: Request<Action>)
-    -> Result<Response<DoActionStream>, Status>;
+        -> Result<Response<DoActionStream>, Status>;
 }
 
 pub struct FlightServ {
@@ -68,7 +56,8 @@ impl FlightService for FlightServ {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         self.handler.do_get(request).await.inspect_err(|e| {
-            error!("Error in do_get: {:?}", e);
+            error!("Error in do_get: {:#?}", e);
+            log::error!("LOG Error in do_get: {:#?}", e);
         })
     }
 
@@ -119,7 +108,7 @@ impl FlightService for FlightServ {
         request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
         self.handler.do_action(request).await.inspect_err(|e| {
-            error!("Error in do_action: {:?}", e);
+            error!("Error in do_action: {:#?}", e);
         })
     }
 
@@ -172,7 +161,7 @@ impl FlightSqlService for FlightSqlServ {
             .get_flight_info_statement(query, request)
             .await
             .inspect_err(|e| {
-                error!("Error in do_flight_info_statement: {:?}", e);
+                error!("Error in do_flight_info_statement: {:#?}", e);
             })
     }
     async fn do_get_statement(
@@ -184,7 +173,7 @@ impl FlightSqlService for FlightSqlServ {
             .do_get_statement(ticket, request)
             .await
             .inspect_err(|e| {
-                error!("Error in do_get_statement: {:?}", e);
+                error!("Error in do_get_statement: {:#?}", e);
             })
     }
 }

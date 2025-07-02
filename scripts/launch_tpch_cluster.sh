@@ -38,20 +38,20 @@ DEFAULT_LOG_PATH="."
 # Parse named arguments
 for arg in "$@"; do
     case "$arg" in
-        num_workers=*)
-            NUM_WORKERS="${arg#*=}"
-            ;;
-        tpch_file_path=*)
-            TPCH_DATA_DIR="${arg#*=}"
-            ;;
-        log_file_path=*)
-            LOG_DIR="${arg#*=}"
-            ;;
-        *)
-            echo "Error: Unknown argument '$arg'"
-            echo "Usage: $0 [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH]"
-            exit 1
-            ;;
+    num_workers=*)
+        NUM_WORKERS="${arg#*=}"
+        ;;
+    tpch_file_path=*)
+        TPCH_DATA_DIR="${arg#*=}"
+        ;;
+    log_file_path=*)
+        LOG_DIR="${arg#*=}"
+        ;;
+    *)
+        echo "Error: Unknown argument '$arg'"
+        echo "Usage: $0 [num_workers=N] [tpch_file_path=PATH] [log_file_path=PATH]"
+        exit 1
+        ;;
     esac
 done
 
@@ -71,13 +71,14 @@ if [ ! -f "./target/release/distributed-datafusion" ]; then
     echo "Binary not found, building release version..."
     echo "This may take a few minutes on first run..."
     if [ -f "./build.sh" ]; then
-        ./build.sh --release
+        ./build.sh #--release
     else
-        cargo build --release
+        cargo build #--release
     fi
-    
+
     # Verify the build was successful
-    if [ ! -f "./target/release/distributed-datafusion" ]; then
+    #if [ ! -f "./target/release/distributed-datafusion" ]; then
+    if [ ! -f "./target/debug/distributed-datafusion" ]; then
         echo "Error: Failed to build distributed-datafusion binary"
         exit 1
     fi
@@ -98,8 +99,8 @@ if [ ! -d "$LOG_DIR" ]; then
 fi
 
 # Verify required parquet files exist
-required_files=("customer.parquet" "lineitem.parquet" "nation.parquet" "orders.parquet" 
-                "part.parquet" "partsupp.parquet" "region.parquet" "supplier.parquet")
+required_files=("customer.parquet" "lineitem.parquet" "nation.parquet" "orders.parquet"
+    "part.parquet" "partsupp.parquet" "region.parquet" "supplier.parquet")
 
 for file in "${required_files[@]}"; do
     if [ ! -f "${TPCH_DATA_DIR}/${file}" ]; then
@@ -141,12 +142,13 @@ trap cleanup SIGINT SIGTERM EXIT
 
 # Start workers
 echo "Starting workers..."
-for ((i=0; i<NUM_WORKERS; i++)); do
+for ((i = 0; i < NUM_WORKERS; i++)); do
     PORT=$((20201 + i))
-    WORKER_NAME="worker$((i+1))"
+    WORKER_NAME="worker$((i + 1))"
     LOG_FILE="${LOG_DIR}/${WORKER_NAME}.log"
     echo "  Starting $WORKER_NAME on port $PORT..."
-    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT > "$LOG_FILE" 2>&1 &
+    #env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
+    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
     WORKER_ADDRESSES[$i]="${WORKER_NAME}/localhost:${PORT}"
 done
@@ -156,13 +158,17 @@ echo "Waiting for workers to initialize..."
 sleep 2
 
 # Construct worker addresses string for proxy
-WORKER_ADDRESSES_STR=$(IFS=,; echo "${WORKER_ADDRESSES[*]}")
+WORKER_ADDRESSES_STR=$(
+    IFS=,
+    echo "${WORKER_ADDRESSES[*]}"
+)
 
 # Start proxy
 echo "Starting proxy on port 20200..."
 echo "Connecting to workers: $WORKER_ADDRESSES_STR"
 PROXY_LOG="${LOG_DIR}/proxy.log"
-env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 > "$PROXY_LOG" 2>&1 &
+#env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
+env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/debug/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 
 echo
@@ -170,20 +176,20 @@ echo "TPC-H cluster is now running!"
 echo
 echo "Cluster Information:"
 echo "  Proxy: localhost:20200"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    echo "  Worker $((i+1)): localhost:$((20201 + i))"
+for ((i = 0; i < NUM_WORKERS; i++)); do
+    echo "  Worker $((i + 1)): localhost:$((20201 + i))"
 done
 echo
 echo "Log files in ${LOG_DIR}:"
 echo "  - proxy.log"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    echo "  - worker$((i+1)).log"
+for ((i = 0; i < NUM_WORKERS; i++)); do
+    echo "  - worker$((i + 1)).log"
 done
 echo
 echo "To monitor logs in real-time:"
 echo "  tail -f ${LOG_DIR}/proxy.log   # for proxy logs"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    echo "  tail -f ${LOG_DIR}/worker$((i+1)).log # for worker $((i+1)) logs"
+for ((i = 0; i < NUM_WORKERS; i++)); do
+    echo "  tail -f ${LOG_DIR}/worker$((i + 1)).log # for worker $((i + 1)) logs"
 done
 echo
 echo "Press Ctrl+C to stop the cluster"

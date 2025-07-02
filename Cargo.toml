@@ -39,11 +39,8 @@ arrow-flight = { version = "55", features = ["flight-sql-experimental"] }
 async-stream = "0.3"
 bytes = "1.5"
 clap = { version = "4.4", features = ["derive"] }
-datafusion = { git = "https://github.com/apache/datafusion", branch = "main", features = [
-    "pyarrow",
-    "avro",
-] }
-datafusion-proto = { git = "https://github.com/apache/datafusion", branch = "main" }
+datafusion = "48.0.0"
+datafusion-proto = "48.0.0"
 env_logger = "0.11"
 futures = "0.3"
 itertools = "0.14"
@@ -95,4 +92,5 @@ tonic-build = { version = "0.12", default-features = false, features = [
 url = "2"
 
 [dev-dependencies]
-tempfile = "3.20" 
+tempfile = "3.20"
+

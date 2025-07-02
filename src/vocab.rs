@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+
+use parking_lot::Mutex;
+
+use crate::protobuf::AnnotatedTaskOutput;
 
 /// a map of stage_id, partition to a list (name,endpoint address) that can
 /// serve this (stage_id, and partition).   It is assumed that to consume a
@@ -15,4 +19,7 @@ pub(crate) struct CtxStageAddrs(pub Addrs);
 pub(crate) struct CtxName(pub String);
 
 /// used to hold a partition group as an extension for datafusion SessionContext
-pub struct CtxPartitionGroup(pub Vec<u64>);
+pub(crate) struct CtxPartitionGroup(pub Vec<u64>);
+
+#[derive(Default)]
+pub(crate) struct CtxAnnotatedOutputs(pub Arc<Mutex<Vec<AnnotatedTaskOutput>>>);

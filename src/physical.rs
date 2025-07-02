@@ -22,14 +22,15 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan,
-        joins::NestedLoopJoinExec,
-        repartition::RepartitionExec,
-        sorts::sort::SortExec,
+        analyze::AnalyzeExec, joins::NestedLoopJoinExec, repartition::RepartitionExec,
+        sorts::sort::SortExec, ExecutionPlan,
     },
 };
 
-use crate::{logging::info, stage::DFRayStageExec, util::display_plan_with_partition_counts};
+use crate::{
+    analyze::DistributedAnalyzeExec, logging::info, stage::DFRayStageExec,
+    util::display_plan_with_partition_counts,
+};
 
 /// This optimizer rule walks up the physical plan tree
 /// and inserts RayStageExec nodes where appropriate to denote where we will
@@ -67,6 +68,8 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
             display_plan_with_partition_counts(&plan)
         );
 
+        let maybe_analyze_plan = plan.as_any().downcast_ref::<AnalyzeExec>();
+
         let mut stage_counter = 0;
 
         let up = |plan: Arc<dyn ExecutionPlan>| {
@@ -74,6 +77,18 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
                 || plan.as_any().downcast_ref::<SortExec>().is_some()
                 || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
             {
+                let plan = if maybe_analyze_plan.is_some() {
+                    let definitely_analyze_plan = maybe_analyze_plan.cloned().unwrap();
+                    Arc::new(DistributedAnalyzeExec::new(
+                        plan.clone(),
+                        definitely_analyze_plan.verbose(),
+                        definitely_analyze_plan.show_statistics(),
+                    )) as Arc<dyn ExecutionPlan>
+                } else {
+                    plan
+                };
+
+                // insert a stage marker here so we know where to break up the physical plan later
                 let stage = Arc::new(DFRayStageExec::new(plan, stage_counter));
                 stage_counter += 1;
                 Ok(Transformed::yes(stage as Arc<dyn ExecutionPlan>))
@@ -82,7 +97,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
             }
         };
 
-        let plan = plan.transform_up(up)?.data;
+        let plan = plan.clone().transform_up(up)?.data;
         let final_plan =
             Arc::new(DFRayStageExec::new(plan, stage_counter)) as Arc<dyn ExecutionPlan>;
 

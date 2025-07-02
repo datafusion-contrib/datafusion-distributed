@@ -22,6 +22,7 @@ use crate::logging::info;
 mod proto;
 pub use proto::generated::protobuf;
 
+pub mod analyze;
 pub mod codec;
 pub mod explain;
 pub mod flight;
@@ -72,14 +73,12 @@ fn setup_memory_logging() {
     #[cfg(not(target_env = "msvc"))]
     {
         let mut mem_tracker = MemTracker::new();
-        std::thread::spawn(move || {
-            loop {
-                let dt = 0.5;
-                std::thread::sleep(std::time::Duration::from_millis((dt * 1000.0) as u64));
-                mem_tracker.update(dt);
-                if mem_tracker.rate_above_reporting_threshold() {
-                    info!("{}", mem_tracker.status());
-                }
+        std::thread::spawn(move || loop {
+            let dt = 0.5;
+            std::thread::sleep(std::time::Duration::from_millis((dt * 1000.0) as u64));
+            mem_tracker.update(dt);
+            if mem_tracker.rate_above_reporting_threshold() {
+                info!("{}", mem_tracker.status());
             }
         });
     }

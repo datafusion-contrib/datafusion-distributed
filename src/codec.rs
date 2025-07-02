@@ -2,32 +2,28 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use datafusion::{
-    common::{Result, internal_datafusion_err, internal_err},
+    common::{internal_datafusion_err, internal_err, Result},
     datasource::source::DataSourceExec,
     execution::FunctionRegistry,
-    physical_plan::{ExecutionPlan, displayable},
+    physical_plan::{displayable, ExecutionPlan},
 };
 use datafusion_proto::{
     physical_plan::{
-        DefaultPhysicalExtensionCodec,
-        PhysicalExtensionCodec,
-        from_proto::parse_protobuf_partitioning,
-        to_proto::serialize_partitioning,
+        from_proto::parse_protobuf_partitioning, to_proto::serialize_partitioning,
+        DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
     },
     protobuf,
 };
 use prost::Message;
 
 use crate::{
+    analyze::DistributedAnalyzeExec,
     isolator::PartitionIsolatorExec,
     logging::trace,
     max_rows::MaxRowsExec,
     protobuf::{
-        DfRayExecNode,
-        DfRayStageReaderExecNode,
-        MaxRowsExecNode,
-        PartitionIsolatorExecNode,
-        df_ray_exec_node::Payload,
+        df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode,
+        DistributedAnalyzeExecNode, MaxRowsExecNode, PartitionIsolatorExecNode,
     },
     stage_reader::DFRayStageReaderExec,
 };
@@ -95,15 +91,18 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
-                Payload::NumpangExec(_) => {
-                    Err(internal_datafusion_err!(
-                        "NumpangExec not supported in open source version"
-                    ))
-                }
-                Payload::ContextExec(_) => {
-                    Err(internal_datafusion_err!(
-                        "ContextExec not supported in open source version"
-                    ))
+                Payload::DistributedAnalyzeExec(distributed_analyze_exec_node) => {
+                    if inputs.len() != 1 {
+                        Err(internal_datafusion_err!(
+                            "DistributedAnalyzeExec requires one input"
+                        ))
+                    } else {
+                        Ok(Arc::new(DistributedAnalyzeExec::new(
+                            inputs[0].clone(),
+                            distributed_analyze_exec_node.verbose,
+                            distributed_analyze_exec_node.show_statistics,
+                        )))
+                    }
                 }
             }
         } else {
@@ -133,7 +132,6 @@ impl PhysicalExtensionCodec for DFRayCodec {
             Payload::StageReaderExec(pb)
         } else if let Some(pi) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
             let pb = PartitionIsolatorExecNode {
-                dummy: 0.0,
                 partition_count: pi.partition_count as u64,
             };
 
@@ -143,8 +141,12 @@ impl PhysicalExtensionCodec for DFRayCodec {
                 max_rows: max.max_rows as u64,
             };
             Payload::MaxRowsExec(pb)
-        } else if let Some(_exec) = node.as_any().downcast_ref::<DataSourceExec>() {
-            return internal_err!("DataSourceExec encoding not supported in open source version");
+        } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeExec>() {
+            let pb = DistributedAnalyzeExecNode {
+                verbose: exec.verbose,
+                show_statistics: exec.show_statistics,
+            };
+            Payload::DistributedAnalyzeExec(pb)
         } else {
             return internal_err!("Not supported node to encode to proto");
         };
@@ -169,16 +171,14 @@ mod test {
 
     use arrow::datatypes::DataType;
     use datafusion::{
-        physical_plan::{Partitioning, displayable},
+        physical_plan::{displayable, Partitioning},
         prelude::SessionContext,
     };
     use datafusion_proto::physical_plan::AsExecutionPlan;
 
     use super::*;
     use crate::{
-        isolator::PartitionIsolatorExec,
-        max_rows::MaxRowsExec,
-        stage_reader::DFRayStageReaderExec,
+        isolator::PartitionIsolatorExec, max_rows::MaxRowsExec, stage_reader::DFRayStageReaderExec,
     };
 
     fn create_test_schema() -> Arc<arrow::datatypes::Schema> {
