@@ -371,6 +371,36 @@ Result files: ./logs/validation_results
 
 The script will warn you if the running cluster has a different number of workers than requested, and automatically handles missing dependencies and data generation.
 
+<!-- TODO: Merge this section into the above -->
+## TPC-H Validation Tests
+
+The project includes comprehensive TPC-H validation tests that automatically compare results between regular DataFusion and distributed DataFusion to ensure correctness. These tests are completely self-contained and handle all setup automatically:
+
+```bash
+# Run all TPC-H validation tests (fully automated)
+cargo test --lib tpch_validation_tests -- --nocapture
+
+# Run single query test for debugging
+cargo test --lib test_tpch_validation_single_query -- --ignored --nocapture
+```
+
+**What the tests do automatically:**
+- ✅ Kill existing processes on ports 40400-40402
+- ✅ Install `tpchgen-cli` if not available  
+- ✅ Generate TPC-H data at `/tmp/tpch_s1` if not present
+- ✅ Start distributed cluster (1 proxy + 2 workers)
+- ✅ Run all 22 TPC-H queries on both systems
+- ✅ Compare results with floating-point tolerance
+- ✅ Clean up cluster processes
+
+**Architecture:**
+- **Proxy**: Port 40400
+- **Worker 1**: Port 40401
+- **Worker 2**: Port 40402
+- **TPC-H Data**: `/tmp/tpch_s1` (scale factor 1)
+
+No prerequisites needed - just run `cargo test --lib tpch_validation_tests -- --nocapture` and everything is handled automatically!
+
 ## Development
 
 ### Project Structure
