@@ -3,21 +3,15 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    logical_expr::LogicalPlan,
-    physical_plan::ExecutionPlan,
-    prelude::SessionContext,
+    logical_expr::LogicalPlan, physical_plan::ExecutionPlan, prelude::SessionContext,
 };
 
 use crate::{
-    explain::{DistributedExplainExec, is_explain_query},
+    explain::{is_explain_query, DistributedExplainExec},
     k8s::get_worker_addresses,
     logging::debug,
     planning::{
-        distribute_stages,
-        execution_planning,
-        get_ctx,
-        logical_planning,
-        physical_planning,
+        distribute_stages, execution_planning, get_ctx, logical_planning, physical_planning,
         DFRayStage,
     },
     result::Result,
@@ -41,8 +35,14 @@ impl std::fmt::Debug for QueryPlanBase {
             .field("session_context", &"<SessionContext>")
             .field("logical_plan", &self.logical_plan)
             .field("physical_plan", &format!("<{}>", self.physical_plan.name()))
-            .field("distributed_plan", &format!("<{}>", self.distributed_plan.name()))
-            .field("stages", &format!("<{} stages>", self.distributed_stages.len()))
+            .field(
+                "distributed_plan",
+                &format!("<{}>", self.distributed_plan.name()),
+            )
+            .field(
+                "stages",
+                &format!("<{} stages>", self.distributed_stages.len()),
+            )
             .finish()
     }
 }
@@ -79,7 +79,8 @@ impl QueryPlanner {
         let physical_plan = physical_planning(&logical_plan, &ctx).await?;
 
         // divide the physical plan into chunks (stages) that we can distribute to workers
-        let (distributed_plan, distributed_stages) = execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
+        let (distributed_plan, distributed_stages) =
+            execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
 
         Ok(QueryPlanBase {
             query_id,
@@ -109,7 +110,12 @@ impl QueryPlanner {
 
         // distribute the stages to workers, further dividing them up
         // into chunks of partitions (partition_groups)
-        let final_workers = distribute_stages(&base_result.query_id, base_result.distributed_stages, worker_addrs).await?;
+        let final_workers = distribute_stages(
+            &base_result.query_id,
+            base_result.distributed_stages,
+            worker_addrs,
+        )
+        .await?;
 
         Ok(QueryPlan {
             query_id: base_result.query_id,
@@ -125,23 +131,42 @@ impl QueryPlanner {
     pub async fn prepare_explain(&self, sql: &str) -> Result<QueryPlan> {
         // Validate that this is actually an EXPLAIN query (not EXPLAIN ANALYZE)
         if !is_explain_query(sql) {
-            return Err(anyhow!("prepare_explain called with non-EXPLAIN query or EXPLAIN ANALYZE query: {}", sql).into());
+            return Err(anyhow!(
+                "prepare_explain called with non-EXPLAIN query or EXPLAIN ANALYZE query: {}",
+                sql
+            )
+            .into());
         }
-        
+
         // Extract the underlying query from the EXPLAIN statement
-        let underlying_query = sql.trim()
+        let underlying_query = sql
+            .trim()
             .strip_prefix("EXPLAIN")
-            .or_else(|| sql.trim().to_uppercase().strip_prefix("EXPLAIN").map(|_| &sql.trim()[7..]))
+            .or_else(|| {
+                sql.trim()
+                    .to_uppercase()
+                    .strip_prefix("EXPLAIN")
+                    .map(|_| &sql.trim()[7..])
+            })
             .unwrap_or(sql)
             .trim();
-        
+
         let base_result = self.prepare_query_base(underlying_query, "EXPLAIN").await?;
 
         // generate the plan strings
         let logical_plan_string = format!("{}", base_result.logical_plan.display_indent());
-        let physical_plan_string = format!("{}", datafusion::physical_plan::displayable(base_result.physical_plan.as_ref()).indent(true));
-        let distributed_plan_string = format!("{}", datafusion::physical_plan::displayable(base_result.distributed_plan.as_ref()).indent(true));
-        let distributed_stages_string = DistributedExplainExec::format_distributed_stages(base_result.distributed_stages.as_slice());
+        let physical_plan_string = format!(
+            "{}",
+            datafusion::physical_plan::displayable(base_result.physical_plan.as_ref()).indent(true)
+        );
+        let distributed_plan_string = format!(
+            "{}",
+            datafusion::physical_plan::displayable(base_result.distributed_plan.as_ref())
+                .indent(true)
+        );
+        let distributed_stages_string = DistributedExplainExec::format_distributed_stages(
+            base_result.distributed_stages.as_slice(),
+        );
 
         // create the schema for EXPLAIN results
         use arrow::datatypes::{DataType, Field, Schema};
@@ -162,7 +187,10 @@ impl QueryPlanner {
         // Create dummy addresses for EXPLAIN (no real workers needed)
         let mut dummy_addrs = std::collections::HashMap::new();
         let mut partition_addrs = std::collections::HashMap::new();
-        partition_addrs.insert(0u64, vec![("explain_local".to_string(), "local".to_string())]);
+        partition_addrs.insert(
+            0u64,
+            vec![("explain_local".to_string(), "local".to_string())],
+        );
         dummy_addrs.insert(0u64, partition_addrs);
 
         Ok(QueryPlan {
@@ -189,7 +217,8 @@ mod tests {
             ("mock_worker_1".to_string(), "localhost:9001".to_string()),
             ("mock_worker_2".to_string(), "localhost:9002".to_string()),
         ];
-        let mock_env_value = mock_addrs.iter()
+        let mock_env_value = mock_addrs
+            .iter()
             .map(|(name, addr)| format!("{}/{}", name, addr))
             .collect::<Vec<_>>()
             .join(",");
@@ -197,17 +226,17 @@ mod tests {
     }
 
     // //////////////////////////////////////////////////////////////
-    // Core function tests 
+    // Core function tests
     // //////////////////////////////////////////////////////////////
 
     #[tokio::test]
     async fn test_prepare_query_base() {
         let planner = QueryPlanner::new();
-        
+
         // Test with a simple SELECT query without the need to read any table
         let sql = "SELECT 1 as test_col";
         let result = planner.prepare_query_base(sql, "TEST").await;
-        
+
         if result.is_ok() {
             let query_plan_base = result.unwrap();
             // verify all fields have values
@@ -215,7 +244,10 @@ mod tests {
             assert!(!query_plan_base.distributed_stages.is_empty());
             assert!(!query_plan_base.physical_plan.schema().fields().is_empty());
             // logical plan of select 1 on empty relation
-            assert_eq!(query_plan_base.logical_plan.to_string(), "Projection: Int64(1) AS test_col\n  EmptyRelation");
+            assert_eq!(
+                query_plan_base.logical_plan.to_string(),
+                "Projection: Int64(1) AS test_col\n  EmptyRelation"
+            );
             // physical plan of select 1 on empty releation is ProjectionExec
             assert_eq!(query_plan_base.physical_plan.name(), "ProjectionExec");
         } else {
@@ -228,44 +260,49 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_explain() {
         let planner = QueryPlanner::new();
-        
+
         // Test with a simple EXPLAIN query
         let sql = "EXPLAIN SELECT 1 as test_col";
         let query_plan = planner.prepare_explain(sql).await.unwrap();
-        
+
         // EXPLAIN queries should work even without worker discovery since they use dummy addresses
         assert!(!query_plan.query_id.is_empty());
         assert_eq!(query_plan.final_stage_id, 0);
         assert!(query_plan.explain_data.is_some());
-        
+
         // Verify content of the explain data
         let explain_data = query_plan.explain_data.unwrap();
-        assert_eq!(explain_data.logical_plan(), "Projection: Int64(1) AS test_col\n  EmptyRelation");
-        assert_eq!(explain_data.physical_plan(), "ProjectionExec: expr=[1 as test_col]\n  PlaceholderRowExec\n");
-        assert_eq!(explain_data.distributed_plan(), 
+        assert_eq!(
+            explain_data.logical_plan(),
+            "Projection: Int64(1) AS test_col\n  EmptyRelation"
+        );
+        assert_eq!(
+            explain_data.physical_plan(),
+            "ProjectionExec: expr=[1 as test_col]\n  PlaceholderRowExec\n"
+        );
+        assert_eq!(explain_data.distributed_plan(),
             "RayStageExec[0] (output_partitioning=UnknownPartitioning(1))\n  ProjectionExec: expr=[1 as test_col]\n    PlaceholderRowExec\n");
-        assert_eq!(explain_data.distributed_stages(), 
+        assert_eq!(explain_data.distributed_stages(),
             "Stage 0:\n  Partition Groups: [[0]]\n  Full Partitions: false\n  Plan:\n    MaxRowsExec[max_rows=8192]\n      CoalesceBatchesExec: target_batch_size=8192\n        ProjectionExec: expr=[1 as test_col]\n          PlaceholderRowExec\n");
-        
+
         // Should have explain schema (plan_type, plan columns)
         assert_eq!(query_plan.schema.fields().len(), 2);
         assert_eq!(query_plan.schema.field(0).name(), "plan_type");
         assert_eq!(query_plan.schema.field(1).name(), "plan");
         println!("✓ prepare_explain_query succeeded with proper structure");
-          
     }
 
     #[tokio::test]
     async fn test_prepare_explain_invalid_input() {
         let planner = QueryPlanner::new();
-        
+
         // Test with EXPLAIN ANALYZE (should fail)
         let sql = "EXPLAIN ANALYZE SELECT 1";
         let result = planner.prepare_explain(sql).await;
         assert!(result.is_err());
         let error_msg = format!("{:?}", result.unwrap_err());
         assert!(error_msg.contains("prepare_explain called with non-EXPLAIN query"));
-        
+
         // Test with non-EXPLAIN query (should fail)
         let sql = "SELECT 1";
         let result = planner.prepare_explain(sql).await;
@@ -275,9 +312,9 @@ mod tests {
     }
 
     // NOTE: This test is ignored because prepare_query() requires actual worker communication.
-    // 
+    //
     // 🔍 Root Cause Analysis:
-    // The issue is NOT with mock worker setup - that works perfectly. The problem is in the 
+    // The issue is NOT with mock worker setup - that works perfectly. The problem is in the
     // distribute_stages() retry logic:
     //
     // 1. ✅ Mock workers are set up correctly: ["mock_worker_1/localhost:9001", "mock_worker_2/localhost:9002"]
@@ -301,11 +338,11 @@ mod tests {
     async fn test_prepare_query() {
         setup_mock_worker_env();
         let planner = QueryPlanner::new();
-        
+
         // Test with a simple SELECT query
         let sql = "SELECT 1 as test_col, 'hello' as text_col";
         let result = planner.prepare_query(sql).await;
-        
+
         match result {
             Ok(query_plan) => {
                 assert!(query_plan.explain_data.is_none());
@@ -319,14 +356,18 @@ mod tests {
             Err(e) => {
                 let error_msg = format!("{:?}", e);
                 assert!(
-                    error_msg.contains("worker") || 
-                    error_msg.contains("address") || 
-                    error_msg.contains("DFRAY_WORKER") ||
-                    error_msg.contains("index out of bounds"),
-                    "Unexpected error type: {}", error_msg
+                    error_msg.contains("worker")
+                        || error_msg.contains("address")
+                        || error_msg.contains("DFRAY_WORKER")
+                        || error_msg.contains("index out of bounds"),
+                    "Unexpected error type: {}",
+                    error_msg
                 );
-                println!("✓ prepare_query failed with expected worker discovery error: {}", error_msg);
+                println!(
+                    "✓ prepare_query failed with expected worker discovery error: {}",
+                    error_msg
+                );
             }
         }
     }
-} 
+}

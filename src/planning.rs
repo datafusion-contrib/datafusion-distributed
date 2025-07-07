@@ -4,13 +4,13 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use arrow_flight::Action;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     config::ConfigOptions,
     datasource::{
-        file_format::{FileFormat, csv::CsvFormat, json::JsonFormat, parquet::ParquetFormat},
+        file_format::{csv::CsvFormat, json::JsonFormat, parquet::ParquetFormat, FileFormat},
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
@@ -18,13 +18,9 @@ use datafusion::{
     logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ExecutionPlan,
+        coalesce_batches::CoalesceBatchesExec, displayable, joins::NestedLoopJoinExec,
+        repartition::RepartitionExec, sorts::sort::SortExec, ExecutionPlan,
         ExecutionPlanProperties,
-        coalesce_batches::CoalesceBatchesExec,
-        displayable,
-        joins::NestedLoopJoinExec,
-        repartition::RepartitionExec,
-        sorts::sort::SortExec,
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
@@ -419,7 +415,9 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
     for stage_data in stage_datas {
         trace!(
             "Distributing stage_id {}, pg: {:?} to worker: {:?}",
-            stage_data.stage_id, stage_data.partition_group, stage_data.assigned_addr
+            stage_data.stage_id,
+            stage_data.partition_group,
+            stage_data.assigned_addr
         );
 
         // populate its child stages
