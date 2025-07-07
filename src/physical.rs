@@ -22,10 +22,8 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
+        joins::NestedLoopJoinExec, repartition::RepartitionExec, sorts::sort::SortExec,
         ExecutionPlan,
-        joins::NestedLoopJoinExec,
-        repartition::RepartitionExec,
-        sorts::sort::SortExec,
     },
 };
 

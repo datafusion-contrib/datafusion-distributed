@@ -18,21 +18,9 @@
 use std::sync::Arc;
 
 use arrow_flight::{
-    Action,
-    ActionType,
-    Criteria,
-    Empty,
-    FlightData,
-    FlightDescriptor,
-    FlightInfo,
-    HandshakeRequest,
-    HandshakeResponse,
-    PollInfo,
-    PutResult,
-    SchemaResult,
-    Ticket,
-    flight_service_server::FlightService,
-    sql::server::FlightSqlService,
+    flight_service_server::FlightService, sql::server::FlightSqlService, Action, ActionType,
+    Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
+    PollInfo, PutResult, SchemaResult, Ticket,
 };
 use futures::stream::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -46,7 +34,7 @@ pub type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status
 pub trait FlightHandler: Send + Sync {
     async fn do_get(&self, request: Request<Ticket>) -> Result<Response<DoGetStream>, Status>;
     async fn do_action(&self, request: Request<Action>)
-    -> Result<Response<DoActionStream>, Status>;
+        -> Result<Response<DoActionStream>, Status>;
 }
 
 pub struct FlightServ {

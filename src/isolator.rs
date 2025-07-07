@@ -5,13 +5,8 @@ use datafusion::{
     error::Result,
     execution::SendableRecordBatchStream,
     physical_plan::{
-        DisplayAs,
-        DisplayFormatType,
-        EmptyRecordBatchStream,
-        ExecutionPlan,
-        ExecutionPlanProperties,
-        Partitioning,
-        PlanProperties,
+        DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+        ExecutionPlanProperties, Partitioning, PlanProperties,
     },
 };
 

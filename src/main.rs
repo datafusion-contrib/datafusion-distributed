@@ -1,10 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use distributed_datafusion::{
-    friendly::new_friendly_name,
-    processor_service::DFRayProcessorService,
-    proxy_service::DFRayProxyService,
-    setup,
+    friendly::new_friendly_name, processor_service::DFRayProcessorService,
+    proxy_service::DFRayProxyService, setup,
 };
 
 #[derive(Parser)]

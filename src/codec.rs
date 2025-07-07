@@ -2,17 +2,15 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use datafusion::{
-    common::{Result, internal_datafusion_err, internal_err},
+    common::{internal_datafusion_err, internal_err, Result},
     datasource::source::DataSourceExec,
     execution::FunctionRegistry,
-    physical_plan::{ExecutionPlan, displayable},
+    physical_plan::{displayable, ExecutionPlan},
 };
 use datafusion_proto::{
     physical_plan::{
-        DefaultPhysicalExtensionCodec,
-        PhysicalExtensionCodec,
-        from_proto::parse_protobuf_partitioning,
-        to_proto::serialize_partitioning,
+        from_proto::parse_protobuf_partitioning, to_proto::serialize_partitioning,
+        DefaultPhysicalExtensionCodec, PhysicalExtensionCodec,
     },
     protobuf,
 };
@@ -23,11 +21,8 @@ use crate::{
     logging::trace,
     max_rows::MaxRowsExec,
     protobuf::{
-        DfRayExecNode,
-        DfRayStageReaderExecNode,
-        MaxRowsExecNode,
+        df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode, MaxRowsExecNode,
         PartitionIsolatorExecNode,
-        df_ray_exec_node::Payload,
     },
     stage_reader::DFRayStageReaderExec,
 };
@@ -95,16 +90,12 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
-                Payload::NumpangExec(_) => {
-                    Err(internal_datafusion_err!(
-                        "NumpangExec not supported in open source version"
-                    ))
-                }
-                Payload::ContextExec(_) => {
-                    Err(internal_datafusion_err!(
-                        "ContextExec not supported in open source version"
-                    ))
-                }
+                Payload::NumpangExec(_) => Err(internal_datafusion_err!(
+                    "NumpangExec not supported in open source version"
+                )),
+                Payload::ContextExec(_) => Err(internal_datafusion_err!(
+                    "ContextExec not supported in open source version"
+                )),
             }
         } else {
             internal_err!("cannot decode proto extension in dfray codec")
@@ -169,16 +160,14 @@ mod test {
 
     use arrow::datatypes::DataType;
     use datafusion::{
-        physical_plan::{Partitioning, displayable},
+        physical_plan::{displayable, Partitioning},
         prelude::SessionContext,
     };
     use datafusion_proto::physical_plan::AsExecutionPlan;
 
     use super::*;
     use crate::{
-        isolator::PartitionIsolatorExec,
-        max_rows::MaxRowsExec,
-        stage_reader::DFRayStageReaderExec,
+        isolator::PartitionIsolatorExec, max_rows::MaxRowsExec, stage_reader::DFRayStageReaderExec,
     };
 
     fn create_test_schema() -> Arc<arrow::datatypes::Schema> {

@@ -1,7 +1,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::anyhow;
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
 use crate::result::Result;
 
