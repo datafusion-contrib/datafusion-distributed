@@ -17,21 +17,23 @@ runs:
         echo $HOME
         echo ${{ runner.os }}
 
-    - name: Cache apt packages on Linux
+    - name: Cache APT packages
       if: runner.os == 'Linux'
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
-        path: /var/cache/apt
-        key: ${{ runner.os }}-apt-cache-${{ hashFiles('/var/lib/apt/lists/*') }}
+        path: |
+          /var/cache/apt/archives
+          /var/lib/apt/lists
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/actions/setup/apt-packages.txt') }}
         restore-keys: |
-          ${{ runner.os }}-apt-cache-
+          ${{ runner.os }}-apt-
 
-    - name: Install protobuf-compiler on Linux
+    - name: Update and install APT packages
       if: runner.os == 'Linux'
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+        xargs -a .github/actions/setup/apt-packages.txt sudo apt-get install -y
 
     - uses: dtolnay/rust-toolchain@stable
       with:
