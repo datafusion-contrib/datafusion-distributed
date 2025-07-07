@@ -219,15 +219,15 @@ pub async fn add_views_from_env(state: &SessionState) -> Result<()> {
     }
 
     let ctx = SessionContext::new_with_state(state.clone());
-    
+
     for view_sql in views_str.unwrap().split(';') {
         let view_sql = view_sql.trim();
         if view_sql.is_empty() {
             continue;
         }
-        
+
         info!("creating view from env: {}", view_sql);
-        
+
         // Execute the CREATE VIEW statement
         match ctx.sql(view_sql).await {
             Ok(_) => {

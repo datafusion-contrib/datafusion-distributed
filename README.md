@@ -138,7 +138,9 @@ cargo build --release
 
 ### Running Tests
 
-Run all tests:
+#### Basic Tests
+
+Run all unit tests (fast - excludes TPC-H validation):
 
 ```bash
 cargo test
@@ -149,6 +151,20 @@ Run tests with output:
 ```bash
 cargo test -- --nocapture
 ```
+
+#### TPC-H Validation Integration Tests
+
+Run comprehensive TPC-H validation tests that compare distributed DataFusion against regular DataFusion. No prerequisites needed - the tests handle everything automatically!
+
+```bash
+# Run all TPC-H validation tests (manual - excluded from cargo test for speed)
+cargo test --test tpch_validation test_tpch_validation_all_queries -- --ignored --nocapture
+
+# Run single query test for debugging  
+cargo test --test tpch_validation test_tpch_validation_single_query -- --ignored --nocapture
+```
+
+**Note:** TPC-H validation tests are marked with `#[ignore]` to keep `cargo test` fast for development. Run them manually when needed for validation.
 
 ## Usage
 
@@ -323,84 +339,6 @@ The system supports various configuration options through environment variables:
 - `DFRAY_TABLES`: Comma-separated list of tables in format `name:format:path`
 - `DFRAY_VIEWS`: Semicolon-separated list of CREATE VIEW SQL statements
 
-## TPC-H Query Validation
-
-To validate that your distributed cluster is working correctly, you can use the automated validation script that compares results between DataFusion CLI (single-node) and the distributed system:
-
-```bash
-# Run validation with default settings (2 workers, /tmp/tpch_s1 data)
-./scripts/validate_tpch_correctness.sh
-
-# Run validation with custom settings
-./scripts/validate_tpch_correctness.sh num_workers=3 tpch_file_path=/path/to/tpch/data log_file_path=./logs query_path=./tpch/queries/
-```
-
-**Key Features:**
-- **Automated Setup**: Installs `datafusion-cli` and `tpchgen-cli` if missing
-- **Data Generation**: Creates TPC-H data automatically if not found
-- **Smart Validation**: Compares all 22 TPC-H queries with floating-point tolerance
-- **Cluster Detection**: Uses existing cluster or launches a new one
-- **Detailed Reporting**: Generates comprehensive validation reports
-
-**Example Output:**
-```
-==============================================================================
-TPC-H Correctness Validation
-==============================================================================
-Configuration:
-  - Workers: 2
-  - TPC-H Data Directory: /tmp/tpch_s1
-  - Query Path: ./tpch/queries/
-  - Proxy Port: 20200
-
-[SUCCESS] q1: Results match ✓ (within floating-point tolerance)
-[SUCCESS] q6: Results match ✓ (within floating-point tolerance)
-...
-
-==============================================================================
-Validation Summary
-==============================================================================
-Total queries tested: 22
-Passed: 20
-Failed: 2
-Success rate: 90%
-
-Detailed report: ./logs/validation_results/validation_report.txt
-Result files: ./logs/validation_results
-```
-
-The script will warn you if the running cluster has a different number of workers than requested, and automatically handles missing dependencies and data generation.
-
-<!-- TODO: Merge this section into the above -->
-## TPC-H Validation Tests
-
-The project includes comprehensive TPC-H validation tests that automatically compare results between regular DataFusion and distributed DataFusion to ensure correctness. These tests are completely self-contained and handle all setup automatically:
-
-```bash
-# Run all TPC-H validation tests (fully automated)
-cargo test --lib tpch_validation_tests -- --nocapture
-
-# Run single query test for debugging
-cargo test --lib test_tpch_validation_single_query -- --ignored --nocapture
-```
-
-**What the tests do automatically:**
-- ✅ Kill existing processes on ports 40400-40402
-- ✅ Install `tpchgen-cli` if not available  
-- ✅ Generate TPC-H data at `/tmp/tpch_s1` if not present
-- ✅ Start distributed cluster (1 proxy + 2 workers)
-- ✅ Run all 22 TPC-H queries on both systems
-- ✅ Compare results with floating-point tolerance
-- ✅ Clean up cluster processes
-
-**Architecture:**
-- **Proxy**: Port 40400
-- **Worker 1**: Port 40401
-- **Worker 2**: Port 40402
-- **TPC-H Data**: `/tmp/tpch_s1` (scale factor 1)
-
-No prerequisites needed - just run `cargo test --lib tpch_validation_tests -- --nocapture` and everything is handled automatically!
-
 ## Development
 
 ### Project Structure
@@ -417,6 +355,9 @@ No prerequisites needed - just run `cargo test --lib tpch_validation_tests -- --
   - `launch_python_arrowflightsql_client.sh`: Launch Python query client
   - `build_and_push_docker.sh`: Docker build and push script
   - `python_tests.sh`: Python test runner
+- `tests/`: Integration tests
+  - `tpch_validation.rs`: TPC-H validation integration tests
+  - `common/mod.rs`: Shared test utilities and helper functions
 - `tpch/queries/`: TPC-H benchmark SQL queries
 - `testdata/`: Test data files
 - `k8s/`: Kubernetes deployment files
