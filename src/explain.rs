@@ -160,9 +160,10 @@ impl ExecutionPlan for DistributedExplainExec {
             self.distributed_stages.as_str(),
         ]);
 
-        let batch =
-            RecordBatch::try_new(schema.clone(), vec![Arc::new(plan_types), Arc::new(plans)])
-                .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(plan_types), Arc::new(plans)],
+        ).map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
 
         // Use MemoryStream which is designed for DataFusion execution plans
         let stream = MemoryStream::try_new(vec![batch], schema, None)?;

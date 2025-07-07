@@ -136,6 +136,27 @@ impl FlightRequestHandler {
         Ok(Response::new(flight_info))
     }
 
+    pub async fn handle_substrait_info_request(&self, substrait_plan: datafusion_substrait::substrait::proto::Plan) -> Result<Response<FlightInfo>, Status> {
+        let query_plan = self
+            .planner
+            .prepare_substrait_query(substrait_plan)
+            .await
+            .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
+
+        debug!("get flight info: query id {}", query_plan.query_id);
+
+        let flight_info = self.create_flight_info_response(
+            query_plan.query_id,
+            query_plan.worker_addresses,
+            query_plan.final_stage_id,
+            query_plan.schema,
+            None  // Regular queries don't have explain data
+        )?;
+
+        trace!("get_flight_info_statement done");
+        Ok(Response::new(flight_info))
+    }
+
     /// Handle execution of EXPLAIN statement queries.
     ///
     /// This function does not execute the plan but returns all plans we want to display to the user.
