@@ -7,6 +7,7 @@ use datafusion::{
     physical_plan::ExecutionPlan,
     prelude::SessionContext,
 };
+use datafusion_substrait::logical_plan::{consumer::from_substrait_plan};
 
 use crate::{
     explain::{DistributedExplainExec, is_explain_query},
@@ -65,6 +66,38 @@ impl QueryPlanner {
         Self
     }
 
+    /// Dispatch a distributed query plan to the workers.
+    async fn dispatch_query_plan(&self, base_result: QueryPlanBase) -> Result<QueryPlan> {
+        if base_result.distributed_stages.is_empty() {
+            return Err(anyhow!("No stages generated for query").into());
+        }
+
+        let worker_addrs = get_worker_addresses()?;
+
+        // The last stage produces the data returned to the client.
+        let final_stage = &base_result.distributed_stages
+            [base_result.distributed_stages.len() - 1];
+        let schema = Arc::clone(&final_stage.plan.schema());
+        let final_stage_id = final_stage.stage_id;
+
+        // Physically dispatch each stage to the worker pool, further dividing
+        // them into partition groups.
+        let final_workers = distribute_stages(
+            &base_result.query_id,
+            base_result.distributed_stages,
+            worker_addrs,
+        )
+        .await?;
+
+        Ok(QueryPlan {
+            query_id: base_result.query_id,
+            worker_addresses: final_workers,
+            final_stage_id,
+            schema,
+            explain_data: None,
+        })
+    }
+
     /// Common planning steps shared by both query and its EXPLAIN
     ///
     /// Prepare a query by parsing the SQL, planning it, and distributing the
@@ -78,7 +111,7 @@ impl QueryPlanner {
         let logical_plan = logical_planning(sql, &ctx).await?;
         let physical_plan = physical_planning(&logical_plan, &ctx).await?;
 
-        // divide the physical plan into chunks (stages) that we can distribute to workers
+        // divide the physical plan into chunks (stages) that we can distribute to workers later in dispatch_query_plan
         let (distributed_plan, distributed_stages) = execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
 
         Ok(QueryPlanBase {
@@ -91,32 +124,44 @@ impl QueryPlanner {
         })
     }
 
-    /// Prepare a distributed query
+    /// Prepare a distributed query (SQL entry point)
     pub async fn prepare_query(&self, sql: &str) -> Result<QueryPlan> {
         let base_result = self.prepare_query_base(sql, "REGULAR").await?;
+        self.dispatch_query_plan(base_result).await
+    }
 
-        if base_result.distributed_stages.is_empty() {
-            return Err(anyhow!("No stages generated for query").into());
-        }
+    /// Prepare a distributed query (Substrait entry point)
+    pub async fn prepare_substrait_query(&self, substrait_plan: datafusion_substrait::substrait::proto::Plan) -> Result<QueryPlan> {
+        let base_result = self.prepare_substrait_query_base(substrait_plan, "SUBSTRAIT").await?;
+        self.dispatch_query_plan(base_result).await
+    }
 
-        let worker_addrs = get_worker_addresses()?;
+    pub async fn prepare_substrait_query_base(
+        &self,
+        substrait_plan: datafusion_substrait::substrait::proto::Plan,
+        query_type: &str,
+    ) -> Result<QueryPlanBase> {
+        debug!("prepare_substrait_query_base: {} Substrait = {:#?}", query_type, substrait_plan);
+        
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
 
-        // gather some information we need to send back such that
-        // we can send a ticket to the client
-        let final_stage = &base_result.distributed_stages[base_result.distributed_stages.len() - 1];
-        let schema = Arc::clone(&final_stage.plan.schema());
-        let final_stage_id = final_stage.stage_id;
+        let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan)
+            .await
+            .map_err(|e| anyhow!("Failed to convert DataFusion Logical Plan: {e}"))?;
 
-        // distribute the stages to workers, further dividing them up
-        // into chunks of partitions (partition_groups)
-        let final_workers = distribute_stages(&base_result.query_id, base_result.distributed_stages, worker_addrs).await?;
+        let physical_plan = physical_planning(&logical_plan, &ctx).await.map_err(|e| anyhow!("Failed to convert DataFusion Physical Plan: {e}"))?;
 
-        Ok(QueryPlan {
-            query_id: base_result.query_id,
-            worker_addresses: final_workers,
-            final_stage_id,
-            schema,
-            explain_data: None,
+        // divide the physical plan into chunks (stages) that we can distribute to workers later in dispatch_query_plan
+        let (distributed_plan, distributed_stages) = execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
+
+        Ok(QueryPlanBase {
+            query_id,
+            session_context: ctx,
+            logical_plan,
+            physical_plan,
+            distributed_plan,
+            distributed_stages,
         })
     }
 
@@ -178,6 +223,9 @@ impl QueryPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs::{File}, path::Path};
+    use std::io::BufReader;
+
 
     // //////////////////////////////////////////////////////////////
     // Test helper functions
@@ -216,6 +264,34 @@ mod tests {
             assert!(!query_plan_base.physical_plan.schema().fields().is_empty());
             // logical plan of select 1 on empty relation
             assert_eq!(query_plan_base.logical_plan.to_string(), "Projection: Int64(1) AS test_col\n  EmptyRelation");
+            // physical plan of select 1 on empty releation is ProjectionExec
+            assert_eq!(query_plan_base.physical_plan.name(), "ProjectionExec");
+        } else {
+            // If worker discovery fails, we expect a specific error
+            let error_msg = format!("{:?}", result.unwrap_err());
+            assert!(error_msg.contains("worker") || error_msg.contains("address"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_substrait_query_base() {
+        let planner = QueryPlanner::new();
+
+        // Read the JSON plan and convert to binary Substrait protobuf bytes
+        let plan = serde_json::from_reader::<_, datafusion_substrait::substrait::proto::Plan>(BufReader::new(
+            File::open(Path::new("testdata/substrait/select_one.substrait.json")).expect("file not found"),
+        )).expect("failed to parse json");
+        
+        let result = planner.prepare_substrait_query_base(plan, "TEST").await;
+        
+        if result.is_ok() {
+            let query_plan_base = result.unwrap();
+            // verify all fields have values
+            assert!(!query_plan_base.query_id.is_empty());
+            assert!(!query_plan_base.distributed_stages.is_empty());
+            assert!(!query_plan_base.physical_plan.schema().fields().is_empty());
+            // logical plan of select 1 on empty relation
+            assert_eq!(query_plan_base.logical_plan.to_string(), "Projection: Int64(1) AS test_col\n  Values: (Int64(0))");
             // physical plan of select 1 on empty releation is ProjectionExec
             assert_eq!(query_plan_base.physical_plan.name(), "ProjectionExec");
         } else {
