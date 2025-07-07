@@ -3,12 +3,12 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::{apps::v1::Deployment, core::v1::Pod};
 use kube::{
-    Client,
     api::{Api, ResourceExt, WatchEvent, WatchParams},
+    Client,
 };
 use parking_lot::RwLock;
 
@@ -32,7 +32,7 @@ pub fn get_worker_addresses() -> Result<Vec<(String, String)>> {
                     .join("\n")
             );
             Ok(worker_addrs)
-        },
+        }
         Err(e) => Err(anyhow!("Failed to initialize WorkerDiscovery: {}", e).into()),
     }
 }
@@ -182,7 +182,8 @@ async fn watch_deployment_hosts_continuous(
             WatchEvent::Added(pod) | WatchEvent::Modified(pod) => {
                 trace!(
                     "Pod event: {:?}, added or modified: {:#?}",
-                    event_result, pod
+                    event_result,
+                    pod
                 );
                 if let Some(Some(_ip)) = pod.status.as_ref().map(|s| s.pod_ip.as_ref()) {
                     let (pod_ip, name_str, host_str) = get_worker_info_from_pod(pod)?;

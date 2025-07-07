@@ -8,22 +8,18 @@ use datafusion::{
     execution::SendableRecordBatchStream,
     physical_expr::EquivalenceProperties,
     physical_plan::{
-        DisplayAs,
-        DisplayFormatType,
-        ExecutionPlan,
-        Partitioning,
-        PlanProperties,
         execution_plan::{Boundedness, EmissionType},
         stream::RecordBatchStreamAdapter,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     },
 };
-use futures::{StreamExt, stream::TryStreamExt};
+use futures::{stream::TryStreamExt, StreamExt};
 use prost::Message;
 
 use crate::{
     logging::trace,
     protobuf::FlightTicketData,
-    util::{CombinedRecordBatchStream, get_client},
+    util::{get_client, CombinedRecordBatchStream},
     vocab::{CtxName, CtxStageAddrs},
 };
 

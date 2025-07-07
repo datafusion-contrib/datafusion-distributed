@@ -15,7 +15,7 @@ use arrow::{
     error::ArrowError,
     ipc::{convert::fb_to_schema, root_as_message},
 };
-use arrow_flight::{FlightClient, FlightData, Ticket, decode::FlightRecordBatchStream};
+use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightData, Ticket};
 use async_stream::stream;
 use bytes::Bytes;
 use datafusion::{
@@ -25,22 +25,16 @@ use datafusion::{
     },
     datasource::{physical_plan::FileScanConfig, source::DataSourceExec},
     error::DataFusionError,
-    execution::{RecordBatchStream, SendableRecordBatchStream, object_store::ObjectStoreUrl},
+    execution::{object_store::ObjectStoreUrl, RecordBatchStream, SendableRecordBatchStream},
     physical_plan::{
-        ExecutionPlan,
-        ExecutionPlanProperties,
-        displayable,
-        stream::RecordBatchStreamAdapter,
+        displayable, stream::RecordBatchStreamAdapter, ExecutionPlan, ExecutionPlanProperties,
     },
     prelude::SessionContext,
 };
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use futures::{Stream, StreamExt, stream::BoxStream};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
-    ObjectStore,
-    aws::AmazonS3Builder,
-    gcp::GoogleCloudStorageBuilder,
-    http::HttpBuilder,
+    aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, http::HttpBuilder, ObjectStore,
 };
 use parking_lot::RwLock;
 use prost::Message;

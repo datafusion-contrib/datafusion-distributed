@@ -1,0 +1,46 @@
+name: Setup
+description: Setup environment for CI
+
+inputs:
+  targets:
+    description: Comma-separated list of target triples to install for this toolchain
+    required: false
+  components:
+    description: Comma-separated list of components to be additionally installed
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      run: |
+        echo $HOME
+        echo ${{ runner.os }}
+
+    - name: Cache APT packages
+      if: runner.os == 'Linux'
+      uses: actions/cache@v4
+      with:
+        path: |
+          /var/cache/apt/archives
+          /var/lib/apt/lists
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/actions/setup/apt-packages.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
+
+    - name: Update and install APT packages
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        xargs -a .github/actions/setup/apt-packages.txt sudo apt-get install -y
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ runner.os }}-${{ inputs.targets }}-rust-cache

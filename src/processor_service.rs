@@ -21,18 +21,15 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use arrow::array::RecordBatch;
 use arrow_flight::{
-    Action,
-    Ticket,
-    encode::FlightDataEncoderBuilder,
-    error::FlightError,
-    flight_service_server::FlightServiceServer,
+    encode::FlightDataEncoderBuilder, error::FlightError,
+    flight_service_server::FlightServiceServer, Action, Ticket,
 };
 use async_stream::stream;
 use datafusion::{
-    physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable},
+    physical_plan::{displayable, ExecutionPlan, ExecutionPlanProperties},
     prelude::SessionContext,
 };
 use futures::{Stream, TryStreamExt};
@@ -40,9 +37,9 @@ use parking_lot::{Mutex, RwLock};
 use prost::Message;
 use tokio::{
     net::TcpListener,
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::mpsc::{channel, Receiver, Sender},
 };
-use tonic::{Request, Response, Status, async_trait, transport::Server};
+use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
     flight::{FlightHandler, FlightServ},
@@ -51,11 +48,8 @@ use crate::{
     protobuf::{FlightTicketData, StageData},
     result::{DFRayError, Result},
     util::{
-        bytes_to_physical_plan,
-        display_plan_with_partition_counts,
-        get_addrs,
-        register_object_store_for_paths_in_plan,
-        reporting_stream,
+        bytes_to_physical_plan, display_plan_with_partition_counts, get_addrs,
+        register_object_store_for_paths_in_plan, reporting_stream,
     },
     vocab::{Addrs, CtxName},
 };
