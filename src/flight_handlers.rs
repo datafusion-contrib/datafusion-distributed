@@ -136,7 +136,10 @@ impl FlightRequestHandler {
         Ok(Response::new(flight_info))
     }
 
-    pub async fn handle_substrait_info_request(&self, substrait_plan: datafusion_substrait::substrait::proto::Plan) -> Result<Response<FlightInfo>, Status> {
+    pub async fn handle_substrait_info_request(
+        &self,
+        substrait_plan: datafusion_substrait::substrait::proto::Plan,
+    ) -> Result<Response<FlightInfo>, Status> {
         let query_plan = self
             .planner
             .prepare_substrait_query(substrait_plan)
@@ -150,7 +153,7 @@ impl FlightRequestHandler {
             query_plan.worker_addresses,
             query_plan.final_stage_id,
             query_plan.schema,
-            None  // Regular queries don't have explain data
+            None, // Regular queries don't have explain data
         )?;
 
         trace!("get_flight_info_statement done");

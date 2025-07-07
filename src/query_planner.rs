@@ -5,7 +5,7 @@ use arrow::datatypes::SchemaRef;
 use datafusion::{
     logical_expr::LogicalPlan, physical_plan::ExecutionPlan, prelude::SessionContext,
 };
-use datafusion_substrait::logical_plan::{consumer::from_substrait_plan};
+use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 
 use crate::{
     explain::{is_explain_query, DistributedExplainExec},
@@ -75,8 +75,7 @@ impl QueryPlanner {
         let worker_addrs = get_worker_addresses()?;
 
         // The last stage produces the data returned to the client.
-        let final_stage = &base_result.distributed_stages
-            [base_result.distributed_stages.len() - 1];
+        let final_stage = &base_result.distributed_stages[base_result.distributed_stages.len() - 1];
         let schema = Arc::clone(&final_stage.plan.schema());
         let final_stage_id = final_stage.stage_id;
 
@@ -112,7 +111,8 @@ impl QueryPlanner {
         let physical_plan = physical_planning(&logical_plan, &ctx).await?;
 
         // divide the physical plan into chunks (stages) that we can distribute to workers later in dispatch_query_plan
-        let (distributed_plan, distributed_stages) = execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
+        let (distributed_plan, distributed_stages) =
+            execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
 
         Ok(QueryPlanBase {
             query_id,
@@ -131,8 +131,13 @@ impl QueryPlanner {
     }
 
     /// Prepare a distributed query (Substrait entry point)
-    pub async fn prepare_substrait_query(&self, substrait_plan: datafusion_substrait::substrait::proto::Plan) -> Result<QueryPlan> {
-        let base_result = self.prepare_substrait_query_base(substrait_plan, "SUBSTRAIT").await?;
+    pub async fn prepare_substrait_query(
+        &self,
+        substrait_plan: datafusion_substrait::substrait::proto::Plan,
+    ) -> Result<QueryPlan> {
+        let base_result = self
+            .prepare_substrait_query_base(substrait_plan, "SUBSTRAIT")
+            .await?;
         self.dispatch_query_plan(base_result).await
     }
 
@@ -141,8 +146,11 @@ impl QueryPlanner {
         substrait_plan: datafusion_substrait::substrait::proto::Plan,
         query_type: &str,
     ) -> Result<QueryPlanBase> {
-        debug!("prepare_substrait_query_base: {} Substrait = {:#?}", query_type, substrait_plan);
-        
+        debug!(
+            "prepare_substrait_query_base: {} Substrait = {:#?}",
+            query_type, substrait_plan
+        );
+
         let query_id = uuid::Uuid::new_v4().to_string();
         let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
 
@@ -150,11 +158,13 @@ impl QueryPlanner {
             .await
             .map_err(|e| anyhow!("Failed to convert DataFusion Logical Plan: {e}"))?;
 
-
-        let physical_plan = physical_planning(&logical_plan, &ctx).await.map_err(|e| anyhow!("Failed to convert DataFusion Physical Plan: {e}"))?;
+        let physical_plan = physical_planning(&logical_plan, &ctx)
+            .await
+            .map_err(|e| anyhow!("Failed to convert DataFusion Physical Plan: {e}"))?;
 
         // divide the physical plan into chunks (stages) that we can distribute to workers later in dispatch_query_plan
-        let (distributed_plan, distributed_stages) = execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
+        let (distributed_plan, distributed_stages) =
+            execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
 
         Ok(QueryPlanBase {
             query_id,
@@ -246,9 +256,8 @@ impl QueryPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs::{File}, path::Path};
     use std::io::BufReader;
-
+    use std::{fs::File, path::Path};
 
     // //////////////////////////////////////////////////////////////
     // Test helper functions
@@ -256,8 +265,10 @@ mod tests {
 
     /// Set up mock worker environment for testing
     fn setup_mock_worker_env() {
-        let mock_addrs = [("mock_worker_1".to_string(), "localhost:9001".to_string()),
-            ("mock_worker_2".to_string(), "localhost:9002".to_string())];
+        let mock_addrs = [
+            ("mock_worker_1".to_string(), "localhost:9001".to_string()),
+            ("mock_worker_2".to_string(), "localhost:9002".to_string()),
+        ];
         let mock_env_value = mock_addrs
             .iter()
             .map(|(name, addr)| format!("{}/{}", name, addr))
@@ -303,12 +314,16 @@ mod tests {
         let planner = QueryPlanner::new();
 
         // Read the JSON plan and convert to binary Substrait protobuf bytes
-        let plan = serde_json::from_reader::<_, datafusion_substrait::substrait::proto::Plan>(BufReader::new(
-            File::open(Path::new("testdata/substrait/select_one.substrait.json")).expect("file not found"),
-        )).expect("failed to parse json");
-        
+        let plan = serde_json::from_reader::<_, datafusion_substrait::substrait::proto::Plan>(
+            BufReader::new(
+                File::open(Path::new("testdata/substrait/select_one.substrait.json"))
+                    .expect("file not found"),
+            ),
+        )
+        .expect("failed to parse json");
+
         let result = planner.prepare_substrait_query_base(plan, "TEST").await;
-        
+
         if result.is_ok() {
             let query_plan_base = result.unwrap();
             // verify all fields have values
@@ -316,7 +331,10 @@ mod tests {
             assert!(!query_plan_base.distributed_stages.is_empty());
             assert!(!query_plan_base.physical_plan.schema().fields().is_empty());
             // logical plan of select 1 on empty relation
-            assert_eq!(query_plan_base.logical_plan.to_string(), "Projection: Int64(1) AS test_col\n  Values: (Int64(0))");
+            assert_eq!(
+                query_plan_base.logical_plan.to_string(),
+                "Projection: Int64(1) AS test_col\n  Values: (Int64(0))"
+            );
             // physical plan of select 1 on empty releation is ProjectionExec
             assert_eq!(query_plan_base.physical_plan.name(), "ProjectionExec");
         } else {

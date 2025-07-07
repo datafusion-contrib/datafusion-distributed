@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
 use arrow_flight::{
-    flight_service_server::FlightServiceServer, sql::TicketStatementQuery, FlightDescriptor, FlightInfo, Ticket
+    flight_service_server::FlightServiceServer, sql::TicketStatementQuery, FlightDescriptor,
+    FlightInfo, Ticket,
 };
 use datafusion_substrait::substrait;
 use parking_lot::Mutex;
@@ -106,14 +107,14 @@ impl FlightSqlHandler for DfRayProxyHandler {
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let plan = match &substrait.plan {
-            Some(substrait_plan) => {
-                substrait::proto::Plan::decode(substrait_plan.plan.as_ref())
-                    .map_err(|e| Status::invalid_argument(format!("Invalid Substrait plan: {e}")))?
-            }
+            Some(substrait_plan) => substrait::proto::Plan::decode(substrait_plan.plan.as_ref())
+                .map_err(|e| Status::invalid_argument(format!("Invalid Substrait plan: {e}")))?,
             None => return Err(Status::invalid_argument("Missing Substrait plan")),
         };
 
-        self.flight_handler.handle_substrait_info_request(plan).await
+        self.flight_handler
+            .handle_substrait_info_request(plan)
+            .await
     }
 }
 
@@ -230,7 +231,8 @@ mod tests {
     use super::*;
     // Test-specific imports
     use arrow_flight::{
-        sql::{CommandStatementQuery, TicketStatementQuery}, FlightDescriptor, Ticket
+        sql::{CommandStatementQuery, TicketStatementQuery},
+        FlightDescriptor, Ticket,
     };
     use prost::Message;
     use tonic::Request;
@@ -361,5 +363,4 @@ mod tests {
     // TODO: Add tests for regular (non-explain) queries
     // We might need to create integration or end-to-end test infrastructure for this because
     // they need workers
-
 }
