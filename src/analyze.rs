@@ -1,13 +1,24 @@
 use std::{fmt::Formatter, sync::Arc};
 
+use arrow::{
+    array::{RecordBatch, StringBuilder},
+    datatypes::{DataType, Field, Schema, SchemaRef},
+};
 use datafusion::{
-    error::Result,
+    error::{DataFusionError, Result},
     execution::SendableRecordBatchStream,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
-        display::DisplayableExecutionPlan, DisplayAs, DisplayFormatType, ExecutionPlan,
+        display::DisplayableExecutionPlan,
+        execution_plan::{Boundedness, EmissionType},
+        stream::RecordBatchStreamAdapter,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
         PlanProperties,
     },
 };
+use futures::StreamExt;
+
+use crate::{logging::debug, protobuf::AnnotatedTaskOutput, vocab::CtxAnnotatedOutputs};
 
 #[derive(Debug)]
 pub struct DistributedAnalyzeExec {
@@ -93,22 +104,29 @@ pub struct DistributedAnalyzeRootExec {
     pub(crate) show_statistics: bool,
     /// The input plan (the plan being analyzed)
     pub(crate) input: Arc<dyn ExecutionPlan>,
+    /// our plan properties
+    properties: PlanProperties,
 }
 
 impl DistributedAnalyzeRootExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, verbose: bool, show_statistics: bool) -> Self {
+        let field_a = Field::new("Task", DataType::Utf8, false);
+        let field_b = Field::new("Plan", DataType::Utf8, false);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+
         Self {
             input,
             verbose,
             show_statistics,
+            properties,
         }
-    }
-
-    pub fn annotated_plan(&self) -> String {
-        DisplayableExecutionPlan::with_metrics(self.input.as_ref())
-            .set_show_statistics(self.show_statistics)
-            .indent(self.verbose)
-            .to_string()
     }
 }
 
@@ -116,7 +134,7 @@ impl DisplayAs for DistributedAnalyzeRootExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "DistributedAnalyzeExec[verbose = {}, show stats = {}]",
+            "DistributedAnalyzeRootExec[verbose = {}, show stats = {}]",
             self.verbose, self.show_statistics
         )
     }
@@ -124,7 +142,7 @@ impl DisplayAs for DistributedAnalyzeRootExec {
 
 impl ExecutionPlan for DistributedAnalyzeRootExec {
     fn name(&self) -> &str {
-        "DistributedAnalyzeExec"
+        "DistributedAnalyzeRootExec"
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -132,7 +150,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        self.input.properties()
+        &self.properties
     }
 
     fn children(&self) -> Vec<&std::sync::Arc<dyn ExecutionPlan>> {
@@ -157,6 +175,91 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
         partition: usize,
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        self.input.execute(partition, context)
+        let input_capture = self.input.clone();
+        let show_statistics_capture = self.show_statistics;
+        let verbose_capture = self.verbose;
+        let fmt_plan = move || -> String {
+            DisplayableExecutionPlan::with_metrics(input_capture.as_ref())
+                .set_show_statistics(show_statistics_capture)
+                .indent(verbose_capture)
+                .to_string()
+        };
+
+        let task_outputs = context
+            .session_config()
+            .get_extension::<CtxAnnotatedOutputs>()
+            .unwrap_or(Arc::new(CtxAnnotatedOutputs::default()))
+            .0
+            .clone();
+
+        assert!(
+            partition == 0,
+            "DistributedAnalyzeRootExec expects only partition 0"
+        );
+
+        let mut input_stream = self.input.execute(partition, context)?;
+
+        let schema_clone = self.schema().clone();
+
+        let output = async move {
+            // consume input, and we do not have to send it downstream as we are the
+            // root of the distributed analyze so we can discard the results just like
+            // regular AnalyzeExec
+            let mut done = false;
+            let mut total_rows = 0;
+            while !done {
+                match input_stream.next().await.transpose() {
+                    Ok(Some(batch)) => {
+                        // we consume the batch, yum.
+                        debug!("consumed {} ", batch.num_rows());
+                        total_rows += batch.num_rows();
+                    }
+                    Ok(None) => done = true,
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+            let annotated_plan = fmt_plan();
+            let toutput = AnnotatedTaskOutput {
+                plan: annotated_plan,
+                host: None,
+                stage_id: 0,
+                partition_group: vec![0],
+            };
+
+            let mut tasks = task_outputs.lock();
+            tasks.push(toutput);
+
+            let mut task_builder = StringBuilder::with_capacity(1, 1024);
+            let mut plan_builder = StringBuilder::with_capacity(1, 1024);
+            task_builder.append_value("Task");
+            plan_builder.append_value("Plan with Metrics");
+
+            for task_output in tasks.iter() {
+                task_builder.append_value(format!(
+                    "Task: Stage {}, Partitions {:?}",
+                    task_output.stage_id, task_output.partition_group
+                ));
+                plan_builder.append_value(&task_output.plan);
+            }
+
+            RecordBatch::try_new(
+                schema_clone,
+                vec![
+                    Arc::new(task_builder.finish()),
+                    Arc::new(plan_builder.finish()),
+                ],
+            )
+            .map_err(DataFusionError::from)
+            .inspect(|batch| {
+                debug!("returning record batch {:?}", batch);
+            })
+        };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            futures::stream::once(output),
+        )))
     }
 }

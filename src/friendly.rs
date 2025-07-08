@@ -1,7 +1,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::anyhow;
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
 use crate::result::Result;
 
@@ -1619,9 +1619,11 @@ impl Friendly {
             .lock()
             .map_err(|e| anyhow!("Failed to lock adjectives: {}", e))?;
 
+        let suffix = rng.gen_range(0..1000);
+
         let index = rng.gen_range(0..adjectives.len());
         let adj = adjectives.remove(index);
 
-        Ok(format!("{}-{}", adj, name))
+        Ok(format!("{}-{}-{:0>4}", adj, name, suffix))
     }
 }

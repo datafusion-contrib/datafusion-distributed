@@ -29,7 +29,6 @@ pub mod flight;
 pub mod flight_handlers;
 pub mod friendly;
 pub mod isolator;
-pub mod k8s;
 pub mod logging;
 pub mod max_rows;
 pub mod physical;
@@ -43,6 +42,7 @@ pub mod stage_reader;
 pub mod test_utils;
 pub mod util;
 pub mod vocab;
+pub mod worker_discovery;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;

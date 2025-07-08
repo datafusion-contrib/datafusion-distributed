@@ -1,10 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use distributed_datafusion::{
-    friendly::new_friendly_name,
-    processor_service::DFRayProcessorService,
-    proxy_service::DFRayProxyService,
-    setup,
+    friendly::new_friendly_name, processor_service::DFRayProcessorService,
+    proxy_service::DFRayProxyService, setup,
 };
 
 #[derive(Parser)]
@@ -40,8 +38,7 @@ async fn main() -> Result<()> {
             service.serve().await?;
         }
         "worker" => {
-            let mut service = DFRayProcessorService::new(new_friendly_name()?, args.port);
-            service.start_up().await?;
+            let service = DFRayProcessorService::new(new_friendly_name()?, args.port).await?;
             service.serve().await?;
         }
         _ => {

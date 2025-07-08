@@ -173,10 +173,7 @@ impl FlightRequestHandler {
         // Create dummy addresses for EXPLAIN execution
         let mut dummy_addrs = std::collections::HashMap::new();
         let mut partition_addrs = std::collections::HashMap::new();
-        partition_addrs.insert(
-            0u64,
-            vec![("explain_local".to_string(), "local".to_string())],
-        );
+        partition_addrs.insert(0u64, vec![]);
         dummy_addrs.insert(0u64, partition_addrs);
 
         self.execute_plan_and_build_stream(explain_plan, tsd.query_id, dummy_addrs)
@@ -302,9 +299,12 @@ impl FlightRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::explain_test_helpers::{
-        create_explain_ticket_statement_data, create_test_flight_handler,
-        verify_explain_stream_results,
+    use crate::{
+        test_utils::explain_test_helpers::{
+            create_explain_ticket_statement_data, create_test_flight_handler,
+            verify_explain_stream_results,
+        },
+        vocab::Host,
     };
     use std::collections::HashMap;
 
@@ -319,8 +319,14 @@ mod tests {
         stage_addrs.insert(
             1u64,
             vec![
-                ("worker1".to_string(), "localhost:8001".to_string()),
-                ("worker2".to_string(), "localhost:8002".to_string()),
+                Host {
+                    name: "worker1".to_string(),
+                    addr: "localhost:8001".to_string(),
+                },
+                Host {
+                    name: "worker2".to_string(),
+                    addr: "localhost:8002".to_string(),
+                },
             ],
         );
         addrs.insert(1u64, stage_addrs);
@@ -350,12 +356,18 @@ mod tests {
         let mut stage1_addrs = HashMap::new();
         stage1_addrs.insert(
             1u64,
-            vec![("worker1".to_string(), "localhost:8001".to_string())],
+            vec![Host {
+                name: "worker1".to_string(),
+                addr: "localhost:8001".to_string(),
+            }],
         );
         let mut stage2_addrs = HashMap::new();
         stage2_addrs.insert(
             2u64,
-            vec![("worker2".to_string(), "localhost:8002".to_string())],
+            vec![Host {
+                name: "worker1".to_string(),
+                addr: "localhost:8002".to_string(),
+            }],
         );
         addrs.insert(1u64, stage1_addrs);
         addrs.insert(2u64, stage2_addrs);
@@ -494,4 +506,3 @@ mod tests {
         }
     }
 }
-

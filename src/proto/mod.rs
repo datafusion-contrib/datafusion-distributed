@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::{
-    protobuf::{Host, Hosts, StageAddrs},
+    protobuf::{Hosts, StageAddrs},
     vocab::Addrs,
 };
 
@@ -29,10 +29,7 @@ impl From<Addrs> for StageAddrs {
 
         for (stage_id, partition_addrs) in value {
             for (part, part_addrs) in partition_addrs {
-                let host_addrs = part_addrs
-                    .into_iter()
-                    .map(|(name, addr)| Host { name, addr })
-                    .collect();
+                let host_addrs = part_addrs.into_iter().collect();
                 stage_addrs
                     .stage_addrs
                     .entry(stage_id)

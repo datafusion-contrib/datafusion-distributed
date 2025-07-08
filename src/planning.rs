@@ -33,12 +33,12 @@ use crate::{
     logging::{debug, error, info, trace},
     max_rows::MaxRowsExec,
     physical::DFRayStageOptimizerRule,
-    protobuf::{Host, Hosts, PartitionAddrs, StageAddrs, StageData},
     result::{DFRayError, Result},
     stage::DFRayStageExec,
     stage_reader::{DFRayStageReaderExec, QueryId},
     util::{display_plan_with_partition_counts, get_client, physical_plan_to_bytes, wait_for},
     vocab::{Addrs, CtxAnnotatedOutputs, CtxName, CtxPartitionGroup, CtxStageAddrs},
+    vocab::{Host, Hosts, PartitionAddrs, StageAddrs, StageData},
 };
 
 #[derive(Debug)]
@@ -96,7 +96,7 @@ static STATE: LazyLock<Result<SessionState>> = LazyLock::new(|| {
 
 pub fn get_ctx() -> Result<SessionContext> {
     match &*STATE {
-        Ok(ctx) => Ok(SessionContext::new_with_state(ctx.clone())),
+        Ok(state) => Ok(SessionContext::new_with_state(state.clone())),
         Err(e) => Err(anyhow!("Context initialization failed: {}", e).into()),
     }
 }
@@ -341,6 +341,12 @@ pub async fn execution_planning(
     let distributed_plan_clone = Arc::clone(&distributed_plan);
     distributed_plan.transform_up(up)?;
 
+    let txt = stages
+        .iter()
+        .map(|stage| format!("{}", display_plan_with_partition_counts(&stage.plan)))
+        .join(",\n");
+    trace!("stages before fix:\n{}", txt);
+
     // add coalesce and max rows to last stage
     let mut last_stage = stages.pop().ok_or(anyhow!("No stages found"))?;
 
@@ -362,7 +368,7 @@ pub async fn execution_planning(
         .iter()
         .map(|stage| format!("{}", display_plan_with_partition_counts(&stage.plan)))
         .join(",\n");
-    trace!("stages:{}", txt);
+    trace!("stages:\n{}", txt);
 
     Ok((distributed_plan_clone, stages))
 }
@@ -373,18 +379,22 @@ pub async fn execution_planning(
 pub async fn distribute_stages(
     query_id: &str,
     stages: Vec<DFRayStage>,
-    worker_addrs: Vec<(String, String)>,
+    worker_addrs: Vec<Host>,
 ) -> Result<Addrs> {
     // map of worker name to address
     // FIXME: use types over tuples of strings, as we can accidently swap them and
     // not know
 
-    let mut workers: HashMap<String, String> = worker_addrs.iter().cloned().collect();
+    // a map of worker name to host
+    let mut workers: HashMap<String, Host> = worker_addrs
+        .iter()
+        .map(|host| (host.name.clone(), host.clone()))
+        .collect();
 
     for attempt in 0..3 {
         // all stages to workers
         let (stage_datas, final_addrs) =
-            assign_to_workers(query_id, &stages, workers.iter().collect())?;
+            assign_to_workers(query_id, &stages, workers.values().collect())?;
 
         // we retry this a few times to ensure that the workers are ready
         // and can accept the stages
@@ -396,7 +406,7 @@ pub async fn distribute_stages(
                      worker {bad_worker}. Retrying..."
                 );
                 // if we cannot communicate with a worker, we remove it from the list of workers
-                workers.remove(&bad_worker);
+                workers.remove(&bad_worker.name);
             }
             Err(e) => return Err(e),
         }
@@ -418,7 +428,7 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
             "Distributing stage_id {}, pg: {:?} to worker: {:?}",
             stage_data.stage_id,
             stage_data.partition_group,
-            stage_data.assigned_addr
+            stage_data.assigned_host
         );
 
         // populate its child stages
@@ -428,28 +438,17 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
             stage_datas,
         )?);
 
-        let mut client = match get_client(
-            &stage_data
-                .assigned_addr
-                .as_ref()
-                .context("Assigned stage address is missing")?
-                .name,
-            &stage_data
-                .assigned_addr
-                .as_ref()
-                .context("Assigned stage address is missing")?
-                .addr,
-        ) {
+        let host = stage_data
+            .assigned_host
+            .clone()
+            .context("Assigned host is missing for stage data")?;
+
+        let mut client = match get_client(&host) {
             Ok(client) => client,
             Err(e) => {
                 error!("Couldn't not communicate with worker {e:#?}");
                 return Err(DFRayError::WorkerCommunicationError(
-                    stage_data
-                        .assigned_addr
-                        .as_ref()
-                        .cloned()
-                        .unwrap() // we know we can unwrap it as we checked a few lines up
-                        .name,
+                    host.clone(), // here
                 ));
             }
         };
@@ -488,7 +487,7 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
 fn assign_to_workers(
     query_id: &str,
     stages: &[DFRayStage],
-    worker_addrs: Vec<(&String, &String)>,
+    worker_addrs: Vec<&Host>,
 ) -> Result<(Vec<StageData>, Addrs)> {
     let mut stage_datas = vec![];
     let mut worker_idx = 0;
@@ -502,10 +501,7 @@ fn assign_to_workers(
         for partition_group in stage.partition_groups.iter() {
             let plan_bytes = physical_plan_to_bytes(stage.plan.clone())?;
 
-            let addr = Host {
-                name: worker_addrs[worker_idx].0.to_string(),
-                addr: worker_addrs[worker_idx].1.to_string(),
-            };
+            let host = worker_addrs[worker_idx].clone();
             worker_idx = (worker_idx + 1) % worker_addrs.len();
 
             if stage.stage_id as isize > max_stage_id {
@@ -521,7 +517,7 @@ fn assign_to_workers(
                         .or_default()
                         .entry(*part)
                         .or_default()
-                        .push((addr.name.clone(), addr.addr.clone()));
+                        .push(host.clone());
                 }
             }
 
@@ -534,7 +530,7 @@ fn assign_to_workers(
                 stage_addrs: None, // will be calculated and filled in later
                 num_output_partitions: stage.plan.output_partitioning().partition_count() as u64,
                 full_partitions: stage.full_partitions,
-                assigned_addr: Some(addr),
+                assigned_host: Some(host),
             };
             stage_datas.push(stage_data);
         }
@@ -567,17 +563,12 @@ fn get_stage_addrs_from_stages(
                             .iter()
                             .filter(|s| s.stage_id == stage_id)
                             .map(|s| {
-                                Ok(Host {
-                                    name: s
-                                        .assigned_addr
-                                        .clone()
-                                        .context("assigned address missing")?
-                                        .name,
-                                    addr: s
-                                        .assigned_addr
-                                        .clone()
-                                        .context("assigned address missing")?
-                                        .addr,
+                                s.assigned_host.clone().ok_or_else(|| {
+                                    anyhow!(
+                                        "Assigned address is missing for stage_id: {}",
+                                        stage_id
+                                    )
+                                    .into()
                                 })
                             })
                             .collect::<Result<Vec<_>>>()?;
@@ -587,18 +578,10 @@ fn get_stage_addrs_from_stages(
                             .insert(*part, Hosts { hosts });
                     } else {
                         // we have the full partition, so this is the only address required
-                        let host = Host {
-                            name: stage
-                                .assigned_addr
-                                .clone()
-                                .context("Assigned address is missing")?
-                                .name,
-                            addr: stage
-                                .assigned_addr
-                                .clone()
-                                .context("Assigned address is missing")?
-                                .addr,
-                        };
+                        let host = stage
+                            .assigned_host
+                            .clone()
+                            .context("Assigned address is missing")?;
                         partition_addrs
                             .partition_addrs
                             .insert(*part, Hosts { hosts: vec![host] });

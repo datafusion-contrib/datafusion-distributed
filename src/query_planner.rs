@@ -10,7 +10,7 @@ use datafusion::{
 
 use crate::{
     explain::{DistributedExplainExec, is_explain_query},
-    k8s::get_worker_addresses,
+    worker_discovery::get_worker_addresses,
     logging::debug,
     planning::{
         distribute_stages,
@@ -162,7 +162,7 @@ impl QueryPlanner {
         // Create dummy addresses for EXPLAIN (no real workers needed)
         let mut dummy_addrs = std::collections::HashMap::new();
         let mut partition_addrs = std::collections::HashMap::new();
-        partition_addrs.insert(0u64, vec![("explain_local".to_string(), "local".to_string())]);
+        partition_addrs.insert(0u64, vec![]);
         dummy_addrs.insert(0u64, partition_addrs);
 
         Ok(QueryPlan {

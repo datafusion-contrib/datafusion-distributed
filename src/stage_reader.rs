@@ -152,7 +152,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
                 ))
             })??
             .iter()
-            .map(|(name, addr)| get_client(name, addr))
+            .map(|host| get_client(host))
             .collect::<Result<Vec<_>>>()?;
 
         trace!("got clients.  {name} num clients: {}", clients.len());
@@ -194,7 +194,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
                     },
                     Err(e) => {
                         error = true;
-                        yield internal_err!("{name} - {ctx_name_capture} Error getting flight stream from {}: {e}", client.destination);
+                        yield internal_err!("{name} - {ctx_name_capture} Error getting flight stream from {}: {e}", client.host);
                     }
                 }
             }
@@ -252,7 +252,6 @@ fn make_flight_metadata_saver_stream(
                                 yield Err(FlightError::DecodeError(format!(
                                     "{name} Failed to decode flight data metadata: {e:#?}"
                                 )));
-                                done = true;
                             }
                         }
 
@@ -261,10 +260,13 @@ fn make_flight_metadata_saver_stream(
                         // it
                         done = true;
                     } else {
+                        // just normal data, yield to consumer
+                        trace!("received normal data");
                         yield Ok(flight_data.inner);
                     }
                 },
                 (false, Some(Err(e))) => {
+                    // propagate this error
                     yield Err(e);
                 }
                 (false, None) => {
@@ -275,10 +277,11 @@ fn make_flight_metadata_saver_stream(
                 }
                 (true,_) => {
                     // already done, ignore any further data
-                    trace!("{name} Ignoring further data from flight stream, already done");
+                    error!("{name} Unreachable block. flight stream already done");
                 }
             }
         }
+        trace!("Done with flight stream {name} - no more data to yield");
     };
 
     let trailing_stream =

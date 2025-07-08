@@ -31,7 +31,14 @@ pub struct DistributedAnalyzeExecNode {
     pub show_statistics: bool,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct DistributedAnalyzeRootExecNode {}
+pub struct DistributedAnalyzeRootExecNode {
+    /// how much data to show
+    #[prost(bool, tag = "1")]
+    pub verbose: bool,
+    /// if statistics should be displayed
+    #[prost(bool, tag = "2")]
+    pub show_statistics: bool,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExplainExecNode {
     #[prost(message, optional, tag = "1")]
@@ -47,7 +54,7 @@ pub struct DistributedExplainExecNode {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DfRayExecNode {
-    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5")]
     pub payload: ::core::option::Option<df_ray_exec_node::Payload>,
 }
 /// Nested message and enum types in `DFRayExecNode`.
@@ -60,9 +67,10 @@ pub mod df_ray_exec_node {
         MaxRowsExec(super::MaxRowsExecNode),
         #[prost(message, tag = "3")]
         IsolatorExec(super::PartitionIsolatorExecNode),
-        /// DistributedAnalyzeRootExecNode distributed_analyze_root_exec = 5;
         #[prost(message, tag = "4")]
         DistributedAnalyzeExec(super::DistributedAnalyzeExecNode),
+        #[prost(message, tag = "5")]
+        DistributedAnalyzeRootExec(super::DistributedAnalyzeRootExecNode),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -162,5 +170,5 @@ pub struct StageData {
     #[prost(bool, tag = "8")]
     pub full_partitions: bool,
     #[prost(message, optional, tag = "9")]
-    pub assigned_addr: ::core::option::Option<Host>,
+    pub assigned_host: ::core::option::Option<Host>,
 }

@@ -148,7 +148,7 @@ for ((i = 0; i < NUM_WORKERS; i++)); do
     LOG_FILE="${LOG_DIR}/${WORKER_NAME}.log"
     echo "  Starting $WORKER_NAME on port $PORT..."
     #env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
-    env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
+    env RUST_BACKTRACE=1 DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
     WORKER_ADDRESSES[$i]="${WORKER_NAME}/localhost:${PORT}"
 done
@@ -168,7 +168,7 @@ echo "Starting proxy on port 20200..."
 echo "Connecting to workers: $WORKER_ADDRESSES_STR"
 PROXY_LOG="${LOG_DIR}/proxy.log"
 #env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
-env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/debug/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
+env RUST_BACKTRACE=1 DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/debug/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 
 echo

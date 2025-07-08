@@ -17,13 +17,14 @@ use datafusion_proto::{
 use prost::Message;
 
 use crate::{
-    analyze::DistributedAnalyzeExec,
+    analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
     isolator::PartitionIsolatorExec,
     logging::trace,
     max_rows::MaxRowsExec,
     protobuf::{
         df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode,
-        DistributedAnalyzeExecNode, MaxRowsExecNode, PartitionIsolatorExecNode,
+        DistributedAnalyzeExecNode, DistributedAnalyzeRootExecNode, MaxRowsExecNode,
+        PartitionIsolatorExecNode,
     },
     stage_reader::DFRayStageReaderExec,
 };
@@ -104,6 +105,19 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
+                Payload::DistributedAnalyzeRootExec(distributed_analyze_root_exec_node) => {
+                    if inputs.len() != 1 {
+                        Err(internal_datafusion_err!(
+                            "DistributedAnalyzeRootExec requires one input"
+                        ))
+                    } else {
+                        Ok(Arc::new(DistributedAnalyzeRootExec::new(
+                            inputs[0].clone(),
+                            distributed_analyze_root_exec_node.verbose,
+                            distributed_analyze_root_exec_node.show_statistics,
+                        )))
+                    }
+                }
             }
         } else {
             internal_err!("cannot decode proto extension in dfray codec")
@@ -147,6 +161,12 @@ impl PhysicalExtensionCodec for DFRayCodec {
                 show_statistics: exec.show_statistics,
             };
             Payload::DistributedAnalyzeExec(pb)
+        } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeRootExec>() {
+            let pb = DistributedAnalyzeRootExecNode {
+                verbose: exec.verbose,
+                show_statistics: exec.show_statistics,
+            };
+            Payload::DistributedAnalyzeRootExec(pb)
         } else {
             return internal_err!("Not supported node to encode to proto");
         };

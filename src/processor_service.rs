@@ -17,6 +17,7 @@
 
 use std::{
     collections::HashMap,
+    ops::DerefMut,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -47,7 +48,8 @@ use crate::{
     logging::{debug, error, info, trace},
     planning::{add_ctx_extentions, get_ctx},
     protobuf::{
-        AnnotatedTaskOutput, AnnotatedTaskOutputs, FlightDataMetadata, FlightTicketData, StageData,
+        AnnotatedTaskOutput, AnnotatedTaskOutputs, FlightDataMetadata, FlightTicketData, Host,
+        StageData,
     },
     result::{DFRayError, Result},
     util::{
@@ -72,6 +74,8 @@ type PlanVec = Vec<(SystemTime, SessionContext, Arc<dyn ExecutionPlan>)>;
 struct DfRayProcessorHandler {
     /// our name, useful for logging
     name: String,
+    //// our address string, also useful for logging
+    pub(crate) addr: String,
     /// our map of query_id -> (session ctx, execution plan)
     #[allow(clippy::type_complexity)]
     plans: Arc<RwLock<HashMap<PlanKey, PlanVec>>>,
@@ -79,7 +83,7 @@ struct DfRayProcessorHandler {
 }
 
 impl DfRayProcessorHandler {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, addr: String) -> Self {
         let plans: Arc<RwLock<HashMap<PlanKey, PlanVec>>> = Arc::new(RwLock::new(HashMap::new()));
         let done = Arc::new(Mutex::new(false));
 
@@ -135,10 +139,16 @@ impl DfRayProcessorHandler {
             }
         });
 
-        Self { name, plans, done }
+        Self {
+            name,
+            addr,
+            plans,
+            done,
+        }
     }
 
     #[allow(dead_code)]
+    /// shutdown
     pub fn all_done(&self) {
         *self.done.lock() = true;
     }
@@ -289,9 +299,25 @@ impl DfRayProcessorHandler {
         let stream = plan
             .execute(partition as usize, task_ctx)
             .inspect_err(|e| error!("Could not get partition stream from plan {e:#?}"))?
+            .inspect(|batch| {
+                trace!("producing maybe batch {:?}", batch);
+            })
             .map_err(|e| FlightError::from_external_error(Box::new(e)));
 
         info!("{} plans held {}", self.name, self.plans.read().len());
+
+        fn find_analyze(plan: &dyn ExecutionPlan) -> Option<&DistributedAnalyzeExec> {
+            if let Some(target) = plan.as_any().downcast_ref::<DistributedAnalyzeExec>() {
+                Some(target)
+            } else {
+                for child in plan.children() {
+                    if let Some(target) = find_analyze(child.as_ref()) {
+                        return Some(target);
+                    }
+                }
+                None
+            }
+        }
 
         let mut flight_data_stream = FlightDataEncoderBuilder::new().build(stream);
         let name = self.name.clone();
@@ -312,7 +338,7 @@ impl DfRayProcessorHandler {
                                     .clone();
 
 
-                                if let Some(analyze) = plan.as_any().downcast_ref::<DistributedAnalyzeExec>() {
+                                if let Some(analyze) = find_analyze(plan.as_ref()) {
                                     let annotated_plan = analyze.annotated_plan();
                                     debug!("sending annotated plan: {}", annotated_plan);
 
@@ -363,18 +389,70 @@ impl DfRayProcessorHandler {
                             },
                     (false, Some(Ok(flight_data))) => {
                                 // we have a flight data, so we yield it
-                                // decode this data for output
+                                trace!("received normal flight data, yielding");
                                 yield Ok(flight_data);
                             },
                     (true, _) => {
                                 // we are done, so we don't yield anything
-                                debug!("{} stream done for stage {} partition {}", name, stage_id, partition);
+                                error!("{} we should not arrive at this block!. stage {} partition {}", name, stage_id, partition);
                             },
                 }
             }
         };
 
         Ok(Box::pin(out_stream))
+    }
+    fn do_action_get_host(&self) -> Result<Response<crate::flight::DoActionStream>, Status> {
+        let addr = self.addr.clone();
+        let name = self.name.clone();
+
+        let out_stream = Box::pin(stream! {
+            yield Ok::<_, tonic::Status>(arrow_flight::Result {
+                body: Host{
+                    addr,
+                    name,
+                }.encode_to_vec().into()
+            });
+        }) as crate::flight::DoActionStream;
+
+        Ok(Response::new(out_stream))
+    }
+
+    async fn do_action_add_plan(
+        &self,
+        action: Action,
+    ) -> Result<Response<crate::flight::DoActionStream>, Status> {
+        let stage_data = StageData::decode(action.body.as_ref()).map_err(|e| {
+            Status::internal(format!(
+                "{}, Unexpected error decoding StageData: {e:?}",
+                self.name
+            ))
+        })?;
+
+        let addrs = stage_data
+            .stage_addrs
+            .as_ref()
+            .context("stage addrs not present")
+            .map_err(DFRayError::from)
+            .and_then(get_addrs)
+            .map_err(|e| Status::internal(format!("{}, {e}", self.name)))?;
+
+        self.add_plan(
+            stage_data.query_id,
+            stage_data.stage_id,
+            addrs,
+            stage_data.partition_group,
+            stage_data.full_partitions,
+            &stage_data.plan_bytes,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("{}, Could not add plan: {e:?}", self.name)))?;
+
+        let out_stream = Box::pin(stream! {
+            yield Ok::<_, tonic::Status>(arrow_flight::Result::default());
+        }) as crate::flight::DoActionStream;
+
+        Ok(Response::new(out_stream))
     }
 }
 
@@ -440,45 +518,27 @@ impl FlightHandler for DfRayProcessorHandler {
         let action_type = action.r#type.as_str();
         trace!("{} received action: {}", self.name, action_type);
 
-        if action_type != "add_plan" {
-            return Err(Status::unimplemented(format!(
+        if action_type == "add_plan" {
+            self.do_action_add_plan(action).await
+        } else if action_type == "get_host" {
+            self.do_action_get_host()
+        } else {
+            Err(Status::unimplemented(format!(
                 "{}, Unimplemented action: {}",
                 self.name, action_type
-            )));
+            )))
         }
-
-        let stage_data = StageData::decode(action.body.as_ref()).map_err(|e| {
-            Status::internal(format!(
-                "{}, Unexpected error decoding StageData: {e:?}",
-                self.name
-            ))
-        })?;
-
-        let addrs = stage_data
-            .stage_addrs
-            .as_ref()
-            .context("stage addrs not present")
-            .map_err(DFRayError::from)
-            .and_then(get_addrs)
-            .map_err(|e| Status::internal(format!("{}, {e}", self.name)))?;
-
-        self.add_plan(
-            stage_data.query_id,
-            stage_data.stage_id,
-            addrs,
-            stage_data.partition_group,
-            stage_data.full_partitions,
-            &stage_data.plan_bytes,
-        )
-        .await
-        .map_err(|e| Status::internal(format!("{}, Could not add plan: {e:?}", self.name)))?;
-
-        let out_stream = Box::pin(stream! {
-            yield Ok::<_, tonic::Status>(arrow_flight::Result::default());
-        }) as crate::flight::DoActionStream;
-
-        Ok(Response::new(out_stream))
     }
+}
+
+pub async fn start_up(port: usize) -> Result<TcpListener> {
+    let my_host_str = format!("0.0.0.0:{}", port);
+
+    let listener = TcpListener::bind(&my_host_str)
+        .await
+        .context("Could not bind socket to {my_host_str}")?;
+
+    Ok(listener)
 }
 
 /// DFRayProcessorService is a Arrow Flight service that serves streams of
@@ -488,26 +548,30 @@ impl FlightHandler for DfRayProcessorHandler {
 pub struct DFRayProcessorService {
     #[allow(dead_code)]
     name: String,
-    listener: Option<TcpListener>,
+    listener: TcpListener,
     handler: Arc<DfRayProcessorHandler>,
-    addr: Option<String>,
+    addr: String,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
     port: usize,
 }
 
 impl DFRayProcessorService {
-    pub fn new(name: String, port: usize) -> Self {
+    pub async fn new(name: String, port: usize) -> Result<Self> {
         let name = format!("[{}]", name);
-        let listener = None;
-        let addr = None;
 
         let (all_done_tx, all_done_rx) = channel(1);
         let all_done_tx = Arc::new(Mutex::new(all_done_tx));
 
-        let handler = Arc::new(DfRayProcessorHandler::new(name.clone()));
+        let listener = start_up(port).await?;
 
-        Self {
+        let addr = format!("{}", listener.local_addr().unwrap());
+
+        info!("DFRayProcessorService bound to {addr}");
+
+        let handler = Arc::new(DfRayProcessorHandler::new(name.clone(), addr.clone()));
+
+        Ok(Self {
             name,
             listener,
             handler,
@@ -515,35 +579,12 @@ impl DFRayProcessorService {
             all_done_tx,
             all_done_rx: Some(all_done_rx),
             port,
-        }
+        })
     }
 
-    pub async fn start_up(&mut self) -> Result<()> {
-        let my_host_str = format!("0.0.0.0:{}", self.port);
-
-        self.listener = TcpListener::bind(&my_host_str)
-            .await
-            .map(Some)
-            .context("Could not bind socket to {my_host_str}")?;
-
-        self.addr = Some(format!(
-            "{}",
-            self.listener.as_ref().unwrap().local_addr().unwrap()
-        ));
-
-        info!(
-            "DFRayProcessorService bound to {}",
-            self.addr.as_ref().unwrap()
-        );
-
-        Ok(())
-    }
     /// get the address of the listing socket for this service
-    pub fn addr(&self) -> Result<String> {
-        let addr = self.addr.clone().ok_or(anyhow!(
-            "DFRayProxyService not started yet, no address available"
-        ))?;
-        Ok(addr)
+    pub fn addr(&self) -> String {
+        self.addr.clone()
     }
 
     pub async fn all_done(&self) -> Result<()> {
@@ -556,8 +597,8 @@ impl DFRayProcessorService {
         Ok(())
     }
 
-    /// start the service
-    pub async fn serve(&mut self) -> Result<()> {
+    /// start the service, consuming self
+    pub async fn serve(mut self) -> Result<()> {
         let mut all_done_rx = self.all_done_rx.take().unwrap();
 
         let signal = async move {
@@ -574,12 +615,10 @@ impl DFRayProcessorService {
 
         let svc = FlightServiceServer::new(flight_serv);
 
-        let listener = self.listener.take().unwrap();
-
         Server::builder()
             .add_service(svc)
             .serve_with_incoming_shutdown(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
+                tokio_stream::wrappers::TcpListenerStream::new(self.listener),
                 signal,
             )
             .await

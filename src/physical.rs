@@ -22,13 +22,16 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        analyze::AnalyzeExec, joins::NestedLoopJoinExec, repartition::RepartitionExec,
-        sorts::sort::SortExec, ExecutionPlan,
+        analyze::AnalyzeExec, coalesce_partitions::CoalescePartitionsExec,
+        joins::NestedLoopJoinExec, repartition::RepartitionExec, sorts::sort::SortExec,
+        ExecutionPlan,
     },
 };
 
 use crate::{
-    analyze::DistributedAnalyzeExec, logging::info, stage::DFRayStageExec,
+    analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
+    logging::info,
+    stage::DFRayStageExec,
     util::display_plan_with_partition_counts,
 };
 
@@ -50,7 +53,6 @@ impl Default for DFRayStageOptimizerRule {
         Self::new()
     }
 }
-
 impl DFRayStageOptimizerRule {
     pub fn new() -> Self {
         Self {}
@@ -92,6 +94,24 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
                 let stage = Arc::new(DFRayStageExec::new(plan, stage_counter));
                 stage_counter += 1;
                 Ok(Transformed::yes(stage as Arc<dyn ExecutionPlan>))
+            } else if let Some(definitely_analize_plan) =
+                plan.as_any().downcast_ref::<AnalyzeExec>()
+            {
+                // we need to replace this with a DistributedAnalyzeRootExec so that we can
+                // discoard the output and send back the plans for each task.
+
+                // add a coalesce partitions exec to ensure that we have a single partition
+                let child = Arc::new(CoalescePartitionsExec::new(
+                    definitely_analize_plan.input().clone(),
+                )) as Arc<dyn ExecutionPlan>;
+
+                let new_plan = Arc::new(DistributedAnalyzeRootExec::new(
+                    child,
+                    definitely_analize_plan.verbose(),
+                    definitely_analize_plan.show_statistics(),
+                )) as Arc<dyn ExecutionPlan>;
+
+                Ok(Transformed::yes(new_plan as Arc<dyn ExecutionPlan>))
             } else {
                 Ok(Transformed::no(plan))
             }
@@ -114,5 +134,79 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
 
     fn schema_check(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::array::{Int32Array, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::execution::context::SessionContext;
+    use datafusion::physical_plan::displayable;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_optimize_with_explain_analyze() {
+        // Create a session context
+        let ctx = SessionContext::new();
+
+        // Define a schema for the in-memory table
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        // Create some data for the table
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])),
+            ],
+        )
+        .unwrap();
+
+        // Register the in-memory table
+        ctx.register_batch("test_table", batch).unwrap();
+
+        // Run the EXPLAIN ANALYZE query
+        let df = ctx
+            .sql("EXPLAIN ANALYZE SELECT * FROM test_table")
+            .await
+            .unwrap();
+        // get the physical plan from the dataframe
+        let physical_plan = df.create_physical_plan().await.unwrap();
+
+        // Apply the optimizer
+        let optimizer = DFRayStageOptimizerRule::new();
+        let optimized_physical_plan = optimizer
+            .optimize(physical_plan.clone(), &Default::default())
+            .unwrap();
+
+        let data_source = ctx
+            .table_provider("test_table")
+            .await
+            .unwrap()
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .unwrap();
+
+        let coalesce = Arc::new(CoalescePartitionsExec::new(data_source));
+
+        let analyze = Arc::new(DistributedAnalyzeRootExec::new(coalesce, false, false));
+
+        let target_plan = DFRayStageExec::new(
+            analyze, 0, // stage counter
+        );
+
+        assert_eq!(
+            displayable(optimized_physical_plan.as_ref())
+                .indent(true)
+                .to_string(),
+            displayable(&target_plan).indent(true).to_string()
+        );
     }
 }
