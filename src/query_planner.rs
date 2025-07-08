@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::{
     logical_expr::LogicalPlan, physical_plan::ExecutionPlan, prelude::SessionContext,
 };
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+use datafusion_substrait::substrait::proto::Plan;
 
 use crate::{
     explain::{is_explain_query, DistributedExplainExec},
@@ -131,10 +132,7 @@ impl QueryPlanner {
     }
 
     /// Prepare a distributed query (Substrait entry point)
-    pub async fn prepare_substrait_query(
-        &self,
-        substrait_plan: datafusion_substrait::substrait::proto::Plan,
-    ) -> Result<QueryPlan> {
+    pub async fn prepare_substrait_query(&self, substrait_plan: Plan) -> Result<QueryPlan> {
         let base_result = self
             .prepare_substrait_query_base(substrait_plan, "SUBSTRAIT")
             .await?;
@@ -143,7 +141,7 @@ impl QueryPlanner {
 
     pub async fn prepare_substrait_query_base(
         &self,
-        substrait_plan: datafusion_substrait::substrait::proto::Plan,
+        substrait_plan: Plan,
         query_type: &str,
     ) -> Result<QueryPlanBase> {
         debug!(
@@ -219,7 +217,6 @@ impl QueryPlanner {
         );
 
         // create the schema for EXPLAIN results
-        use arrow::datatypes::{DataType, Field, Schema};
         let schema = Arc::new(Schema::new(vec![
             Field::new("plan_type", DataType::Utf8, false),
             Field::new("plan", DataType::Utf8, false),
