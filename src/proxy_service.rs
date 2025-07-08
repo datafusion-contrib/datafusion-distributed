@@ -101,7 +101,7 @@ impl FlightSqlHandler for DfRayProxyHandler {
         }
     }
 
-    async fn get_flight_info_substrait(
+    async fn get_flight_info_substrait_plan(
         &self,
         substrait: arrow_flight::sql::CommandStatementSubstraitPlan,
         _request: Request<FlightDescriptor>,
