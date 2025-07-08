@@ -138,7 +138,9 @@ cargo build --release
 
 ### Running Tests
 
-Run all tests:
+#### Basic Tests
+
+Run all unit tests (fast - excludes TPC-H validation):
 
 ```bash
 cargo test
@@ -149,6 +151,20 @@ Run tests with output:
 ```bash
 cargo test -- --nocapture
 ```
+
+#### TPC-H Validation Integration Tests
+
+Run comprehensive TPC-H validation tests that compare distributed DataFusion against regular DataFusion. No prerequisites needed - the tests handle everything automatically!
+
+```bash
+# Run all TPC-H validation tests
+cargo test --test tpch_validation test_tpch_validation_all_queries -- --ignored --nocapture
+
+# Run single query test for debugging  
+cargo test --test tpch_validation test_tpch_validation_single_query -- --ignored --nocapture
+```
+
+**Note:** TPC-H validation tests are annotated with #[ignore] to avoid slowing down `cargo test` during development. They're included in the CI pipeline and can be run manually when needed.
 
 ## Usage
 
@@ -250,6 +266,18 @@ DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/
 DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,nation:parquet:/tmp/tpch_s1/nation.parquet DATAFUSION_RAY_LOG_LEVEL=trace DFRAY_WORKER_ADDRESSES=worker1/localhost:20201,worker2/localhost:20202 ./target/release/distributed-datafusion --mode proxy --port 20200
 ```
 
+**Using Views:**
+
+To pre-create views that queries can reference (such as for TPC-H q15), you can use the `DFRAY_VIEWS` environment variable:
+
+```bash
+# Example: Create a view for TPC-H q15 revenue calculation
+DFRAY_VIEWS="CREATE VIEW revenue0 (supplier_no, total_revenue) AS SELECT l_suppkey, sum(l_extendedprice * (1 - l_discount)) FROM lineitem WHERE l_shipdate >= date '1996-08-01' AND l_shipdate < date '1996-08-01' + interval '3' month GROUP BY l_suppkey"
+
+# Use both tables and views in your cluster
+DFRAY_TABLES=customer:parquet:/tmp/tpch_s1/customer.parquet,lineitem:parquet:/tmp/tpch_s1/lineitem.parquet,supplier:parquet:/tmp/tpch_s1/supplier.parquet DFRAY_VIEWS="$DFRAY_VIEWS" DATAFUSION_RAY_LOG_LEVEL=trace ./target/release/distributed-datafusion --mode worker --port 20201
+```
+
 #### Manual Client Setup
 
 You can now connect a client to the proxy at `localhost:20200` to execute queries across the distributed cluster.
@@ -309,6 +337,7 @@ The system supports various configuration options through environment variables:
 
 - `DATAFUSION_RAY_LOG_LEVEL`: Set logging level (default: WARN)
 - `DFRAY_TABLES`: Comma-separated list of tables in format `name:format:path`
+- `DFRAY_VIEWS`: Semicolon-separated list of CREATE VIEW SQL statements
 
 ## Development
 
@@ -326,6 +355,9 @@ The system supports various configuration options through environment variables:
   - `launch_python_arrowflightsql_client.sh`: Launch Python query client
   - `build_and_push_docker.sh`: Docker build and push script
   - `python_tests.sh`: Python test runner
+- `tests/`: Integration tests
+  - `tpch_validation.rs`: TPC-H validation integration tests
+  - `common/mod.rs`: Shared test utilities and helper functions
 - `tpch/queries/`: TPC-H benchmark SQL queries
 - `testdata/`: Test data files
 - `k8s/`: Kubernetes deployment files
