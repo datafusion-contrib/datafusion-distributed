@@ -19,8 +19,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
 use arrow_flight::{
-    flight_service_server::FlightServiceServer, FlightDescriptor, FlightInfo, Ticket,
+    flight_service_server::FlightServiceServer, sql::TicketStatementQuery, FlightDescriptor,
+    FlightInfo, Ticket,
 };
+use datafusion_substrait::substrait;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::{
@@ -74,7 +76,7 @@ impl FlightSqlHandler for DfRayProxyHandler {
 
     async fn do_get_statement(
         &self,
-        ticket: arrow_flight::sql::TicketStatementQuery,
+        ticket: TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<crate::flight::DoGetStream>, Status> {
         trace!("do_get_statement");
@@ -97,6 +99,22 @@ impl FlightSqlHandler for DfRayProxyHandler {
                 .handle_regular_statement_execution(tsd, &remote_addr)
                 .await
         }
+    }
+
+    async fn get_flight_info_substrait_plan(
+        &self,
+        substrait: arrow_flight::sql::CommandStatementSubstraitPlan,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let plan = match &substrait.plan {
+            Some(substrait_plan) => substrait::proto::Plan::decode(substrait_plan.plan.as_ref())
+                .map_err(|e| Status::invalid_argument(format!("Invalid Substrait plan: {e}")))?,
+            None => return Err(Status::invalid_argument("Missing Substrait plan")),
+        };
+
+        self.flight_handler
+            .handle_substrait_info_request(plan)
+            .await
     }
 }
 
