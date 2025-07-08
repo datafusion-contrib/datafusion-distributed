@@ -19,8 +19,8 @@ use datafusion::prelude::*;
 
 /// Test configuration constants
 pub const PROXY_PORT: u16 = 40400;
-pub const WORKER_PORT_1: u16 = 40401;
-pub const WORKER_PORT_2: u16 = 40402;
+pub const FIRST_WORKER_PORT: u16 = 40401;
+pub const NUM_WORKERS: usize = 2;
 pub const TPCH_DATA_PATH: &str = "/tmp/tpch_s1";
 pub const QUERY_PATH: &str = "./tpch/queries";
 pub const FLOATING_POINT_TOLERANCE: f64 = 1e-5;
@@ -42,6 +42,16 @@ pub fn should_be_verbose(_query_name: &str) -> bool {
     // Enable verbose mode for specific queries you want to debug
     // Example: VERBOSE_COMPARISON || _query_name == "q16"
     VERBOSE_COMPARISON
+}
+
+/// Get worker port for a given worker index (0-based)
+pub fn get_worker_port(worker_index: usize) -> u16 {
+    FIRST_WORKER_PORT + worker_index as u16
+}
+
+/// Get all worker ports
+pub fn get_all_worker_ports() -> Vec<u16> {
+    (0..NUM_WORKERS).map(get_worker_port).collect()
 }
 
 /// Validation results
@@ -70,7 +80,9 @@ pub struct ComparisonResult {
 pub struct ClusterManager {
     pub proxy_process: Option<Child>,
     pub worker_processes: Vec<Child>,
+    pub worker_ports: Vec<u16>,
     pub is_running: Arc<AtomicBool>,
+    pub reusable_python_script: Option<String>,
 }
 
 impl ClusterManager {
@@ -78,7 +90,9 @@ impl ClusterManager {
         Self {
             proxy_process: None,
             worker_processes: Vec::new(),
+            worker_ports: get_all_worker_ports(),
             is_running: Arc::new(AtomicBool::new(false)),
+            reusable_python_script: None,
         }
     }
 
@@ -163,6 +177,67 @@ impl ClusterManager {
         }
     }
 
+    /// Generate the reusable Python script for executing distributed queries
+    pub fn generate_reusable_python_script(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let python_script = format!(
+            r#"
+import adbc_driver_flightsql.dbapi as dbapi
+import duckdb
+import sys
+import time
+
+if len(sys.argv) != 2:
+    print("Usage: python script.py <sql_file_path>", file=sys.stderr)
+    sys.exit(1)
+
+sql_file_path = sys.argv[1]
+
+try:
+    # Connect to the distributed cluster
+    conn = dbapi.connect("grpc://localhost:{}")
+    cur = conn.cursor()
+    
+    # Read and execute the SQL query
+    with open(sql_file_path, 'r') as f:
+        sql = f.read()
+    
+    start_time = time.time()
+    cur.execute(sql)
+    reader = cur.fetch_record_batch()
+    
+    # Convert results to string using DuckDB for consistent formatting
+    results = duckdb.sql("select * from reader")
+    
+    # Fetch all results before closing connections
+    all_rows = results.fetchall()
+    
+    # Close cursor and connection properly
+    cur.close()
+    conn.close()
+    
+    # Print results in a format that can be parsed
+    print("--- RESULTS START ---")
+    for row in all_rows:
+        print("|" + "|".join([str(cell) if cell is not None else "NULL" for cell in row]) + "|")
+    print("--- RESULTS END ---")
+    
+except Exception as e:
+    print(f"Error executing distributed query: {{str(e)}}", file=sys.stderr)
+    sys.exit(1)
+"#,
+            self.get_proxy_address().split(':').last().unwrap()
+        );
+
+        let script_path = Self::write_temp_file(
+            "reusable_distributed_query.py",
+            &python_script,
+            "reusable Python script for distributed queries",
+        )?;
+
+        self.reusable_python_script = Some(script_path);
+        Ok(())
+    }
+
     /// Setup everything needed for tests
     pub async fn setup() -> Result<Self, Box<dyn std::error::Error>> {
         let mut cluster = ClusterManager::new();
@@ -185,6 +260,9 @@ impl ClusterManager {
         // Step 6: Wait for cluster to be ready
         cluster.wait_for_cluster_ready().await?;
 
+        // Step 7: Generate reusable Python script
+        cluster.generate_reusable_python_script()?;
+
         Ok(cluster)
     }
 
@@ -192,7 +270,8 @@ impl ClusterManager {
     pub fn kill_existing_processes(&self) -> Result<(), Box<dyn std::error::Error>> {
         println!("🧹 Cleaning up existing processes on test ports...");
 
-        let ports = [PROXY_PORT, WORKER_PORT_1, WORKER_PORT_2];
+        let mut ports = vec![PROXY_PORT];
+        ports.extend(&self.worker_ports);
 
         for port in &ports {
             // Find and kill processes using lsof
@@ -370,34 +449,29 @@ impl ClusterManager {
         let tpch_views = "CREATE VIEW revenue0 (supplier_no, total_revenue) AS SELECT l_suppkey, sum(l_extendedprice * (1 - l_discount)) FROM lineitem WHERE l_shipdate >= date '1996-08-01' AND l_shipdate < date '1996-08-01' + interval '3' month GROUP BY l_suppkey";
 
         // Start workers first
-        println!("  Starting worker 1 on port {}...", WORKER_PORT_1);
-        let worker1 = Self::spawn_process(
-            binary_path_str,
-            &["--mode", "worker", "--port", &WORKER_PORT_1.to_string()],
-            &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", &tpch_views)],
-            "start worker 1",
-        )?;
-
-        println!("  Starting worker 2 on port {}...", WORKER_PORT_2);
-        let worker2 = Self::spawn_process(
-            binary_path_str,
-            &["--mode", "worker", "--port", &WORKER_PORT_2.to_string()],
-            &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", &tpch_views)],
-            "start worker 2",
-        )?;
-
-        self.worker_processes.push(worker1);
-        self.worker_processes.push(worker2);
+        for (i, &port) in self.worker_ports.iter().enumerate() {
+            println!("  Starting worker {} on port {}...", i + 1, port);
+            let worker = Self::spawn_process(
+                binary_path_str,
+                &["--mode", "worker", "--port", &port.to_string()],
+                &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", &tpch_views)],
+                &format!("start worker {}", i + 1),
+            )?;
+            self.worker_processes.push(worker);
+        }
 
         // Give workers time to start
         thread::sleep(Duration::from_secs(WORKER_STARTUP_WAIT_SECONDS));
 
         // Start proxy
         println!("  Starting proxy on port {}...", PROXY_PORT);
-        let worker_addresses = format!(
-            "worker1/127.0.0.1:{},worker2/127.0.0.1:{}",
-            WORKER_PORT_1, WORKER_PORT_2
-        );
+        let worker_addresses = self
+            .worker_ports
+            .iter()
+            .enumerate()
+            .map(|(i, &port)| format!("worker{}/127.0.0.1:{}", i + 1, port))
+            .collect::<Vec<_>>()
+            .join(",");
         let proxy = Self::spawn_process(
             binary_path_str,
             &["--mode", "proxy", "--port", &PROXY_PORT.to_string()],
@@ -533,7 +607,7 @@ impl ClusterManager {
 
     /// Check if we can connect to workers
     pub fn can_connect_to_workers(&self) -> bool {
-        for port in &[WORKER_PORT_1, WORKER_PORT_2] {
+        for &port in &self.worker_ports {
             if let Ok(stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)) {
                 drop(stream);
                 return true;
@@ -567,6 +641,11 @@ impl Drop for ClusterManager {
 
             self.is_running.store(false, Ordering::Relaxed);
             println!("✅ Cluster cleanup complete");
+        }
+
+        // Clean up reusable Python script
+        if let Some(script_path) = &self.reusable_python_script {
+            Self::cleanup_temp_files(&[script_path]);
         }
     }
 }
@@ -672,10 +751,12 @@ pub async fn execute_query_datafusion(
 ) -> Result<(Vec<RecordBatch>, Duration), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
 
-    let df = ctx
-        .sql(sql)
-        .await
-        .map_err(|e| format!("DataFusion SQL parsing failed for {}: {}", query_name, e))?;
+    let df = ctx.sql(sql).await.map_err(|e| {
+        format!(
+            "DataFusion SQL parsing/planning failed for {}: {}",
+            query_name, e
+        )
+    })?;
 
     let batches = df.collect().await.map_err(|e| {
         format!(
@@ -703,65 +784,20 @@ pub async fn execute_query_distributed(
         &format!("SQL for {}", query_name),
     )?;
 
-    // Create a temporary Python script to execute the query
-    let python_script = format!(
-        r#"
-import adbc_driver_flightsql.dbapi as dbapi
-import duckdb
-import sys
-import time
+    // Get the reusable Python script
+    let python_script_path = cluster
+        .reusable_python_script
+        .as_ref()
+        .ok_or("Reusable Python script not available")?;
 
-try:
-    # Connect to the distributed cluster
-    conn = dbapi.connect("grpc://localhost:{}")
-    cur = conn.cursor()
-    
-    # Read and execute the SQL query
-    with open('{}', 'r') as f:
-        sql = f.read()
-    
-    start_time = time.time()
-    cur.execute(sql)
-    reader = cur.fetch_record_batch()
-    
-    # Convert results to string using DuckDB for consistent formatting
-    results = duckdb.sql("select * from reader")
-    
-    # Fetch all results before closing connections
-    all_rows = results.fetchall()
-    
-    # Close cursor and connection properly
-    cur.close()
-    conn.close()
-    
-    # Print results in a format that can be parsed
-    print("--- RESULTS START ---")
-    for row in all_rows:
-        print("|" + "|".join([str(cell) if cell is not None else "NULL" for cell in row]) + "|")
-    print("--- RESULTS END ---")
-    
-except Exception as e:
-    print(f"Error executing distributed query: {{str(e)}}", file=sys.stderr)
-    sys.exit(1)
-"#,
-        cluster.get_proxy_address().split(':').last().unwrap(),
-        temp_sql_file
-    );
-
-    let temp_python_script = ClusterManager::write_temp_file(
-        &format!("{}_query.py", query_name),
-        &python_script,
-        &format!("Python script for {}", query_name),
-    )?;
-
-    // Execute using Python Flight SQL client
+    // Execute using Python Flight SQL client with SQL file as argument
     let output = ClusterManager::run_python_command(
-        &[&temp_python_script],
+        &[python_script_path, &temp_sql_file],
         &format!("execute distributed query for {}", query_name),
     )?;
 
-    // Clean up temp files
-    ClusterManager::cleanup_temp_files(&[&temp_sql_file, &temp_python_script]);
+    // Clean up only the SQL temp file (keep the reusable Python script)
+    ClusterManager::cleanup_temp_files(&[&temp_sql_file]);
 
     let result = String::from_utf8_lossy(&output.stdout).to_string();
     let execution_time = start_time.elapsed();
@@ -1145,31 +1181,40 @@ pub async fn execute_single_query_validation(
         }
     };
 
-    // Execute with DataFusion
-    let (datafusion_batches, datafusion_time) =
-        match execute_query_datafusion(ctx, &sql, query_name).await {
-            Ok(result) => result,
-            Err(e) => {
-                return create_error_comparison_result(
-                    query_name,
-                    format!("DataFusion execution failed: {}", e),
-                    0,
-                    Duration::default(),
-                );
-            }
-        };
-
     // Execute with distributed system
     let (distributed_output, distributed_time) =
         match execute_query_distributed(cluster, &sql, query_name).await {
             Ok(result) => result,
             Err(e) => {
-                return create_error_comparison_result(
-                    query_name,
-                    format!("Distributed execution failed: {}", e),
-                    datafusion_batches.iter().map(|b| b.num_rows()).sum(),
-                    datafusion_time,
-                );
+                return ComparisonResult {
+                    query_name: query_name.to_string(),
+                    matches: false,
+                    row_count_datafusion: 0,
+                    row_count_distributed: 0,
+                    error_message: Some(format!("Distributed execution failed: {}", e)),
+                    execution_time_datafusion: Duration::default(),
+                    execution_time_distributed: Duration::default(),
+                };
+            }
+        };
+
+    // Execute with DataFusion
+    let (datafusion_batches, datafusion_time) =
+        match execute_query_datafusion(ctx, &sql, query_name).await {
+            Ok(result) => result,
+            Err(e) => {
+                // Get estimated row count from distributed output
+                let distributed_row_count =
+                    distributed_output_to_sorted_strings(&distributed_output).len();
+                return ComparisonResult {
+                    query_name: query_name.to_string(),
+                    matches: false,
+                    row_count_datafusion: 0,
+                    row_count_distributed: distributed_row_count,
+                    error_message: Some(format!("DataFusion execution failed: {}", e)),
+                    execution_time_datafusion: Duration::default(),
+                    execution_time_distributed: distributed_time,
+                };
             }
         };
 

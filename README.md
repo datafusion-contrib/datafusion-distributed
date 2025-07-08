@@ -157,14 +157,14 @@ cargo test -- --nocapture
 Run comprehensive TPC-H validation tests that compare distributed DataFusion against regular DataFusion. No prerequisites needed - the tests handle everything automatically!
 
 ```bash
-# Run all TPC-H validation tests (manual - excluded from cargo test for speed)
+# Run all TPC-H validation tests
 cargo test --test tpch_validation test_tpch_validation_all_queries -- --ignored --nocapture
 
 # Run single query test for debugging  
 cargo test --test tpch_validation test_tpch_validation_single_query -- --ignored --nocapture
 ```
 
-**Note:** TPC-H validation tests are marked with `#[ignore]` to keep `cargo test` fast for development. Run them manually when needed for validation.
+**Note:** TPC-H validation tests are annotated with #[ignore] to avoid slowing down `cargo test` during development. They're included in the CI pipeline and can be run manually when needed.
 
 ## Usage
 
