@@ -4,12 +4,13 @@
 //! between regular DataFusion and distributed DataFusion systems.
 //!
 //! ## Features
-//! - Automatic cluster setup and teardown
-//! - Automatic TPC-H data generation
-//! - Automatic dependency installation
+//! - Automatic cluster setup and teardown on test ports 40400, 40401, ...
+//! - Automatic installation of tpchgen-cli if needed to generate TPC-H scale factor 1 data at /tmp/tpch_s1 if not present
+//! - Automatic installation of Python Flight SQL packages if needed
+//! - Automatic generation of a reusable Python script to execute queries on the cluster
 //! - Complete result comparison with tolerance
 //! - CI-ready with detailed reporting
-//! - Fast execution with minimal output (only top 2 rows for large results)
+//! - Fast execution with minimal output (only top 2 rows for large results) and verbose output for debugging specific queries
 //! - Configurable verbosity for debugging specific queries
 //! - Configurable timing parameters for cluster startup and polling
 //! - Modular design with reusable helper functions
@@ -17,7 +18,6 @@
 //!
 //! ## Usage
 //!
-//! Just run the tests - everything is automated:
 //! ```bash
 //! # Run all TPC-H validation tests
 //! cargo test --test tpch_validation test_tpch_validation_all_queries -- --ignored --nocapture
@@ -28,15 +28,6 @@
 //! # Enable verbose output for debugging specific queries
 //! # Modify the should_be_verbose() function in utils.rs to return true for specific queries
 //! ```
-//!
-//! ## What the tests do automatically:
-//! 1. Clean up any existing processes on test ports 40400-40402 only
-//! 2. Install tpchgen-cli if not available
-//! 3. Generate TPC-H scale factor 1 data at /tmp/tpch_s1 if not present
-//! 4. Start distributed cluster (1 proxy + 2 workers)
-//! 5. Run validation tests comparing DataFusion vs Distributed for all 22 TPC-H queries in ./tpch/queries/
-//! 6. Clean up test cluster processes (without affecting other instances)
-//!
 use std::time::Instant;
 
 mod common;
@@ -132,7 +123,7 @@ async fn test_tpch_validation_all_queries() {
 /// This test is marked with #[ignore] - use `cargo test --ignored` to run it.
 /// Modify the query_name to test different queries.
 ///
-/// To enable verbose output for debugging, modify the `should_be_verbose` function in utils.rs.
+/// To enable verbose output for debugging, modify the `should_be_verbose` function in common/mod.rs.
 #[tokio::test]
 #[ignore]
 async fn test_tpch_validation_single_query() {

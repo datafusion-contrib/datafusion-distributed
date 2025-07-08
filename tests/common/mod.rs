@@ -1,8 +1,3 @@
-//! Utility functions and structures for TPC-H validation tests
-//!
-//! This module contains reusable components for testing distributed DataFusion
-//! against standard DataFusion using TPC-H queries.
-
 use std::fs;
 use std::io::Read;
 use std::path::Path;
