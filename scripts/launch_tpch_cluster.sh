@@ -150,12 +150,12 @@ for ((i = 0; i < NUM_WORKERS; i++)); do
     #env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
     env RUST_BACKTRACE=1 DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
-    WORKER_ADDRESSES[$i]="${WORKER_NAME}/localhost:${PORT}"
+    WORKER_ADDRESSES[$i]="localhost:${PORT}"
 done
 
 # Give workers time to start
 echo "Waiting for workers to initialize..."
-sleep 2
+sleep 5
 
 # Construct worker addresses string for proxy
 WORKER_ADDRESSES_STR=$(

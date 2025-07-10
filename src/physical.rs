@@ -70,8 +70,6 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
             display_plan_with_partition_counts(&plan)
         );
 
-        let maybe_analyze_plan = plan.as_any().downcast_ref::<AnalyzeExec>();
-
         let mut stage_counter = 0;
 
         let up = |plan: Arc<dyn ExecutionPlan>| {
@@ -79,39 +77,10 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
                 || plan.as_any().downcast_ref::<SortExec>().is_some()
                 || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
             {
-                let plan = if maybe_analyze_plan.is_some() {
-                    let definitely_analyze_plan = maybe_analyze_plan.cloned().unwrap();
-                    Arc::new(DistributedAnalyzeExec::new(
-                        plan.clone(),
-                        definitely_analyze_plan.verbose(),
-                        definitely_analyze_plan.show_statistics(),
-                    )) as Arc<dyn ExecutionPlan>
-                } else {
-                    plan
-                };
-
                 // insert a stage marker here so we know where to break up the physical plan later
                 let stage = Arc::new(DFRayStageExec::new(plan, stage_counter));
                 stage_counter += 1;
                 Ok(Transformed::yes(stage as Arc<dyn ExecutionPlan>))
-            } else if let Some(definitely_analize_plan) =
-                plan.as_any().downcast_ref::<AnalyzeExec>()
-            {
-                // we need to replace this with a DistributedAnalyzeRootExec so that we can
-                // discoard the output and send back the plans for each task.
-
-                // add a coalesce partitions exec to ensure that we have a single partition
-                let child = Arc::new(CoalescePartitionsExec::new(
-                    definitely_analize_plan.input().clone(),
-                )) as Arc<dyn ExecutionPlan>;
-
-                let new_plan = Arc::new(DistributedAnalyzeRootExec::new(
-                    child,
-                    definitely_analize_plan.verbose(),
-                    definitely_analize_plan.show_statistics(),
-                )) as Arc<dyn ExecutionPlan>;
-
-                Ok(Transformed::yes(new_plan as Arc<dyn ExecutionPlan>))
             } else {
                 Ok(Transformed::no(plan))
             }
@@ -143,7 +112,7 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
-    use datafusion::catalog::memory::DataSourceExec;
+
     use datafusion::execution::context::SessionContext;
     use datafusion::physical_plan::displayable;
     use std::sync::Arc;

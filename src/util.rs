@@ -40,6 +40,7 @@ use parking_lot::RwLock;
 use prost::Message;
 use tokio::{
     macros::support::thread_rng_n,
+    net::TcpListener,
     runtime::{Handle, Runtime},
 };
 use tonic::transport::Channel;
@@ -611,6 +612,16 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
 
     ctx.register_object_store(ob_url.as_ref(), object_store);
     Ok(())
+}
+
+pub async fn start_up(port: usize) -> Result<TcpListener> {
+    let my_host_str = format!("0.0.0.0:{}", port);
+
+    let listener = TcpListener::bind(&my_host_str)
+        .await
+        .context("Could not bind socket to {my_host_str}")?;
+
+    Ok(listener)
 }
 
 #[cfg(test)]

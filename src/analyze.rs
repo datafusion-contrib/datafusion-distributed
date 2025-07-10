@@ -2,7 +2,7 @@ use std::{fmt::Formatter, sync::Arc};
 
 use arrow::{
     array::{RecordBatch, StringBuilder},
-    datatypes::{DataType, Field, Schema, SchemaRef},
+    datatypes::{DataType, Field, Schema},
 };
 use datafusion::{
     error::{DataFusionError, Result},
@@ -12,13 +12,16 @@ use datafusion::{
         display::DisplayableExecutionPlan,
         execution_plan::{Boundedness, EmissionType},
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
-        PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     },
 };
 use futures::StreamExt;
 
-use crate::{logging::debug, protobuf::AnnotatedTaskOutput, vocab::CtxAnnotatedOutputs};
+use crate::{
+    logging::{debug, trace},
+    protobuf::AnnotatedTaskOutput,
+    vocab::{CtxAnnotatedOutputs, CtxHost, CtxPartitionGroup, CtxStageId},
+};
 
 #[derive(Debug)]
 pub struct DistributedAnalyzeExec {
@@ -197,6 +200,40 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             "DistributedAnalyzeRootExec expects only partition 0"
         );
 
+        let host = context
+            .session_config()
+            .get_extension::<CtxHost>()
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "CtxHost not set in session config for DistributedAnalyzeRootExec".to_string(),
+                )
+            })?
+            .0
+            .clone();
+
+        let stage_id = context
+            .session_config()
+            .get_extension::<CtxStageId>()
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "CtxStageId not set in session config for DistributedAnalyzeRootExec"
+                        .to_string(),
+                )
+            })?
+            .0;
+
+        let partition_group = context
+            .session_config()
+            .get_extension::<CtxPartitionGroup>()
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "CtxPartitionGroup not set in session config for DistributedAnalyzeRootExec"
+                        .to_string(),
+                )
+            })?
+            .0
+            .clone();
+
         let mut input_stream = self.input.execute(partition, context)?;
 
         let schema_clone = self.schema().clone();
@@ -206,13 +243,11 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             // root of the distributed analyze so we can discard the results just like
             // regular AnalyzeExec
             let mut done = false;
-            let mut total_rows = 0;
             while !done {
                 match input_stream.next().await.transpose() {
                     Ok(Some(batch)) => {
                         // we consume the batch, yum.
-                        debug!("consumed {} ", batch.num_rows());
-                        total_rows += batch.num_rows();
+                        trace!("consumed {} ", batch.num_rows());
                     }
                     Ok(None) => done = true,
                     Err(e) => {
@@ -223,13 +258,15 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             let annotated_plan = fmt_plan();
             let toutput = AnnotatedTaskOutput {
                 plan: annotated_plan,
-                host: None,
-                stage_id: 0,
-                partition_group: vec![0],
+                host: Some(host),
+                stage_id,
+                partition_group,
             };
 
             let mut tasks = task_outputs.lock();
             tasks.push(toutput);
+
+            tasks.sort_by_key(|t| (t.stage_id, t.partition_group.clone()));
 
             let mut task_builder = StringBuilder::with_capacity(1, 1024);
             let mut plan_builder = StringBuilder::with_capacity(1, 1024);
@@ -238,8 +275,14 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
 
             for task_output in tasks.iter() {
                 task_builder.append_value(format!(
-                    "Task: Stage {}, Partitions {:?}",
-                    task_output.stage_id, task_output.partition_group
+                    "Task: Stage {}, Partitions {:?}\nHost: {}",
+                    task_output.stage_id,
+                    task_output.partition_group,
+                    task_output
+                        .host
+                        .as_ref()
+                        .map(|h| h.to_string())
+                        .unwrap_or("Unknown".to_string())
                 ));
                 plan_builder.append_value(&task_output.plan);
             }

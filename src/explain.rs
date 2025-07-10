@@ -15,27 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    any::Any,
-    fmt::Formatter,
-    sync::Arc,
-};
+use std::{any::Any, fmt::Formatter, sync::Arc};
 
-use arrow::{
-    array::StringArray,
-    datatypes::SchemaRef,
-    record_batch::RecordBatch,
-};
+use anyhow::Context;
+use arrow::{array::StringArray, datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
     execution::TaskContext,
+    logical_expr::LogicalPlan,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
+        displayable,
         execution_plan::{Boundedness, EmissionType},
         memory::MemoryStream,
-        ExecutionPlan, Partitioning,
-        PlanProperties, DisplayAs, DisplayFormatType,
-        SendableRecordBatchStream, displayable,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+        SendableRecordBatchStream,
     },
-    physical_expr::EquivalenceProperties,
+    prelude::SessionContext,
+};
+
+use crate::{
+    planning::{get_ctx, logical_planning},
+    result::Result,
+    util::bytes_to_physical_plan,
+    vocab::DDTask,
 };
 
 /// Custom distributed EXPLAIN execution plan that also returns distributed plan and stages
@@ -45,7 +47,7 @@ pub struct DistributedExplainExec {
     logical_plan: String,
     physical_plan: String,
     distributed_plan: String,
-    distributed_stages: String,
+    distributed_tasks: String,
     properties: PlanProperties,
 }
 
@@ -55,7 +57,7 @@ impl DistributedExplainExec {
         logical_plan: String,
         physical_plan: String,
         distributed_plan: String,
-        distributed_stages: String,
+        distributed_tasks: String,
     ) -> Self {
         // properties required by the ExecutionPlan trait
         let properties = PlanProperties::new(
@@ -70,7 +72,7 @@ impl DistributedExplainExec {
             logical_plan,
             physical_plan,
             distributed_plan,
-            distributed_stages,
+            distributed_tasks,
             properties,
         }
     }
@@ -87,30 +89,33 @@ impl DistributedExplainExec {
         &self.distributed_plan
     }
 
-    pub fn distributed_stages(&self) -> &str {
-        &self.distributed_stages
+    pub fn distributed_tasks(&self) -> &str {
+        &self.distributed_tasks
     }
 
-    /// Format distributed stages for display
-    pub fn format_distributed_stages(stages: &[crate::planning::DFRayStage]) -> String {
+    /// Format distributed tasks for display
+    pub fn format_distributed_tasks(tasks: &[DDTask]) -> Result<String> {
         let mut result = String::new();
-        for (i, stage) in stages.iter().enumerate() {
-            result.push_str(&format!("Stage {}:\n", stage.stage_id));
-            result.push_str(&format!("  Partition Groups: {:?}\n", stage.partition_groups));
-            result.push_str(&format!("  Full Partitions: {}\n", stage.full_partitions));
+        for (i, task) in tasks.iter().enumerate() {
+            let plan = bytes_to_physical_plan(&SessionContext::new(), &task.plan_bytes)
+                .context(format!("unable to decode task plan for formatted output"))?;
+
+            result.push_str(&format!("Stage {}:\n", task.stage_id));
+            result.push_str(&format!("  Partition Group: {:?}\n", task.partition_group));
+            result.push_str(&format!("  Full Partitions: {}\n", task.full_partitions));
             result.push_str("  Plan:\n");
-            let plan_display = format!("{}", displayable(stage.plan.as_ref()).indent(true));
+            let plan_display = format!("{}", displayable(plan.as_ref()).indent(true));
             for line in plan_display.lines() {
                 result.push_str(&format!("    {}\n", line));
             }
-            if i < stages.len() - 1 {
+            if i < tasks.len() - 1 {
                 result.push('\n');
             }
         }
         if result.is_empty() {
-            result.push_str("No distributed stages generated");
+            result.push_str("No distributed tasks generated");
         }
-        result
+        Ok(result)
     }
 }
 
@@ -150,29 +155,28 @@ impl ExecutionPlan for DistributedExplainExec {
         _context: Arc<TaskContext>,
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
         let schema = self.schema.clone();
-        
+
         // Create the result data with our 4 plan types
         let plan_types = StringArray::from(vec![
-            "logical_plan", 
-            "physical_plan", 
-            "distributed_plan", 
-            "distributed_stages"
+            "logical_plan",
+            "physical_plan",
+            "distributed_plan",
+            "distributed_tasks",
         ]);
         let plans = StringArray::from(vec![
             self.logical_plan.as_str(),
             self.physical_plan.as_str(),
             self.distributed_plan.as_str(),
-            self.distributed_stages.as_str(),
+            self.distributed_tasks.as_str(),
         ]);
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(plan_types), Arc::new(plans)],
-        ).map_err(|e| datafusion::error::DataFusionError::ArrowError(e, None))?;
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(plan_types), Arc::new(plans)])
+                .map_err(|e| datafusion::error::DataFusionError::ArrowError(e, None))?;
 
         // Use MemoryStream which is designed for DataFusion execution plans
         let stream = MemoryStream::try_new(vec![batch], schema, None)?;
-        
+
         Ok(Box::pin(stream))
     }
 
@@ -182,18 +186,19 @@ impl ExecutionPlan for DistributedExplainExec {
 }
 
 /// Check if this is an EXPLAIN query (but not EXPLAIN ANALYZE)
-/// 
+///
 /// This function distinguishes between:
 /// - EXPLAIN queries (returns true) - show plan information only
 /// - EXPLAIN ANALYZE queries (returns false) - execute and show runtime stats
 /// - Regular queries (returns false) - normal query execution
-pub fn is_explain_query(query: &str) -> bool {
-    let query_upper = query.trim().to_uppercase();
-    // Must start with "EXPLAIN" followed by whitespace or end of string
-    let is_explain = query_upper.starts_with("EXPLAIN") && 
-        (query_upper.len() == 7 || query_upper.chars().nth(7).is_some_and(|c| c.is_whitespace()));
-    let is_explain_analyze = query_upper.starts_with("EXPLAIN ANALYZE");
-    is_explain && !is_explain_analyze
+pub async fn is_explain_query(sql: &str) -> Result<bool> {
+    let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+    let logical_plan = logical_planning(sql, &ctx).await?;
+
+    match logical_plan {
+        LogicalPlan::Explain(_) => Ok(true),
+        _ => Ok(false), // Not an EXPLAIN plan
+    }
 }
 
 #[cfg(test)]
@@ -223,7 +228,7 @@ mod tests {
         // Test edge cases
         assert!(!is_explain_query(""));
         assert!(!is_explain_query("   "));
-        assert!(!is_explain_query("EXPLAINSELECT"));  // No space
+        assert!(!is_explain_query("EXPLAINSELECT")); // No space
         assert!(is_explain_query("EXPLAIN")); // Just EXPLAIN
     }
 }

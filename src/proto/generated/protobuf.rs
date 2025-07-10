@@ -40,17 +40,12 @@ pub struct DistributedAnalyzeRootExecNode {
     pub show_statistics: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DistributedExplainExecNode {
+pub struct RecordBatchExecNode {
     #[prost(message, optional, tag = "1")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    #[prost(string, tag = "2")]
-    pub logical_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub physical_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub distributed_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub distributed_stages: ::prost::alloc::string::String,
+    /// the arrow IPC serialized record batch of the response
+    #[prost(bytes = "vec", tag = "2")]
+    pub batch: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DfRayExecNode {
@@ -124,9 +119,6 @@ pub struct TicketStatementData {
     /// the schema of the final stage
     #[prost(message, optional, tag = "4")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    /// For EXPLAIN queries, store the explain plan data directly
-    #[prost(message, optional, tag = "5")]
-    pub explain_data: ::core::option::Option<DistributedExplainExecNode>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Host {
@@ -152,7 +144,7 @@ pub struct StageAddrs {
     pub stage_addrs: ::std::collections::HashMap<u64, PartitionAddrs>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StageData {
+pub struct DdTask {
     #[prost(string, tag = "1")]
     pub query_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]

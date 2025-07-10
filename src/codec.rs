@@ -3,7 +3,6 @@ use std::sync::Arc;
 use arrow::datatypes::Schema;
 use datafusion::{
     common::{internal_datafusion_err, internal_err, Result},
-    datasource::source::DataSourceExec,
     execution::FunctionRegistry,
     physical_plan::{displayable, ExecutionPlan},
 };

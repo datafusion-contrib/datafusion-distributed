@@ -1,10 +1,6 @@
 use std::{fmt::Formatter, sync::Arc};
 
-use arrow_flight::{
-    decode::{DecodedPayload, FlightRecordBatchStream},
-    error::FlightError,
-    Ticket,
-};
+use arrow_flight::{decode::FlightRecordBatchStream, error::FlightError, Ticket};
 use datafusion::{
     arrow::datatypes::SchemaRef,
     common::{internal_datafusion_err, internal_err},
@@ -16,7 +12,7 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     },
-    prelude::{SessionConfig, SessionContext},
+    prelude::SessionConfig,
 };
 use futures::{stream::TryStreamExt, StreamExt};
 use prost::Message;
@@ -25,7 +21,7 @@ use crate::{
     logging::{error, trace},
     protobuf::{FlightDataMetadata, FlightTicketData},
     util::{get_client, CombinedRecordBatchStream},
-    vocab::{CtxAnnotatedOutputs, CtxName, CtxStageAddrs},
+    vocab::{CtxAnnotatedOutputs, CtxHost, CtxStageAddrs},
 };
 
 pub(crate) struct QueryId(pub String);
@@ -129,9 +125,9 @@ impl ExecutionPlan for DFRayStageReaderExec {
 
         let ctx_name = &context
             .session_config()
-            .get_extension::<CtxName>()
-            .unwrap_or(Arc::new(CtxName("unknown ctx".to_string())))
-            .0;
+            .get_extension::<CtxHost>()
+            .map(|ctx_host| ctx_host.0.to_string())
+            .unwrap_or("unknown_context_host!".to_string());
 
         trace!(" trying to get clients for {:?}", stage_addrs);
         let clients = stage_addrs
@@ -152,7 +148,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
                 ))
             })??
             .iter()
-            .map(|host| get_client(host))
+            .map(get_client)
             .collect::<Result<Vec<_>>>()?;
 
         trace!("got clients.  {name} num clients: {}", clients.len());
@@ -270,9 +266,6 @@ fn make_flight_metadata_saver_stream(
                     yield Err(e);
                 }
                 (false, None) => {
-                    // we should not reach this block, because we decide we have reach the end when
-                    // we receive a valid message with trailing data
-                    error!("{name} Unexpected arrival in block we do not expect!");
                     done = true;
                 }
                 (true,_) => {

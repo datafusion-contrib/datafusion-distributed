@@ -5,19 +5,14 @@ use datafusion::{
     error::Result,
     execution::SendableRecordBatchStream,
     physical_plan::{
-        DisplayAs,
-        DisplayFormatType,
-        EmptyRecordBatchStream,
-        ExecutionPlan,
-        ExecutionPlanProperties,
-        Partitioning,
-        PlanProperties,
+        DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+        ExecutionPlanProperties, Partitioning, PlanProperties,
     },
 };
 
 use crate::{
     logging::{error, trace},
-    vocab::{CtxName, CtxPartitionGroup},
+    vocab::{CtxHost, CtxPartitionGroup},
 };
 
 /// This is a simple execution plan that isolates a partition from the input
@@ -113,12 +108,11 @@ impl ExecutionPlan for PartitionIsolatorExec {
             ));
         }
 
-        let ctx_name = context
+        let ctx_name = &context
             .session_config()
-            .get_extension::<CtxName>()
-            .ok_or_else(|| internal_datafusion_err!("CtxName not set in session config"))?
-            .0
-            .clone();
+            .get_extension::<CtxHost>()
+            .map(|ctx_host| ctx_host.0.to_string())
+            .unwrap_or("unknown_context_host!".to_string());
 
         let partitions_in_input = self.input.output_partitioning().partition_count() as u64;
 
