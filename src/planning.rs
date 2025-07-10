@@ -18,10 +18,9 @@ use datafusion::{
     logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        analyze::AnalyzeExec, coalesce_batches::CoalesceBatchesExec,
-        coalesce_partitions::CoalescePartitionsExec, displayable, joins::NestedLoopJoinExec,
-        repartition::RepartitionExec, sorts::sort::SortExec, ExecutionPlan,
-        ExecutionPlanProperties,
+        analyze::AnalyzeExec, coalesce_batches::CoalesceBatchesExec, displayable,
+        joins::NestedLoopJoinExec, repartition::RepartitionExec, sorts::sort::SortExec,
+        ExecutionPlan, ExecutionPlanProperties,
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
@@ -417,8 +416,7 @@ pub fn add_distributed_analyze(
                 displayable(plan_without_analyze.as_ref()).indent(false)
             );
             stage.plan = Arc::new(DistributedAnalyzeRootExec::new(
-                Arc::new(CoalescePartitionsExec::new(plan_without_analyze))
-                    as Arc<dyn ExecutionPlan>,
+                plan_without_analyze,
                 verbose,
                 show_statistics,
             )) as Arc<dyn ExecutionPlan>;

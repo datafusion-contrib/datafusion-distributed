@@ -27,7 +27,7 @@ use arrow_flight::{
     FlightDescriptor, FlightEndpoint, FlightInfo, Ticket,
 };
 use datafusion::physical_plan::{
-    coalesce_partitions::CoalescePartitionsExec, displayable, ExecutionPlan, Partitioning,
+    coalesce_partitions::CoalescePartitionsExec, ExecutionPlan, Partitioning,
 };
 use futures::TryStreamExt;
 use parking_lot::Mutex;
@@ -167,12 +167,12 @@ impl FlightSqlHandler for DfRayProxyHandler {
     ) -> Result<Response<FlightInfo>, Status> {
         let query_plan = self
             .planner
-            .prepare_query(&query.query)
+            .prepare(&query.query)
             .await
             .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
 
         self.create_flight_info_response(query_plan)
-            .map(|flight_info| Response::new(flight_info))
+            .map(Response::new)
             .context("Could not create flight info response")
             .map_err(|e| Status::internal(format!("Error creating flight info: {e:?}")))
     }
@@ -249,13 +249,11 @@ impl FlightSqlHandler for DfRayProxyHandler {
 ///
 /// It only responds to the DoGet Arrow Flight method
 pub struct DFRayProxyService {
-    name: String,
     listener: TcpListener,
     handler: Arc<DfRayProxyHandler>,
     addr: String,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
-    port: usize,
 }
 
 impl DFRayProxyService {
@@ -271,16 +269,14 @@ impl DFRayProxyService {
 
         info!("DFRayProcessorService bound to {addr}");
 
-        let handler = Arc::new(DfRayProxyHandler::new(name.clone(), addr.clone()));
+        let handler = Arc::new(DfRayProxyHandler::new(name, addr.clone()));
 
         Ok(Self {
-            name,
             listener,
             handler,
             addr,
             all_done_tx,
             all_done_rx: Some(all_done_rx),
-            port,
         })
     }
 

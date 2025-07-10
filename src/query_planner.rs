@@ -7,11 +7,11 @@ use datafusion::{
 };
 
 use crate::{
-    logging::debug,
+    explain::build_explain_batch,
     planning::{
         distribute_stages, execution_planning, get_ctx, logical_planning, physical_planning,
-        DDStage,
     },
+    record_batch_exec::RecordBatchExec,
     result::Result,
     vocab::{Addrs, DDTask},
     worker_discovery::get_worker_addresses,
@@ -28,15 +28,6 @@ pub struct QueryPlan {
     pub physical_plan: Arc<dyn ExecutionPlan>,
     pub distributed_plan: Arc<dyn ExecutionPlan>,
     pub distributed_tasks: Vec<DDTask>,
-}
-
-impl QueryPlan {
-    pub fn is_explain(&self) -> bool {
-        match self.logical_plan {
-            LogicalPlan::Explain { .. } => true,
-            _ => false,
-        }
-    }
 }
 
 impl std::fmt::Debug for QueryPlan {
@@ -76,12 +67,35 @@ impl QueryPlanner {
     ///
     /// Prepare a query by parsing the SQL, planning it, and distributing the
     /// physical plan into stages that can be executed by workers.
-    pub async fn prepare_query(&self, sql: &str) -> Result<QueryPlan> {
-        let query_id = uuid::Uuid::new_v4().to_string();
+    pub async fn prepare(&self, sql: &str) -> Result<QueryPlan> {
         let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
 
         let logical_plan = logical_planning(sql, &ctx).await?;
+
+        match logical_plan {
+            p @ LogicalPlan::Explain(_) => self.prepare_explain(p, ctx).await,
+            // add other logical plans for local execution here following the pattern for explain
+            p => self.prepare_query(p, ctx).await,
+        }
+    }
+
+    async fn prepare_query(
+        &self,
+        logical_plan: LogicalPlan,
+        ctx: SessionContext,
+    ) -> Result<QueryPlan> {
         let physical_plan = physical_planning(&logical_plan, &ctx).await?;
+
+        self.send_it(logical_plan, physical_plan, ctx).await
+    }
+
+    async fn send_it(
+        &self,
+        logical_plan: LogicalPlan,
+        physical_plan: Arc<dyn ExecutionPlan>,
+        ctx: SessionContext,
+    ) -> Result<QueryPlan> {
+        let query_id = uuid::Uuid::new_v4().to_string();
 
         // divide the physical plan into chunks (tasks) that we can distribute to workers
         let (distributed_plan, distributed_stages) =
@@ -113,5 +127,35 @@ impl QueryPlanner {
         };
 
         Ok(qp)
+    }
+
+    async fn prepare_explain(
+        &self,
+        explain_plan: LogicalPlan,
+        ctx: SessionContext,
+    ) -> Result<QueryPlan> {
+        let child_plan = explain_plan.inputs();
+        if child_plan.len() != 1 {
+            return Err(anyhow!("EXPLAIN plan must have exactly one child").into());
+        }
+
+        let logical_plan = child_plan[0];
+
+        let query_plan = self.prepare_query(logical_plan.clone(), ctx).await?;
+
+        let batch = build_explain_batch(
+            &query_plan.logical_plan,
+            &query_plan.physical_plan,
+            &query_plan.distributed_plan,
+            &query_plan.distributed_tasks,
+        )?;
+        let physical_plan = Arc::new(RecordBatchExec::new(batch));
+
+        self.send_it(
+            query_plan.logical_plan,
+            physical_plan,
+            query_plan.session_context,
+        )
+        .await
     }
 }

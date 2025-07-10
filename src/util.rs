@@ -2,18 +2,25 @@ use std::{
     collections::HashMap,
     fmt::Display,
     future::Future,
+    io::Cursor,
     pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
 
-use anyhow::Context as anyhowctx;
+use anyhow::{anyhow, Context as anyhowctx};
 use arrow::{
     array::RecordBatch,
     datatypes::SchemaRef,
     error::ArrowError,
-    ipc::{convert::fb_to_schema, root_as_message},
+    ipc::{
+        convert::fb_to_schema,
+        reader::StreamReader,
+        root_as_message,
+        writer::{IpcWriteOptions, StreamWriter},
+        MetadataVersion,
+    },
 };
 use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightData, Ticket};
 use async_stream::stream;
@@ -173,6 +180,28 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     let schema = fb_to_schema(ipc_schema);
     let schema = Arc::new(schema);
     Ok(schema)
+}
+
+pub fn batch_to_ipc(batch: &RecordBatch) -> Result<Vec<u8>> {
+    let schema = batch.schema();
+    let buffer: Vec<u8> = Vec::new();
+    let options = IpcWriteOptions::try_new(8, false, MetadataVersion::V5)
+        .map_err(|e| internal_datafusion_err!("Cannot create ipcwriteoptions {e}"))?;
+
+    let mut stream_writer = StreamWriter::try_new_with_options(buffer, &schema, options)?;
+    stream_writer.write(batch)?;
+    let bytes = stream_writer.into_inner()?;
+    Ok(bytes)
+}
+
+pub fn ipc_to_batch(bytes: &[u8]) -> Result<RecordBatch> {
+    let mut stream_reader = StreamReader::try_new_buffered(Cursor::new(bytes), None)?;
+
+    match stream_reader.next() {
+        Some(Ok(batch_res)) => Ok(batch_res),
+        Some(Err(e)) => Err(e.into()),
+        None => Err(anyhow!("Expected a valid batch").into()),
+    }
 }
 
 /// produce a new SendableRecordBatchStream that will respect the rows

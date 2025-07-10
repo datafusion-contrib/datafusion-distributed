@@ -9,6 +9,7 @@ use datafusion::{
     execution::SendableRecordBatchStream,
     physical_expr::EquivalenceProperties,
     physical_plan::{
+        coalesce_partitions::CoalescePartitionsExec,
         display::DisplayableExecutionPlan,
         execution_plan::{Boundedness, EmissionType},
         stream::RecordBatchStreamAdapter,
@@ -178,16 +179,6 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
         partition: usize,
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let input_capture = self.input.clone();
-        let show_statistics_capture = self.show_statistics;
-        let verbose_capture = self.verbose;
-        let fmt_plan = move || -> String {
-            DisplayableExecutionPlan::with_metrics(input_capture.as_ref())
-                .set_show_statistics(show_statistics_capture)
-                .indent(verbose_capture)
-                .to_string()
-        };
-
         let task_outputs = context
             .session_config()
             .get_extension::<CtxAnnotatedOutputs>()
@@ -234,9 +225,22 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             .0
             .clone();
 
-        let mut input_stream = self.input.execute(partition, context)?;
+        // we want to gather all partitions
+        let coalesce = CoalescePartitionsExec::new(self.input.clone());
 
-        let schema_clone = self.schema().clone();
+        let mut input_stream = coalesce.execute(partition, context)?;
+
+        let schema_capture = self.schema().clone();
+        let input_capture = self.input.clone();
+        let show_statistics_capture = self.show_statistics;
+        let verbose_capture = self.verbose;
+
+        let fmt_plan = move || -> String {
+            DisplayableExecutionPlan::with_metrics(input_capture.as_ref())
+                .set_show_statistics(show_statistics_capture)
+                .indent(verbose_capture)
+                .to_string()
+        };
 
         let output = async move {
             // consume input, and we do not have to send it downstream as we are the
@@ -288,7 +292,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             }
 
             RecordBatch::try_new(
-                schema_clone,
+                schema_capture,
                 vec![
                     Arc::new(task_builder.finish()),
                     Arc::new(plan_builder.finish()),

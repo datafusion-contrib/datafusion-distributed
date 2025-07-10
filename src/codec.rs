@@ -23,9 +23,11 @@ use crate::{
     protobuf::{
         df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode,
         DistributedAnalyzeExecNode, DistributedAnalyzeRootExecNode, MaxRowsExecNode,
-        PartitionIsolatorExecNode,
+        PartitionIsolatorExecNode, RecordBatchExecNode,
     },
+    record_batch_exec::RecordBatchExec,
     stage_reader::DFRayStageReaderExec,
+    util::{batch_to_ipc, ipc_to_batch},
 };
 
 #[derive(Debug)]
@@ -117,6 +119,14 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
+                Payload::RecordBatchExec(rb_exec) => {
+                    // deserialize the record batch stored in the opaque bytes field
+                    let batch = ipc_to_batch(&rb_exec.batch).map_err(|e| {
+                        internal_datafusion_err!("Failed to decode RecordBatch: {:#?}", e)
+                    })?;
+
+                    Ok(Arc::new(RecordBatchExec::new(batch)))
+                }
             }
         } else {
             internal_err!("cannot decode proto extension in dfray codec")
@@ -166,6 +176,13 @@ impl PhysicalExtensionCodec for DFRayCodec {
                 show_statistics: exec.show_statistics,
             };
             Payload::DistributedAnalyzeRootExec(pb)
+        } else if let Some(exec) = node.as_any().downcast_ref::<RecordBatchExec>() {
+            let pb = RecordBatchExecNode {
+                batch: batch_to_ipc(&exec.batch).map_err(|e| {
+                    internal_datafusion_err!("Failed to encode RecordBatch: {:#?}", e)
+                })?,
+            };
+            Payload::RecordBatchExec(pb)
         } else {
             return internal_err!("Not supported node to encode to proto");
         };

@@ -22,18 +22,12 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        analyze::AnalyzeExec, coalesce_partitions::CoalescePartitionsExec,
         joins::NestedLoopJoinExec, repartition::RepartitionExec, sorts::sort::SortExec,
         ExecutionPlan,
     },
 };
 
-use crate::{
-    analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
-    logging::info,
-    stage::DFRayStageExec,
-    util::display_plan_with_partition_counts,
-};
+use crate::{logging::info, stage::DFRayStageExec, util::display_plan_with_partition_counts};
 
 /// This optimizer rule walks up the physical plan tree
 /// and inserts RayStageExec nodes where appropriate to denote where we will
@@ -108,6 +102,8 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
 
 #[cfg(test)]
 mod tests {
+    use crate::analyze::DistributedAnalyzeRootExec;
+
     use super::*;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -163,9 +159,7 @@ mod tests {
             .await
             .unwrap();
 
-        let coalesce = Arc::new(CoalescePartitionsExec::new(data_source));
-
-        let analyze = Arc::new(DistributedAnalyzeRootExec::new(coalesce, false, false));
+        let analyze = Arc::new(DistributedAnalyzeRootExec::new(data_source, false, false));
 
         let target_plan = DFRayStageExec::new(
             analyze, 0, // stage counter

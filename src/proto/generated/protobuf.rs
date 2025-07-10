@@ -41,15 +41,12 @@ pub struct DistributedAnalyzeRootExecNode {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RecordBatchExecNode {
-    #[prost(message, optional, tag = "1")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    /// the arrow IPC serialized record batch of the response
-    #[prost(bytes = "vec", tag = "2")]
+    #[prost(bytes = "vec", tag = "1")]
     pub batch: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DfRayExecNode {
-    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5, 6")]
     pub payload: ::core::option::Option<df_ray_exec_node::Payload>,
 }
 /// Nested message and enum types in `DFRayExecNode`.
@@ -66,6 +63,8 @@ pub mod df_ray_exec_node {
         DistributedAnalyzeExec(super::DistributedAnalyzeExecNode),
         #[prost(message, tag = "5")]
         DistributedAnalyzeRootExec(super::DistributedAnalyzeRootExecNode),
+        #[prost(message, tag = "6")]
+        RecordBatchExec(super::RecordBatchExecNode),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

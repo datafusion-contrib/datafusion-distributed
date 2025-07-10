@@ -24,7 +24,7 @@ pub use proto::generated::protobuf;
 
 pub mod analyze;
 pub mod codec;
-//pub mod explain;
+pub mod explain;
 pub mod flight;
 pub mod friendly;
 pub mod isolator;
@@ -35,6 +35,7 @@ pub mod planning;
 pub mod processor_service;
 pub mod proxy_service;
 pub mod query_planner;
+pub mod record_batch_exec;
 pub mod result;
 pub mod stage;
 pub mod stage_reader;
