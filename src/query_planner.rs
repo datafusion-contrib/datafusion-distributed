@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use arrow::datatypes::SchemaRef;
+use arrow::{compute::concat_batches, datatypes::SchemaRef};
 use datafusion::{
-    logical_expr::LogicalPlan, physical_plan::ExecutionPlan, prelude::SessionContext,
+    logical_expr::LogicalPlan,
+    physical_plan::{coalesce_partitions::CoalescePartitionsExec, ExecutionPlan},
+    prelude::SessionContext,
 };
 
 use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
+use tokio_stream::StreamExt;
 
 use crate::{
     explain::build_explain_batch,
@@ -77,6 +80,7 @@ impl QueryPlanner {
         match logical_plan {
             p @ LogicalPlan::Explain(_) => self.prepare_explain(p, ctx).await,
             // add other logical plans for local execution here following the pattern for explain
+            p @ LogicalPlan::DescribeTable(_) => self.prepare_local(p, ctx).await,
             p => self.prepare_query(p, ctx).await,
         }
     }
@@ -89,6 +93,7 @@ impl QueryPlanner {
         match logical_plan {
             p @ LogicalPlan::Explain(_) => self.prepare_explain(p, ctx).await,
             // add other logical plans for local execution here following the pattern for explain
+            p @ LogicalPlan::DescribeTable(_) => self.prepare_local(p, ctx).await,
             p => self.prepare_query(p, ctx).await,
         }
     }
@@ -103,6 +108,61 @@ impl QueryPlanner {
         self.send_it(logical_plan, physical_plan, ctx).await
     }
 
+    async fn prepare_local(
+        &self,
+        logical_plan: LogicalPlan,
+        ctx: SessionContext,
+    ) -> Result<QueryPlan> {
+        let physical_plan = physical_planning(&logical_plan, &ctx).await?;
+
+        // execute it locally
+        let mut stream =
+            Arc::new(CoalescePartitionsExec::new(physical_plan)).execute(0, ctx.task_ctx())?;
+        let mut batches = vec![];
+
+        while let Some(batch) = stream.next().await {
+            batches.push(batch?);
+        }
+
+        if batches.is_empty() {
+            return Err(anyhow!("No data returned from local execution").into());
+        }
+
+        let combined_batch = concat_batches(&batches[0].schema(), &batches)?;
+        let physical_plan = Arc::new(RecordBatchExec::new(combined_batch));
+
+        self.send_it(logical_plan, physical_plan, ctx).await
+    }
+
+    async fn prepare_explain(
+        &self,
+        explain_plan: LogicalPlan,
+        ctx: SessionContext,
+    ) -> Result<QueryPlan> {
+        let child_plan = explain_plan.inputs();
+        if child_plan.len() != 1 {
+            return Err(anyhow!("EXPLAIN plan must have exactly one child").into());
+        }
+
+        let logical_plan = child_plan[0];
+
+        let query_plan = self.prepare_query(logical_plan.clone(), ctx).await?;
+
+        let batch = build_explain_batch(
+            &query_plan.logical_plan,
+            &query_plan.physical_plan,
+            &query_plan.distributed_plan,
+            &query_plan.distributed_tasks,
+        )?;
+        let physical_plan = Arc::new(RecordBatchExec::new(batch));
+
+        self.send_it(
+            query_plan.logical_plan,
+            physical_plan,
+            query_plan.session_context,
+        )
+        .await
+    }
     async fn send_it(
         &self,
         logical_plan: LogicalPlan,
@@ -141,35 +201,5 @@ impl QueryPlanner {
         };
 
         Ok(qp)
-    }
-
-    async fn prepare_explain(
-        &self,
-        explain_plan: LogicalPlan,
-        ctx: SessionContext,
-    ) -> Result<QueryPlan> {
-        let child_plan = explain_plan.inputs();
-        if child_plan.len() != 1 {
-            return Err(anyhow!("EXPLAIN plan must have exactly one child").into());
-        }
-
-        let logical_plan = child_plan[0];
-
-        let query_plan = self.prepare_query(logical_plan.clone(), ctx).await?;
-
-        let batch = build_explain_batch(
-            &query_plan.logical_plan,
-            &query_plan.physical_plan,
-            &query_plan.distributed_plan,
-            &query_plan.distributed_tasks,
-        )?;
-        let physical_plan = Arc::new(RecordBatchExec::new(batch));
-
-        self.send_it(
-            query_plan.logical_plan,
-            physical_plan,
-            query_plan.session_context,
-        )
-        .await
     }
 }

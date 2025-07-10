@@ -185,7 +185,7 @@ def run_sql(sql_query):
             rich_table.add_row(*row_data)
 
         console = Console()
-        console.print(rich_table)
+        console.print(rich_table, markup=False)
         
     except Exception as e:
         print(f"Error executing SQL query: {str(e)}")

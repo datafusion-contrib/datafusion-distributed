@@ -115,7 +115,7 @@ pub struct DistributedAnalyzeRootExec {
 impl DistributedAnalyzeRootExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, verbose: bool, show_statistics: bool) -> Self {
         let field_a = Field::new("Task", DataType::Utf8, false);
-        let field_b = Field::new("Plan", DataType::Utf8, false);
+        let field_b = Field::new("Plan with Metrics", DataType::Utf8, false);
         let schema = Arc::new(Schema::new(vec![field_a, field_b]));
 
         let properties = PlanProperties::new(
@@ -226,7 +226,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             .clone();
 
         // we want to gather all partitions
-        let coalesce = CoalescePartitionsExec::new(self.input.clone());
+        let coalesce = Arc::new(CoalescePartitionsExec::new(self.input.clone()));
 
         let mut input_stream = coalesce.execute(partition, context)?;
 
@@ -272,10 +272,10 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
 
             tasks.sort_by_key(|t| (t.stage_id, t.partition_group.clone()));
 
+            trace!("sorted tasks: {:?}", tasks);
+
             let mut task_builder = StringBuilder::with_capacity(1, 1024);
             let mut plan_builder = StringBuilder::with_capacity(1, 1024);
-            task_builder.append_value("Task");
-            plan_builder.append_value("Plan with Metrics");
 
             for task_output in tasks.iter() {
                 task_builder.append_value(format!(
@@ -285,7 +285,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
                     task_output
                         .host
                         .as_ref()
-                        .map(|h| h.to_string())
+                        .map(|h| format!("{} {}", h.name, h.addr))
                         .unwrap_or("Unknown".to_string())
                 ));
                 plan_builder.append_value(&task_output.plan);
