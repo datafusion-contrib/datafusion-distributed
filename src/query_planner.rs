@@ -6,6 +6,8 @@ use datafusion::{
     logical_expr::LogicalPlan, physical_plan::ExecutionPlan, prelude::SessionContext,
 };
 
+use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
+
 use crate::{
     explain::build_explain_batch,
     planning::{
@@ -71,6 +73,18 @@ impl QueryPlanner {
         let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
 
         let logical_plan = logical_planning(sql, &ctx).await?;
+
+        match logical_plan {
+            p @ LogicalPlan::Explain(_) => self.prepare_explain(p, ctx).await,
+            // add other logical plans for local execution here following the pattern for explain
+            p => self.prepare_query(p, ctx).await,
+        }
+    }
+
+    pub async fn prepare_substrait(&self, substrait_plan: Plan) -> Result<QueryPlan> {
+        let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+
+        let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
 
         match logical_plan {
             p @ LogicalPlan::Explain(_) => self.prepare_explain(p, ctx).await,

@@ -29,6 +29,7 @@ use arrow_flight::{
 use datafusion::physical_plan::{
     coalesce_partitions::CoalescePartitionsExec, ExecutionPlan, Partitioning,
 };
+use datafusion_substrait::substrait;
 use futures::TryStreamExt;
 use parking_lot::Mutex;
 use prost::Message;
@@ -168,6 +169,29 @@ impl FlightSqlHandler for DfRayProxyHandler {
         let query_plan = self
             .planner
             .prepare(&query.query)
+            .await
+            .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
+
+        self.create_flight_info_response(query_plan)
+            .map(Response::new)
+            .context("Could not create flight info response")
+            .map_err(|e| Status::internal(format!("Error creating flight info: {e:?}")))
+    }
+
+    async fn get_flight_info_substrait_plan(
+        &self,
+        substrait: arrow_flight::sql::CommandStatementSubstraitPlan,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let plan = match &substrait.plan {
+            Some(substrait_plan) => substrait::proto::Plan::decode(substrait_plan.plan.as_ref())
+                .map_err(|e| Status::invalid_argument(format!("Invalid Substrait plan: {e}")))?,
+            None => return Err(Status::invalid_argument("Missing Substrait plan")),
+        };
+
+        let query_plan = self
+            .planner
+            .prepare_substrait(plan)
             .await
             .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
 

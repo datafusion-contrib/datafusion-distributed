@@ -41,6 +41,7 @@ bytes = "1.5"
 clap = { version = "4.4", features = ["derive"] }
 datafusion = "48.0.0"
 datafusion-proto = "48.0.0"
+datafusion-substrait = "48.0.0"
 env_logger = "0.11"
 futures = "0.3"
 itertools = "0.14"
@@ -93,4 +94,3 @@ url = "2"
 
 [dev-dependencies]
 tempfile = "3.20"
-

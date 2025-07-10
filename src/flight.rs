@@ -135,6 +135,12 @@ pub trait FlightSqlHandler: Send + Sync {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status>;
 
+    async fn get_flight_info_substrait_plan(
+        &self,
+        query: arrow_flight::sql::CommandStatementSubstraitPlan,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status>;
+
     async fn do_get_statement(
         &self,
         ticket: arrow_flight::sql::TicketStatementQuery,
@@ -164,6 +170,20 @@ impl FlightSqlService for FlightSqlServ {
                 error!("Error in do_flight_info_statement: {:#?}", e);
             })
     }
+
+    async fn get_flight_info_substrait_plan(
+        &self,
+        query: arrow_flight::sql::CommandStatementSubstraitPlan,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.handler
+            .get_flight_info_substrait_plan(query, request)
+            .await
+            .inspect_err(|e| {
+                error!("Error in get_flight_info_substrait_plan: {:?}", e);
+            })
+    }
+
     async fn do_get_statement(
         &self,
         ticket: arrow_flight::sql::TicketStatementQuery,
