@@ -59,6 +59,7 @@ done
 NUM_WORKERS=${NUM_WORKERS:-$DEFAULT_NUM_WORKERS}
 TPCH_DATA_DIR=${TPCH_DATA_DIR:-$DEFAULT_TPCH_PATH}
 LOG_DIR=${LOG_DIR:-$DEFAULT_LOG_PATH}
+RUST_LOG=${RUST_LOG:-"info,distributed_datafusion=debug"}
 
 # Validate inputs
 if [ "$NUM_WORKERS" -lt 1 ]; then
@@ -116,8 +117,7 @@ echo "  - Log Directory: $LOG_DIR"
 echo
 
 # Define environment variables
-export DATAFUSION_RAY_LOG_LEVEL=trace
-export DFRAY_TABLES="customer:parquet:${TPCH_DATA_DIR}/customer.parquet,\
+export DD_TABLES="customer:parquet:${TPCH_DATA_DIR}/customer.parquet,\
 lineitem:parquet:${TPCH_DATA_DIR}/lineitem.parquet,\
 nation:parquet:${TPCH_DATA_DIR}/nation.parquet,\
 orders:parquet:${TPCH_DATA_DIR}/orders.parquet,\
@@ -147,8 +147,7 @@ for ((i = 0; i < NUM_WORKERS; i++)); do
     WORKER_NAME="worker$((i + 1))"
     LOG_FILE="${LOG_DIR}/${WORKER_NAME}.log"
     echo "  Starting $WORKER_NAME on port $PORT..."
-    #env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/release/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
-    env RUST_BACKTRACE=1 DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
+    env RUST_LOG="$RUST_LOG" RUST_BACKTRACE=1 DD_TABLES="$DD_TABLES" ./target/debug/distributed-datafusion --mode worker --port $PORT >"$LOG_FILE" 2>&1 &
     WORKER_PIDS[$i]=$!
     WORKER_ADDRESSES[$i]="localhost:${PORT}"
 done
@@ -167,8 +166,7 @@ WORKER_ADDRESSES_STR=$(
 echo "Starting proxy on port 20200..."
 echo "Connecting to workers: $WORKER_ADDRESSES_STR"
 PROXY_LOG="${LOG_DIR}/proxy.log"
-#env DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/release/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
-env RUST_BACKTRACE=1 DATAFUSION_RAY_LOG_LEVEL="$DATAFUSION_RAY_LOG_LEVEL" DFRAY_TABLES="$DFRAY_TABLES" DFRAY_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/debug/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
+env RUST_LOG="$RUST_LOG" RUST_BACKTRACE=1 DD_TABLES="$DD_TABLES" DD_WORKER_ADDRESSES="$WORKER_ADDRESSES_STR" ./target/debug/distributed-datafusion --mode proxy --port 20200 >"$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 
 echo

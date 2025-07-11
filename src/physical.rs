@@ -27,33 +27,30 @@ use datafusion::{
     },
 };
 
-use crate::{logging::info, stage::DFRayStageExec, util::display_plan_with_partition_counts};
+use crate::{logging::info, stage::DDStageExec, util::display_plan_with_partition_counts};
 
 /// This optimizer rule walks up the physical plan tree
-/// and inserts RayStageExec nodes where appropriate to denote where we will
+/// and inserts DDStageExec nodes where appropriate to denote where we will
 /// split the plan into stages.
 ///
-/// The RayStageExec nodes are merely markers to inform where to break the plan
-/// up.
-///
 /// Later, the plan will be examined again to actually split it up.
-/// These RayStageExecs serve as markers where we know to break it up on a
+/// These DDStageExecs serve as markers where we know to break it up on a
 /// network boundary and we can insert readers and writers as appropriate.
 #[derive(Debug)]
-pub struct DFRayStageOptimizerRule {}
+pub struct DDStageOptimizerRule {}
 
-impl Default for DFRayStageOptimizerRule {
+impl Default for DDStageOptimizerRule {
     fn default() -> Self {
         Self::new()
     }
 }
-impl DFRayStageOptimizerRule {
+impl DDStageOptimizerRule {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
+impl PhysicalOptimizerRule for DDStageOptimizerRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -72,7 +69,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
                 || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
             {
                 // insert a stage marker here so we know where to break up the physical plan later
-                let stage = Arc::new(DFRayStageExec::new(plan, stage_counter));
+                let stage = Arc::new(DDStageExec::new(plan, stage_counter));
                 stage_counter += 1;
                 Ok(Transformed::yes(stage as Arc<dyn ExecutionPlan>))
             } else {
@@ -81,8 +78,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
         };
 
         let plan = plan.clone().transform_up(up)?.data;
-        let final_plan =
-            Arc::new(DFRayStageExec::new(plan, stage_counter)) as Arc<dyn ExecutionPlan>;
+        let final_plan = Arc::new(DDStageExec::new(plan, stage_counter)) as Arc<dyn ExecutionPlan>;
 
         info!(
             "optimized physical plan:\n{}",
@@ -92,7 +88,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
     }
 
     fn name(&self) -> &str {
-        "RayStageOptimizerRule"
+        "DDStageOptimizerRule"
     }
 
     fn schema_check(&self) -> bool {

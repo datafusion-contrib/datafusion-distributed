@@ -33,10 +33,10 @@ use crate::{
     isolator::PartitionIsolatorExec,
     logging::{debug, error, info, trace},
     max_rows::MaxRowsExec,
-    physical::DFRayStageOptimizerRule,
-    result::{DFRayError, Result},
-    stage::DFRayStageExec,
-    stage_reader::{DFRayStageReaderExec, QueryId},
+    physical::DDStageOptimizerRule,
+    result::{DDError, Result},
+    stage::DDStageExec,
+    stage_reader::{DDStageReaderExec, QueryId},
     util::{display_plan_with_partition_counts, get_client, physical_plan_to_bytes, wait_for},
     vocab::{
         Addrs, CtxAnnotatedOutputs, CtxHost, CtxPartitionGroup, CtxStageAddrs, CtxStageId, DDTask,
@@ -53,7 +53,7 @@ pub struct DDStage {
     /// the partition groups for this stage.
     pub partition_groups: Vec<Vec<u64>>,
     /// Are we hosting the complete partitions?  If not
-    /// then RayStageReaderExecs will be inserted to consume its desired
+    /// then DDStageReaderExecs will be inserted to consume its desired
     /// partition from all stages with this same id, and merge the results.
     /// Using a CombinedRecordBatchStream
     pub full_partitions: bool,
@@ -79,7 +79,7 @@ impl DDStage {
         self.plan
             .clone()
             .transform_down(|node: Arc<dyn ExecutionPlan>| {
-                if let Some(reader) = node.as_any().downcast_ref::<DFRayStageReaderExec>() {
+                if let Some(reader) = node.as_any().downcast_ref::<DDStageReaderExec>() {
                     result.push(reader.stage_id);
                 }
                 Ok(Transformed::no(node))
@@ -161,9 +161,9 @@ pub fn add_ctx_extentions(
 pub async fn add_tables_from_env(state: &mut SessionState) -> Result<()> {
     // this string is formatted as a comman separated list of table info
     // where each table info is name:format:path
-    let table_str = env::var("DFRAY_TABLES");
+    let table_str = env::var("DD_TABLES");
     if table_str.is_err() {
-        info!("No DFRAY_TABLES environment variable set, skipping table registration");
+        info!("No DD_TABLES environment variable set, skipping table registration");
         return Ok(());
     }
 
@@ -171,7 +171,7 @@ pub async fn add_tables_from_env(state: &mut SessionState) -> Result<()> {
         info!("adding table from env: {}", table);
         let parts: Vec<&str> = table.split(':').collect();
         if parts.len() != 3 {
-            return Err(anyhow!("Invalid format for DFRAY_TABLES env var: {}", table).into());
+            return Err(anyhow!("Invalid format for DD_TABLES env var: {}", table).into());
         }
         let name = parts[0].to_string();
         let fmt = parts[1].to_string();
@@ -247,11 +247,11 @@ pub async fn execution_planning(
 
     let mut partition_groups = vec![];
     let mut full_partitions = false;
-    // We walk up the tree from the leaves to find the stages, record ray stages,
-    // and replace each ray stage with a corresponding ray reader stage.
+    // We walk up the tree from the leaves to find the stages
+    // and replace each stage with a corresponding reader stage.
     //
     // we also calculate the paritition groups at each node, anticipating
-    // arriving at a RayStageExec that we have to replace with a stage reader
+    // arriving at a DDStageExec that we have to replace with a stage reader
     // which will have differing requirements for partition groups depending on
     // its children.
     let up = |plan: Arc<dyn ExecutionPlan>| {
@@ -260,13 +260,13 @@ pub async fn execution_planning(
             displayable(plan.as_ref()).one_line()
         );
 
-        if let Some(stage_exec) = plan.as_any().downcast_ref::<DFRayStageExec>() {
-            trace!("ray stage exec. partition_groups: {:?}", partition_groups);
+        if let Some(stage_exec) = plan.as_any().downcast_ref::<DDStageExec>() {
+            trace!("stage exec. partition_groups: {:?}", partition_groups);
             let input = plan.children();
-            assert!(input.len() == 1, "RayStageExec must have exactly one child");
+            assert!(input.len() == 1, "DDStageExec must have exactly one child");
             let input = input[0];
 
-            let replacement = Arc::new(DFRayStageReaderExec::try_new(
+            let replacement = Arc::new(DDStageReaderExec::try_new(
                 plan.output_partitioning().clone(),
                 input.schema(),
                 stage_exec.stage_id,
@@ -330,11 +330,11 @@ pub async fn execution_planning(
         }
     };
 
-    // walk up the plan adding DFRayStageExec marker nodes.
+    // walk up the plan adding DDStageExec marker nodes.
     // FIXME: we can do this in one step in the future i think but this is
     // a carry over from when it was done in a physical optimizer seperate
     // step
-    let optimizer = DFRayStageOptimizerRule::new();
+    let optimizer = DDStageOptimizerRule::new();
     let distributed_plan = optimizer.optimize(physical_plan, &ConfigOptions::default())?;
 
     // Clone the distributed plan before transformation since we need to return it
@@ -459,7 +459,7 @@ pub async fn distribute_stages(
         // and can accept the stages
         match try_distribute_tasks(&task_datas).await {
             Ok(_) => return Ok((final_addrs, task_datas)),
-            Err(DFRayError::WorkerCommunicationError(bad_worker)) => {
+            Err(DDError::WorkerCommunicationError(bad_worker)) => {
                 error!(
                     "distribute stages for query {query_id} attempt {attempt} failed removing \
                      worker {bad_worker}. Retrying..."
@@ -506,7 +506,7 @@ async fn try_distribute_tasks(task_datas: &[DDTask]) -> Result<()> {
             Ok(client) => client,
             Err(e) => {
                 error!("Couldn't not communicate with worker {e:#?}");
-                return Err(DFRayError::WorkerCommunicationError(
+                return Err(DDError::WorkerCommunicationError(
                     host.clone(), // here
                 ));
             }

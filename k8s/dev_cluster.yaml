@@ -1,51 +1,49 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: service-dfray-proxy
+  name: service-dd-proxy
   labels:
-    app: dfray-proxy
+    app: dd-proxy
 spec:
   type: ClusterIP
   ports:
-    - name: dfray-proxy
+    - name: dd-proxy
       port: 20200
       targetPort: 20200
   selector:
-    app: dfray-proxy
+    app: dd-proxy
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-dfray-proxy
+  name: deployment-dd-proxy
   labels:
-    app: dfray-proxy
+    app: dd-proxy
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: dfray-proxy
+      app: dd-proxy
   template:
     metadata:
       labels:
-        app: dfray-proxy
-        service: dfray-proxy
+        app: dd-proxy
+        service: dd-proxy
     spec:
       containers:
-        - name: dfray-proxy
-          image: registry.ddbuild.io/dfray:2025-06-16-e
+        - name: dd-proxy
+          image: registry.ddbuild.io/dd:2025-06-16-e
           env:
-            - name: DATAFUSION_RAY_LOG_LEVEL
-              value: debug
-            - name: DFRAY_WORKER_DEPLOYMENT
-              value: deployment-dfray-worker
-            - name: DFRAY_WORKER_DEPLOYMENT_PORT
+            - name: dd_WORKER_DEPLOYMENT
+              value: deployment-dd-worker
+            - name: dd_WORKER_DEPLOYMENT_PORT
               value: "20201"
-            - name: DFRAY_WORKER_DEPLOYMENT_NAMESPACE
+            - name: dd_WORKER_DEPLOYMENT_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: RUST_LOG
-              value: datafusion_bindings=info,cs3_query=info
+              value: datafusion_bindings=info,cs3_query=info,distributed_datafusion=debug
             - name: HDQ_URL
               value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
             - name: MEM_THRESHOLD
@@ -55,35 +53,33 @@ spec:
           command:
             - sh
             - "-c"
-            - "/dfray --mode proxy --port 20200"
+            - "/dd --mode proxy --port 20200"
           ports:
             - containerPort: 20200
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-dfray-worker
+  name: deployment-dd-worker
   labels:
-    app: dfray-worker
+    app: dd-worker
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: dfray-worker
+      app: dd-worker
   template:
     metadata:
       labels:
-        app: dfray-worker
-        service: service-dfray-worker
+        app: dd-worker
+        service: service-dd-worker
     spec:
       containers:
-        - name: dfray-worker
-          image: registry.ddbuild.io/dfray:2025-06-16-e
+        - name: dd-worker
+          image: registry.ddbuild.io/dd:2025-06-16-e
           env:
-            - name: DATAFUSION_RAY_LOG_LEVEL
-              value: debug
             - name: RUST_LOG
-              value: datafusion_bindings=info,cs3_query=info
+              value: datafusion_bindings=info,cs3_query=info,distributed_datafusion=debug
             - name: HDQ_URL
               value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
             - name: MEM_THRESHOLD
@@ -93,7 +89,7 @@ spec:
           command:
             - sh
             - "-c"
-            - "/dfray --mode worker --port 20201"
+            - "/dd --mode worker --port 20201"
           ports:
             - containerPort: 20201
 ---

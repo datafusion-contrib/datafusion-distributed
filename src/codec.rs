@@ -21,27 +21,26 @@ use crate::{
     logging::trace,
     max_rows::MaxRowsExec,
     protobuf::{
-        df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode,
-        DistributedAnalyzeExecNode, DistributedAnalyzeRootExecNode, MaxRowsExecNode,
-        PartitionIsolatorExecNode, RecordBatchExecNode,
+        dd_exec_node::Payload, DdExecNode, DdStageReaderExecNode, DistributedAnalyzeExecNode,
+        DistributedAnalyzeRootExecNode, MaxRowsExecNode, PartitionIsolatorExecNode,
+        RecordBatchExecNode,
     },
     record_batch_exec::RecordBatchExec,
-    stage_reader::DFRayStageReaderExec,
+    stage_reader::DDStageReaderExec,
     util::{batch_to_ipc, ipc_to_batch},
 };
 
 #[derive(Debug)]
-/// Physical Extension Codec for for DataFusion for Ray plans
-pub struct DFRayCodec {}
+pub struct DDCodec {}
 
-impl PhysicalExtensionCodec for DFRayCodec {
+impl PhysicalExtensionCodec for DDCodec {
     fn try_decode(
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         registry: &dyn FunctionRegistry,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if let Ok(node) = DfRayExecNode::decode(buf) {
+        if let Ok(node) = DdExecNode::decode(buf) {
             let payload = node
                 .payload
                 .ok_or(internal_datafusion_err!("no payload when decoding proto"))?;
@@ -62,7 +61,7 @@ impl PhysicalExtensionCodec for DFRayCodec {
                     )?
                     .ok_or(internal_datafusion_err!("missing partitioning in proto"))?;
 
-                    Ok(Arc::new(DFRayStageReaderExec::try_new(
+                    Ok(Arc::new(DDStageReaderExec::try_new(
                         part,
                         Arc::new(schema),
                         node.stage_id,
@@ -129,7 +128,7 @@ impl PhysicalExtensionCodec for DFRayCodec {
                 }
             }
         } else {
-            internal_err!("cannot decode proto extension in dfray codec")
+            internal_err!("cannot decode proto extension in distributed datafusion codec")
         }
     }
 
@@ -139,14 +138,14 @@ impl PhysicalExtensionCodec for DFRayCodec {
             displayable(node.as_ref()).one_line()
         );
 
-        let payload = if let Some(reader) = node.as_any().downcast_ref::<DFRayStageReaderExec>() {
+        let payload = if let Some(reader) = node.as_any().downcast_ref::<DDStageReaderExec>() {
             let schema: protobuf::Schema = reader.schema().try_into()?;
             let partitioning: protobuf::Partitioning = serialize_partitioning(
                 reader.properties().output_partitioning(),
                 &DefaultPhysicalExtensionCodec {},
             )?;
 
-            let pb = DfRayStageReaderExecNode {
+            let pb = DdStageReaderExecNode {
                 schema: Some(schema),
                 partitioning: Some(partitioning),
                 stage_id: reader.stage_id,
@@ -187,7 +186,7 @@ impl PhysicalExtensionCodec for DFRayCodec {
             return internal_err!("Not supported node to encode to proto");
         };
 
-        let pb = DfRayExecNode {
+        let pb = DdExecNode {
             payload: Some(payload),
         };
         pb.encode(buf)
@@ -214,7 +213,7 @@ mod test {
 
     use super::*;
     use crate::{
-        isolator::PartitionIsolatorExec, max_rows::MaxRowsExec, stage_reader::DFRayStageReaderExec,
+        isolator::PartitionIsolatorExec, max_rows::MaxRowsExec, stage_reader::DDStageReaderExec,
     };
 
     fn create_test_schema() -> Arc<arrow::datatypes::Schema> {
@@ -226,7 +225,7 @@ mod test {
 
     fn verify_round_trip(exec: Arc<dyn ExecutionPlan>) {
         let ctx = SessionContext::new();
-        let codec = DFRayCodec {};
+        let codec = DDCodec {};
 
         // serialize execution plan to proto
         let proto: protobuf::PhysicalPlanNode =
@@ -255,8 +254,8 @@ mod test {
     fn stage_reader_round_trip() {
         let schema = create_test_schema();
         let part = Partitioning::UnknownPartitioning(2);
-        let exec = Arc::new(DFRayStageReaderExec::try_new(part, schema, 1).unwrap());
-        let codec = DFRayCodec {};
+        let exec = Arc::new(DDStageReaderExec::try_new(part, schema, 1).unwrap());
+        let codec = DDCodec {};
         let mut buf = vec![];
         codec.try_encode(exec.clone(), &mut buf).unwrap();
         let ctx = SessionContext::new();
@@ -268,7 +267,7 @@ mod test {
     fn max_rows_round_trip() {
         let schema = create_test_schema();
         let part = Partitioning::UnknownPartitioning(2);
-        let reader_exec = Arc::new(DFRayStageReaderExec::try_new(part, schema, 1).unwrap());
+        let reader_exec = Arc::new(DDStageReaderExec::try_new(part, schema, 1).unwrap());
         let exec = Arc::new(MaxRowsExec::new(reader_exec, 10));
 
         verify_round_trip(exec);
@@ -278,7 +277,7 @@ mod test {
     fn partition_isolator_round_trip() {
         let schema = create_test_schema();
         let part = Partitioning::UnknownPartitioning(2);
-        let reader_exec = Arc::new(DFRayStageReaderExec::try_new(part, schema, 1).unwrap());
+        let reader_exec = Arc::new(DDStageReaderExec::try_new(part, schema, 1).unwrap());
         let exec = Arc::new(PartitionIsolatorExec::new(reader_exec, 4));
 
         verify_round_trip(exec);
@@ -289,7 +288,7 @@ mod test {
         let schema = create_test_schema();
         let part = Partitioning::UnknownPartitioning(2);
         let exec = Arc::new(MaxRowsExec::new(
-            Arc::new(DFRayStageReaderExec::try_new(part, schema, 1).unwrap()),
+            Arc::new(DDStageReaderExec::try_new(part, schema, 1).unwrap()),
             10,
         ));
 

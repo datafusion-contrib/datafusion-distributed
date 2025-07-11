@@ -50,7 +50,7 @@ use crate::{
     protobuf::{
         AnnotatedTaskOutput, AnnotatedTaskOutputs, FlightDataMetadata, FlightTicketData, Host,
     },
-    result::{DFRayError, Result},
+    result::{DDError, Result},
     util::{
         bytes_to_physical_plan, display_plan_with_partition_counts, get_addrs,
         register_object_store_for_paths_in_plan, start_up,
@@ -86,7 +86,7 @@ struct StageTasks {
 }
 
 /// It only responds to the DoGet Arrow Flight method.
-struct DfRayProcessorHandler {
+struct DDProcessorHandler {
     /// our name, useful for logging
     name: String,
     /// our address string, also useful for logging
@@ -96,7 +96,7 @@ struct DfRayProcessorHandler {
     done: Arc<Mutex<bool>>,
 }
 
-impl DfRayProcessorHandler {
+impl DDProcessorHandler {
     pub fn new(name: String, addr: String) -> Self {
         let stages: Arc<RwLock<HashMap<StageKey, StageTasks>>> =
             Arc::new(RwLock::new(HashMap::new()));
@@ -340,7 +340,7 @@ impl DfRayProcessorHandler {
     /// executing the plan further downstream to consumers of our stream.
     ///
     /// We may discover a FlightDataMetadata as an additional payload incoming
-    /// on streming requests.   The [`RayStageReader`] will look for these and add
+    /// on streming requests.   The [`DDStageReader`] will look for these and add
     /// them to an extension on the context.
     ///
     /// Our job is to send all record batches from our stream over our flight response
@@ -514,7 +514,7 @@ impl DfRayProcessorHandler {
             .stage_addrs
             .as_ref()
             .context("stage addrs not present")
-            .map_err(DFRayError::from)
+            .map_err(DDError::from)
             .and_then(get_addrs)
             .map_err(|e| Status::internal(format!("{}, {e}", self.name)))?;
 
@@ -538,7 +538,7 @@ impl DfRayProcessorHandler {
 }
 
 #[async_trait]
-impl FlightHandler for DfRayProcessorHandler {
+impl FlightHandler for DDProcessorHandler {
     async fn do_get(
         &self,
         request: Request<Ticket>,
@@ -611,21 +611,21 @@ impl FlightHandler for DfRayProcessorHandler {
     }
 }
 
-/// DFRayProcessorService is a Arrow Flight service that serves streams of
+/// DDProcessorService is a Arrow Flight service that serves streams of
 /// partitions from a hosted Physical Plan
 ///
 /// It only responds to the DoGet Arrow Flight method
-pub struct DFRayProcessorService {
+pub struct DDProcessorService {
     #[allow(dead_code)]
     name: String,
     listener: TcpListener,
-    handler: Arc<DfRayProcessorHandler>,
+    handler: Arc<DDProcessorHandler>,
     addr: String,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
 }
 
-impl DFRayProcessorService {
+impl DDProcessorService {
     pub async fn new(name: String, port: usize) -> Result<Self> {
         let name = format!("[{}]", name);
 
@@ -636,9 +636,9 @@ impl DFRayProcessorService {
 
         let addr = format!("{}", listener.local_addr().unwrap());
 
-        info!("DFRayProcessorService bound to {addr}");
+        info!("DDProcessorService bound to {addr}");
 
-        let handler = Arc::new(DfRayProcessorHandler::new(name.clone(), addr.clone()));
+        let handler = Arc::new(DDProcessorHandler::new(name.clone(), addr.clone()));
 
         Ok(Self {
             name,

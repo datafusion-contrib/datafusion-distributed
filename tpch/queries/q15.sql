@@ -11,7 +11,7 @@
 --         and l_shipdate < date '1996-08-01' + interval '3' month
 --     group by
 --         l_suppkey;
--- Note: The revenue0 view is created at cluster startup via DFRAY_VIEWS environment variable
+-- Note: The revenue0 view is created at cluster startup via DD_VIEWS environment variable
 select
 	s_suppkey,
 	s_name,

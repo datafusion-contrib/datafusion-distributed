@@ -54,11 +54,11 @@ use tonic::transport::Channel;
 use url::Url;
 
 use crate::{
-    codec::DFRayCodec,
+    codec::DDCodec,
     logging::{debug, error, trace},
     protobuf::StageAddrs,
     result::Result,
-    stage_reader::DFRayStageReaderExec,
+    stage_reader::DDStageReaderExec,
     vocab::{Addrs, Host},
 };
 
@@ -138,7 +138,7 @@ pub fn physical_plan_to_bytes(plan: Arc<dyn ExecutionPlan>) -> Result<Vec<u8>, D
         "serializing plan to bytes. plan:\n{}",
         display_plan_with_partition_counts(&plan)
     );
-    let codec = DFRayCodec {};
+    let codec = DDCodec {};
     let proto = datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
     let bytes = proto.encode_to_vec();
 
@@ -151,7 +151,7 @@ pub fn bytes_to_physical_plan(
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let proto_plan = datafusion_proto::protobuf::PhysicalPlanNode::try_decode(plan_bytes)?;
 
-    let codec = DFRayCodec {};
+    let codec = DDCodec {};
     let plan = proto_plan.try_into_physical_plan(ctx, ctx.runtime_env().as_ref(), &codec)?;
     Ok(plan)
 }
@@ -253,7 +253,7 @@ pub fn input_stage_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>, DataFu
     let mut result = vec![];
     plan.clone()
         .transform_down(|node: Arc<dyn ExecutionPlan>| {
-            if let Some(reader) = node.as_any().downcast_ref::<DFRayStageReaderExec>() {
+            if let Some(reader) = node.as_any().downcast_ref::<DDStageReaderExec>() {
                 result.push(reader.stage_id);
             }
             Ok(Transformed::no(node))
@@ -391,28 +391,6 @@ impl ProcessorClientFactory {
     }
 
     pub fn get_client(&self, host: &Host) -> Result<ProcessorClient, DataFusionError> {
-        // ideally we want to reuse channels as Tonic encourages cloning them when
-        // you can.   This could would allow us to lazily create channels and keep
-        // them around so that on subsequent requests to the same address, we won't
-        // incur the penalty of establishing a socket connection.
-        //
-        // However this doesn't work at the moment.  We encounter
-        // hangs or deadlock I cant tell which.  Its not due to the lock, as far
-        // as I can tell, but rather something about the cloned channels themselves.
-        //
-        // In the case where we use a single DFProcessor, all connections will be to
-        // the same host, and from itself, to itself, so we'll have 100s of clones
-        // of a channel.   Could this be the issue?
-        //
-        // TODO: figure out why this doesn't work
-        //
-        // UPDATE: This is repeatable for tpc
-        // RAY_DEDUP_LOGS=0 DATAFUSION_RAY_LOG_LEVEL=trace python tpch/tpcbench.py
-        // --data /path/to/data --concurrency 3 --partitions-per-processor=2
-        // --processor-pool-min 1 --validate but goes away for when there are
-        // higher number of processors, even 2. I'm going to leave in the
-        // functionality for cached channels for now
-
         let url = format!("http://{}", host.addr);
 
         let maybe_chan = self.channels.read().get(&host.addr).cloned();

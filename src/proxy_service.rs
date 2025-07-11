@@ -46,20 +46,20 @@ use crate::{
     protobuf::TicketStatementData,
     query_planner::{QueryPlan, QueryPlanner},
     result::Result,
-    stage_reader::DFRayStageReaderExec,
+    stage_reader::DDStageReaderExec,
     util::{display_plan_with_partition_counts, get_addrs, start_up},
     vocab::{Addrs, Host},
     worker_discovery::get_worker_addresses,
 };
 
-pub struct DfRayProxyHandler {
+pub struct DDProxyHandler {
     /// our host info, useful for logging
     pub host: Host,
 
     pub planner: QueryPlanner,
 }
 
-impl DfRayProxyHandler {
+impl DDProxyHandler {
     pub fn new(name: String, addr: String) -> Self {
         // call this function to bootstrap the worker discovery mechanism
         get_worker_addresses().expect("Could not get worker addresses upon startup");
@@ -160,7 +160,7 @@ impl DfRayProxyHandler {
 }
 
 #[async_trait]
-impl FlightSqlHandler for DfRayProxyHandler {
+impl FlightSqlHandler for DDProxyHandler {
     async fn get_flight_info_statement(
         &self,
         query: arrow_flight::sql::CommandStatementQuery,
@@ -246,7 +246,7 @@ impl FlightSqlHandler for DfRayProxyHandler {
         })?;
 
         let plan = Arc::new(
-            DFRayStageReaderExec::try_new(
+            DDStageReaderExec::try_new(
                 Partitioning::UnknownPartitioning(stage_partition_addrs.len()),
                 Arc::new(schema),
                 tsd.stage_id,
@@ -268,21 +268,21 @@ impl FlightSqlHandler for DfRayProxyHandler {
     }
 }
 
-/// DFRayProcessorService is a Arrow Flight service that serves streams of
+/// DDProcessorService is a Arrow Flight service that serves streams of
 /// partitions from a hosted Physical Plan
 ///
 /// It only responds to the DoGet Arrow Flight method
-pub struct DFRayProxyService {
+pub struct DDProxyService {
     listener: TcpListener,
-    handler: Arc<DfRayProxyHandler>,
+    handler: Arc<DDProxyHandler>,
     addr: String,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
 }
 
-impl DFRayProxyService {
+impl DDProxyService {
     pub async fn new(name: String, port: usize) -> Result<Self> {
-        debug!("Creating DFRayProxyService!");
+        debug!("Creating DDProxyService!");
 
         let (all_done_tx, all_done_rx) = channel(1);
         let all_done_tx = Arc::new(Mutex::new(all_done_tx));
@@ -291,9 +291,9 @@ impl DFRayProxyService {
 
         let addr = format!("{}", listener.local_addr().unwrap());
 
-        info!("DFRayProcessorService bound to {addr}");
+        info!("DDProcessorService bound to {addr}");
 
-        let handler = Arc::new(DfRayProxyHandler::new(name, addr.clone()));
+        let handler = Arc::new(DDProxyHandler::new(name, addr.clone()));
 
         Ok(Self {
             listener,

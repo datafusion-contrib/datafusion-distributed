@@ -34,13 +34,13 @@ pub(crate) struct QueryId(pub String);
 /// [`crate::stage_service::ServiceClients`] and storing it as an extension in
 /// the [`datafusion::execution::TaskContext`] configuration.
 #[derive(Debug)]
-pub struct DFRayStageReaderExec {
+pub struct DDStageReaderExec {
     properties: PlanProperties,
     schema: SchemaRef,
     pub stage_id: u64,
 }
 
-impl DFRayStageReaderExec {
+impl DDStageReaderExec {
     pub fn try_new_from_input(input: Arc<dyn ExecutionPlan>, stage_id: u64) -> Result<Self> {
         let properties = input.properties().clone();
 
@@ -62,18 +62,18 @@ impl DFRayStageReaderExec {
         })
     }
 }
-impl DisplayAs for DFRayStageReaderExec {
+impl DisplayAs for DDStageReaderExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "RayStageReaderExec[{}] (output_partitioning={:?})",
+            "DDStageReaderExec[{}] (output_partitioning={:?})",
             self.stage_id,
             self.properties().partitioning
         )
     }
 }
 
-impl ExecutionPlan for DFRayStageReaderExec {
+impl ExecutionPlan for DDStageReaderExec {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -82,7 +82,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
     }
 
     fn name(&self) -> &str {
-        "RayStageReaderExec"
+        "DDStageReaderExec"
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -106,7 +106,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
         partition: usize,
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let name = format!("RayStageReaderExec[{}-{}]:", self.stage_id, partition);
+        let name = format!("DDStageReaderExec[{}-{}]:", self.stage_id, partition);
         trace!("{name} execute: partition {partition}");
 
         let stage_addrs = &context
