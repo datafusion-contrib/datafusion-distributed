@@ -32,7 +32,6 @@ pub mod logging;
 pub mod max_rows;
 pub mod physical;
 pub mod planning;
-pub mod processor_service;
 pub mod proxy_service;
 pub mod query_planner;
 pub mod record_batch_exec;
@@ -42,6 +41,7 @@ pub mod stage_reader;
 pub mod util;
 pub mod vocab;
 pub mod worker_discovery;
+pub mod worker_service;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;

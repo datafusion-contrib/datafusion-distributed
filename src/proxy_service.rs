@@ -268,10 +268,7 @@ impl FlightSqlHandler for DDProxyHandler {
     }
 }
 
-/// DDProcessorService is a Arrow Flight service that serves streams of
-/// partitions from a hosted Physical Plan
-///
-/// It only responds to the DoGet Arrow Flight method
+/// An Arrow Flight SQL service
 pub struct DDProxyService {
     listener: TcpListener,
     handler: Arc<DDProxyHandler>,
@@ -291,7 +288,7 @@ impl DDProxyService {
 
         let addr = format!("{}", listener.local_addr().unwrap());
 
-        info!("DDProcessorService bound to {addr}");
+        info!("DDProxyService bound to {addr}");
 
         let handler = Arc::new(DDProxyHandler::new(name, addr.clone()));
 

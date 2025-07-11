@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use distributed_datafusion::{
-    friendly::new_friendly_name, processor_service::DDProcessorService,
-    proxy_service::DDProxyService, setup,
+    friendly::new_friendly_name, proxy_service::DDProxyService, setup,
+    worker_service::DDWorkerService,
 };
 
 #[derive(Parser)]
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
             service.serve().await?;
         }
         "worker" => {
-            let service = DDProcessorService::new(new_friendly_name()?, args.port).await?;
+            let service = DDWorkerService::new(new_friendly_name()?, args.port).await?;
             service.serve().await?;
         }
         _ => {

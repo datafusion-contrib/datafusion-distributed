@@ -34,11 +34,11 @@ spec:
         - name: dd-proxy
           image: registry.ddbuild.io/dd:2025-06-16-e
           env:
-            - name: dd_WORKER_DEPLOYMENT
+            - name: DD_WORKER_DEPLOYMENT
               value: deployment-dd-worker
-            - name: dd_WORKER_DEPLOYMENT_PORT
+            - name: DD_WORKER_DEPLOYMENT_PORT
               value: "20201"
-            - name: dd_WORKER_DEPLOYMENT_NAMESPACE
+            - name: DD_WORKER_DEPLOYMENT_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
