@@ -23,4 +23,4 @@ maturin develop
 
 python tpch/make_data.py $TPCH_SCALING_FACTOR $TPCH_DATA_PATH
 
-DATAFUSION_RAY_LOG_LEVEL=debug RAY_COLOR_PREFIX=1 RAY_DEDUP_LOGS=0 python tpch/tpcbench.py --data=file:///$TPCH_DATA_PATH/ --concurrency 3 --partitions-per-processor 2 --batch-size=8192 --worker-pool-min=20 --validate
+RUST_LOG=distributed_datafusion=debug python tpch/tpcbench.py --data=file:///$TPCH_DATA_PATH/ --concurrency 3 --partitions-per-processor 2 --batch-size=8192 --worker-pool-min=20 --validate

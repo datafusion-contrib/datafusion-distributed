@@ -61,9 +61,9 @@ impl WorkerDiscovery {
     }
 
     fn start(&self) -> Result<()> {
-        let worker_addrs_env = std::env::var("DFRAY_WORKER_ADDRESSES");
-        let worker_deployment_env = std::env::var("DFRAY_WORKER_DEPLOYMENT");
-        let worker_deployment_namespace_env = std::env::var("DFRAY_WORKER_DEPLOYMENT_NAMESPACE");
+        let worker_addrs_env = std::env::var("DD_WORKER_ADDRESSES");
+        let worker_deployment_env = std::env::var("DD_WORKER_DEPLOYMENT");
+        let worker_deployment_namespace_env = std::env::var("DD_WORKER_DEPLOYMENT_NAMESPACE");
 
         if worker_addrs_env.is_ok() {
             let addresses = self.addresses.clone();
@@ -86,8 +86,8 @@ impl WorkerDiscovery {
         } else {
             // if neither env var is set, return an error
             return Err(anyhow!(
-                "Either DFRAY_WORKER_ADDRESSES or both DFRAY_WORKER_DEPLOYMENT and \
-                 DFRAY_WORKER_DEPLOYMENT_NAMESPACE must be set"
+                "Either DD_WORKER_ADDRESSES or both DD_WORKER_DEPLOYMENT and \
+                 DD_WORKER_DEPLOYMENT_NAMESPACE must be set"
             )
             .into());
         }
@@ -264,7 +264,7 @@ async fn get_worker_info_from_pod(pod: &Pod) -> Result<(String, Host)> {
         .and_then(|spec| {
             spec.containers
                 .iter()
-                .find(|c| c.name == "dfray-worker")
+                .find(|c| c.name == "dd-worker")
                 .and_then(|c| {
                     c.ports
                         .as_ref()
@@ -273,7 +273,7 @@ async fn get_worker_info_from_pod(pod: &Pod) -> Result<(String, Host)> {
         })
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "No could not find container port for container named dfray-worker found in pod {}",
+                "No could not find container port for container named dd-worker found in pod {}",
                 pod.name_any()
             )
         })?;

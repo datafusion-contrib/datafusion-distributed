@@ -9,95 +9,8 @@ use datafusion::{
 
 /// An execution plan that serves as a marker of where we want to split the
 /// physical plan into stages.
-///
-/// This marker is consumed later by the [`crate::dataframe::RayDataFrame`],
-/// when we are told to execute.   It will create the discrete stages and insert
-/// other ExecutionPlans to read and write the data
-///
-/// # Example
-/// The following query,
-/// ```sql
-/// select c.c_name, sum(o.o_totalprice) as total
-/// from orders o inner join customer c on o.o_c ustkey = c.c_custkey
-/// group by c_name limit 1
-/// ```
-///
-/// Will produce the following physical_plan from the optimizer
-///
-/// `
-/// RayStageExec[3] (output_partitioning=UnknownPartitioning(1))
-///  ProjectionExec: expr=[c_name@0 as c_name, sum(o.o_totalprice)@1 as total]
-///    GlobalLimitExec: skip=0, fetch=1
-///      CoalescePartitionsExec
-///        AggregateExec: mode=FinalPartitioned, gby=[c_name@0 as c_name],
-/// aggr=[sum(o.o_totalprice)]          RayStageExec[2]
-/// (output_partitioning=Hash([Column { name: "c_name", index: 0 }], 2))
-///            RepartitionExec: partitioning=Hash([c_name@0], 2),
-/// input_partitions=2              AggregateExec: mode=Partial, gby=[c_name@1
-/// as c_name], aggr=[sum(o.o_totalprice)]                ProjectionExec:
-/// expr=[o_totalprice@1 as o_totalprice, c_name@0 as c_name]                  
-/// HashJoinExec: mode=Partitioned, join_type=Inner, on=[(c_custkey@0,
-/// o_custkey@0)], projection=[c_name@1, o_totalprice@3]                    
-/// RayStageExec[0] (output_partitioning=Hash([Column { name: "c_custkey",
-/// index: 0 }], 2))                      RepartitionExec:
-/// partitioning=Hash([c_custkey@0], 2), input_partitions=1                     
-/// ParquetExec: file_groups={1 group: [[.../customer.parquet]]},
-/// projection=[c_custkey, c_name]                    RayStageExec[1]
-/// (output_partitioning=Hash([Column { name: "o_custkey", index: 0 }], 2))
-///                      RepartitionExec: partitioning=Hash([o_custkey@0], 2),
-/// input_partitions=2                        ParquetExec: file_groups={2
-/// groups: [[.../orders.parquet:0..19037604],
-/// [.../orders.parquet:19037604..38075207]]}, projection=[o_custkey,
-/// o_totalprice] `
-/// This physical plan will be split into 4 stages, as indicated by the
-/// RayStageExec nodes.  Those stages will look like this:
-///
-/// `
-/// Stage 0 output partitions:2 shadow partitions: 1
-/// MaxRowsExec[max_rows=8192]
-///   CoalesceBatchesExec: target_batch_size=8192
-///     RepartitionExec: partitioning=Hash([c_custkey@0], 2), input_partitions=1
-///       PartitionIsolatorExec
-///         ParquetExec: file_groups={1 group: [[.../customer.parquet]]},
-/// projection=[c_custkey, c_name]
-///
-/// Stage 1 output partitions:2 shadow partitions: 2
-/// MaxRowsExec[max_rows=8192]
-///   CoalesceBatchesExec: target_batch_size=8192
-///     RepartitionExec: partitioning=Hash([o_custkey@0], 2), input_partitions=1
-///       PartitionIsolatorExec
-///         ParquetExec: file_groups={2 groups:
-/// [[.../orders.parquet:0..19037604],
-/// [.../orders.parquet:19037604..38075207]]}, projection=[o_custkey,
-/// o_totalprice]
-///
-/// Stage 2 output partitions:2 shadow partitions: 2
-/// MaxRowsExec[max_rows=8192]
-///   CoalesceBatchesExec: target_batch_size=8192
-///     RepartitionExec: partitioning=Hash([c_name@0], 2), input_partitions=1
-///       PartitionIsolatorExec
-///         AggregateExec: mode=Partial, gby=[c_name@1 as c_name],
-/// aggr=[sum(o.o_totalprice)]           ProjectionExec: expr=[o_totalprice@1 as
-/// o_totalprice, c_name@0 as c_name]             HashJoinExec:
-/// mode=Partitioned, join_type=Inner, on=[(c_custkey@0, o_custkey@0)],
-/// projection=[c_name@1, o_totalprice@3]               RayStageReaderExec[0]
-/// (output_partitioning=UnknownPartitioning(2))               
-/// RayStageReaderExec[1] (output_partitioning=UnknownPartitioning(2))
-///
-/// Stage 3 output partitions:1 shadow partitions: None
-/// MaxRowsExec[max_rows=8192]
-///   CoalesceBatchesExec: target_batch_size=8192
-///     ProjectionExec: expr=[c_name@0 as c_name, sum(o.o_totalprice)@1 as
-/// total]       GlobalLimitExec: skip=0, fetch=1
-///         CoalescePartitionsExec
-///           AggregateExec: mode=FinalPartitioned, gby=[c_name@0 as c_name],
-/// aggr=[sum(o.o_totalprice)]             RayStageReaderExec[2]
-/// (output_partitioning=UnknownPartitioning(2)) `
-///
-/// See [`crate::isolator::PartitionIsolatorExec`] for more information on how
-/// the shadow partitions work
 #[derive(Debug)]
-pub struct DFRayStageExec {
+pub struct DDStageExec {
     /// Input plan
     pub(crate) input: Arc<dyn ExecutionPlan>,
     /// Output partitioning
@@ -105,7 +18,7 @@ pub struct DFRayStageExec {
     pub stage_id: u64,
 }
 
-impl DFRayStageExec {
+impl DDStageExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, stage_id: u64) -> Self {
         let properties = input.properties().clone();
 
@@ -128,18 +41,18 @@ impl DFRayStageExec {
         }
     }
 }
-impl DisplayAs for DFRayStageExec {
+impl DisplayAs for DDStageExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "RayStageExec[{}] (output_partitioning={:?})",
+            "DDStageExec[{}] (output_partitioning={:?})",
             self.stage_id,
             self.properties().partitioning
         )
     }
 }
 
-impl ExecutionPlan for DFRayStageExec {
+impl ExecutionPlan for DDStageExec {
     fn schema(&self) -> SchemaRef {
         self.input.schema()
     }
@@ -148,7 +61,7 @@ impl ExecutionPlan for DFRayStageExec {
     }
 
     fn name(&self) -> &str {
-        "RayStageExec"
+        "DDStageExec"
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -167,24 +80,19 @@ impl ExecutionPlan for DFRayStageExec {
         assert_eq!(children.len(), 1);
         let child = children[0].clone();
 
-        // as the plan tree is rearranged we want to remember the original partitioning
-        // that we had, even if we get new inputs.   This is because
-        // RayStageReaderExecs, when created by the RayDataFrame will need to
-        // know the original partitioning
-        Ok(Arc::new(DFRayStageExec::new_with_properties(
+        Ok(Arc::new(DDStageExec::new_with_properties(
             child,
             self.stage_id,
             self.properties.clone(),
         )))
     }
 
-    /// We will have to defer this functionality to python as Ray does not yet
-    /// have Rust bindings.
     fn execute(
         &self,
         _partition: usize,
         _context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        unimplemented!("Ray Stage Exec")
+        // we are only using this node as a marker in the plan, so we don't execute it
+        unimplemented!("DDStageExec")
     }
 }

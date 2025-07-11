@@ -32,7 +32,6 @@ pub mod logging;
 pub mod max_rows;
 pub mod physical;
 pub mod planning;
-pub mod processor_service;
 pub mod proxy_service;
 pub mod query_planner;
 pub mod record_batch_exec;
@@ -42,6 +41,7 @@ pub mod stage_reader;
 pub mod util;
 pub mod vocab;
 pub mod worker_discovery;
+pub mod worker_service;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -58,13 +58,10 @@ pub fn setup() {
 }
 
 fn setup_logging() {
-    let dfr_env = env::var("DATAFUSION_RAY_LOG_LEVEL").unwrap_or("WARN".to_string());
     let rust_log_env = env::var("RUST_LOG").unwrap_or("WARN".to_string());
 
-    let combined_env = format!("{rust_log_env},distributed_datafusion={dfr_env}");
-
     env_logger::Builder::new()
-        .parse_filters(&combined_env)
+        .parse_filters(&rust_log_env)
         .init();
 }
 

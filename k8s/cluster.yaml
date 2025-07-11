@@ -1,34 +1,34 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: service-dfray-proxy
+  name: service-dd-proxy
   labels:
-    app: dfray-proxy
+    app: dd-proxy
 spec:
   type: ClusterIP
   ports:
-    - name: dfray-proxy
+    - name: dd-proxy
       port: 20200
       targetPort: 20200
   selector:
-    app: dfray-proxy
+    app: dd-proxy
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-dfray-proxy
+  name: deployment-dd-proxy
   labels:
-    app: dfray-proxy
+    app: dd-proxy
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: dfray-proxy
+      app: dd-proxy
   template:
     metadata:
       labels:
-        app: dfray-proxy
-        service: dfray-proxy
+        app: dd-proxy
+        service: dd-proxy
         team: mint
         admission.datadoghq.com/enabled: "true"
       annotations:
@@ -52,16 +52,14 @@ spec:
                   - key: "node-role.kubernetes.io/nodeless"
                     operator: Exists
       containers:
-        - name: dfray-proxy
-          image: registry.ddbuild.io/dfray-amd64:2025-06-17-b
+        - name: dd-proxy
+          image: registry.ddbuild.io/dd-amd64:2025-06-17-b
           env:
-            - name: DATAFUSION_RAY_LOG_LEVEL
-              value: trace
-            - name: DFRAY_WORKER_DEPLOYMENT
-              value: deployment-dfray-worker
-            - name: DFRAY_WORKER_DEPLOYMENT_PORT
+            - name: DD_WORKER_DEPLOYMENT
+              value: deployment-dd-worker
+            - name: DD_WORKER_DEPLOYMENT_PORT
               value: "20201"
-            - name: DFRAY_WORKER_DEPLOYMENT_NAMESPACE
+            - name: DD_WORKER_DEPLOYMENT_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
@@ -76,7 +74,7 @@ spec:
           command:
             - sh
             - "-c"
-            - "/dfray --mode proxy --port 20200"
+            - "/dd --mode proxy --port 20200"
           ports:
             - containerPort: 20200
           resources:
@@ -90,19 +88,19 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-dfray-worker
+  name: deployment-dd-worker
   labels:
-    app: dfray-worker
+    app: dd-worker
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: dfray-worker
+      app: dd-worker
   template:
     metadata:
       labels:
-        app: dfray-worker
-        service: service-dfray-worker
+        app: dd-worker
+        service: service-dd-worker
         team: mint
         admission.datadoghq.com/enabled: "true"
       annotations:
@@ -126,13 +124,11 @@ spec:
                   - key: "node-role.kubernetes.io/nodeless"
                     operator: Exists
       containers:
-        - name: dfray-worker
-          image: registry.ddbuild.io/dfray-amd64:2025-06-17-b
+        - name: dd-worker
+          image: registry.ddbuild.io/dd-amd64:2025-06-17-b
           env:
-            - name: DATAFUSION_RAY_LOG_LEVEL
-              value: trace
             - name: RUST_LOG
-              value: datafusion_bindings=info,cs3_query=info
+              value: distributed_datafusion=trace,datafusion_bindings=info,cs3_query=info
             - name: HDQ_URL
               value: http://hdq-creed.data-eng.all-clusters.local-dc.fabric.dog:6420
             - name: MEM_THRESHOLD
@@ -142,7 +138,7 @@ spec:
           command:
             - sh
             - "-c"
-            - "/dfray --mode worker --port 20201"
+            - "/dd --mode worker --port 20201"
           ports:
             - containerPort: 20201
           resources:

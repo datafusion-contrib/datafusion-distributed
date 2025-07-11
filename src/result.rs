@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::vocab::Host;
 
 #[derive(Debug, Error)]
-pub enum DFRayError {
+pub enum DDError {
     #[error("Internal Arrow error: {0}")]
     ArrowError(#[from] arrow::error::ArrowError),
     #[error("Internal DataFusion error: {0}")]
@@ -22,4 +22,4 @@ pub enum DFRayError {
     Other(#[from] anyhow::Error),
 }
 
-pub type Result<T, E = DFRayError> = std::result::Result<T, E>;
+pub type Result<T, E = DDError> = std::result::Result<T, E>;

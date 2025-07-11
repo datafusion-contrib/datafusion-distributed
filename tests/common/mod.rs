@@ -447,7 +447,7 @@ except Exception as e:
             let worker = Self::spawn_process(
                 binary_path_str,
                 &["--mode", "worker", "--port", &port.to_string()],
-                &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", tpch_views)],
+                &[("DD_TABLES", &tpch_tables), ("DD_VIEWS", tpch_views)],
                 &format!("start worker {}", i + 1),
             )?;
             self.worker_processes.push(worker);
@@ -469,9 +469,9 @@ except Exception as e:
             binary_path_str,
             &["--mode", "proxy", "--port", &PROXY_PORT.to_string()],
             &[
-                ("DFRAY_WORKER_ADDRESSES", &worker_addresses),
-                ("DFRAY_TABLES", &tpch_tables),
-                ("DFRAY_VIEWS", tpch_views),
+                ("DD_WORKER_ADDRESSES", &worker_addresses),
+                ("DD_TABLES", &tpch_tables),
+                ("DD_VIEWS", tpch_views),
             ],
             "start proxy",
         )?;
@@ -770,7 +770,7 @@ pub async fn execute_query_distributed(
 ) -> Result<(String, Duration), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
 
-    // Write SQL to temporary file (revenue0 view now handled via DFRAY_VIEWS env var)
+    // Write SQL to temporary file (revenue0 view now handled via DD_VIEWS env var)
     let temp_sql_file = ClusterManager::write_temp_file(
         &format!("{}_query.sql", query_name),
         sql,

@@ -9,7 +9,7 @@ option java_multiple_files = true;
 option java_outer_classname = "DistributedDataFusionProto";
 option java_package = "distributed_datafusion.protobuf";
 
-message DFRayStageReaderExecNode {
+message DDStageReaderExecNode {
   // schema of the stage we will consume
   datafusion_common.Schema schema = 1;
   // properties of the stage we will consume
@@ -44,9 +44,9 @@ message RecordBatchExecNode {
   bytes batch = 1;
 }
 
-message DFRayExecNode {
+message DDExecNode {
   oneof payload {
-    DFRayStageReaderExecNode stage_reader_exec = 1;
+    DDStageReaderExecNode stage_reader_exec = 1;
     MaxRowsExecNode max_rows_exec = 2;
     PartitionIsolatorExecNode isolator_exec = 3;
     DistributedAnalyzeExecNode distributed_analyze_exec = 4;
