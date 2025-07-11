@@ -1,13 +1,13 @@
 syntax = "proto3";
 
-package datafusion_ray.protobuf;
+package distributed_datafusion.protobuf;
 
 import "datafusion.proto";
 import "datafusion_common.proto";
 
 option java_multiple_files = true;
-option java_outer_classname = "RayDataFusionProto";
-option java_package = "datafusion_ray.protobuf";
+option java_outer_classname = "DistributedDataFusionProto";
+option java_package = "distributed_datafusion.protobuf";
 
 message DFRayStageReaderExecNode {
   // schema of the stage we will consume
@@ -18,37 +18,30 @@ message DFRayStageReaderExecNode {
   uint64 stage_id = 3;
 }
 
-// the simplicity of the decoder in src/codec.rs currently requires a different byte
-// representation per message.  Hence the dummy fields.
-//
-// I'll come back to this and sort it out.  Its not super critical as the plans are
-// only exchanged at the start of queries, not during execution.
-
 message MaxRowsExecNode {
   uint64 max_rows = 1;
 }
 
 message PartitionIsolatorExecNode {
-  float dummy = 1;
   uint64 partition_count = 2;
 }
 
-message NumpangScanExecNode {
-  datafusion.FileScanExecConf base_conf = 1;
+message DistributedAnalyzeExecNode {
+  // how much data to show
+  bool verbose = 1;
+  // if statistics should be displayed
+  bool show_statistics = 2;
 }
 
-message ContextScanExecNode {
-  datafusion.FileScanExecConf base_conf = 1;
-  repeated datafusion.LogicalExprNode filters = 2;
-  datafusion_common.Schema schema = 3;
+message DistributedAnalyzeRootExecNode {
+  // how much data to show
+  bool verbose = 1;
+  // if statistics should be displayed
+  bool show_statistics = 2;
 }
 
-message DistributedExplainExecNode {
-  datafusion_common.Schema schema = 1;
-  string logical_plan = 2;
-  string physical_plan = 3;
-  string distributed_plan = 4;
-  string distributed_stages = 5;
+message RecordBatchExecNode {
+  bytes batch = 1;
 }
 
 message DFRayExecNode {
@@ -56,9 +49,29 @@ message DFRayExecNode {
     DFRayStageReaderExecNode stage_reader_exec = 1;
     MaxRowsExecNode max_rows_exec = 2;
     PartitionIsolatorExecNode isolator_exec = 3;
-    NumpangScanExecNode numpang_exec = 4;
-    ContextScanExecNode context_exec = 5;
+    DistributedAnalyzeExecNode distributed_analyze_exec = 4;
+    DistributedAnalyzeRootExecNode distributed_analyze_root_exec = 5;
+    RecordBatchExecNode record_batch_exec = 6;
   }
+}
+
+message AnnotatedTaskOutput {
+  // the output of the explain analyze
+  string plan = 1;
+  // the host who executed this stage
+  Host host = 2;
+  // the stage id that was executed
+  uint64 stage_id = 3;
+  // the partitions that were executed by this stage
+  repeated uint64 partition_group = 4;
+}
+
+message AnnotatedTaskOutputs {
+  repeated AnnotatedTaskOutput outputs = 1;
+}
+
+message FlightDataMetadata {
+  AnnotatedTaskOutputs annotated_task_outputs = 1;
 }
 
 message FlightTicketData {
@@ -78,8 +91,6 @@ message TicketStatementData {
   StageAddrs stage_addrs = 3;
   // the schema of the final stage
   datafusion_common.Schema schema = 4;
-  // For EXPLAIN queries, store the explain plan data directly
-  optional DistributedExplainExecNode explain_data = 5;
 }
 
 message Host {
@@ -100,7 +111,7 @@ message StageAddrs {
   map<uint64, PartitionAddrs> stage_addrs = 1;
 }
 
-message StageData {
+message DDTask {
   string query_id = 1;
 
   uint64 stage_id = 2;
@@ -117,5 +128,5 @@ message StageData {
 
   bool full_partitions = 8;
 
-  Host assigned_addr = 9;
+  Host assigned_host = 9;
 }

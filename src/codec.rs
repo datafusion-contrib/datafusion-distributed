@@ -3,7 +3,6 @@ use std::sync::Arc;
 use arrow::datatypes::Schema;
 use datafusion::{
     common::{internal_datafusion_err, internal_err, Result},
-    datasource::source::DataSourceExec,
     execution::FunctionRegistry,
     physical_plan::{displayable, ExecutionPlan},
 };
@@ -17,14 +16,18 @@ use datafusion_proto::{
 use prost::Message;
 
 use crate::{
+    analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
     isolator::PartitionIsolatorExec,
     logging::trace,
     max_rows::MaxRowsExec,
     protobuf::{
-        df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode, MaxRowsExecNode,
-        PartitionIsolatorExecNode,
+        df_ray_exec_node::Payload, DfRayExecNode, DfRayStageReaderExecNode,
+        DistributedAnalyzeExecNode, DistributedAnalyzeRootExecNode, MaxRowsExecNode,
+        PartitionIsolatorExecNode, RecordBatchExecNode,
     },
+    record_batch_exec::RecordBatchExec,
     stage_reader::DFRayStageReaderExec,
+    util::{batch_to_ipc, ipc_to_batch},
 };
 
 #[derive(Debug)]
@@ -90,12 +93,40 @@ impl PhysicalExtensionCodec for DFRayCodec {
                         )))
                     }
                 }
-                Payload::NumpangExec(_) => Err(internal_datafusion_err!(
-                    "NumpangExec not supported in open source version"
-                )),
-                Payload::ContextExec(_) => Err(internal_datafusion_err!(
-                    "ContextExec not supported in open source version"
-                )),
+                Payload::DistributedAnalyzeExec(distributed_analyze_exec_node) => {
+                    if inputs.len() != 1 {
+                        Err(internal_datafusion_err!(
+                            "DistributedAnalyzeExec requires one input"
+                        ))
+                    } else {
+                        Ok(Arc::new(DistributedAnalyzeExec::new(
+                            inputs[0].clone(),
+                            distributed_analyze_exec_node.verbose,
+                            distributed_analyze_exec_node.show_statistics,
+                        )))
+                    }
+                }
+                Payload::DistributedAnalyzeRootExec(distributed_analyze_root_exec_node) => {
+                    if inputs.len() != 1 {
+                        Err(internal_datafusion_err!(
+                            "DistributedAnalyzeRootExec requires one input"
+                        ))
+                    } else {
+                        Ok(Arc::new(DistributedAnalyzeRootExec::new(
+                            inputs[0].clone(),
+                            distributed_analyze_root_exec_node.verbose,
+                            distributed_analyze_root_exec_node.show_statistics,
+                        )))
+                    }
+                }
+                Payload::RecordBatchExec(rb_exec) => {
+                    // deserialize the record batch stored in the opaque bytes field
+                    let batch = ipc_to_batch(&rb_exec.batch).map_err(|e| {
+                        internal_datafusion_err!("Failed to decode RecordBatch: {:#?}", e)
+                    })?;
+
+                    Ok(Arc::new(RecordBatchExec::new(batch)))
+                }
             }
         } else {
             internal_err!("cannot decode proto extension in dfray codec")
@@ -124,7 +155,6 @@ impl PhysicalExtensionCodec for DFRayCodec {
             Payload::StageReaderExec(pb)
         } else if let Some(pi) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
             let pb = PartitionIsolatorExecNode {
-                dummy: 0.0,
                 partition_count: pi.partition_count as u64,
             };
 
@@ -134,8 +164,25 @@ impl PhysicalExtensionCodec for DFRayCodec {
                 max_rows: max.max_rows as u64,
             };
             Payload::MaxRowsExec(pb)
-        } else if let Some(_exec) = node.as_any().downcast_ref::<DataSourceExec>() {
-            return internal_err!("DataSourceExec encoding not supported in open source version");
+        } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeExec>() {
+            let pb = DistributedAnalyzeExecNode {
+                verbose: exec.verbose,
+                show_statistics: exec.show_statistics,
+            };
+            Payload::DistributedAnalyzeExec(pb)
+        } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeRootExec>() {
+            let pb = DistributedAnalyzeRootExecNode {
+                verbose: exec.verbose,
+                show_statistics: exec.show_statistics,
+            };
+            Payload::DistributedAnalyzeRootExec(pb)
+        } else if let Some(exec) = node.as_any().downcast_ref::<RecordBatchExec>() {
+            let pb = RecordBatchExecNode {
+                batch: batch_to_ipc(&exec.batch).map_err(|e| {
+                    internal_datafusion_err!("Failed to encode RecordBatch: {:#?}", e)
+                })?,
+            };
+            Payload::RecordBatchExec(pb)
         } else {
             return internal_err!("Not supported node to encode to proto");
         };

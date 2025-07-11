@@ -18,9 +18,9 @@ use datafusion::{
     logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        coalesce_batches::CoalesceBatchesExec, displayable, joins::NestedLoopJoinExec,
-        repartition::RepartitionExec, sorts::sort::SortExec, ExecutionPlan,
-        ExecutionPlanProperties,
+        analyze::AnalyzeExec, coalesce_batches::CoalesceBatchesExec, displayable,
+        joins::NestedLoopJoinExec, repartition::RepartitionExec, sorts::sort::SortExec,
+        ExecutionPlan, ExecutionPlanProperties,
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
@@ -29,20 +29,23 @@ use itertools::Itertools;
 use prost::Message;
 
 use crate::{
+    analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
     isolator::PartitionIsolatorExec,
     logging::{debug, error, info, trace},
     max_rows::MaxRowsExec,
     physical::DFRayStageOptimizerRule,
-    protobuf::{Host, Hosts, PartitionAddrs, StageAddrs, StageData},
     result::{DFRayError, Result},
     stage::DFRayStageExec,
     stage_reader::{DFRayStageReaderExec, QueryId},
     util::{display_plan_with_partition_counts, get_client, physical_plan_to_bytes, wait_for},
-    vocab::{Addrs, CtxName, CtxPartitionGroup, CtxStageAddrs},
+    vocab::{
+        Addrs, CtxAnnotatedOutputs, CtxHost, CtxPartitionGroup, CtxStageAddrs, CtxStageId, DDTask,
+        Host, Hosts, PartitionAddrs, StageAddrs,
+    },
 };
 
 #[derive(Debug)]
-pub struct DFRayStage {
+pub struct DDStage {
     /// our stage id
     pub stage_id: u64,
     /// the physical plan of our stage
@@ -56,7 +59,7 @@ pub struct DFRayStage {
     pub full_partitions: bool,
 }
 
-impl DFRayStage {
+impl DDStage {
     fn new(
         stage_id: u64,
         plan: Arc<dyn ExecutionPlan>,
@@ -96,7 +99,7 @@ static STATE: LazyLock<Result<SessionState>> = LazyLock::new(|| {
 
 pub fn get_ctx() -> Result<SessionContext> {
     match &*STATE {
-        Ok(ctx) => Ok(SessionContext::new_with_state(ctx.clone())),
+        Ok(state) => Ok(SessionContext::new_with_state(state.clone())),
         Err(e) => Err(anyhow!("Context initialization failed: {}", e).into()),
     }
 }
@@ -129,19 +132,16 @@ async fn make_state() -> Result<SessionState> {
         .await
         .context("Failed to add tables from environment")?;
 
-    add_views_from_env(&state)
-        .await
-        .context("Failed to add views from environment")?;
-
     Ok(state)
 }
 
 pub fn add_ctx_extentions(
     ctx: &mut SessionContext,
-    ctx_name: &str,
+    host: &Host,
     query_id: &str,
+    stage_id: u64,
     stage_addrs: Addrs,
-    partition_group: Option<Vec<u64>>,
+    partition_group: Vec<u64>,
 ) -> Result<()> {
     let state = ctx.state_ref();
     let mut guard = state.write();
@@ -149,15 +149,12 @@ pub fn add_ctx_extentions(
 
     config.set_extension(Arc::new(CtxStageAddrs(stage_addrs)));
     config.set_extension(Arc::new(QueryId(query_id.to_owned())));
-    config.set_extension(Arc::new(CtxName(ctx_name.to_owned())));
+    config.set_extension(Arc::new(CtxHost(host.clone())));
+    config.set_extension(Arc::new(CtxStageId(stage_id)));
+    config.set_extension(Arc::new(CtxAnnotatedOutputs::default()));
 
-    if let Some(pg) = partition_group {
-        // this only matters if the plan includes an PartitionIsolatorExec, which looks
-        // for this for this extension and will be ignored otherwise
-
-        trace!("Adding partition group: {:?}", pg);
-        config.set_extension(Arc::new(CtxPartitionGroup(pg)));
-    }
+    trace!("Adding partition group: {:?}", partition_group);
+    config.set_extension(Arc::new(CtxPartitionGroup(partition_group)));
     Ok(())
 }
 
@@ -210,38 +207,6 @@ pub async fn add_tables_from_env(state: &mut SessionState) -> Result<()> {
     Ok(())
 }
 
-pub async fn add_views_from_env(state: &SessionState) -> Result<()> {
-    // this string contains CREATE VIEW SQL statements separated by semicolons
-    let views_str = env::var("DFRAY_VIEWS");
-    if views_str.is_err() {
-        info!("No DFRAY_VIEWS environment variable set, skipping view creation");
-        return Ok(());
-    }
-
-    let ctx = SessionContext::new_with_state(state.clone());
-
-    for view_sql in views_str.unwrap().split(';') {
-        let view_sql = view_sql.trim();
-        if view_sql.is_empty() {
-            continue;
-        }
-
-        info!("creating view from env: {}", view_sql);
-
-        // Execute the CREATE VIEW statement
-        match ctx.sql(view_sql).await {
-            Ok(_) => {
-                info!("Successfully created view: {}", view_sql);
-            }
-            Err(e) => {
-                return Err(anyhow!("Failed to create view '{}': {}", view_sql, e).into());
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub async fn logical_planning(sql: &str, ctx: &SessionContext) -> Result<LogicalPlan> {
     let options = SQLOptions::new();
     let plan = ctx.state().create_logical_plan(sql).await?;
@@ -277,7 +242,7 @@ pub async fn execution_planning(
     physical_plan: Arc<dyn ExecutionPlan>,
     batch_size: usize,
     partitions_per_worker: Option<usize>,
-) -> Result<(Arc<dyn ExecutionPlan>, Vec<DFRayStage>)> {
+) -> Result<(Arc<dyn ExecutionPlan>, Vec<DDStage>)> {
     let mut stages = vec![];
 
     let mut partition_groups = vec![];
@@ -307,7 +272,7 @@ pub async fn execution_planning(
                 stage_exec.stage_id,
             )?) as Arc<dyn ExecutionPlan>;
 
-            let stage = DFRayStage::new(
+            let stage = DDStage::new(
                 stage_exec.stage_id,
                 input.clone(),
                 partition_groups.clone(),
@@ -379,7 +344,7 @@ pub async fn execution_planning(
     // add coalesce and max rows to last stage
     let mut last_stage = stages.pop().ok_or(anyhow!("No stages found"))?;
 
-    last_stage = DFRayStage::new(
+    last_stage = DDStage::new(
         last_stage.stage_id,
         Arc::new(MaxRowsExec::new(
             Arc::new(CoalesceBatchesExec::new(last_stage.plan, batch_size))
@@ -393,13 +358,78 @@ pub async fn execution_planning(
     // done fixing last stage, put it back
     stages.push(last_stage);
 
+    if contains_analyze(stages[stages.len() - 1].plan.as_ref()) {
+        // if the plan contains an analyze, we need to add the distributed analyze
+        // stages to the plan
+        add_distributed_analyze(&mut stages, false, false)?;
+    }
+
     let txt = stages
         .iter()
         .map(|stage| format!("{}", display_plan_with_partition_counts(&stage.plan)))
         .join(",\n");
-    trace!("stages:{}", txt);
+    trace!("stages:\n{}", txt);
 
     Ok((distributed_plan_clone, stages))
+}
+
+fn contains_analyze(plan: &dyn ExecutionPlan) -> bool {
+    trace!(
+        "checking stage for analyze: {}",
+        displayable(plan).indent(false)
+    );
+    if plan.as_any().downcast_ref::<AnalyzeExec>().is_some() {
+        true
+    } else {
+        for child in plan.children() {
+            if contains_analyze(child.as_ref()) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+pub fn add_distributed_analyze(
+    stages: &mut [DDStage],
+    verbose: bool,
+    show_statistics: bool,
+) -> Result<()> {
+    trace!("Adding distributed analyze to stages");
+    let len = stages.len();
+    for (i, stage) in stages.iter_mut().enumerate() {
+        if i == len - 1 {
+            let plan_without_analyze = stage
+                .plan
+                .clone()
+                .transform_down(|plan: Arc<dyn ExecutionPlan>| {
+                    if let Some(analyze) = plan.as_any().downcast_ref::<AnalyzeExec>() {
+                        Ok(Transformed::yes(analyze.input().clone()))
+                    } else {
+                        Ok(Transformed::no(plan))
+                    }
+                })?
+                .data;
+
+            trace!(
+                "plan without analyze: {}",
+                displayable(plan_without_analyze.as_ref()).indent(false)
+            );
+            stage.plan = Arc::new(DistributedAnalyzeRootExec::new(
+                plan_without_analyze,
+                verbose,
+                show_statistics,
+            )) as Arc<dyn ExecutionPlan>;
+            stage.partition_groups = vec![vec![0]]; // accounting for coalesce
+        } else {
+            stage.plan = Arc::new(DistributedAnalyzeExec::new(
+                stage.plan.clone(),
+                verbose,
+                show_statistics,
+            )) as Arc<dyn ExecutionPlan>;
+        }
+    }
+    Ok(())
 }
 
 /// Distribute the stages to the workers, assigning each stage to a worker
@@ -407,31 +437,35 @@ pub async fn execution_planning(
 /// final stage only as that's all we care about from the call site
 pub async fn distribute_stages(
     query_id: &str,
-    stages: Vec<DFRayStage>,
-    worker_addrs: Vec<(String, String)>,
-) -> Result<Addrs> {
+    stages: Vec<DDStage>,
+    worker_addrs: Vec<Host>,
+) -> Result<(Addrs, Vec<DDTask>)> {
     // map of worker name to address
     // FIXME: use types over tuples of strings, as we can accidently swap them and
     // not know
 
-    let mut workers: HashMap<String, String> = worker_addrs.iter().cloned().collect();
+    // a map of worker name to host
+    let mut workers: HashMap<String, Host> = worker_addrs
+        .iter()
+        .map(|host| (host.name.clone(), host.clone()))
+        .collect();
 
     for attempt in 0..3 {
         // all stages to workers
-        let (stage_datas, final_addrs) =
-            assign_to_workers(query_id, &stages, workers.iter().collect())?;
+        let (task_datas, final_addrs) =
+            assign_to_workers(query_id, &stages, workers.values().collect())?;
 
         // we retry this a few times to ensure that the workers are ready
         // and can accept the stages
-        match try_distribute_stages(&stage_datas).await {
-            Ok(_) => return Ok(final_addrs),
+        match try_distribute_tasks(&task_datas).await {
+            Ok(_) => return Ok((final_addrs, task_datas)),
             Err(DFRayError::WorkerCommunicationError(bad_worker)) => {
                 error!(
                     "distribute stages for query {query_id} attempt {attempt} failed removing \
                      worker {bad_worker}. Retrying..."
                 );
                 // if we cannot communicate with a worker, we remove it from the list of workers
-                workers.remove(&bad_worker);
+                workers.remove(&bad_worker.name);
             }
             Err(e) => return Err(e),
         }
@@ -446,45 +480,34 @@ pub async fn distribute_stages(
 
 /// try to distribute the stages to the workers, if we cannot communicate with a
 /// worker return it as the element in the Err
-async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
+async fn try_distribute_tasks(task_datas: &[DDTask]) -> Result<()> {
     // we can use the stage data to distribute the stages to workers
-    for stage_data in stage_datas {
+    for task_data in task_datas {
         trace!(
-            "Distributing stage_id {}, pg: {:?} to worker: {:?}",
-            stage_data.stage_id,
-            stage_data.partition_group,
-            stage_data.assigned_addr
+            "Distributing Task: stage_id {}, pg: {:?} to worker: {:?}",
+            task_data.stage_id,
+            task_data.partition_group,
+            task_data.assigned_host
         );
 
         // populate its child stages
-        let mut stage_data = stage_data.clone();
-        stage_data.stage_addrs = Some(get_stage_addrs_from_stages(
+        let mut stage_data = task_data.clone();
+        stage_data.stage_addrs = Some(get_stage_addrs_from_tasks(
             &stage_data.child_stage_ids,
-            stage_datas,
+            task_datas,
         )?);
 
-        let mut client = match get_client(
-            &stage_data
-                .assigned_addr
-                .as_ref()
-                .context("Assigned stage address is missing")?
-                .name,
-            &stage_data
-                .assigned_addr
-                .as_ref()
-                .context("Assigned stage address is missing")?
-                .addr,
-        ) {
+        let host = stage_data
+            .assigned_host
+            .clone()
+            .context("Assigned host is missing for task data")?;
+
+        let mut client = match get_client(&host) {
             Ok(client) => client,
             Err(e) => {
                 error!("Couldn't not communicate with worker {e:#?}");
                 return Err(DFRayError::WorkerCommunicationError(
-                    stage_data
-                        .assigned_addr
-                        .as_ref()
-                        .cloned()
-                        .unwrap() // we know we can unwrap it as we checked a few lines up
-                        .name,
+                    host.clone(), // here
                 ));
             }
         };
@@ -518,15 +541,23 @@ async fn try_distribute_stages(stage_datas: &[StageData]) -> Result<()> {
 }
 
 // go through our stages, and further divide them into their partition
-// groups and produce a StageData for each partition group and assign it
+// groups and produce a DDTask for each partition group and assign it
 // to a worker
 fn assign_to_workers(
     query_id: &str,
-    stages: &[DFRayStage],
-    worker_addrs: Vec<(&String, &String)>,
-) -> Result<(Vec<StageData>, Addrs)> {
-    let mut stage_datas = vec![];
+    stages: &[DDStage],
+    worker_addrs: Vec<&Host>,
+) -> Result<(Vec<DDTask>, Addrs)> {
+    let mut task_datas = vec![];
     let mut worker_idx = 0;
+
+    trace!(
+        "assigning stages: {:?}",
+        stages
+            .iter()
+            .map(|s| format!("stage_id: {}, pgs:{:?}", s.stage_id, s.partition_groups))
+            .join(",\n")
+    );
 
     // keep track of which worker has the root of the plan tree (highest stage
     // number)
@@ -537,10 +568,7 @@ fn assign_to_workers(
         for partition_group in stage.partition_groups.iter() {
             let plan_bytes = physical_plan_to_bytes(stage.plan.clone())?;
 
-            let addr = Host {
-                name: worker_addrs[worker_idx].0.to_string(),
-                addr: worker_addrs[worker_idx].1.to_string(),
-            };
+            let host = worker_addrs[worker_idx].clone();
             worker_idx = (worker_idx + 1) % worker_addrs.len();
 
             if stage.stage_id as isize > max_stage_id {
@@ -556,11 +584,11 @@ fn assign_to_workers(
                         .or_default()
                         .entry(*part)
                         .or_default()
-                        .push((addr.name.clone(), addr.addr.clone()));
+                        .push(host.clone());
                 }
             }
 
-            let stage_data = StageData {
+            let task_data = DDTask {
                 query_id: query_id.to_string(),
                 stage_id: stage.stage_id,
                 plan_bytes,
@@ -569,19 +597,16 @@ fn assign_to_workers(
                 stage_addrs: None, // will be calculated and filled in later
                 num_output_partitions: stage.plan.output_partitioning().partition_count() as u64,
                 full_partitions: stage.full_partitions,
-                assigned_addr: Some(addr),
+                assigned_host: Some(host),
             };
-            stage_datas.push(stage_data);
+            task_datas.push(task_data);
         }
     }
 
-    Ok((stage_datas, final_addrs))
+    Ok((task_datas, final_addrs))
 }
 
-fn get_stage_addrs_from_stages(
-    target_stage_ids: &[u64],
-    stages: &[StageData],
-) -> Result<StageAddrs> {
+fn get_stage_addrs_from_tasks(target_stage_ids: &[u64], stages: &[DDTask]) -> Result<StageAddrs> {
     let mut stage_addrs = StageAddrs::default();
 
     // this can be more efficient
@@ -602,17 +627,12 @@ fn get_stage_addrs_from_stages(
                             .iter()
                             .filter(|s| s.stage_id == stage_id)
                             .map(|s| {
-                                Ok(Host {
-                                    name: s
-                                        .assigned_addr
-                                        .clone()
-                                        .context("assigned address missing")?
-                                        .name,
-                                    addr: s
-                                        .assigned_addr
-                                        .clone()
-                                        .context("assigned address missing")?
-                                        .addr,
+                                s.assigned_host.clone().ok_or_else(|| {
+                                    anyhow!(
+                                        "Assigned address is missing for stage_id: {}",
+                                        stage_id
+                                    )
+                                    .into()
                                 })
                             })
                             .collect::<Result<Vec<_>>>()?;
@@ -622,18 +642,10 @@ fn get_stage_addrs_from_stages(
                             .insert(*part, Hosts { hosts });
                     } else {
                         // we have the full partition, so this is the only address required
-                        let host = Host {
-                            name: stage
-                                .assigned_addr
-                                .clone()
-                                .context("Assigned address is missing")?
-                                .name,
-                            addr: stage
-                                .assigned_addr
-                                .clone()
-                                .context("Assigned address is missing")?
-                                .addr,
-                        };
+                        let host = stage
+                            .assigned_host
+                            .clone()
+                            .context("Assigned address is missing")?;
                         partition_addrs
                             .partition_addrs
                             .insert(*part, Hosts { hosts: vec![host] });

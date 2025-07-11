@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
+use arrow_flight::{Action, FlightClient};
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::{apps::v1::Deployment, core::v1::Pod};
 use kube::{
@@ -11,15 +13,18 @@ use kube::{
     Client,
 };
 use parking_lot::RwLock;
+use prost::Message;
+use tonic::transport::Channel;
 
 use crate::{
     logging::{debug, error, trace},
     result::Result,
+    vocab::Host,
 };
 
 static WORKER_DISCOVERY: OnceLock<Result<WorkerDiscovery>> = OnceLock::new();
 
-pub fn get_worker_addresses() -> Result<Vec<(String, String)>> {
+pub fn get_worker_addresses() -> Result<Vec<Host>> {
     match WORKER_DISCOVERY.get_or_init(WorkerDiscovery::new) {
         Ok(wd) => {
             let worker_addrs = wd.get_addresses();
@@ -27,7 +32,7 @@ pub fn get_worker_addresses() -> Result<Vec<(String, String)>> {
                 "Worker addresses found:\n{}",
                 worker_addrs
                     .iter()
-                    .map(|(name, addr)| format!("{}: {}", name, addr))
+                    .map(|host| format!("{host}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             );
@@ -38,7 +43,7 @@ pub fn get_worker_addresses() -> Result<Vec<(String, String)>> {
 }
 
 struct WorkerDiscovery {
-    addresses: Arc<RwLock<HashMap<String, (String, String)>>>,
+    addresses: Arc<RwLock<HashMap<String, Host>>>,
 }
 
 impl WorkerDiscovery {
@@ -50,12 +55,9 @@ impl WorkerDiscovery {
         Ok(wd)
     }
 
-    fn get_addresses(&self) -> Vec<(String, String)> {
+    fn get_addresses(&self) -> Vec<Host> {
         let guard = self.addresses.read();
-        guard
-            .iter()
-            .map(|(_ip, (name, addr))| (name.clone(), addr.clone()))
-            .collect()
+        guard.iter().map(|(_ip, host)| host.clone()).collect()
     }
 
     fn start(&self) -> Result<()> {
@@ -64,9 +66,13 @@ impl WorkerDiscovery {
         let worker_deployment_namespace_env = std::env::var("DFRAY_WORKER_DEPLOYMENT_NAMESPACE");
 
         if worker_addrs_env.is_ok() {
-            // if the env var is set, use it
-            self.set_worker_addresses_from_env(worker_addrs_env.unwrap().as_str())
-                .context("Failed to set worker addresses from env var")?;
+            let addresses = self.addresses.clone();
+            tokio::spawn(async move {
+                // if the env var is set, use it
+                set_worker_addresses_from_env(addresses, worker_addrs_env.unwrap().as_str())
+                    .await
+                    .expect("Could not set worker addresses from env");
+            });
         } else if worker_deployment_namespace_env.is_ok() && worker_deployment_env.is_ok() {
             let addresses = self.addresses.clone();
             let deployment = worker_deployment_env.unwrap();
@@ -87,24 +93,24 @@ impl WorkerDiscovery {
         }
         Ok(())
     }
-
-    fn set_worker_addresses_from_env(&self, env_str: &str) -> Result<()> {
-        // get addresss from an env var where addresses are split by comans
-        // and in the form of name/address,name/address
-        let mut guard = self.addresses.write();
-
-        for addr in env_str.split(',') {
-            let parts: Vec<&str> = addr.split('/').collect();
-            if parts.len() != 2 {
-                return Err(anyhow!("Invalid worker address format: {addr}").into());
-            }
-            let name = parts[0].to_string();
-            let address = parts[1].to_string();
-            guard.insert(address.clone(), (name, address));
-        }
-        Ok(())
-    }
 }
+
+async fn set_worker_addresses_from_env(
+    addresses: Arc<RwLock<HashMap<String, Host>>>,
+    env_str: &str,
+) -> Result<()> {
+    // get addresss from an env var where addresses are split by comans
+    // and in the form of name/address,name/address
+
+    for addr in env_str.split(',') {
+        let host = get_worker_host(addr.to_string())
+            .await
+            .context(format!("Failed to get worker host for address: {}", addr))?;
+        addresses.write().insert(addr.to_owned(), host);
+    }
+    Ok(())
+}
+
 /// Continuously watch for changes to pods in a Kubernetes deployment and call a
 /// handler function whenever the list of hosts changes.
 ///
@@ -120,7 +126,7 @@ impl WorkerDiscovery {
 /// Returns an error if there's an issue connecting to the Kubernetes API
 /// or if the deployment or its pods cannot be found
 async fn watch_deployment_hosts_continuous(
-    addresses: Arc<RwLock<HashMap<String, (String, String)>>>,
+    addresses: Arc<RwLock<HashMap<String, Host>>>,
     deployment_name: &str,
     namespace: &str,
 ) -> Result<()> {
@@ -186,15 +192,14 @@ async fn watch_deployment_hosts_continuous(
                     pod
                 );
                 if let Some(Some(_ip)) = pod.status.as_ref().map(|s| s.pod_ip.as_ref()) {
-                    let (pod_ip, name_str, host_str) = get_worker_info_from_pod(pod)?;
+                    let (pod_ip, host) = get_worker_info_from_pod(pod).await?;
                     debug!(
-                        "Pod {} has IP address {}, name {}, host {}",
+                        "Pod {} has IP address {}, host {}",
                         pod.name_any(),
                         pod_ip,
-                        name_str,
-                        host_str
+                        host
                     );
-                    addresses.write().insert(pod_ip, (name_str, host_str));
+                    addresses.write().insert(pod_ip, host);
                 } else {
                     trace!("Pod {} has no IP address, skipping", pod.name_any());
                 }
@@ -220,7 +225,35 @@ async fn watch_deployment_hosts_continuous(
     Ok(())
 }
 
-fn get_worker_info_from_pod(pod: &Pod) -> Result<(String, String, String)> {
+async fn get_worker_host(addr: String) -> Result<Host> {
+    let mut client = Channel::from_shared(format!("http://{addr}"))
+        .context("Failed to create channel")?
+        .connect_timeout(Duration::from_secs(2))
+        .connect()
+        .await
+        .map(FlightClient::new)
+        .context("Failed to connect to worker")?;
+
+    let action = Action {
+        r#type: "get_host".to_string(),
+        body: vec![].into(),
+    };
+
+    let mut response = client
+        .do_action(action)
+        .await
+        .context("Failed to send action to worker")?;
+
+    Ok(response
+        .try_next()
+        .await
+        .transpose()
+        .context("error consuming do_action response")?
+        .map(Host::decode)?
+        .context("Failed to decode Host from worker response")?)
+}
+
+async fn get_worker_info_from_pod(pod: &Pod) -> Result<(String, Host)> {
     let status = pod.status.as_ref().context("Pod has no status")?;
     let pod_ip = status.pod_ip.as_ref().context("Pod has no IP address")?;
 
@@ -249,7 +282,10 @@ fn get_worker_info_from_pod(pod: &Pod) -> Result<(String, String, String)> {
         Err(anyhow::anyhow!("Pod {} has no IP address", pod.name_any()).into())
     } else {
         let host_str = format!("{}:{}", pod_ip, port);
-        let name_str = format!("{}:{}", pod_ip, port); // for now
-        Ok((pod_ip.to_owned(), name_str, host_str))
+        let host = get_worker_host(host_str.clone()).await.context(format!(
+            "Failed to get worker host for pod {}",
+            pod.name_any()
+        ))?;
+        Ok((pod_ip.to_owned(), host))
     }
 }

@@ -56,7 +56,8 @@ impl FlightService for FlightServ {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         self.handler.do_get(request).await.inspect_err(|e| {
-            error!("Error in do_get: {:?}", e);
+            error!("Error in do_get: {:#?}", e);
+            log::error!("LOG Error in do_get: {:#?}", e);
         })
     }
 
@@ -107,7 +108,7 @@ impl FlightService for FlightServ {
         request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
         self.handler.do_action(request).await.inspect_err(|e| {
-            error!("Error in do_action: {:?}", e);
+            error!("Error in do_action: {:#?}", e);
         })
     }
 
@@ -166,7 +167,7 @@ impl FlightSqlService for FlightSqlServ {
             .get_flight_info_statement(query, request)
             .await
             .inspect_err(|e| {
-                error!("Error in do_flight_info_statement: {:?}", e);
+                error!("Error in do_flight_info_statement: {:#?}", e);
             })
     }
 
@@ -192,7 +193,7 @@ impl FlightSqlService for FlightSqlServ {
             .do_get_statement(ticket, request)
             .await
             .inspect_err(|e| {
-                error!("Error in do_get_statement: {:?}", e);
+                error!("Error in do_get_statement: {:#?}", e);
             })
     }
 }

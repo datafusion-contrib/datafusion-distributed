@@ -18,45 +18,35 @@ pub struct MaxRowsExecNode {
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct PartitionIsolatorExecNode {
-    #[prost(float, tag = "1")]
-    pub dummy: f32,
     #[prost(uint64, tag = "2")]
     pub partition_count: u64,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NumpangScanExecNode {
-    #[prost(message, optional, tag = "1")]
-    pub base_conf: ::core::option::Option<
-        ::datafusion_proto::protobuf::FileScanExecConf,
-    >,
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct DistributedAnalyzeExecNode {
+    /// how much data to show
+    #[prost(bool, tag = "1")]
+    pub verbose: bool,
+    /// if statistics should be displayed
+    #[prost(bool, tag = "2")]
+    pub show_statistics: bool,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct DistributedAnalyzeRootExecNode {
+    /// how much data to show
+    #[prost(bool, tag = "1")]
+    pub verbose: bool,
+    /// if statistics should be displayed
+    #[prost(bool, tag = "2")]
+    pub show_statistics: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ContextScanExecNode {
-    #[prost(message, optional, tag = "1")]
-    pub base_conf: ::core::option::Option<
-        ::datafusion_proto::protobuf::FileScanExecConf,
-    >,
-    #[prost(message, repeated, tag = "2")]
-    pub filters: ::prost::alloc::vec::Vec<::datafusion_proto::protobuf::LogicalExprNode>,
-    #[prost(message, optional, tag = "3")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DistributedExplainExecNode {
-    #[prost(message, optional, tag = "1")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    #[prost(string, tag = "2")]
-    pub logical_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub physical_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub distributed_plan: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub distributed_stages: ::prost::alloc::string::String,
+pub struct RecordBatchExecNode {
+    #[prost(bytes = "vec", tag = "1")]
+    pub batch: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DfRayExecNode {
-    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "df_ray_exec_node::Payload", tags = "1, 2, 3, 4, 5, 6")]
     pub payload: ::core::option::Option<df_ray_exec_node::Payload>,
 }
 /// Nested message and enum types in `DFRayExecNode`.
@@ -70,10 +60,37 @@ pub mod df_ray_exec_node {
         #[prost(message, tag = "3")]
         IsolatorExec(super::PartitionIsolatorExecNode),
         #[prost(message, tag = "4")]
-        NumpangExec(super::NumpangScanExecNode),
+        DistributedAnalyzeExec(super::DistributedAnalyzeExecNode),
         #[prost(message, tag = "5")]
-        ContextExec(super::ContextScanExecNode),
+        DistributedAnalyzeRootExec(super::DistributedAnalyzeRootExecNode),
+        #[prost(message, tag = "6")]
+        RecordBatchExec(super::RecordBatchExecNode),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnnotatedTaskOutput {
+    /// the output of the explain analyze
+    #[prost(string, tag = "1")]
+    pub plan: ::prost::alloc::string::String,
+    /// the host who executed this stage
+    #[prost(message, optional, tag = "2")]
+    pub host: ::core::option::Option<Host>,
+    /// the stage id that was executed
+    #[prost(uint64, tag = "3")]
+    pub stage_id: u64,
+    /// the partitions that were executed by this stage
+    #[prost(uint64, repeated, tag = "4")]
+    pub partition_group: ::prost::alloc::vec::Vec<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnnotatedTaskOutputs {
+    #[prost(message, repeated, tag = "1")]
+    pub outputs: ::prost::alloc::vec::Vec<AnnotatedTaskOutput>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FlightDataMetadata {
+    #[prost(message, optional, tag = "1")]
+    pub annotated_task_outputs: ::core::option::Option<AnnotatedTaskOutputs>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FlightTicketData {
@@ -101,9 +118,6 @@ pub struct TicketStatementData {
     /// the schema of the final stage
     #[prost(message, optional, tag = "4")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    /// For EXPLAIN queries, store the explain plan data directly
-    #[prost(message, optional, tag = "5")]
-    pub explain_data: ::core::option::Option<DistributedExplainExecNode>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Host {
@@ -129,7 +143,7 @@ pub struct StageAddrs {
     pub stage_addrs: ::std::collections::HashMap<u64, PartitionAddrs>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StageData {
+pub struct DdTask {
     #[prost(string, tag = "1")]
     pub query_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
@@ -147,5 +161,5 @@ pub struct StageData {
     #[prost(bool, tag = "8")]
     pub full_partitions: bool,
     #[prost(message, optional, tag = "9")]
-    pub assigned_addr: ::core::option::Option<Host>,
+    pub assigned_host: ::core::option::Option<Host>,
 }

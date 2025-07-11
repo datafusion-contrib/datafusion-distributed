@@ -2,18 +2,25 @@ use std::{
     collections::HashMap,
     fmt::Display,
     future::Future,
+    io::Cursor,
     pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
 
-use anyhow::Context as anyhowctx;
+use anyhow::{anyhow, Context as anyhowctx};
 use arrow::{
     array::RecordBatch,
     datatypes::SchemaRef,
     error::ArrowError,
-    ipc::{convert::fb_to_schema, root_as_message},
+    ipc::{
+        convert::fb_to_schema,
+        reader::StreamReader,
+        root_as_message,
+        writer::{IpcWriteOptions, StreamWriter},
+        MetadataVersion,
+    },
 };
 use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightData, Ticket};
 use async_stream::stream;
@@ -40,6 +47,7 @@ use parking_lot::RwLock;
 use prost::Message;
 use tokio::{
     macros::support::thread_rng_n,
+    net::TcpListener,
     runtime::{Handle, Runtime},
 };
 use tonic::transport::Channel;
@@ -51,7 +59,7 @@ use crate::{
     protobuf::StageAddrs,
     result::Result,
     stage_reader::DFRayStageReaderExec,
-    vocab::Addrs,
+    vocab::{Addrs, Host},
 };
 
 struct Spawner {
@@ -154,11 +162,7 @@ pub fn get_addrs(stage_addrs: &StageAddrs) -> Result<Addrs> {
     for (stage_id, partition_addrs) in stage_addrs.stage_addrs.iter() {
         let mut stage_addrs = HashMap::new();
         for (partition, hosts) in partition_addrs.partition_addrs.iter() {
-            let mut host_addrs = vec![];
-            for host in &hosts.hosts {
-                host_addrs.push((host.name.clone(), host.addr.clone()));
-            }
-            stage_addrs.insert(*partition, host_addrs);
+            stage_addrs.insert(*partition, hosts.hosts.clone());
         }
         addrs.insert(*stage_id, stage_addrs);
     }
@@ -176,6 +180,28 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     let schema = fb_to_schema(ipc_schema);
     let schema = Arc::new(schema);
     Ok(schema)
+}
+
+pub fn batch_to_ipc(batch: &RecordBatch) -> Result<Vec<u8>> {
+    let schema = batch.schema();
+    let buffer: Vec<u8> = Vec::new();
+    let options = IpcWriteOptions::try_new(8, false, MetadataVersion::V5)
+        .map_err(|e| internal_datafusion_err!("Cannot create ipcwriteoptions {e}"))?;
+
+    let mut stream_writer = StreamWriter::try_new_with_options(buffer, &schema, options)?;
+    stream_writer.write(batch)?;
+    let bytes = stream_writer.into_inner()?;
+    Ok(bytes)
+}
+
+pub fn ipc_to_batch(bytes: &[u8]) -> Result<RecordBatch> {
+    let mut stream_reader = StreamReader::try_new_buffered(Cursor::new(bytes), None)?;
+
+    match stream_reader.next() {
+        Some(Ok(batch_res)) => Ok(batch_res),
+        Some(Err(e)) => Err(e.into()),
+        None => Err(anyhow!("Expected a valid batch").into()),
+    }
 }
 
 /// produce a new SendableRecordBatchStream that will respect the rows
@@ -300,10 +326,8 @@ pub fn reporting_stream(
 }
 
 pub struct ProcessorClient {
-    /// The name of the processor we are connecting to
-    pub destination: String,
-    /// the address we are connecting to
-    addr: String,
+    /// the host we are connecting to
+    pub(crate) host: Host,
     /// The flight client to the processor
     inner: FlightClient,
     /// the channel cache in the factory
@@ -312,14 +336,12 @@ pub struct ProcessorClient {
 
 impl ProcessorClient {
     pub fn new(
-        name: String,
+        host: Host,
         inner: FlightClient,
         channels: Arc<RwLock<HashMap<String, Channel>>>,
-        addr: String,
     ) -> Self {
         Self {
-            destination: name,
-            addr,
+            host,
             inner,
             channels,
         }
@@ -332,8 +354,8 @@ impl ProcessorClient {
         let stream = self.inner.do_get(ticket).await
         .inspect_err(|e| {
             error!("Error in do_get for processor {}: {e:?}. 
-                Considering this channel poisoned and removing it from ProcessorClientFactory cache", self.destination);
-            self.channels.write().remove(&self.addr);
+                Considering this channel poisoned and removing it from ProcessorClientFactory cache", self.host);
+            self.channels.write().remove(&self.host.addr);
         })?;
 
         Ok(stream)
@@ -348,9 +370,9 @@ impl ProcessorClient {
                 "Error in do_action for processor {}: {e:?}. 
                     Considering this channel poisoned and removing it from ProcessorClientFactory \
                  cache",
-                self.destination
+                self.host
             );
-            self.channels.write().remove(&self.addr);
+            self.channels.write().remove(&self.host.addr);
         })?;
 
         Ok(result)
@@ -368,7 +390,7 @@ impl ProcessorClientFactory {
         }
     }
 
-    pub fn get_client(&self, name: &str, addr: &str) -> Result<ProcessorClient, DataFusionError> {
+    pub fn get_client(&self, host: &Host) -> Result<ProcessorClient, DataFusionError> {
         // ideally we want to reuse channels as Tonic encourages cloning them when
         // you can.   This could would allow us to lazily create channels and keep
         // them around so that on subsequent requests to the same address, we won't
@@ -391,18 +413,18 @@ impl ProcessorClientFactory {
         // higher number of processors, even 2. I'm going to leave in the
         // functionality for cached channels for now
 
-        let url = format!("http://{addr}");
+        let url = format!("http://{}", host.addr);
 
-        let maybe_chan = self.channels.read().get(addr).cloned();
+        let maybe_chan = self.channels.read().get(&host.addr).cloned();
         let chan = match maybe_chan {
             Some(chan) => {
-                debug!("ProcessorFactory using cached channel for {addr}");
+                debug!("ProcessorFactory using cached channel for {host}");
                 chan
             }
             None => {
-                let addr_c = addr.to_owned();
+                let host_str = host.to_string();
                 let fut = async move {
-                    trace!("ProcessorFactory connecting to {addr_c}");
+                    trace!("ProcessorFactory connecting to {host_str}");
                     Channel::from_shared(url.clone())
                         .map_err(|e| {
                             internal_datafusion_err!("ProcessorFactory invalid url {e:#?}")
@@ -421,30 +443,31 @@ impl ProcessorClientFactory {
                         "ProcessorFactory Cannot wait for channel connect future {e:#?}"
                     )
                 })??;
-                trace!("ProcessorFactory connected to {addr}");
-                self.channels.write().insert(addr.to_string(), chan.clone());
+                trace!("ProcessorFactory connected to {host}");
+                self.channels
+                    .write()
+                    .insert(host.addr.to_string(), chan.clone());
 
                 chan
             }
         };
-        debug!("ProcessorFactory have channel now for {addr}");
+        debug!("ProcessorFactory have channel now for {host}");
 
         let flight_client = FlightClient::new(chan);
-        debug!("ProcessorFactory made flight client for {addr}");
+        debug!("ProcessorFactory made flight client for {host}");
         Ok(ProcessorClient::new(
-            name.to_owned(),
+            host.clone(),
             flight_client,
             self.channels.clone(),
-            addr.to_owned(),
         ))
     }
 }
 
 static FACTORY: OnceLock<ProcessorClientFactory> = OnceLock::new();
 
-pub fn get_client(name: &str, addr: &str) -> Result<ProcessorClient, DataFusionError> {
+pub fn get_client(host: &Host) -> Result<ProcessorClient, DataFusionError> {
     let factory = FACTORY.get_or_init(ProcessorClientFactory::new);
-    factory.get_client(name, addr)
+    factory.get_client(host)
 }
 
 /// Copied from datafusion_physical_plan::union as its useful and not public
@@ -481,7 +504,10 @@ impl Stream for CombinedRecordBatchStream {
             let stream = self.entries.get_mut(idx).unwrap();
 
             match Pin::new(stream).poll_next(cx) {
-                Ready(Some(val)) => return Ready(Some(val)),
+                Ready(Some(val)) => {
+                    trace!("Combined stream got {:?}", val);
+                    return Ready(Some(val));
+                }
                 Ready(None) => {
                     // Remove the entry
                     self.entries.swap_remove(idx);
@@ -523,7 +549,7 @@ fn print_node(plan: &Arc<dyn ExecutionPlan>, indent: usize, output: &mut String)
         "[ output_partitions: {}]{:>indent$}{}",
         plan.output_partitioning().partition_count(),
         "",
-        displayable(plan.as_ref()).one_line(),
+        displayable(plan.as_ref()).set_show_schema(true).one_line(),
         indent = indent
     ));
 
@@ -615,6 +641,16 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
 
     ctx.register_object_store(ob_url.as_ref(), object_store);
     Ok(())
+}
+
+pub async fn start_up(port: usize) -> Result<TcpListener> {
+    let my_host_str = format!("0.0.0.0:{}", port);
+
+    let listener = TcpListener::bind(&my_host_str)
+        .await
+        .context("Could not bind socket to {my_host_str}")?;
+
+    Ok(listener)
 }
 
 #[cfg(test)]

@@ -220,7 +220,7 @@ except Exception as e:
     print(f"Error executing distributed query: {{str(e)}}", file=sys.stderr)
     sys.exit(1)
 "#,
-            self.get_proxy_address().split(':').last().unwrap()
+            self.get_proxy_address().split(':').next_back().unwrap()
         );
 
         let script_path = Self::write_temp_file(
@@ -271,15 +271,13 @@ except Exception as e:
         for port in &ports {
             // Find and kill processes using lsof
             if let Ok(output) = Command::new("lsof")
-                .args(&["-ti", &format!(":{}", port)])
+                .args(["-ti", &format!(":{}", port)])
                 .output()
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     if let Ok(pid) = line.trim().parse::<u32>() {
-                        let _ = Command::new("kill")
-                            .args(&["-9", &pid.to_string()])
-                            .output();
+                        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
                         println!("  🔥 Killed process {} on port {}", pid, port);
                     }
                 }
@@ -362,7 +360,7 @@ except Exception as e:
 
         // Check if packages are already installed
         let check_cmd = Command::new("python3")
-            .args(&["-c", "import adbc_driver_manager; import adbc_driver_flightsql; import duckdb; import pyarrow; print('OK')"])
+            .args(["-c", "import adbc_driver_manager; import adbc_driver_flightsql; import duckdb; import pyarrow; print('OK')"])
             .output();
 
         if let Ok(output) = check_cmd {
@@ -449,7 +447,7 @@ except Exception as e:
             let worker = Self::spawn_process(
                 binary_path_str,
                 &["--mode", "worker", "--port", &port.to_string()],
-                &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", &tpch_views)],
+                &[("DFRAY_TABLES", &tpch_tables), ("DFRAY_VIEWS", tpch_views)],
                 &format!("start worker {}", i + 1),
             )?;
             self.worker_processes.push(worker);
@@ -473,7 +471,7 @@ except Exception as e:
             &[
                 ("DFRAY_WORKER_ADDRESSES", &worker_addresses),
                 ("DFRAY_TABLES", &tpch_tables),
-                ("DFRAY_VIEWS", &tpch_views),
+                ("DFRAY_VIEWS", tpch_views),
             ],
             "start proxy",
         )?;
@@ -819,7 +817,7 @@ pub fn batches_to_sorted_strings(
     let mut in_table = false;
     let mut header_found = false;
 
-    for (_line_idx, line) in lines.iter().enumerate() {
+    for line in lines.iter() {
         let trimmed = line.trim();
 
         // Detect table boundaries (+---+)

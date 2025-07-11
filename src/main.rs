@@ -33,13 +33,11 @@ async fn main() -> Result<()> {
 
     match args.mode.as_str() {
         "proxy" => {
-            let mut service = DFRayProxyService::new(args.port);
-            service.start_up().await?;
+            let service = DFRayProxyService::new(new_friendly_name()?, args.port).await?;
             service.serve().await?;
         }
         "worker" => {
-            let mut service = DFRayProcessorService::new(new_friendly_name()?, args.port);
-            service.start_up().await?;
+            let service = DFRayProcessorService::new(new_friendly_name()?, args.port).await?;
             service.serve().await?;
         }
         _ => {

@@ -17,12 +17,20 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
+use arrow::datatypes::Schema;
 use arrow_flight::{
-    flight_service_server::FlightServiceServer, sql::TicketStatementQuery, FlightDescriptor,
-    FlightInfo, Ticket,
+    encode::FlightDataEncoderBuilder,
+    error::FlightError,
+    flight_service_server::FlightServiceServer,
+    sql::{ProstMessageExt, TicketStatementQuery},
+    FlightDescriptor, FlightEndpoint, FlightInfo, Ticket,
+};
+use datafusion::physical_plan::{
+    coalesce_partitions::CoalescePartitionsExec, ExecutionPlan, Partitioning,
 };
 use datafusion_substrait::substrait;
+use futures::TryStreamExt;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::{
@@ -32,27 +40,122 @@ use tokio::{
 use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
-    explain::is_explain_query,
     flight::{FlightSqlHandler, FlightSqlServ},
-    flight_handlers::FlightRequestHandler,
-    k8s::get_worker_addresses,
     logging::{debug, info, trace},
+    planning::{add_ctx_extentions, get_ctx},
     protobuf::TicketStatementData,
-    query_planner::QueryPlanner,
+    query_planner::{QueryPlan, QueryPlanner},
     result::Result,
+    stage_reader::DFRayStageReaderExec,
+    util::{display_plan_with_partition_counts, get_addrs, start_up},
+    vocab::{Addrs, Host},
+    worker_discovery::get_worker_addresses,
 };
 
 pub struct DfRayProxyHandler {
-    pub flight_handler: FlightRequestHandler,
+    /// our host info, useful for logging
+    pub host: Host,
+
+    pub planner: QueryPlanner,
 }
 
 impl DfRayProxyHandler {
-    pub fn new() -> Self {
+    pub fn new(name: String, addr: String) -> Self {
         // call this function to bootstrap the worker discovery mechanism
         get_worker_addresses().expect("Could not get worker addresses upon startup");
+
+        let host = Host {
+            name: name.clone(),
+            addr: addr.clone(),
+        };
         Self {
-            flight_handler: FlightRequestHandler::new(QueryPlanner::new()),
+            host: host.clone(),
+            planner: QueryPlanner::new(),
         }
+    }
+
+    pub fn create_flight_info_response(&self, query_plan: QueryPlan) -> Result<FlightInfo, Status> {
+        let mut flight_info = FlightInfo::new()
+            .try_with_schema(&query_plan.schema)
+            .map_err(|e| Status::internal(format!("Could not create flight info {e:?}")))?;
+
+        let ticket_data = TicketStatementData {
+            query_id: query_plan.query_id,
+            stage_id: query_plan.final_stage_id,
+            stage_addrs: Some(query_plan.worker_addresses.into()),
+            schema: Some(
+                query_plan
+                    .schema
+                    .try_into()
+                    .map_err(|e| Status::internal(format!("Could not convert schema {e:?}")))?,
+            ),
+        };
+
+        let ticket = Ticket::new(
+            TicketStatementQuery {
+                statement_handle: ticket_data.encode_to_vec().into(),
+            }
+            .as_any()
+            .encode_to_vec(),
+        );
+
+        let endpoint = FlightEndpoint::new().with_ticket(ticket);
+        flight_info = flight_info.with_endpoint(endpoint);
+
+        Ok(flight_info)
+    }
+
+    pub async fn execute_plan_and_build_stream(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        query_id: String,
+        stage_id: u64,
+        addrs: Addrs,
+    ) -> Result<Response<crate::flight::DoGetStream>, Status> {
+        let mut ctx =
+            get_ctx().map_err(|e| Status::internal(format!("Could not create context {e:?}")))?;
+
+        add_ctx_extentions(&mut ctx, &self.host, &query_id, stage_id, addrs, vec![])
+            .map_err(|e| Status::internal(format!("Could not add context extensions {e:?}")))?;
+
+        // TODO: revisit this to allow for consuming a partitular partition
+        trace!("calling execute plan");
+        let partition = 0;
+        let stream = plan
+            .execute(partition, ctx.task_ctx())
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Error executing plan for query_id {} partition {}: {e:?}",
+                    query_id, partition
+                ))
+            })?
+            .map_err(|e| FlightError::ExternalError(Box::new(e)));
+
+        let out_stream = FlightDataEncoderBuilder::new()
+            .build(stream)
+            .map_err(move |e| Status::internal(format!("Unexpected error building stream {e:?}")));
+
+        Ok(Response::new(Box::pin(out_stream)))
+    }
+
+    pub fn validate_single_stage_addrs(
+        &self,
+        addrs: &Addrs,
+        expected_stage_id: u64,
+    ) -> Result<(), Status> {
+        if addrs.len() != 1 {
+            return Err(Status::internal(format!(
+                "Expected exactly one stage in addrs, got {}",
+                addrs.len()
+            )));
+        }
+        if !addrs.contains_key(&expected_stage_id) {
+            return Err(Status::internal(format!(
+                "No addresses found for stage_id {} in addrs",
+                expected_stage_id
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -63,42 +166,16 @@ impl FlightSqlHandler for DfRayProxyHandler {
         query: arrow_flight::sql::CommandStatementQuery,
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let is_explain = is_explain_query(&query.query);
+        let query_plan = self
+            .planner
+            .prepare(&query.query)
+            .await
+            .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
 
-        if is_explain {
-            self.flight_handler
-                .handle_explain_request(&query.query)
-                .await
-        } else {
-            self.flight_handler.handle_query_request(&query.query).await
-        }
-    }
-
-    async fn do_get_statement(
-        &self,
-        ticket: TicketStatementQuery,
-        request: Request<Ticket>,
-    ) -> Result<Response<crate::flight::DoGetStream>, Status> {
-        trace!("do_get_statement");
-        let remote_addr = request
-            .remote_addr()
-            .map(|a| a.to_string())
-            .unwrap_or("unknown".to_string());
-
-        let tsd = TicketStatementData::decode(ticket.statement_handle)
-            .map_err(|e| Status::internal(format!("Cannot parse statement handle {e:?}")))?;
-
-        debug!("request for ticket: {:?} from {}", tsd, remote_addr);
-
-        if tsd.explain_data.is_some() {
-            self.flight_handler
-                .handle_explain_statement_execution(tsd, &remote_addr)
-                .await
-        } else {
-            self.flight_handler
-                .handle_regular_statement_execution(tsd, &remote_addr)
-                .await
-        }
+        self.create_flight_info_response(query_plan)
+            .map(Response::new)
+            .context("Could not create flight info response")
+            .map_err(|e| Status::internal(format!("Error creating flight info: {e:?}")))
     }
 
     async fn get_flight_info_substrait_plan(
@@ -112,8 +189,81 @@ impl FlightSqlHandler for DfRayProxyHandler {
             None => return Err(Status::invalid_argument("Missing Substrait plan")),
         };
 
-        self.flight_handler
-            .handle_substrait_info_request(plan)
+        let query_plan = self
+            .planner
+            .prepare_substrait(plan)
+            .await
+            .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
+
+        self.create_flight_info_response(query_plan)
+            .map(Response::new)
+            .context("Could not create flight info response")
+            .map_err(|e| Status::internal(format!("Error creating flight info: {e:?}")))
+    }
+
+    async fn do_get_statement(
+        &self,
+        ticket: arrow_flight::sql::TicketStatementQuery,
+        request: Request<Ticket>,
+    ) -> Result<Response<crate::flight::DoGetStream>, Status> {
+        trace!("do_get_statement");
+        let remote_addr = request
+            .remote_addr()
+            .map(|a| a.to_string())
+            .unwrap_or("unknown".to_string());
+
+        let tsd = TicketStatementData::decode(ticket.statement_handle)
+            .map_err(|e| Status::internal(format!("Cannot parse statement handle {e:?}")))?;
+
+        debug!("request for ticket: {:?} from {}", tsd, remote_addr);
+
+        let schema: Schema = tsd
+            .schema
+            .as_ref()
+            .ok_or_else(|| Status::internal("No schema in TicketStatementData"))?
+            .try_into()
+            .map_err(|e| Status::internal(format!("Cannot convert schema {e}")))?;
+
+        // Create an Addrs from the final stage information in the tsd
+        let stage_addrs = tsd.stage_addrs.ok_or_else(|| {
+            Status::internal("No stages_addrs in TicketStatementData, cannot proceed")
+        })?;
+
+        let addrs: Addrs = get_addrs(&stage_addrs).map_err(|e| {
+            Status::internal(format!("Cannot get addresses from stage_addrs {e:?}"))
+        })?;
+
+        trace!("calculated addrs: {:?}", addrs);
+
+        // Validate that addrs contains exactly one stage
+        self.validate_single_stage_addrs(&addrs, tsd.stage_id)?;
+
+        let stage_partition_addrs = addrs.get(&tsd.stage_id).ok_or_else(|| {
+            Status::internal(format!(
+                "No partition addresses found for stage_id {}",
+                tsd.stage_id
+            ))
+        })?;
+
+        let plan = Arc::new(
+            DFRayStageReaderExec::try_new(
+                Partitioning::UnknownPartitioning(stage_partition_addrs.len()),
+                Arc::new(schema),
+                tsd.stage_id,
+            )
+            // TODO: revisit this to allow for consuming a particular partition
+            .map(|stg| CoalescePartitionsExec::new(Arc::new(stg)))
+            .map_err(|e| Status::internal(format!("Unexpected error {e}")))?,
+        ) as Arc<dyn ExecutionPlan>;
+
+        debug!(
+            "request for query_id {} from {} reader plan:\n{}",
+            tsd.query_id,
+            remote_addr,
+            display_plan_with_partition_counts(&plan)
+        );
+
+        self.execute_plan_and_build_stream(plan, tsd.query_id, tsd.stage_id, addrs)
             .await
     }
 }
@@ -123,59 +273,40 @@ impl FlightSqlHandler for DfRayProxyHandler {
 ///
 /// It only responds to the DoGet Arrow Flight method
 pub struct DFRayProxyService {
-    listener: Option<TcpListener>,
+    listener: TcpListener,
     handler: Arc<DfRayProxyHandler>,
-    addr: Option<String>,
+    addr: String,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
-    port: usize,
 }
 
 impl DFRayProxyService {
-    pub fn new(port: usize) -> Self {
+    pub async fn new(name: String, port: usize) -> Result<Self> {
         debug!("Creating DFRayProxyService!");
-        let listener = None;
-        let addr = None;
 
         let (all_done_tx, all_done_rx) = channel(1);
         let all_done_tx = Arc::new(Mutex::new(all_done_tx));
 
-        let handler = Arc::new(DfRayProxyHandler::new());
+        let listener = start_up(port).await?;
 
-        Self {
+        let addr = format!("{}", listener.local_addr().unwrap());
+
+        info!("DFRayProcessorService bound to {addr}");
+
+        let handler = Arc::new(DfRayProxyHandler::new(name, addr.clone()));
+
+        Ok(Self {
             listener,
             handler,
             addr,
             all_done_tx,
             all_done_rx: Some(all_done_rx),
-            port,
-        }
-    }
-
-    pub async fn start_up(&mut self) -> Result<()> {
-        let my_host_str = format!("0.0.0.0:{}", self.port);
-
-        self.listener = TcpListener::bind(&my_host_str)
-            .await
-            .map(Some)
-            .context("Could not bind socket to {my_host_str}")?;
-
-        self.addr = Some(format!(
-            "{}",
-            self.listener.as_ref().unwrap().local_addr().unwrap()
-        ));
-
-        info!("DFRayProxyService bound to {}", self.addr.as_ref().unwrap());
-
-        Ok(())
+        })
     }
 
     /// get the address of the listing socket for this service
     pub fn addr(&self) -> Result<String> {
-        let addr = self.addr.clone().ok_or(anyhow!(
-            "DFRayProxyService not started yet, no address available"
-        ))?;
-        Ok(addr)
+        Ok(self.addr.clone())
     }
 
     pub async fn all_done(&self) -> Result<()> {
@@ -189,7 +320,7 @@ impl DFRayProxyService {
     }
 
     /// start the service
-    pub async fn serve(&mut self) -> Result<()> {
+    pub async fn serve(mut self) -> Result<()> {
         let mut all_done_rx = self.all_done_rx.take().unwrap();
 
         let signal = async move {
@@ -212,155 +343,14 @@ impl DFRayProxyService {
         //let svc = FlightServiceServer::new(service);
         let svc = FlightServiceServer::with_interceptor(service, intercept);
 
-        let listener = self.listener.take().unwrap();
-
         Server::builder()
             .add_service(svc)
             .serve_with_incoming_shutdown(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
+                tokio_stream::wrappers::TcpListenerStream::new(self.listener),
                 signal,
             )
             .await
             .context("error running service")?;
         Ok(())
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    // Test-specific imports
-    use arrow_flight::{
-        sql::{CommandStatementQuery, TicketStatementQuery},
-        FlightDescriptor, Ticket,
-    };
-    use prost::Message;
-    use tonic::Request;
-
-    use crate::test_utils::explain_test_helpers::{
-        create_explain_ticket_statement_data, create_test_proxy_handler,
-        verify_explain_stream_results,
-    };
-
-    #[tokio::test]
-    async fn test_get_flight_info_statement_explain() {
-        let handler = create_test_proxy_handler();
-
-        // Test EXPLAIN query
-        let command = CommandStatementQuery {
-            query: "EXPLAIN SELECT 1 as test_col".to_string(),
-            transaction_id: None,
-        };
-
-        let request = Request::new(FlightDescriptor::new_cmd(vec![]));
-        let result = handler.get_flight_info_statement(command, request).await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        let flight_info = response.into_inner();
-
-        // Verify FlightInfo structure
-        assert!(!flight_info.schema.is_empty());
-        assert_eq!(flight_info.endpoint.len(), 1);
-        assert!(flight_info.endpoint[0].ticket.is_some());
-
-        // Verify that ticket has content (encoded TicketStatementData)
-        let ticket = flight_info.endpoint[0].ticket.as_ref().unwrap();
-        assert!(!ticket.ticket.is_empty());
-
-        println!(
-            "✓ FlightInfo created successfully with {} schema bytes and ticket with {} bytes",
-            flight_info.schema.len(),
-            ticket.ticket.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_do_get_statement_explain() {
-        let handler = create_test_proxy_handler();
-
-        // First prepare an EXPLAIN query to get proper ticket data
-        let query = "EXPLAIN SELECT 1 as test_col";
-        let plans = handler
-            .flight_handler
-            .planner
-            .prepare_explain(query)
-            .await
-            .unwrap();
-
-        let tsd = create_explain_ticket_statement_data(plans);
-
-        // Create the ticket
-        let ticket_query = TicketStatementQuery {
-            statement_handle: tsd.encode_to_vec().into(),
-        };
-
-        let request = Request::new(Ticket::new(vec![]));
-        let result = handler.do_get_statement(ticket_query, request).await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        let stream = response.into_inner();
-
-        // Use shared verification function
-        verify_explain_stream_results(stream).await;
-    }
-
-    #[tokio::test]
-    async fn test_compare_explain_flight_info_responses() {
-        let handler = create_test_proxy_handler();
-        let query = "EXPLAIN SELECT 1 as test_col";
-
-        // Get FlightInfo from handle_explain_request
-        let result1 = handler
-            .flight_handler
-            .handle_explain_request(query)
-            .await
-            .unwrap();
-        let flight_info1 = result1.into_inner();
-
-        // Get FlightInfo from get_flight_info_statement
-        let command = CommandStatementQuery {
-            query: query.to_string(),
-            transaction_id: None,
-        };
-        let request = Request::new(FlightDescriptor::new_cmd(vec![]));
-        let result2 = handler
-            .get_flight_info_statement(command, request)
-            .await
-            .unwrap();
-        let flight_info2 = result2.into_inner();
-
-        // Compare FlightInfo responses (structure should be identical)
-        assert_eq!(flight_info1.schema.len(), flight_info2.schema.len()); // Same schema size
-        assert_eq!(flight_info1.endpoint.len(), flight_info2.endpoint.len()); // Same number of endpoints
-        assert_eq!(flight_info1.endpoint.len(), 1); // Both should have exactly one endpoint
-
-        // Both should have tickets with content
-        let ticket1 = flight_info1.endpoint[0].ticket.as_ref().unwrap();
-        let ticket2 = flight_info2.endpoint[0].ticket.as_ref().unwrap();
-        assert!(!ticket1.ticket.is_empty());
-        assert!(!ticket2.ticket.is_empty());
-
-        println!("✓ Both tests produce FlightInfo with identical structure:");
-        println!(
-            "  - Schema bytes: {} vs {}",
-            flight_info1.schema.len(),
-            flight_info2.schema.len()
-        );
-        println!(
-            "  - Endpoints: {} vs {}",
-            flight_info1.endpoint.len(),
-            flight_info2.endpoint.len()
-        );
-        println!(
-            "  - Ticket bytes: {} vs {}",
-            ticket1.ticket.len(),
-            ticket2.ticket.len()
-        );
-    }
-
-    // TODO: Add tests for regular (non-explain) queries
-    // We might need to create integration or end-to-end test infrastructure for this because
-    // they need workers
 }

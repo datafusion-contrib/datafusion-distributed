@@ -47,7 +47,6 @@ impl Default for DFRayStageOptimizerRule {
         Self::new()
     }
 }
-
 impl DFRayStageOptimizerRule {
     pub fn new() -> Self {
         Self {}
@@ -72,6 +71,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
                 || plan.as_any().downcast_ref::<SortExec>().is_some()
                 || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
             {
+                // insert a stage marker here so we know where to break up the physical plan later
                 let stage = Arc::new(DFRayStageExec::new(plan, stage_counter));
                 stage_counter += 1;
                 Ok(Transformed::yes(stage as Arc<dyn ExecutionPlan>))
@@ -80,7 +80,7 @@ impl PhysicalOptimizerRule for DFRayStageOptimizerRule {
             }
         };
 
-        let plan = plan.transform_up(up)?.data;
+        let plan = plan.clone().transform_up(up)?.data;
         let final_plan =
             Arc::new(DFRayStageExec::new(plan, stage_counter)) as Arc<dyn ExecutionPlan>;
 
