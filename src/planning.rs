@@ -451,6 +451,10 @@ pub async fn distribute_stages(
         .collect();
 
     for attempt in 0..3 {
+        if workers.is_empty() {
+            return Err(anyhow!("No workers available to distribute stages").into());
+        }
+
         // all stages to workers
         let (task_datas, final_addrs) =
             assign_to_workers(query_id, &stages, workers.values().collect())?;
