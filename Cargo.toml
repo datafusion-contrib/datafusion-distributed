@@ -28,9 +28,13 @@ license = "Apache-2.0"
 rust-version = "1.82"
 build = "build.rs"
 
+[lib]
+name = "distributed_datafusion"
+path = "src/lib.rs"
+
 [[bin]]
 name = "distributed-datafusion"
-path = "src/main.rs"
+path = "src/bin/distributed-datafusion.rs"
 
 [dependencies]
 anyhow = "1"

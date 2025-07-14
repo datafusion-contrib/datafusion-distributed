@@ -68,14 +68,10 @@ if [ "$NUM_WORKERS" -lt 1 ]; then
 fi
 
 # Check if the binary exists, build if not
-if [ ! -f "./target/release/distributed-datafusion" ]; then
+if [ ! -f "./target/debug/distributed-datafusion" ]; then
     echo "Binary not found, building release version..."
     echo "This may take a few minutes on first run..."
-    if [ -f "./build.sh" ]; then
-        ./build.sh #--release
-    else
-        cargo build #--release
-    fi
+    cargo build #--release
 
     # Verify the build was successful
     #if [ ! -f "./target/release/distributed-datafusion" ]; then
