@@ -31,7 +31,21 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct DDCodec {}
+pub struct DDCodec {
+    sub_codec: Arc<dyn PhysicalExtensionCodec>,
+}
+
+impl DDCodec {
+    pub fn new(sub_codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
+        Self { sub_codec }
+    }
+}
+
+impl Default for DDCodec {
+    fn default() -> Self {
+        Self::new(Arc::new(DefaultPhysicalExtensionCodec {}))
+    }
+}
 
 impl PhysicalExtensionCodec for DDCodec {
     fn try_decode(
@@ -127,6 +141,13 @@ impl PhysicalExtensionCodec for DDCodec {
                     Ok(Arc::new(RecordBatchExec::new(batch)))
                 }
             }
+        } else if let Ok(ext) = self.sub_codec.try_decode(buf, inputs, registry) {
+            // If the node is not a DDExecNode, we delegate to the sub codec
+            trace!(
+                "Delegated decoding to sub codec for node: {}",
+                displayable(ext.as_ref()).one_line()
+            );
+            Ok(ext)
         } else {
             internal_err!("cannot decode proto extension in distributed datafusion codec")
         }
@@ -151,52 +172,58 @@ impl PhysicalExtensionCodec for DDCodec {
                 stage_id: reader.stage_id,
             };
 
-            Payload::StageReaderExec(pb)
+            Some(Payload::StageReaderExec(pb))
         } else if let Some(pi) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
             let pb = PartitionIsolatorExecNode {
                 partition_count: pi.partition_count as u64,
             };
 
-            Payload::IsolatorExec(pb)
+            Some(Payload::IsolatorExec(pb))
         } else if let Some(max) = node.as_any().downcast_ref::<MaxRowsExec>() {
             let pb = MaxRowsExecNode {
                 max_rows: max.max_rows as u64,
             };
-            Payload::MaxRowsExec(pb)
+            Some(Payload::MaxRowsExec(pb))
         } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeExec>() {
             let pb = DistributedAnalyzeExecNode {
                 verbose: exec.verbose,
                 show_statistics: exec.show_statistics,
             };
-            Payload::DistributedAnalyzeExec(pb)
+            Some(Payload::DistributedAnalyzeExec(pb))
         } else if let Some(exec) = node.as_any().downcast_ref::<DistributedAnalyzeRootExec>() {
             let pb = DistributedAnalyzeRootExecNode {
                 verbose: exec.verbose,
                 show_statistics: exec.show_statistics,
             };
-            Payload::DistributedAnalyzeRootExec(pb)
+            Some(Payload::DistributedAnalyzeRootExec(pb))
         } else if let Some(exec) = node.as_any().downcast_ref::<RecordBatchExec>() {
             let pb = RecordBatchExecNode {
                 batch: batch_to_ipc(&exec.batch).map_err(|e| {
                     internal_datafusion_err!("Failed to encode RecordBatch: {:#?}", e)
                 })?,
             };
-            Payload::RecordBatchExec(pb)
+            Some(Payload::RecordBatchExec(pb))
         } else {
-            return internal_err!("Not supported node to encode to proto");
+            trace!(
+                "Node {} is not a custom DDExecNode, delegating to sub codec",
+                displayable(node.as_ref()).one_line()
+            );
+            None
         };
 
-        let pb = DdExecNode {
-            payload: Some(payload),
-        };
-        pb.encode(buf)
-            .map_err(|e| internal_datafusion_err!("Failed to encode protobuf: {}", e))?;
-
-        trace!(
-            "DONE encoding node: {}",
-            displayable(node.as_ref()).one_line()
-        );
-        Ok(())
+        match payload {
+            Some(payload) => {
+                let pb = DdExecNode {
+                    payload: Some(payload),
+                };
+                pb.encode(buf)
+                    .map_err(|e| internal_datafusion_err!("Failed to encode protobuf: {:#?}", e))
+            }
+            None => {
+                // If the node is not one of our custom nodes, we delegate to the sub codec
+                self.sub_codec.try_encode(node, buf)
+            }
+        }
     }
 }
 
@@ -225,7 +252,7 @@ mod test {
 
     fn verify_round_trip(exec: Arc<dyn ExecutionPlan>) {
         let ctx = SessionContext::new();
-        let codec = DDCodec {};
+        let codec = DDCodec::new(Arc::new(DefaultPhysicalExtensionCodec {}));
 
         // serialize execution plan to proto
         let proto: protobuf::PhysicalPlanNode =
@@ -255,7 +282,7 @@ mod test {
         let schema = create_test_schema();
         let part = Partitioning::UnknownPartitioning(2);
         let exec = Arc::new(DDStageReaderExec::try_new(part, schema, 1).unwrap());
-        let codec = DDCodec {};
+        let codec = DDCodec::new(Arc::new(DefaultPhysicalExtensionCodec {}));
         let mut buf = vec![];
         codec.try_encode(exec.clone(), &mut buf).unwrap();
         let ctx = SessionContext::new();

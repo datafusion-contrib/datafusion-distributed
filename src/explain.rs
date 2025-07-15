@@ -11,13 +11,17 @@ use datafusion::{
     physical_plan::{displayable, ExecutionPlan},
     prelude::SessionContext,
 };
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use crate::{result::Result, util::bytes_to_physical_plan, vocab::DDTask};
 
-pub fn format_distributed_tasks(tasks: &[DDTask]) -> Result<String> {
+pub fn format_distributed_tasks(
+    tasks: &[DDTask],
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<String> {
     let mut result = String::new();
     for (i, task) in tasks.iter().enumerate() {
-        let plan = bytes_to_physical_plan(&SessionContext::new(), &task.plan_bytes)
+        let plan = bytes_to_physical_plan(&SessionContext::new(), &task.plan_bytes, codec)
             .context("unable to decode task plan for formatted output")?;
 
         result.push_str(&format!(
@@ -45,6 +49,7 @@ pub fn build_explain_batch(
     physical_plan: &Arc<dyn ExecutionPlan>,
     distributed_plan: &Arc<dyn ExecutionPlan>,
     distributed_tasks: &[DDTask],
+    codec: &dyn PhysicalExtensionCodec,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("plan_type", DataType::Utf8, false),
@@ -64,7 +69,7 @@ pub fn build_explain_batch(
         displayable(distributed_plan.as_ref())
             .indent(true)
             .to_string(),
-        format_distributed_tasks(distributed_tasks)?,
+        format_distributed_tasks(distributed_tasks, codec)?,
     ]);
 
     let batch = RecordBatch::try_new(schema, vec![Arc::new(plan_types), Arc::new(plans)])?;

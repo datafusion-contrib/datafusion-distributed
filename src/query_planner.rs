@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context as AnyhowContext};
 use arrow::{compute::concat_batches, datatypes::SchemaRef};
 use datafusion::{
     logical_expr::LogicalPlan,
@@ -8,10 +8,13 @@ use datafusion::{
     prelude::SessionContext,
 };
 
+use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
 use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
 use tokio_stream::StreamExt;
 
 use crate::{
+    codec::DDCodec,
+    customizer::Customizer,
     explain::build_explain_batch,
     planning::{
         distribute_stages, execution_planning, get_ctx, logical_planning, physical_planning,
@@ -55,17 +58,28 @@ impl std::fmt::Debug for QueryPlan {
 }
 
 /// Query planner responsible for preparing SQL queries for distributed execution
-pub struct QueryPlanner;
+pub struct QueryPlanner {
+    customizer: Option<Arc<dyn Customizer>>,
+    codec: Arc<dyn PhysicalExtensionCodec>,
+}
 
 impl Default for QueryPlanner {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl QueryPlanner {
-    pub fn new() -> Self {
-        Self
+    pub fn new(customizer: Option<Arc<dyn Customizer>>) -> Self {
+        let codec = Arc::new(DDCodec::new(
+            customizer
+                .clone()
+                .map(|c| c as Arc<dyn PhysicalExtensionCodec>)
+                .or(Some(Arc::new(DefaultPhysicalExtensionCodec {})))
+                .unwrap(),
+        ));
+
+        Self { customizer, codec }
     }
 
     /// Common planning steps shared by both query and its EXPLAIN
@@ -73,7 +87,13 @@ impl QueryPlanner {
     /// Prepare a query by parsing the SQL, planning it, and distributing the
     /// physical plan into stages that can be executed by workers.
     pub async fn prepare(&self, sql: &str) -> Result<QueryPlan> {
-        let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        let mut ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        if let Some(customizer) = &self.customizer {
+            customizer
+                .customize(&mut ctx)
+                .await
+                .map_err(|e| anyhow!("Customization failed: {e:#?}"))?;
+        }
 
         let logical_plan = logical_planning(sql, &ctx).await?;
 
@@ -153,6 +173,7 @@ impl QueryPlanner {
             &query_plan.physical_plan,
             &query_plan.distributed_plan,
             &query_plan.distributed_tasks,
+            self.codec.as_ref(),
         )?;
         let physical_plan = Arc::new(RecordBatchExec::new(batch));
 
@@ -185,8 +206,13 @@ impl QueryPlanner {
 
         // distribute the stages to workers, further dividing them up
         // into chunks of partitions (partition_groups)
-        let (final_workers, tasks) =
-            distribute_stages(&query_id, distributed_stages, worker_addrs).await?;
+        let (final_workers, tasks) = distribute_stages(
+            &query_id,
+            distributed_stages,
+            worker_addrs,
+            self.codec.as_ref(),
+        )
+        .await?;
 
         let qp = QueryPlan {
             query_id,

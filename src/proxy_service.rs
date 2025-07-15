@@ -40,7 +40,7 @@ use tokio::{
 use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
-    ctx_customizer::CtxCustomizer,
+    customizer::Customizer,
     flight::{FlightSqlHandler, FlightSqlServ},
     logging::{debug, info, trace},
     planning::{add_ctx_extentions, get_ctx},
@@ -59,15 +59,12 @@ pub struct DDProxyHandler {
 
     pub planner: QueryPlanner,
 
-    pub ctx_customizer: Option<Arc<dyn CtxCustomizer + Send + Sync>>,
+    /// Optional customizer for our context and proto serde
+    pub customizer: Option<Arc<dyn Customizer>>,
 }
 
 impl DDProxyHandler {
-    pub fn new(
-        name: String,
-        addr: String,
-        ctx_customizer: Option<Arc<dyn CtxCustomizer + Send + Sync>>,
-    ) -> Self {
+    pub fn new(name: String, addr: String, customizer: Option<Arc<dyn Customizer>>) -> Self {
         // call this function to bootstrap the worker discovery mechanism
         get_worker_addresses().expect("Could not get worker addresses upon startup");
 
@@ -77,8 +74,8 @@ impl DDProxyHandler {
         };
         Self {
             host: host.clone(),
-            planner: QueryPlanner::new(),
-            ctx_customizer,
+            planner: QueryPlanner::new(customizer.clone()),
+            customizer,
         }
     }
 
@@ -126,8 +123,9 @@ impl DDProxyHandler {
         add_ctx_extentions(&mut ctx, &self.host, &query_id, stage_id, addrs, vec![])
             .map_err(|e| Status::internal(format!("Could not add context extensions {e:?}")))?;
 
-        if let Some(ref c) = self.ctx_customizer {
+        if let Some(ref c) = self.customizer {
             c.customize(&mut ctx)
+                .await
                 .map_err(|e| Status::internal(format!("Could not customize context {e:?}")))?;
         }
 
@@ -294,7 +292,7 @@ impl DDProxyService {
     pub async fn new(
         name: String,
         port: usize,
-        ctx_customizer: Option<Arc<dyn CtxCustomizer + Send + Sync>>,
+        ctx_customizer: Option<Arc<dyn Customizer>>,
     ) -> Result<Self> {
         debug!("Creating DDProxyService!");
 

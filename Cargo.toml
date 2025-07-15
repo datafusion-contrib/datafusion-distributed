@@ -40,6 +40,7 @@ path = "src/bin/distributed-datafusion.rs"
 anyhow = "1"
 arrow = { version = "55.1", features = ["ipc"] }
 arrow-flight = { version = "55", features = ["flight-sql-experimental"] }
+async-trait = "0.1.88"
 async-stream = "0.3"
 bytes = "1.5"
 clap = { version = "4.4", features = ["derive"] }

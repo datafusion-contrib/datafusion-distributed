@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
             service.serve().await?;
         }
         "worker" => {
-            let service = DDWorkerService::new(new_friendly_name()?, args.port).await?;
+            let service = DDWorkerService::new(new_friendly_name()?, args.port, None).await?;
             service.serve().await?;
         }
         _ => {

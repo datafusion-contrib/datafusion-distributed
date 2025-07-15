@@ -1725,6 +1725,7 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-stream",
+ "async-trait",
  "bytes",
  "clap",
  "datafusion",

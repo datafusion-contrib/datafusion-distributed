@@ -38,7 +38,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use futures::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
     aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, http::HttpBuilder, ObjectStore,
@@ -133,13 +133,15 @@ where
     out
 }
 
-pub fn physical_plan_to_bytes(plan: Arc<dyn ExecutionPlan>) -> Result<Vec<u8>, DataFusionError> {
+pub fn physical_plan_to_bytes(
+    plan: Arc<dyn ExecutionPlan>,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Vec<u8>, DataFusionError> {
     trace!(
         "serializing plan to bytes. plan:\n{}",
         display_plan_with_partition_counts(&plan)
     );
-    let codec = DDCodec {};
-    let proto = datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, &codec)?;
+    let proto = datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, codec)?;
     let bytes = proto.encode_to_vec();
 
     Ok(bytes)
@@ -148,11 +150,11 @@ pub fn physical_plan_to_bytes(plan: Arc<dyn ExecutionPlan>) -> Result<Vec<u8>, D
 pub fn bytes_to_physical_plan(
     ctx: &SessionContext,
     plan_bytes: &[u8],
+    codec: &dyn PhysicalExtensionCodec,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let proto_plan = datafusion_proto::protobuf::PhysicalPlanNode::try_decode(plan_bytes)?;
 
-    let codec = DDCodec {};
-    let plan = proto_plan.try_into_physical_plan(ctx, ctx.runtime_env().as_ref(), &codec)?;
+    let plan = proto_plan.try_into_physical_plan(ctx, ctx.runtime_env().as_ref(), codec)?;
     Ok(plan)
 }
 

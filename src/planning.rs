@@ -24,6 +24,7 @@ use datafusion::{
     },
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::TryStreamExt;
 use itertools::Itertools;
 use prost::Message;
@@ -439,6 +440,7 @@ pub async fn distribute_stages(
     query_id: &str,
     stages: Vec<DDStage>,
     worker_addrs: Vec<Host>,
+    codec: &dyn PhysicalExtensionCodec,
 ) -> Result<(Addrs, Vec<DDTask>)> {
     // map of worker name to address
     // FIXME: use types over tuples of strings, as we can accidently swap them and
@@ -457,7 +459,7 @@ pub async fn distribute_stages(
 
         // all stages to workers
         let (task_datas, final_addrs) =
-            assign_to_workers(query_id, &stages, workers.values().collect())?;
+            assign_to_workers(query_id, &stages, workers.values().collect(), codec)?;
 
         // we retry this a few times to ensure that the workers are ready
         // and can accept the stages
@@ -551,6 +553,7 @@ fn assign_to_workers(
     query_id: &str,
     stages: &[DDStage],
     worker_addrs: Vec<&Host>,
+    codec: &dyn PhysicalExtensionCodec,
 ) -> Result<(Vec<DDTask>, Addrs)> {
     let mut task_datas = vec![];
     let mut worker_idx = 0;
@@ -570,7 +573,7 @@ fn assign_to_workers(
 
     for stage in stages {
         for partition_group in stage.partition_groups.iter() {
-            let plan_bytes = physical_plan_to_bytes(stage.plan.clone())?;
+            let plan_bytes = physical_plan_to_bytes(stage.plan.clone(), codec)?;
 
             let host = worker_addrs[worker_idx].clone();
             worker_idx = (worker_idx + 1) % worker_addrs.len();
