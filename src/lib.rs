@@ -24,6 +24,7 @@ pub use proto::generated::protobuf;
 
 pub mod analyze;
 pub mod codec;
+pub mod ctx_customizer;
 pub mod explain;
 pub mod flight;
 pub mod friendly;
