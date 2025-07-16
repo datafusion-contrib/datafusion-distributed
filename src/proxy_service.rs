@@ -40,6 +40,7 @@ use tokio::{
 use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
+    customizer::Customizer,
     flight::{FlightSqlHandler, FlightSqlServ},
     logging::{debug, info, trace},
     planning::{add_ctx_extentions, get_ctx},
@@ -57,10 +58,13 @@ pub struct DDProxyHandler {
     pub host: Host,
 
     pub planner: QueryPlanner,
+
+    /// Optional customizer for our context and proto serde
+    pub customizer: Option<Arc<dyn Customizer>>,
 }
 
 impl DDProxyHandler {
-    pub fn new(name: String, addr: String) -> Self {
+    pub fn new(name: String, addr: String, customizer: Option<Arc<dyn Customizer>>) -> Self {
         // call this function to bootstrap the worker discovery mechanism
         get_worker_addresses().expect("Could not get worker addresses upon startup");
 
@@ -70,7 +74,8 @@ impl DDProxyHandler {
         };
         Self {
             host: host.clone(),
-            planner: QueryPlanner::new(),
+            planner: QueryPlanner::new(customizer.clone()),
+            customizer,
         }
     }
 
@@ -117,6 +122,12 @@ impl DDProxyHandler {
 
         add_ctx_extentions(&mut ctx, &self.host, &query_id, stage_id, addrs, vec![])
             .map_err(|e| Status::internal(format!("Could not add context extensions {e:?}")))?;
+
+        if let Some(ref c) = self.customizer {
+            c.customize(&mut ctx)
+                .await
+                .map_err(|e| Status::internal(format!("Could not customize context {e:?}")))?;
+        }
 
         // TODO: revisit this to allow for consuming a partitular partition
         trace!("calling execute plan");
@@ -278,7 +289,11 @@ pub struct DDProxyService {
 }
 
 impl DDProxyService {
-    pub async fn new(name: String, port: usize) -> Result<Self> {
+    pub async fn new(
+        name: String,
+        port: usize,
+        ctx_customizer: Option<Arc<dyn Customizer>>,
+    ) -> Result<Self> {
         debug!("Creating DDProxyService!");
 
         let (all_done_tx, all_done_rx) = channel(1);
@@ -290,7 +305,7 @@ impl DDProxyService {
 
         info!("DDProxyService bound to {addr}");
 
-        let handler = Arc::new(DDProxyHandler::new(name, addr.clone()));
+        let handler = Arc::new(DDProxyHandler::new(name, addr.clone(), ctx_customizer));
 
         Ok(Self {
             listener,

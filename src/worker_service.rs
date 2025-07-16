@@ -33,6 +33,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, ExecutionPlanProperties},
     prelude::SessionContext,
 };
+use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
 use futures::{StreamExt, TryStreamExt};
 use parking_lot::{Mutex, RwLock};
 use prost::Message;
@@ -44,6 +45,8 @@ use tonic::{async_trait, transport::Server, Request, Response, Status};
 
 use crate::{
     analyze::DistributedAnalyzeExec,
+    codec::DDCodec,
+    customizer::Customizer,
     flight::{FlightHandler, FlightServ},
     logging::{debug, error, info, trace},
     planning::{add_ctx_extentions, get_ctx},
@@ -94,10 +97,15 @@ struct DDWorkerHandler {
     /// our map of query_id -> (session ctx, execution plan)
     stages: Arc<RwLock<HashMap<StageKey, StageTasks>>>,
     done: Arc<Mutex<bool>>,
+
+    /// Optional customizer for our context and proto serde
+    pub customizer: Option<Arc<dyn Customizer>>,
+
+    codec: Arc<dyn PhysicalExtensionCodec>,
 }
 
 impl DDWorkerHandler {
-    pub fn new(name: String, addr: String) -> Self {
+    pub fn new(name: String, addr: String, customizer: Option<Arc<dyn Customizer>>) -> Self {
         let stages: Arc<RwLock<HashMap<StageKey, StageTasks>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let done = Arc::new(Mutex::new(false));
@@ -153,11 +161,21 @@ impl DDWorkerHandler {
             }
         });
 
+        let codec = Arc::new(DDCodec::new(
+            customizer
+                .clone()
+                .map(|c| c as Arc<dyn PhysicalExtensionCodec>)
+                .or(Some(Arc::new(DefaultPhysicalExtensionCodec {})))
+                .unwrap(),
+        ));
+
         Self {
             name,
             addr,
             stages,
             done,
+            customizer,
+            codec,
         }
     }
 
@@ -185,10 +203,11 @@ impl DDWorkerHandler {
             )
             .await?;
 
-        let plan = bytes_to_physical_plan(&ctx, plan_bytes).context(format!(
-            "{}, Could not decode plan for query_id {} stage {}",
-            self.name, query_id, stage_id
-        ))?;
+        let plan =
+            bytes_to_physical_plan(&ctx, plan_bytes, self.codec.as_ref()).context(format!(
+                "{}, Could not decode plan for query_id {} stage {}",
+                self.name, query_id, stage_id
+            ))?;
 
         let partitions = if full_partitions {
             partition_group.clone()
@@ -626,7 +645,11 @@ pub struct DDWorkerService {
 }
 
 impl DDWorkerService {
-    pub async fn new(name: String, port: usize) -> Result<Self> {
+    pub async fn new(
+        name: String,
+        port: usize,
+        customizer: Option<Arc<dyn Customizer>>,
+    ) -> Result<Self> {
         let name = format!("[{}]", name);
 
         let (all_done_tx, all_done_rx) = channel(1);
@@ -638,7 +661,7 @@ impl DDWorkerService {
 
         info!("DDWorkerService bound to {addr}");
 
-        let handler = Arc::new(DDWorkerHandler::new(name.clone(), addr.clone()));
+        let handler = Arc::new(DDWorkerHandler::new(name.clone(), addr.clone(), customizer));
 
         Ok(Self {
             name,
