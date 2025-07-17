@@ -18,10 +18,7 @@ use futures::{stream::TryStreamExt, StreamExt};
 use prost::Message;
 
 use crate::{
-    logging::{error, trace},
-    protobuf::{FlightDataMetadata, FlightTicketData},
-    util::{get_client, CombinedRecordBatchStream},
-    vocab::{CtxAnnotatedOutputs, CtxHost, CtxStageAddrs},
+    logging::{error, trace}, protobuf::{FlightDataMetadata, FlightTicketData}, transport, util::CombinedRecordBatchStream, vocab::{CtxAnnotatedOutputs, CtxHost, CtxStageAddrs}
 };
 
 pub(crate) struct QueryId(pub String);
@@ -148,7 +145,7 @@ impl ExecutionPlan for DDStageReaderExec {
                 ))
             })??
             .iter()
-            .map(get_client)
+            .map(transport::get)
             .collect::<Result<Vec<_>>>()?;
 
         trace!("got clients.  {name} num clients: {}", clients.len());

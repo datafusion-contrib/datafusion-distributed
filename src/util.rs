@@ -22,9 +22,8 @@ use arrow::{
         MetadataVersion,
     },
 };
-use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightData, Ticket};
+use arrow_flight::FlightData;
 use async_stream::stream;
-use bytes::Bytes;
 use datafusion::{
     common::{
         internal_datafusion_err,
@@ -39,27 +38,24 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use futures::{stream::BoxStream, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use object_store::{
     aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, http::HttpBuilder, ObjectStore,
 };
-use parking_lot::RwLock;
 use prost::Message;
 use tokio::{
     macros::support::thread_rng_n,
     net::TcpListener,
     runtime::{Handle, Runtime},
 };
-use tonic::transport::Channel;
 use url::Url;
 
 use crate::{
-    codec::DDCodec,
     logging::{debug, error, trace},
     protobuf::StageAddrs,
     result::Result,
     stage_reader::DDStageReaderExec,
-    vocab::{Addrs, Host},
+    vocab::{Addrs}
 };
 
 struct Spawner {
@@ -325,129 +321,6 @@ pub fn reporting_stream(
     };
 
     Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
-}
-
-pub struct WorkerClient {
-    /// the host we are connecting to
-    pub(crate) host: Host,
-    /// The flight client to the worker
-    inner: FlightClient,
-    /// the channel cache in the factory
-    channels: Arc<RwLock<HashMap<String, Channel>>>,
-}
-
-impl WorkerClient {
-    pub fn new(
-        host: Host,
-        inner: FlightClient,
-        channels: Arc<RwLock<HashMap<String, Channel>>>,
-    ) -> Self {
-        Self {
-            host,
-            inner,
-            channels,
-        }
-    }
-
-    pub async fn do_get(
-        &mut self,
-        ticket: Ticket,
-    ) -> arrow_flight::error::Result<FlightRecordBatchStream> {
-        let stream = self.inner.do_get(ticket).await.inspect_err(|e| {
-            error!(
-                "Error in do_get for worker {}: {e:?}. 
-                Considering this channel poisoned and removing it from WorkerClientFactory cache",
-                self.host
-            );
-            self.channels.write().remove(&self.host.addr);
-        })?;
-
-        Ok(stream)
-    }
-
-    pub async fn do_action(
-        &mut self,
-        action: arrow_flight::Action,
-    ) -> arrow_flight::error::Result<BoxStream<'static, arrow_flight::error::Result<Bytes>>> {
-        let result = self.inner.do_action(action).await.inspect_err(|e| {
-            error!(
-                "Error in do_action for worker {}: {e:?}. 
-                    Considering this channel poisoned and removing it from WorkerClientFactory \
-                 cache",
-                self.host
-            );
-            self.channels.write().remove(&self.host.addr);
-        })?;
-
-        Ok(result)
-    }
-}
-
-struct WorkerClientFactory {
-    channels: Arc<RwLock<HashMap<String, Channel>>>,
-}
-
-impl WorkerClientFactory {
-    fn new() -> Self {
-        Self {
-            channels: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub fn get_client(&self, host: &Host) -> Result<WorkerClient, DataFusionError> {
-        let url = format!("http://{}", host.addr);
-
-        let maybe_chan = self.channels.read().get(&host.addr).cloned();
-        let chan = match maybe_chan {
-            Some(chan) => {
-                debug!("WorkerFactory using cached channel for {host}");
-                chan
-            }
-            None => {
-                let host_str = host.to_string();
-                let fut = async move {
-                    trace!("WorkerFactory connecting to {host_str}");
-                    Channel::from_shared(url.clone())
-                        .map_err(|e| internal_datafusion_err!("WorkerFactory invalid url {e:#?}"))?
-                        // FIXME: update timeout value to not be a magic number
-                        .connect_timeout(Duration::from_secs(2))
-                        .connect()
-                        .await
-                        .map_err(|e| {
-                            internal_datafusion_err!("WorkerFactory cannot connect {e:#?}")
-                        })
-                };
-
-                let chan = wait_for(fut, "WorkerFactory::get_client").map_err(|e| {
-                    internal_datafusion_err!(
-                        "WorkerFactory Cannot wait for channel connect future {e:#?}"
-                    )
-                })??;
-                trace!("WorkerFactory connected to {host}");
-                self.channels
-                    .write()
-                    .insert(host.addr.to_string(), chan.clone());
-
-                chan
-            }
-        };
-        debug!("WorkerFactory have channel now for {host}");
-
-        let flight_client = FlightClient::new(chan);
-        debug!("WorkerFactory made flight client for {host}");
-        Ok(WorkerClient::new(
-            host.clone(),
-            flight_client,
-            self.channels.clone(),
-        ))
-    }
-}
-
-static FACTORY: OnceLock<WorkerClientFactory> = OnceLock::new();
-
-pub fn get_client(host: &Host) -> Result<WorkerClient, DataFusionError> {
-    let factory = FACTORY.get_or_init(WorkerClientFactory::new);
-    factory.get_client(host)
 }
 
 /// Copied from datafusion_physical_plan::union as its useful and not public

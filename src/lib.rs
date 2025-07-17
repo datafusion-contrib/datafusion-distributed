@@ -43,6 +43,9 @@ pub mod util;
 pub mod vocab;
 pub mod worker_discovery;
 pub mod worker_service;
+pub mod transport_traits;
+pub mod transport;
+pub mod test_worker;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context as AnyhowContext};
+use anyhow::{anyhow};
 use arrow::{compute::concat_batches, datatypes::SchemaRef};
 use datafusion::{
     logical_expr::LogicalPlan,
@@ -21,8 +21,7 @@ use crate::{
     },
     record_batch_exec::RecordBatchExec,
     result::Result,
-    vocab::{Addrs, DDTask},
-    worker_discovery::get_worker_addresses,
+    vocab::{Addrs, DDTask}, worker_discovery::{EnvDiscovery, K8sDiscovery, WorkerDiscovery},
 };
 
 /// Result of query preparation for execution of both query and its EXPLAIN
@@ -61,16 +60,22 @@ impl std::fmt::Debug for QueryPlan {
 pub struct QueryPlanner {
     customizer: Option<Arc<dyn Customizer>>,
     codec: Arc<dyn PhysicalExtensionCodec>,
+    discovery: Arc<dyn WorkerDiscovery>,
 }
 
 impl Default for QueryPlanner {
     fn default() -> Self {
-        Self::new(None)
+        let discovery = if std::env::var("DD_WORKER_DEPLOYMENT").is_ok() {
+            Arc::new(K8sDiscovery::new().expect("k8s discovery")) as _
+        } else {
+            Arc::new(EnvDiscovery::new().expect("env discovery")) as _
+        };
+        Self::new(discovery, None)
     }
 }
 
 impl QueryPlanner {
-    pub fn new(customizer: Option<Arc<dyn Customizer>>) -> Self {
+    pub fn new(customizer: Option<Arc<dyn Customizer>>, discovery: Arc<dyn WorkerDiscovery>) -> Self {
         let codec = Arc::new(DDCodec::new(
             customizer
                 .clone()
@@ -79,7 +84,7 @@ impl QueryPlanner {
                 .unwrap(),
         ));
 
-        Self { customizer, codec }
+        Self { customizer, codec, discovery }
     }
 
     /// Common planning steps shared by both query and its EXPLAIN
@@ -196,7 +201,7 @@ impl QueryPlanner {
         let (distributed_plan, distributed_stages) =
             execution_planning(physical_plan.clone(), 8192, Some(2)).await?;
 
-        let worker_addrs = get_worker_addresses()?;
+        let worker_addrs = self.discovery.workers().await?;
 
         // gather some information we need to send back such that
         // we can send a ticket to the client

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use distributed_datafusion::{
     friendly::new_friendly_name, proxy_service::DDProxyService, setup,
-    worker_service::DDWorkerService,
+    worker_service::DDWorkerService, worker_discovery::{EnvDiscovery, WorkerDiscovery},
 };
 
 #[derive(Parser)]
@@ -30,10 +30,16 @@ async fn main() -> Result<()> {
     setup();
 
     let args = Args::parse();
-
+    
     match args.mode.as_str() {
         "proxy" => {
-            let service = DDProxyService::new(new_friendly_name()?, args.port, None).await?;
+            // TODO: put the k8s or ENV decision behind some flag, WARNING: this will kick the discovery so workers should be up
+            let discovery: Arc<dyn WorkerDiscovery> = if std::env::var("DD_WORKER_ADDRESSES").is_ok() {
+                Arc::new(EnvDiscovery::new().await?)
+            } else {
+                Arc::new(K8sDiscovery::new().await?)
+            };
+            let service = DDProxyService::new(new_friendly_name()?, args.port,discovery, None).await?;
             service.serve().await?;
         }
         "worker" => {

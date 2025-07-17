@@ -50,7 +50,7 @@ use crate::{
     stage_reader::DDStageReaderExec,
     util::{display_plan_with_partition_counts, get_addrs, start_up},
     vocab::{Addrs, Host},
-    worker_discovery::get_worker_addresses,
+    worker_discovery::{ WorkerDiscovery},
 };
 
 pub struct DDProxyHandler {
@@ -58,23 +58,22 @@ pub struct DDProxyHandler {
     pub host: Host,
 
     pub planner: QueryPlanner,
+    pub discovery: Arc<dyn WorkerDiscovery>,
 
     /// Optional customizer for our context and proto serde
     pub customizer: Option<Arc<dyn Customizer>>,
 }
 
 impl DDProxyHandler {
-    pub fn new(name: String, addr: String, customizer: Option<Arc<dyn Customizer>>) -> Self {
-        // call this function to bootstrap the worker discovery mechanism
-        get_worker_addresses().expect("Could not get worker addresses upon startup");
-
+    pub fn new(name: String, addr: String, discovery: Arc<dyn WorkerDiscovery>, customizer: Option<Arc<dyn Customizer>>) -> Self {
         let host = Host {
             name: name.clone(),
             addr: addr.clone(),
         };
         Self {
             host: host.clone(),
-            planner: QueryPlanner::new(customizer.clone()),
+            planner: QueryPlanner::new(customizer.clone(), discovery.clone()),
+            discovery,
             customizer,
         }
     }
@@ -292,6 +291,7 @@ impl DDProxyService {
     pub async fn new(
         name: String,
         port: usize,
+        discovery: Arc<dyn WorkerDiscovery>,
         ctx_customizer: Option<Arc<dyn Customizer>>,
     ) -> Result<Self> {
         debug!("Creating DDProxyService!");
@@ -305,7 +305,7 @@ impl DDProxyService {
 
         info!("DDProxyService bound to {addr}");
 
-        let handler = Arc::new(DDProxyHandler::new(name, addr.clone(), ctx_customizer));
+        let handler = Arc::new(DDProxyHandler::new(name, addr.clone(), discovery,  ctx_customizer));
 
         Ok(Self {
             listener,
