@@ -77,19 +77,19 @@ impl QueryPlanner {
             customizer
                 .clone()
                 .map(|c| c as Arc<dyn PhysicalExtensionCodec>)
-                .or(Some(Arc::new(DefaultPhysicalExtensionCodec {})))
-                .unwrap(),
+                .unwrap_or(Arc::new(DefaultPhysicalExtensionCodec {})),
         ));
 
         Self { customizer, codec }
     }
 
-    /// Common planning steps shared by both query and its EXPLAIN
+    /// Prepare a Distributed DataFusion plan from a sql query.
     ///
-    /// Prepare a query by parsing the SQL, performing logical planning,
-    /// and then physical planning to create a distributed plan.
-    /// Builds an initial `QueryPlan` with the logical and physical plans,
-    /// but without worker addresses and tasks, which will be set later in distribute_plan().
+    /// This function parses the SQL, produces a logical plan, then derives the
+    /// physical plan and its distributed counterpart.  
+    /// The resulting `QueryPlan` includes the logical plan, physical plan,
+    /// distributed plan, and distributed stages, but it does not yet contain
+    /// worker addresses or tasks, as they are filled in later by `distribute_plan()`.
     pub async fn prepare(&self, sql: &str) -> Result<QueryPlan> {
         let mut ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
         if let Some(customizer) = &self.customizer {
@@ -109,6 +109,15 @@ impl QueryPlanner {
         }
     }
 
+    /// Prepare a Distributed DataFusion plan from a Substrait plan.
+    ///
+    /// 1. Convert the incoming Substrait plan into a `LogicalPlan` with DataFusion’s
+    ///    default Substrait consumer.
+    /// 2. Derive the corresponding physical plan and distributed variant.
+    ///
+    /// The resulting `QueryPlan` contains the logical plan, physical plan,
+    /// distributed plan, and distributed stages, but it does not yet contain
+    /// worker addresses or tasks, as they are filled in later by `distribute_plan()`.
     pub async fn prepare_substrait(&self, substrait_plan: Plan) -> Result<QueryPlan> {
         let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
 
@@ -122,7 +131,7 @@ impl QueryPlanner {
         }
     }
 
-    /// Prepare the query plan for distributed execution
+    /// Prepare a `QueryPlan` for a regular SELECT query
     async fn prepare_query(
         &self,
         logical_plan: LogicalPlan,
@@ -147,6 +156,8 @@ impl QueryPlanner {
             .await;
     }
 
+    /// Prepare a `QueryPlan` for statements that should run locally on the proxy
+    /// node (e.g. `DESCRIBE TABLE`).
     async fn prepare_local(
         &self,
         logical_plan: LogicalPlan,
@@ -186,6 +197,7 @@ impl QueryPlanner {
             .await;
     }
 
+    /// Prepare a `QueryPlan` for an EXPLAIN statement.
     async fn prepare_explain(
         &self,
         explain_plan: LogicalPlan,
