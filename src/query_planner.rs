@@ -119,7 +119,13 @@ impl QueryPlanner {
     /// distributed plan, and distributed stages, but it does not yet contain
     /// worker addresses or tasks, as they are filled in later by `distribute_plan()`.
     pub async fn prepare_substrait(&self, substrait_plan: Plan) -> Result<QueryPlan> {
-        let ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        let mut ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        if let Some(customizer) = &self.customizer {
+            customizer
+                .customize(&mut ctx)
+                .await
+                .map_err(|e| anyhow!("Customization failed: {e:#?}"))?;
+        }
 
         let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
 
@@ -257,7 +263,7 @@ impl QueryPlanner {
         })
     }
 
-    /// Performs worker discovery, and distributes the query plan to workers.
+    /// Performs worker discovery, and distributes the query plan to workers,
     /// also sets the final worker addresses and distributed tasks in the query plan.
     pub async fn distribute_plan(&self, initial_plan: &mut QueryPlan) -> Result<()> {
         // Perform worker discovery
@@ -267,7 +273,7 @@ impl QueryPlanner {
         // into chunks of partitions (partition_groups)
         let (final_workers, tasks) = distribute_stages(
             &initial_plan.query_id,
-            initial_plan.distributed_stages.clone(),
+            &initial_plan.distributed_stages,
             worker_addrs,
             self.codec.as_ref(),
         )

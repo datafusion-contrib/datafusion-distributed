@@ -439,7 +439,7 @@ pub fn add_distributed_analyze(
 /// final stage only as that's all we care about from the call site
 pub async fn distribute_stages(
     query_id: &str,
-    stages: Vec<DDStage>,
+    stages: &[DDStage],
     worker_addrs: Vec<Host>,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<(Addrs, Vec<DDTask>)> {
