@@ -54,7 +54,6 @@ use tonic::transport::Channel;
 use url::Url;
 
 use crate::{
-    codec::DDCodec,
     logging::{debug, error, trace},
     protobuf::StageAddrs,
     result::Result,

@@ -44,6 +44,9 @@ pub fn format_distributed_tasks(
     Ok(result)
 }
 
+/// Builds a single RecordBatch with two columns, the first column with the type of plan and
+/// the second column containing the formatted logical plan, physical plan, distributed plan,
+/// and distributed tasks.
 pub fn build_explain_batch(
     logical_plan: &LogicalPlan,
     physical_plan: &Arc<dyn ExecutionPlan>,
