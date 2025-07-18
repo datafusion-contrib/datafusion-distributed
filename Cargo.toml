@@ -44,9 +44,9 @@ async-trait = "0.1.88"
 async-stream = "0.3"
 bytes = "1.5"
 clap = { version = "4.4", features = ["derive"] }
-datafusion = "48.0.0"
-datafusion-proto = "48.0.0"
-datafusion-substrait = "48.0.0"
+datafusion = { git = "https://github.com/apache/datafusion", rev = "a45a4c44317ce32f432cbeb8647e6555c93e998f" }
+datafusion-proto = { git = "https://github.com/apache/datafusion", rev = "a45a4c44317ce32f432cbeb8647e6555c93e998f" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion", rev = "a45a4c44317ce32f432cbeb8647e6555c93e998f" }
 env_logger = "0.11"
 futures = "0.3"
 itertools = "0.14"
