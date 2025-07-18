@@ -177,11 +177,16 @@ impl FlightSqlHandler for DDProxyHandler {
         query: arrow_flight::sql::CommandStatementQuery,
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let query_plan = self
+        let mut query_plan = self
             .planner
             .prepare(&query.query)
             .await
             .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
+
+        self.planner
+            .distribute_plan(&mut query_plan)
+            .await
+            .map_err(|e| Status::internal(format!("Could not distribute plan {e:?}")))?;
 
         self.create_flight_info_response(query_plan)
             .map(Response::new)
@@ -200,11 +205,16 @@ impl FlightSqlHandler for DDProxyHandler {
             None => return Err(Status::invalid_argument("Missing Substrait plan")),
         };
 
-        let query_plan = self
+        let mut query_plan = self
             .planner
             .prepare_substrait(plan)
             .await
             .map_err(|e| Status::internal(format!("Could not prepare query {e:?}")))?;
+
+        self.planner
+            .distribute_plan(&mut query_plan)
+            .await
+            .map_err(|e| Status::internal(format!("Could not distribute plan {e:?}")))?;
 
         self.create_flight_info_response(query_plan)
             .map(Response::new)

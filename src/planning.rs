@@ -45,7 +45,7 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DDStage {
     /// our stage id
     pub stage_id: u64,
@@ -221,6 +221,7 @@ pub async fn logical_planning(sql: &str, ctx: &SessionContext) -> Result<Logical
     Ok(plan)
 }
 
+/// Builds the physical plan from the logical plan, using the default Physical Planner from DataFusion
 pub async fn physical_planning(
     logical_plan: &LogicalPlan,
     ctx: &SessionContext,
@@ -239,7 +240,7 @@ pub async fn physical_planning(
 }
 
 /// Returns distributed plan and execution stages for both query execution and EXPLAIN display
-pub async fn execution_planning(
+pub async fn distributed_physical_planning(
     physical_plan: Arc<dyn ExecutionPlan>,
     batch_size: usize,
     partitions_per_worker: Option<usize>,
@@ -438,7 +439,7 @@ pub fn add_distributed_analyze(
 /// final stage only as that's all we care about from the call site
 pub async fn distribute_stages(
     query_id: &str,
-    stages: Vec<DDStage>,
+    stages: &[DDStage],
     worker_addrs: Vec<Host>,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<(Addrs, Vec<DDTask>)> {
