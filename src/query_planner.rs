@@ -10,6 +10,7 @@ use datafusion::{
 
 use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
 use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
+use insta::assert_snapshot;
 use tokio_stream::StreamExt;
 
 use crate::{
@@ -282,6 +283,130 @@ impl QueryPlanner {
         // set the distributed tasks and final worker addresses
         initial_plan.worker_addresses = final_workers;
         initial_plan.distributed_tasks = tasks;
+
+        Ok(())
+    }
+}
+
+pub mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::displayable;
+    use std::io::BufReader;
+    use std::{fs::File, path::Path};
+
+    #[tokio::test]
+    async fn prepare_substrait_select_one() -> anyhow::Result<()> {
+        // Load Substrait and parse to protobuf `Plan`.
+        let file = File::open(Path::new("testdata/substrait/select_one.substrait.json"))?;
+        let reader = BufReader::new(file);
+        let plan: Plan = serde_json::from_reader(reader)?;
+
+        let planner = QueryPlanner::default();
+        let qp = planner.prepare_substrait(plan).await?;
+
+        // Distributed plan schema must match logical schema.
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "test_col",
+            DataType::Int64,
+            false,
+        )]));
+        assert_eq!(qp.distributed_plan.schema(), expected_schema);
+
+        // Check the distributed physical plan.
+        let distributed_plan_str =
+            format!("{}", displayable(qp.distributed_plan.as_ref()).indent(true));
+        assert_snapshot!(distributed_plan_str, @r"
+        DDStageExec[0] (output_partitioning=UnknownPartitioning(1))
+          ProjectionExec: expr=[1 as test_col]
+            DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepare_sql_select_one() -> Result<()> {
+        let planner = QueryPlanner::default();
+        let sql = "SELECT 1 AS test_col";
+
+        let qp = planner.prepare(sql).await?;
+
+        // Distributed plan schema must match logical schema.
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "test_col",
+            DataType::Int64,
+            false,
+        )]));
+        assert_eq!(qp.distributed_plan.schema(), expected_schema);
+
+        // Check the distributed physical plan.
+        let distributed_plan_str =
+            format!("{}", displayable(qp.distributed_plan.as_ref()).indent(true));
+        assert_snapshot!(distributed_plan_str, @r"
+        DDStageExec[0] (output_partitioning=UnknownPartitioning(1))
+          ProjectionExec: expr=[1 as test_col]
+            PlaceholderRowExec
+        ");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepare_describe_table() -> Result<()> {
+        std::env::set_var(
+            "DD_TABLES",
+            "people:parquet:testdata/parquet/people.parquet",
+        );
+
+        let planner = QueryPlanner::default();
+        let sql = "DESCRIBE people";
+
+        let qp = planner.prepare(sql).await?;
+
+        // Check the distributed physical plan.
+        let distributed_plan_str =
+            format!("{}", displayable(qp.distributed_plan.as_ref()).indent(true));
+        assert_snapshot!(distributed_plan_str, @r"
+        DDStageExec[0] (output_partitioning=UnknownPartitioning(1))
+          RecordBatchExec
+        ");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn two_stages_query() -> Result<()> {
+        std::env::set_var(
+            "DD_TABLES",
+            "people:parquet:testdata/parquet/people.parquet",
+        );
+
+        let planner = QueryPlanner::default();
+        let sql = "SELECT * FROM (SELECT 1 as id) a CROSS JOIN (SELECT 2 as id) b order by b.id";
+        let qp = planner.prepare(sql).await?;
+
+        // Distributed plan schema must match logical schema.
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+
+        assert_eq!(qp.distributed_plan.schema(), expected_schema);
+
+        // Check the distributed physical plan.
+        let distributed_plan_str =
+            format!("{}", displayable(qp.distributed_plan.as_ref()).indent(true));
+        assert_snapshot!(distributed_plan_str, @r"
+        DDStageExec[1] (output_partitioning=UnknownPartitioning(1))
+          DDStageExec[0] (output_partitioning=UnknownPartitioning(1))
+            SortExec: expr=[id@1 ASC NULLS LAST], preserve_partitioning=[false]
+              CrossJoinExec
+                ProjectionExec: expr=[1 as id]
+                  PlaceholderRowExec
+                ProjectionExec: expr=[2 as id]
+                  PlaceholderRowExec
+        ");
 
         Ok(())
     }

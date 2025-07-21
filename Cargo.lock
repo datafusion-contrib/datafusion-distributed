@@ -870,6 +870,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "once_cell",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1733,6 +1745,7 @@ dependencies = [
  "datafusion-substrait",
  "env_logger",
  "futures",
+ "insta",
  "itertools 0.14.0",
  "k8s-openapi",
  "kube",
@@ -1744,6 +1757,7 @@ dependencies = [
  "rand 0.8.5",
  "rustc_version",
  "rustls",
+ "serde_json",
  "tempfile",
  "test-log",
  "thiserror 1.0.69",
@@ -1787,6 +1801,12 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "enum-ordinalize"
@@ -2500,6 +2520,17 @@ checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.4",
+]
+
+[[package]]
+name = "insta"
+version = "1.43.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "154934ea70c58054b556dd430b99a98c2a7ff5309ac9891597e339b5c28f4371"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
 ]
 
 [[package]]
@@ -4250,6 +4281,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"
