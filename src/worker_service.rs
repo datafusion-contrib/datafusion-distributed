@@ -99,6 +99,7 @@ struct DDWorkerHandler {
     done: Arc<Mutex<bool>>,
 
     /// Optional customizer for our context and proto serde
+    #[allow(dead_code)]
     pub customizer: Option<Arc<dyn Customizer>>,
 
     codec: Arc<dyn PhysicalExtensionCodec>,
@@ -165,8 +166,7 @@ impl DDWorkerHandler {
             customizer
                 .clone()
                 .map(|c| c as Arc<dyn PhysicalExtensionCodec>)
-                .or(Some(Arc::new(DefaultPhysicalExtensionCodec {})))
-                .unwrap(),
+                .unwrap_or(Arc::new(DefaultPhysicalExtensionCodec {})),
         ));
 
         Self {
@@ -502,6 +502,7 @@ impl DDWorkerHandler {
 
         Ok(Box::pin(out_stream))
     }
+    #[allow(clippy::result_large_err)]
     fn do_action_get_host(&self) -> Result<Response<crate::flight::DoActionStream>, Status> {
         let addr = self.addr.clone();
         let name = self.name.clone();

@@ -10,7 +10,6 @@ use datafusion::{
 
 use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
 use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
-use insta::assert_snapshot;
 use tokio_stream::StreamExt;
 
 use crate::{
@@ -288,10 +287,12 @@ impl QueryPlanner {
     }
 }
 
-pub mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::displayable;
+    use insta::assert_snapshot;
     use std::io::BufReader;
     use std::{fs::File, path::Path};
 
