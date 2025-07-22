@@ -79,21 +79,25 @@ impl DDProxyHandler {
         }
     }
 
-    pub fn create_flight_info_response(&self, query_plan: QueryPlan) -> Result<FlightInfo, Status> {
+    pub fn create_flight_info_response(
+        &self,
+        query_plan: QueryPlan,
+    ) -> Result<FlightInfo, Box<Status>> {
         let mut flight_info = FlightInfo::new()
             .try_with_schema(&query_plan.schema)
-            .map_err(|e| Status::internal(format!("Could not create flight info {e:?}")))?;
+            .map_err(|e| {
+                Box::new(Status::internal(format!(
+                    "Could not create flight info {e:?}"
+                )))
+            })?;
 
         let ticket_data = TicketStatementData {
             query_id: query_plan.query_id,
             stage_id: query_plan.final_stage_id,
             stage_addrs: Some(query_plan.worker_addresses.into()),
-            schema: Some(
-                query_plan
-                    .schema
-                    .try_into()
-                    .map_err(|e| Status::internal(format!("Could not convert schema {e:?}")))?,
-            ),
+            schema: Some(query_plan.schema.try_into().map_err(|e| {
+                Box::new(Status::internal(format!("Could not convert schema {e:?}")))
+            })?),
         };
 
         let ticket = Ticket::new(
@@ -153,18 +157,18 @@ impl DDProxyHandler {
         &self,
         addrs: &Addrs,
         expected_stage_id: u64,
-    ) -> Result<(), Status> {
+    ) -> Result<(), Box<Status>> {
         if addrs.len() != 1 {
-            return Err(Status::internal(format!(
+            return Err(Box::new(Status::internal(format!(
                 "Expected exactly one stage in addrs, got {}",
                 addrs.len()
-            )));
+            ))));
         }
         if !addrs.contains_key(&expected_stage_id) {
-            return Err(Status::internal(format!(
+            return Err(Box::new(Status::internal(format!(
                 "No addresses found for stage_id {} in addrs",
                 expected_stage_id
-            )));
+            ))));
         }
         Ok(())
     }
@@ -257,7 +261,8 @@ impl FlightSqlHandler for DDProxyHandler {
         trace!("calculated addrs: {:?}", addrs);
 
         // Validate that addrs contains exactly one stage
-        self.validate_single_stage_addrs(&addrs, tsd.stage_id)?;
+        self.validate_single_stage_addrs(&addrs, tsd.stage_id)
+            .map_err(|e| *e)?;
 
         let stage_partition_addrs = addrs.get(&tsd.stage_id).ok_or_else(|| {
             Status::internal(format!(
@@ -357,6 +362,7 @@ impl DDProxyService {
             handler: self.handler.clone(),
         };
 
+        #[allow(clippy::result_large_err)]
         fn intercept(req: Request<()>) -> Result<Request<()>, Status> {
             println!("Intercepting request: {:?}", req);
             debug!("Intercepting request: {:?}", req);

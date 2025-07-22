@@ -460,7 +460,7 @@ pub async fn distribute_stages(
 
         // all stages to workers
         let (task_datas, final_addrs) =
-            assign_to_workers(query_id, &stages, workers.values().collect(), codec)?;
+            assign_to_workers(query_id, stages, workers.values().collect(), codec)?;
 
         // we retry this a few times to ensure that the workers are ready
         // and can accept the stages
