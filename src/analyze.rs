@@ -1,3 +1,37 @@
+//! Distributed query analysis and performance profiling execution plans
+//!
+//! This module provides execution plan nodes for analyzing distributed query performance
+//! in a similar way to DataFusion's `EXPLAIN ANALYZE` functionality, but adapted for
+//! distributed execution across multiple worker nodes.
+//!
+//! # Purpose
+//!
+//! When executing `EXPLAIN ANALYZE` queries in a distributed environment, we need to:
+//! - Collect execution metrics from all worker nodes
+//! - Aggregate performance statistics across the distributed execution
+//! - Present a unified view of the distributed query execution plan with metrics
+//! - Track resource usage and timing information per stage and partition
+//!
+//! # Architecture
+//!
+//! The analysis system uses a two-tier approach:
+//! - **`DistributedAnalyzeExec`**: Wraps individual stages for metric collection
+//! - **`DistributedAnalyzeRootExec`**: Aggregates results from all workers at the proxy
+//!
+//! # Execution Flow
+//!
+//! 1. Query planning inserts `DistributedAnalyzeExec` nodes around distributed stages
+//! 2. Workers execute their stages while collecting performance metrics
+//! 3. Workers send annotated execution plans back to the proxy
+//! 4. `DistributedAnalyzeRootExec` at the proxy collects and formats all results
+//! 5. Final output shows the complete distributed execution plan with metrics
+//!
+//! # Integration with Standard DataFusion
+//!
+//! These execution plans integrate with DataFusion's metric collection system,
+//! ensuring that distributed analysis provides the same level of detail as
+//! single-node `EXPLAIN ANALYZE` queries.
+
 use std::{fmt::Formatter, sync::Arc};
 
 use arrow::{
@@ -24,6 +58,22 @@ use crate::{
     vocab::{CtxAnnotatedOutputs, CtxHost, CtxPartitionGroup, CtxStageId},
 };
 
+/// Distributed analysis execution plan for individual stage metric collection
+///
+/// This execution plan wraps another execution plan to enable metric collection
+/// for distributed `EXPLAIN ANALYZE` queries. It acts as a transparent wrapper
+/// that delegates execution to its child while enabling metric tracking that
+/// can be collected by the distributed analysis system.
+///
+/// # Purpose
+/// - Enables metric collection for individual distributed stages
+/// - Maintains compatibility with DataFusion's analysis infrastructure
+/// - Provides transparent execution with metric annotation capabilities
+/// - Supports both verbose and statistics display modes
+///
+/// # Usage
+/// Inserted automatically during distributed query planning when `EXPLAIN ANALYZE`
+/// is used, wrapping stages that will execute on worker nodes.
 #[derive(Debug)]
 pub struct DistributedAnalyzeExec {
     /// Control how much extra to print
@@ -35,6 +85,7 @@ pub struct DistributedAnalyzeExec {
 }
 
 impl DistributedAnalyzeExec {
+    /// Creates a new distributed analysis wrapper
     pub fn new(input: Arc<dyn ExecutionPlan>, verbose: bool, show_statistics: bool) -> Self {
         Self {
             input,
@@ -43,6 +94,7 @@ impl DistributedAnalyzeExec {
         }
     }
 
+    /// Generates an annotated plan string with metrics for this stage
     pub fn annotated_plan(&self) -> String {
         DisplayableExecutionPlan::with_metrics(self.input.as_ref())
             .set_show_statistics(self.show_statistics)
@@ -100,6 +152,30 @@ impl ExecutionPlan for DistributedAnalyzeExec {
     }
 }
 
+/// Distributed analysis root execution plan for result aggregation and formatting
+///
+/// This execution plan serves as the root node for distributed `EXPLAIN ANALYZE` queries,
+/// collecting annotated execution plans from all worker nodes and formatting them into
+/// a unified result. It runs on the proxy node and aggregates performance data from
+/// the entire distributed execution.
+///
+/// # Purpose
+/// - Collects annotated execution plans from all distributed workers
+/// - Aggregates and sorts results by stage and partition for readable output
+/// - Formats the final `EXPLAIN ANALYZE` output with distributed metrics
+/// - Provides a unified view of distributed query performance
+///
+/// # Output Schema
+/// Produces a two-column result:
+/// - **Task**: Stage and partition information with worker host details
+/// - **Plan with Metrics**: Annotated execution plan with performance metrics
+///
+/// # Context Dependencies
+/// Requires session context extensions for distributed execution metadata:
+/// - `CtxAnnotatedOutputs`: Collection of worker analysis results
+/// - `CtxHost`: Current worker host information
+/// - `CtxStageId`: Current stage identifier
+/// - `CtxPartitionGroup`: Partition assignment information
 #[derive(Debug)]
 pub struct DistributedAnalyzeRootExec {
     /// Control how much extra to print
@@ -113,7 +189,12 @@ pub struct DistributedAnalyzeRootExec {
 }
 
 impl DistributedAnalyzeRootExec {
+    /// Creates a new distributed analysis root execution plan
+    ///
+    /// Sets up the output schema for the analysis results and configures
+    /// plan properties for single-partition bounded execution.
     pub fn new(input: Arc<dyn ExecutionPlan>, verbose: bool, show_statistics: bool) -> Self {
+        // Define output schema for analysis results
         let field_a = Field::new("Task", DataType::Utf8, false);
         let field_b = Field::new("Plan with Metrics", DataType::Utf8, false);
         let schema = Arc::new(Schema::new(vec![field_a, field_b]));
@@ -179,6 +260,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
         partition: usize,
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        // Extract annotated outputs from all workers
         let task_outputs = context
             .session_config()
             .get_extension::<CtxAnnotatedOutputs>()
@@ -191,6 +273,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             "DistributedAnalyzeRootExec expects only partition 0"
         );
 
+        // Extract distributed execution context information
         let host = context
             .session_config()
             .get_extension::<CtxHost>()
@@ -225,7 +308,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
             .0
             .clone();
 
-        // we want to gather all partitions
+        // Coalesce all partitions to single stream for processing
         let coalesce = Arc::new(CoalescePartitionsExec::new(self.input.clone()));
 
         let mut input_stream = coalesce.execute(partition, context)?;
@@ -242,15 +325,19 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
                 .to_string()
         };
 
+        // Aggregates analysis results from all distributed workers into formatted output
+        //
+        // This async block handles the core logic of distributed analysis:
+        // 1. Consumes input stream (discarding data like standard AnalyzeExec)
+        // 2. Collects annotated execution plans from all workers
+        // 3. Sorts results by stage and partition for readable output
+        // 4. Formats final RecordBatch with task information and metrics
         let output = async move {
-            // consume input, and we do not have to send it downstream as we are the
-            // root of the distributed analyze so we can discard the results just like
-            // regular AnalyzeExec
+            // Consume input stream without forwarding data
             let mut done = false;
             while !done {
                 match input_stream.next().await.transpose() {
                     Ok(Some(batch)) => {
-                        // we consume the batch, yum.
                         trace!("consumed {} ", batch.num_rows());
                     }
                     Ok(None) => done = true,
@@ -259,6 +346,8 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
                     }
                 }
             }
+
+            // Generate annotated plan for current stage
             let annotated_plan = fmt_plan();
             let toutput = AnnotatedTaskOutput {
                 plan: annotated_plan,
@@ -267,6 +356,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
                 partition_group,
             };
 
+            // Collect and sort all worker analysis results
             let mut tasks = task_outputs.lock();
             tasks.push(toutput);
 
@@ -274,6 +364,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
 
             trace!("sorted tasks: {:?}", tasks);
 
+            // Build output columns with task info and annotated plans
             let mut task_builder = StringBuilder::with_capacity(1, 1024);
             let mut plan_builder = StringBuilder::with_capacity(1, 1024);
 
@@ -291,6 +382,7 @@ impl ExecutionPlan for DistributedAnalyzeRootExec {
                 plan_builder.append_value(&task_output.plan);
             }
 
+            // Create final RecordBatch with formatted analysis results
             RecordBatch::try_new(
                 schema_capture,
                 vec![

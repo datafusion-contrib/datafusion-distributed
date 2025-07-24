@@ -1,3 +1,39 @@
+//! Friendly name generation for distributed DataFusion components
+//!
+//! This module provides human-readable name generation functionality for distributed
+//! system components like worker nodes, query IDs, and other identifiers that benefit
+//! from being memorable and easy to communicate in logs and debugging sessions.
+//!
+//! # Name Format
+//! Generated names follow the pattern: `{adjective}-{animal}-{number}`
+//! - **Adjective**: Descriptive word from a curated list (e.g., "brave", "clever")
+//! - **Animal**: Animal name from a comprehensive list (e.g., "elephant", "sparrow")  
+//! - **Number**: 4-digit zero-padded random number (0000-0999)
+//!
+//! # Example Names
+//! - `brave-elephant-0542`
+//! - `clever-sparrow-0123`
+//! - `gentle-dolphin-0891`
+//!
+//! # Use Cases
+//! - **Worker Node Identification**: Instead of IP addresses in logs
+//! - **Query Session Names**: For tracking distributed query execution
+//! - **Temporary Resource Names**: For debugging intermediate results
+//! - **Error Reporting**: Making error messages more human-friendly
+//!
+//! # Uniqueness Strategy
+//! While not cryptographically unique, the combination of:
+//! - 1000+ adjectives
+//! - 200+ animals  
+//! - 1000 possible numbers
+//!   Provides millions of possible combinations, suitable for most distributed
+//!   system scenarios where temporary uniqueness is needed.
+//!
+//! # Thread Safety
+//! The name generator is thread-safe and can be called concurrently from
+//! multiple threads. Adjectives are consumed without replacement to reduce
+//! collision probability within a single application instance.
+
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::anyhow;
@@ -6,6 +42,7 @@ use rand::{thread_rng, Rng};
 use crate::result::Result;
 
 pub fn new_friendly_name() -> Result<String> {
+    // Get or initialize the global friendly name generator
     let f = FRIENDLY.get_or_init(Friendly::new);
     f.new_name()
 }
@@ -1586,6 +1623,21 @@ const ADJECTIVE_LIST: &[&str] = &[
     "zigzag",
 ];
 
+/// Global singleton instance of the friendly name generator
+///
+/// This static variable provides thread-safe access to a single shared instance
+/// of the friendly name generator. Using `OnceLock` ensures lazy initialization
+/// and prevents multiple initialization in concurrent environments.
+///
+/// # Initialization Strategy
+/// The generator is initialized on first access using `get_or_init()`, which
+/// guarantees exactly one initialization even under concurrent access patterns
+/// common in distributed systems.
+///
+/// # Thread Safety
+/// The `OnceLock` wrapper combined with internal `Mutex` protection in the
+/// `Friendly` struct ensures that multiple threads can safely generate names
+/// concurrently without data races or state corruption.
 static FRIENDLY: OnceLock<Friendly> = OnceLock::new();
 
 struct Friendly {
@@ -1603,6 +1655,7 @@ impl Friendly {
     }
 
     pub fn new_name(&self) -> Result<String> {
+        // Initialize thread-local random number generator for performance
         let mut rng = thread_rng();
 
         // Choose a random animal
@@ -1624,6 +1677,7 @@ impl Friendly {
         let index = rng.gen_range(0..adjectives.len());
         let adj = adjectives.remove(index);
 
+        // Combine components into final friendly name format
         Ok(format!("{}-{}-{:0>4}", adj, name, suffix))
     }
 }

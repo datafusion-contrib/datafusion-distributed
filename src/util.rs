@@ -118,6 +118,11 @@ impl Spawner {
 
 static SPAWNER: OnceLock<Spawner> = OnceLock::new();
 
+/// Blocks until a future completes, enabling async operations in sync contexts
+///
+/// This function provides a way to execute async futures in synchronous code by using
+/// a dedicated thread pool. It's particularly useful during startup and initialization
+/// phases where async operations need to complete before proceeding.
 pub fn wait_for<F>(f: F, name: &str) -> Result<F::Output>
 where
     F: Future + Send + 'static,
@@ -132,6 +137,11 @@ where
     out
 }
 
+/// Serializes a DataFusion execution plan to bytes for network transmission
+///
+/// This function converts a physical execution plan into a protobuf representation
+/// and then encodes it as bytes. This is essential for distributing execution plans
+/// from the proxy to worker nodes in the distributed system.
 pub fn physical_plan_to_bytes(
     plan: Arc<dyn ExecutionPlan>,
     codec: &dyn PhysicalExtensionCodec,
@@ -140,26 +150,41 @@ pub fn physical_plan_to_bytes(
         "serializing plan to bytes. plan:\n{}",
         display_plan_with_partition_counts(&plan)
     );
+    // Convert DataFusion plan to protobuf representation
     let proto = datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(plan, codec)?;
+    // Encode protobuf to bytes for network transmission
     let bytes = proto.encode_to_vec();
 
     Ok(bytes)
 }
 
+/// Deserializes bytes back to a DataFusion execution plan on worker nodes
+///
+/// This function reconstructs a physical execution plan from protobuf bytes received
+/// from the proxy. Workers use this to recreate the execution plan they need to execute
+/// for their assigned stage and partition group.
 pub fn bytes_to_physical_plan(
     ctx: &SessionContext,
     plan_bytes: &[u8],
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    // Decode protobuf from bytes
     let proto_plan = datafusion_proto::protobuf::PhysicalPlanNode::try_decode(plan_bytes)?;
 
+    // Convert protobuf back to DataFusion execution plan
     let plan = proto_plan.try_into_physical_plan(ctx, ctx.runtime_env().as_ref(), codec)?;
     Ok(plan)
 }
 
+/// Converts protobuf StageAddrs to internal Addrs format for easier access
+///
+/// This function transforms the protobuf address structure into a simplified HashMap
+/// format that's more convenient for internal use. The conversion flattens the nested
+/// protobuf structure into direct stage_id -> partition_id -> [hosts] mapping.
 pub fn get_addrs(stage_addrs: &StageAddrs) -> Result<Addrs> {
     let mut addrs = Addrs::new();
 
+    // Convert nested protobuf structure to flat HashMap
     for (stage_id, partition_addrs) in stage_addrs.stage_addrs.iter() {
         let mut stage_addrs = HashMap::new();
         for (partition, hosts) in partition_addrs.partition_addrs.iter() {
@@ -171,10 +196,17 @@ pub fn get_addrs(stage_addrs: &StageAddrs) -> Result<Addrs> {
     Ok(addrs)
 }
 
+/// Extracts schema information from Arrow Flight data messages
+///
+/// This function parses the header of a Flight data message to extract the Arrow schema.
+/// It's used when establishing connections with workers to understand the structure of
+/// data that will be transmitted over the Flight protocol.
 pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaRef> {
+    // Parse the Flight message header to extract schema information
     let message = root_as_message(&flight_data.data_header[..])
         .map_err(|_| ArrowError::CastError("Cannot get root as message".to_string()))?;
 
+    // Extract schema from the message header
     let ipc_schema: arrow::ipc::Schema = message
         .header_as_schema()
         .ok_or_else(|| ArrowError::CastError("Cannot get header as Schema".to_string()))?;
@@ -183,21 +215,35 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     Ok(schema)
 }
 
+/// Converts a RecordBatch to IPC (Inter-Process Communication) bytes format
+///
+/// This function serializes a RecordBatch using Arrow's IPC format, which is efficient
+/// for network transmission and inter-process communication. Used when workers need to
+/// send data to other components or for intermediate result storage.
 pub fn batch_to_ipc(batch: &RecordBatch) -> Result<Vec<u8>> {
     let schema = batch.schema();
     let buffer: Vec<u8> = Vec::new();
+    // Configure IPC writer with specific options for consistency
     let options = IpcWriteOptions::try_new(8, false, MetadataVersion::V5)
         .map_err(|e| internal_datafusion_err!("Cannot create ipcwriteoptions {e}"))?;
 
+    // Write RecordBatch to IPC format
     let mut stream_writer = StreamWriter::try_new_with_options(buffer, &schema, options)?;
     stream_writer.write(batch)?;
     let bytes = stream_writer.into_inner()?;
     Ok(bytes)
 }
 
+/// Converts IPC bytes back to a RecordBatch for processing
+///
+/// This function deserializes IPC format bytes back into a RecordBatch that can be
+/// processed by DataFusion. Used when receiving serialized data from other components
+/// or when reading intermediate results from storage.
 pub fn ipc_to_batch(bytes: &[u8]) -> Result<RecordBatch> {
+    // Create a buffered reader from the IPC bytes
     let mut stream_reader = StreamReader::try_new_buffered(Cursor::new(bytes), None)?;
 
+    // Extract the first (and expected only) batch from the stream
     match stream_reader.next() {
         Some(Ok(batch_res)) => Ok(batch_res),
         Some(Err(e)) => Err(e.into()),
@@ -250,8 +296,14 @@ where
     Box::pin(adapter)
 }
 
+/// Extracts stage IDs from DDStageReaderExec nodes in an execution plan tree
+///
+/// This function traverses an execution plan to find all DDStageReaderExec nodes and
+/// collects their stage IDs. Used to understand which stages a plan depends on for
+/// proper execution ordering and dependency resolution.
 pub fn input_stage_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>, DataFusionError> {
     let mut result = vec![];
+    // Walk the execution plan tree to find stage reader nodes
     plan.clone()
         .transform_down(|node: Arc<dyn ExecutionPlan>| {
             if let Some(reader) = node.as_any().downcast_ref::<DDStageReaderExec>() {
@@ -262,6 +314,11 @@ pub fn input_stage_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<u64>, DataFu
     Ok(result)
 }
 
+/// Monitors and reports on slow-running async operations
+///
+/// This function executes a future while monitoring its execution time. If the operation
+/// takes longer than expected, it logs warnings to help identify performance bottlenecks
+/// in the distributed system.
 pub async fn report_on_lag<F, T>(name: &str, fut: F) -> T
 where
     F: Future<Output = T>,
@@ -270,6 +327,7 @@ where
     let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
     let expire = Duration::from_secs(2);
 
+    // Spawn a background task to monitor execution time
     let report = async move {
         tokio::time::sleep(expire).await;
         while rx.try_recv().is_err() {
@@ -279,14 +337,17 @@ where
     };
     tokio::spawn(report);
 
+    // Execute the future and signal completion
     let out = fut.await;
     tx.send(()).unwrap();
     out
 }
 
-/// A utility wrapper for a stream that will print a message if it has been over
-/// 2 seconds since receiving data.  Useful for debugging which streams are
-/// stuck
+/// Creates a stream wrapper that reports on lag when data flow is slow
+///
+/// This utility wrapper monitors a stream and prints warnings when more than 2 seconds
+/// pass without receiving new data. Useful for debugging which streams are stuck or
+/// experiencing performance issues in the distributed system.
 pub fn lag_reporting_stream<S, T>(name: &str, in_stream: S) -> impl Stream<Item = T> + Send
 where
     S: Stream<Item = T> + Send,
@@ -295,6 +356,7 @@ where
     let mut stream = Box::pin(in_stream);
     let name = name.to_owned();
 
+    // Create a new stream that monitors the input stream for lag
     let out_stream = async_stream::stream! {
         while let Some(item) = report_on_lag(&name, stream.next()).await {
             yield item;
@@ -304,6 +366,11 @@ where
     Box::pin(out_stream)
 }
 
+/// Creates a RecordBatch stream wrapper that logs data flow for debugging
+///
+/// This function wraps a RecordBatch stream with logging functionality to trace
+/// data flow through the system. It logs when batches are received, their row counts,
+/// and any errors that occur, providing visibility into stream processing.
 pub fn reporting_stream(
     name: &str,
     in_stream: SendableRecordBatchStream,
@@ -312,6 +379,7 @@ pub fn reporting_stream(
     let mut stream = Box::pin(in_stream);
     let name = name.to_owned();
 
+    // Create a new stream with logging functionality
     let out_stream = async_stream::stream! {
         trace!("stream:{name}: attempting to read");
         while let Some(batch) = stream.next().await {
@@ -326,16 +394,39 @@ pub fn reporting_stream(
     Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
 }
 
+/// Arrow Flight client for communicating with distributed DataFusion worker nodes
+///
+/// This struct provides a high-level interface for sending queries and retrieving results
+/// from worker nodes in the distributed system. It wraps an Arrow Flight client with
+/// additional functionality for connection management and error handling.
+///
+/// # Connection Management
+/// The client maintains a reference to the shared channel cache to enable automatic
+/// connection cleanup when errors occur. If a connection fails, it removes the cached
+/// channel to force reconnection on the next request.
+///
+/// # Protocol Operations
+/// - **do_get**: Retrieves query results from workers as streaming data
+/// - **do_action**: Sends commands to workers (e.g., store execution plans)
 pub struct WorkerClient {
-    /// the host we are connecting to
+    /// Host information for the worker this client connects to
     pub(crate) host: Host,
-    /// The flight client to the worker
+    /// The underlying Arrow Flight client for gRPC communication
     inner: FlightClient,
-    /// the channel cache in the factory
+    /// Shared reference to the channel cache for connection cleanup
     channels: Arc<RwLock<HashMap<String, Channel>>>,
 }
 
 impl WorkerClient {
+    /// Creates a new WorkerClient with the specified configuration
+    ///
+    /// This constructor is typically called by WorkerClientFactory rather than directly.
+    /// It wraps an Arrow Flight client with additional distributed-specific functionality.
+    ///
+    /// # Arguments
+    /// * `host` - Host information for the target worker
+    /// * `inner` - Configured Arrow Flight client
+    /// * `channels` - Shared channel cache for connection management
     pub fn new(
         host: Host,
         inner: FlightClient,
@@ -348,6 +439,22 @@ impl WorkerClient {
         }
     }
 
+    /// Retrieves streaming query results from the worker node
+    ///
+    /// This method sends a do_get request to the worker with the provided ticket
+    /// and returns a stream of RecordBatches. The ticket typically contains query
+    /// metadata like query_id, stage_id, and partition information.
+    ///
+    /// # Error Handling
+    /// If the request fails, the method automatically removes the cached connection
+    /// to force reconnection on subsequent requests. This helps recover from
+    /// network issues or worker failures.
+    ///
+    /// # Arguments
+    /// * `ticket` - Flight ticket containing query execution metadata
+    ///
+    /// # Returns
+    /// * `FlightRecordBatchStream` - Stream of query results from the worker
     pub async fn do_get(
         &mut self,
         ticket: Ticket,
@@ -358,12 +465,28 @@ impl WorkerClient {
                 Considering this channel poisoned and removing it from WorkerClientFactory cache",
                 self.host
             );
+            // Remove failed connection from cache to force reconnection
             self.channels.write().remove(&self.host.addr);
         })?;
 
         Ok(stream)
     }
 
+    /// Sends action commands to the worker node
+    ///
+    /// This method sends do_action requests to workers for various control operations
+    /// like storing execution plans, reporting host information, or other administrative
+    /// tasks. Actions typically don't return data, just confirmation of completion.
+    ///
+    /// # Error Handling
+    /// Similar to do_get, connection failures automatically trigger cache cleanup
+    /// to ensure connection recovery on subsequent requests.
+    ///
+    /// # Arguments
+    /// * `action` - Arrow Flight action containing command and payload
+    ///
+    /// # Returns
+    /// * `BoxStream<Bytes>` - Stream of response messages from the worker
     pub async fn do_action(
         &mut self,
         action: arrow_flight::Action,
@@ -375,6 +498,7 @@ impl WorkerClient {
                  cache",
                 self.host
             );
+            // Remove failed connection from cache to force reconnection
             self.channels.write().remove(&self.host.addr);
         })?;
 
@@ -382,20 +506,66 @@ impl WorkerClient {
     }
 }
 
+/// Factory for creating and managing WorkerClient connections with connection pooling
+///
+/// This factory provides centralized connection management for distributed DataFusion
+/// worker communications. It maintains a cache of gRPC channels to worker nodes,
+/// enabling connection reuse and improved performance across the distributed system.
+///
+/// # Connection Pooling
+/// The factory caches gRPC channels by worker address, avoiding the overhead of
+/// establishing new connections for each request. Cached connections are automatically
+/// cleaned up when they fail, ensuring automatic recovery from network issues.
+///
+/// # Thread Safety
+/// The factory is designed to be used concurrently across multiple threads, with
+/// internal synchronization provided by RwLock for the connection cache.
+///
+/// # Usage
+/// Typically accessed through the global `get_client()` function rather than directly,
+/// providing a singleton pattern for connection management across the application.
 struct WorkerClientFactory {
+    /// Cache of gRPC channels indexed by worker address
+    /// Enables connection reuse and reduces connection establishment overhead
     channels: Arc<RwLock<HashMap<String, Channel>>>,
 }
 
 impl WorkerClientFactory {
+    /// Creates a new WorkerClientFactory with an empty connection cache
+    ///
+    /// This constructor initializes the factory with a fresh connection cache.
+    /// Typically called once during application startup to create the global factory.
     fn new() -> Self {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// Creates or retrieves a cached WorkerClient for the specified host
+    ///
+    /// This method implements the core connection management logic. It first checks
+    /// for an existing cached connection to the worker, and if none exists, establishes
+    /// a new gRPC connection and caches it for future use.
+    ///
+    /// # Connection Process
+    /// 1. Check cache for existing connection to the worker
+    /// 2. If cached connection exists, reuse it
+    /// 3. If no cached connection, establish new gRPC connection
+    /// 4. Cache the new connection for future requests
+    /// 5. Wrap connection in WorkerClient with error handling
+    ///
+    /// # Arguments
+    /// * `host` - Host information for the target worker node
+    ///
+    /// # Returns
+    /// * `WorkerClient` - Ready-to-use client for communicating with the worker
+    ///
+    /// # Errors
+    /// Returns DataFusionError if connection establishment fails or times out
     pub fn get_client(&self, host: &Host) -> Result<WorkerClient, DataFusionError> {
         let url = format!("http://{}", host.addr);
 
+        // Check if we have a cached connection for this worker
         let maybe_chan = self.channels.read().get(&host.addr).cloned();
         let chan = match maybe_chan {
             Some(chan) => {
@@ -403,12 +573,14 @@ impl WorkerClientFactory {
                 chan
             }
             None => {
+                // No cached connection - establish a new one
                 let host_str = host.to_string();
                 let fut = async move {
                     trace!("WorkerFactory connecting to {host_str}");
                     Channel::from_shared(url.clone())
                         .map_err(|e| internal_datafusion_err!("WorkerFactory invalid url {e:#?}"))?
-                        // FIXME: update timeout value to not be a magic number
+                        // Configure connection timeout to prevent hanging on unreachable workers
+                        // TODO: make this configurable
                         .connect_timeout(Duration::from_secs(2))
                         .connect()
                         .await
@@ -417,12 +589,15 @@ impl WorkerClientFactory {
                         })
                 };
 
+                // Use wait_for to execute the async connection in sync context
                 let chan = wait_for(fut, "WorkerFactory::get_client").map_err(|e| {
                     internal_datafusion_err!(
                         "WorkerFactory Cannot wait for channel connect future {e:#?}"
                     )
                 })??;
                 trace!("WorkerFactory connected to {host}");
+
+                // Cache the new connection for future use
                 self.channels
                     .write()
                     .insert(host.addr.to_string(), chan.clone());
@@ -432,8 +607,11 @@ impl WorkerClientFactory {
         };
         debug!("WorkerFactory have channel now for {host}");
 
+        // Create Flight client from the gRPC channel
         let flight_client = FlightClient::new(chan);
         debug!("WorkerFactory made flight client for {host}");
+
+        // Wrap in WorkerClient with connection management capabilities
         Ok(WorkerClient::new(
             host.clone(),
             flight_client,
@@ -444,12 +622,24 @@ impl WorkerClientFactory {
 
 static FACTORY: OnceLock<WorkerClientFactory> = OnceLock::new();
 
+/// Creates Arrow Flight clients for connecting to worker nodes
+///
+/// This function provides a centralized way to create and manage Flight clients for
+/// communicating with distributed workers. It uses a factory pattern to reuse
+/// connections and ensure consistent client configuration across the system.
 pub fn get_client(host: &Host) -> Result<WorkerClient, DataFusionError> {
+    // Get or initialize the global client factory
     let factory = FACTORY.get_or_init(WorkerClientFactory::new);
     factory.get_client(host)
 }
 
-/// Copied from datafusion_physical_plan::union as its useful and not public
+/// A stream that combines multiple RecordBatch streams into a single output stream
+///
+/// This struct merges results from multiple worker streams into one unified stream,
+/// enabling distributed query results to be consumed as if they came from a single source.
+/// It uses round-robin polling to ensure fair access across all input streams.
+///
+/// Copied from datafusion_physical_plan::union as it's useful but not public
 pub struct CombinedRecordBatchStream {
     /// Schema wrapped by Arc
     schema: SchemaRef,
@@ -458,7 +648,10 @@ pub struct CombinedRecordBatchStream {
 }
 
 impl CombinedRecordBatchStream {
-    /// Create an CombinedRecordBatchStream
+    /// Creates a new combined stream from multiple input streams
+    ///
+    /// All input streams must have the same schema. The combined stream will yield
+    /// batches from all inputs in a round-robin fashion until all streams are exhausted.
     pub fn new(schema: SchemaRef, entries: Vec<SendableRecordBatchStream>) -> Self {
         Self { schema, entries }
     }
@@ -516,6 +709,11 @@ impl Stream for CombinedRecordBatchStream {
     }
 }
 
+/// Formats an execution plan with partition count information for debugging
+///
+/// This function creates a string representation of an execution plan tree that includes
+/// the output partition count for each node. This is particularly useful for understanding
+/// how data is distributed in the execution pipeline and debugging partition-related issues.
 pub fn display_plan_with_partition_counts(plan: &Arc<dyn ExecutionPlan>) -> impl Display {
     let mut output = String::with_capacity(1000);
 
@@ -523,7 +721,13 @@ pub fn display_plan_with_partition_counts(plan: &Arc<dyn ExecutionPlan>) -> impl
     output
 }
 
+/// Recursively prints execution plan nodes with partition information
+///
+/// This helper function traverses the execution plan tree and formats each node with
+/// its partition count and execution details. Used internally by display_plan_with_partition_counts
+/// to build the complete plan representation.
 fn print_node(plan: &Arc<dyn ExecutionPlan>, indent: usize, output: &mut String) {
+    // Format node with partition count and plan details
     output.push_str(&format!(
         "[ output_partitions: {}]{:>indent$}{}",
         plan.output_partitioning().partition_count(),
@@ -532,20 +736,29 @@ fn print_node(plan: &Arc<dyn ExecutionPlan>, indent: usize, output: &mut String)
         indent = indent
     ));
 
+    // Recursively process child nodes with increased indentation
     for child in plan.children() {
         print_node(child, indent + 2, output);
     }
 }
 
+/// Automatically registers object stores for data sources referenced in an execution plan
+///
+/// This function traverses an execution plan tree to find DataSourceExec nodes and
+/// automatically registers appropriate object stores for their file paths. This ensures
+/// that workers can access external data sources like S3, GCS, or local files when
+/// executing their assigned plan portions.
 pub fn register_object_store_for_paths_in_plan(
     ctx: &SessionContext,
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<(), DataFusionError> {
+    // Function to check each plan node for data sources requiring object store registration
     let check_plan = |plan: Arc<dyn ExecutionPlan>| -> Result<_, DataFusionError> {
         for input in plan.children().into_iter() {
             if let Some(node) = input.as_any().downcast_ref::<DataSourceExec>() {
                 if let Some(config) = node.data_source().as_any().downcast_ref::<FileScanConfig>() {
                     let url = &config.object_store_url;
+                    // Register the appropriate object store for this data source
                     maybe_register_object_store(ctx, url.as_ref())?
                 }
             }
@@ -553,21 +766,27 @@ pub fn register_object_store_for_paths_in_plan(
         Ok(Transformed::no(plan))
     };
 
+    // Walk the entire plan tree to find and register all data sources
     plan.transform_down(check_plan)?;
 
     Ok(())
 }
 
-/// Registers an object store with the given session context based on the
-/// provided path.
+/// Registers an appropriate object store with the session context based on the URL scheme
 ///
-/// # Arguments
+/// This function examines a URL and registers the corresponding object store implementation
+/// (S3, Google Cloud Storage, HTTP, or local filesystem) with the DataFusion session context.
+/// This enables the query engine to read data from various storage backends.
 ///
-/// * `ctx` - A reference to the `SessionContext` where the object store will be
-///   registered.
-/// * `path` - A string slice that holds the path or URL of the object store.
+/// # Supported URL Schemes
+/// - `s3://` - Amazon S3 (using credentials from environment)
+/// - `gs://` or `gcs://` - Google Cloud Storage
+/// - `http://` or `https://` - HTTP-based storage
+/// - Other - Local filesystem
 pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<(), DataFusionError> {
+    // Determine object store type and configuration based on URL scheme
     let (ob_url, object_store) = if url.as_str().starts_with("s3://") {
+        // Amazon S3 configuration
         let bucket = url
             .host_str()
             .ok_or(internal_datafusion_err!("missing bucket name in s3:// url"))?;
@@ -580,6 +799,7 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
             Arc::new(s3) as Arc<dyn ObjectStore>,
         )
     } else if url.as_str().starts_with("gs://") || url.as_str().starts_with("gcs://") {
+        // Google Cloud Storage configuration
         let bucket = url
             .host_str()
             .ok_or(internal_datafusion_err!("missing bucket name in gs:// url"))?;
@@ -593,6 +813,7 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
             Arc::new(gs) as Arc<dyn ObjectStore>,
         )
     } else if url.as_str().starts_with("http://") || url.as_str().starts_with("https://") {
+        // HTTP/HTTPS configuration
         let scheme = url.scheme();
 
         let host = url.host_str().ok_or(internal_datafusion_err!(
@@ -609,6 +830,7 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
             Arc::new(http) as Arc<dyn ObjectStore>,
         )
     } else {
+        // Local filesystem configuration (default)
         let local = object_store::local::LocalFileSystem::new();
         (
             ObjectStoreUrl::parse("file://")?,
@@ -618,13 +840,20 @@ pub fn maybe_register_object_store(ctx: &SessionContext, url: &Url) -> Result<()
 
     debug!("Registering object store for {}", ob_url);
 
+    // Register the object store with the session context
     ctx.register_object_store(ob_url.as_ref(), object_store);
     Ok(())
 }
 
+/// Starts a TCP listener on the specified port for distributed service communication
+///
+/// This function creates and binds a TCP listener that distributed services (proxy or worker)
+/// use to accept incoming connections. The listener is configured to bind to all interfaces
+/// (0.0.0.0) to allow connections from other nodes in the distributed cluster.
 pub async fn start_up(port: usize) -> Result<TcpListener> {
     let my_host_str = format!("0.0.0.0:{}", port);
 
+    // Bind TCP listener to the specified port on all interfaces
     let listener = TcpListener::bind(&my_host_str)
         .await
         .context("Could not bind socket to {my_host_str}")?;
