@@ -12,6 +12,7 @@ use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExt
 use datafusion_substrait::{logical_plan::consumer::from_substrait_plan, substrait::proto::Plan};
 use tokio_stream::StreamExt;
 
+use crate::distribution_strategy::PartitionGrouper;
 use crate::{
     codec::DDCodec,
     customizer::Customizer,
@@ -148,18 +149,18 @@ impl QueryPlanner {
 
         // construct the distributed physical plan and stages
         let (distributed_plan, distributed_stages) =
-            distributed_physical_planning(physical_plan.clone(), 8192, Some(2)).await?;
+            distributed_physical_planning(physical_plan.clone(), PartitionGrouper::new(2), 8192)
+                .await?;
 
         // build the initial plan, without the worker addresses and DDTasks
-        return self
-            .build_initial_plan(
-                distributed_plan,
-                distributed_stages,
-                ctx,
-                logical_plan,
-                physical_plan,
-            )
-            .await;
+        self.build_initial_plan(
+            distributed_plan,
+            distributed_stages,
+            ctx,
+            logical_plan,
+            physical_plan,
+        )
+        .await
     }
 
     /// Prepare a `QueryPlan` for statements that should run locally on the proxy
@@ -189,7 +190,8 @@ impl QueryPlanner {
 
         // construct the distributed physical plan and stages
         let (distributed_plan, distributed_stages) =
-            distributed_physical_planning(physical_plan.clone(), 8192, Some(2)).await?;
+            distributed_physical_planning(physical_plan.clone(), PartitionGrouper::new(2), 8192)
+                .await?;
 
         // build the initial plan, without the worker addresses and DDTasks
         return self

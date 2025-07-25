@@ -29,6 +29,7 @@ use futures::TryStreamExt;
 use itertools::Itertools;
 use prost::Message;
 
+use crate::distribution_strategy::{Grouper, PartitionGroup, PartitionGrouper};
 use crate::{
     analyze::{DistributedAnalyzeExec, DistributedAnalyzeRootExec},
     isolator::PartitionIsolatorExec,
@@ -52,7 +53,7 @@ pub struct DDStage {
     /// the physical plan of our stage
     pub plan: Arc<dyn ExecutionPlan>,
     /// the partition groups for this stage.
-    pub partition_groups: Vec<Vec<u64>>,
+    pub partition_groups: Vec<PartitionGroup>,
     /// Are we hosting the complete partitions?  If not
     /// then DDStageReaderExecs will be inserted to consume its desired
     /// partition from all stages with this same id, and merge the results.
@@ -64,7 +65,7 @@ impl DDStage {
     fn new(
         stage_id: u64,
         plan: Arc<dyn ExecutionPlan>,
-        partition_groups: Vec<Vec<u64>>,
+        partition_groups: Vec<PartitionGroup>,
         full_partitions: bool,
     ) -> Self {
         Self {
@@ -240,10 +241,10 @@ pub async fn physical_planning(
 }
 
 /// Returns distributed plan and execution stages for both query execution and EXPLAIN display
-pub async fn distributed_physical_planning(
+pub async fn distributed_physical_planning<G: Grouper + Copy>(
     physical_plan: Arc<dyn ExecutionPlan>,
+    partiton_grouper: G,
     batch_size: usize,
-    partitions_per_worker: Option<usize>,
 ) -> Result<(Arc<dyn ExecutionPlan>, Vec<DDStage>)> {
     let mut stages = vec![];
 
@@ -287,7 +288,7 @@ pub async fn distributed_physical_planning(
         } else if plan.as_any().downcast_ref::<RepartitionExec>().is_some() {
             trace!("repartition exec partition_groups: {:?}", partition_groups);
             let (calculated_partition_groups, replacement) =
-                build_replacement(plan, partitions_per_worker, true, batch_size, batch_size)?;
+                build_replacement(plan, partiton_grouper, true, batch_size, batch_size)?;
             partition_groups = calculated_partition_groups;
             full_partitions = false;
 
@@ -295,7 +296,7 @@ pub async fn distributed_physical_planning(
         } else if plan.as_any().downcast_ref::<SortExec>().is_some() {
             trace!("sort exec partition_groups: {:?}", partition_groups);
             let (calculated_partition_groups, replacement) =
-                build_replacement(plan, partitions_per_worker, false, batch_size, batch_size)?;
+                build_replacement(plan, partiton_grouper, false, batch_size, batch_size)?;
             partition_groups = calculated_partition_groups;
             full_partitions = true;
 
@@ -309,7 +310,7 @@ pub async fn distributed_physical_planning(
             // left side of the join and is not suitable to be executed in a
             // partitioned manner.
             let mut replacement = plan.clone();
-            let partition_count = plan.output_partitioning().partition_count() as u64;
+            let partition_count = plan.output_partitioning().partition_count();
             trace!("nested join output partitioning {}", partition_count);
 
             replacement = Arc::new(MaxRowsExec::new(
@@ -318,16 +319,17 @@ pub async fn distributed_physical_planning(
                 batch_size,
             )) as Arc<dyn ExecutionPlan>;
 
-            partition_groups = vec![(0..partition_count).collect()];
+            // NestedLoopJoinExec must be on a stage by itself
+            partition_groups = vec![PartitionGroup::new(0, partition_count)];
             full_partitions = true;
             Ok(Transformed::yes(replacement))
         } else {
             trace!("not special case partition_groups: {:?}", partition_groups);
 
-            let partition_count = plan.output_partitioning().partition_count() as u64;
-            // set this back to default
-            partition_groups = vec![(0..partition_count).collect()];
+            let partition_count = plan.output_partitioning().partition_count();
 
+            // Default to one partition group containing all the partitions.
+            partition_groups = vec![PartitionGroup::new(0, partition_count)];
             Ok(Transformed::no(plan))
         }
     };
@@ -422,7 +424,7 @@ pub fn add_distributed_analyze(
                 verbose,
                 show_statistics,
             )) as Arc<dyn ExecutionPlan>;
-            stage.partition_groups = vec![vec![0]]; // accounting for coalesce
+            stage.partition_groups = vec![PartitionGroup::new(0, 1)]; // accounting for coalesce
         } else {
             stage.plan = Arc::new(DistributedAnalyzeExec::new(
                 stage.plan.clone(),
@@ -585,12 +587,12 @@ fn assign_to_workers(
                 final_addrs.clear();
             }
             if stage.stage_id as isize == max_stage_id {
-                for part in partition_group.iter() {
+                for part in partition_group.start()..partition_group.end() {
                     // we are the final stage, so we will be the one to serve this partition
                     final_addrs
                         .entry(stage.stage_id)
                         .or_default()
-                        .entry(*part)
+                        .entry(part as u64)
                         .or_default()
                         .push(host.clone());
                 }
@@ -600,7 +602,8 @@ fn assign_to_workers(
                 query_id: query_id.to_string(),
                 stage_id: stage.stage_id,
                 plan_bytes,
-                partition_group: partition_group.to_vec(),
+                partition_group: (partition_group.start() as u64..partition_group.end() as u64)
+                    .collect(),
                 child_stage_ids: stage.child_stage_ids().unwrap_or_default().to_vec(),
                 stage_addrs: None, // will be calculated and filled in later
                 num_output_partitions: stage.plan.output_partitioning().partition_count() as u64,
@@ -669,39 +672,29 @@ fn get_stage_addrs_from_tasks(target_stage_ids: &[u64], stages: &[DDTask]) -> Re
 }
 
 #[allow(clippy::type_complexity)]
-fn build_replacement(
+fn build_replacement<G: Grouper>(
     plan: Arc<dyn ExecutionPlan>,
-    partitions_per_worker: Option<usize>,
+    partition_grouper: G,
     isolate: bool,
     max_rows: usize,
     inner_batch_size: usize,
-) -> Result<(Vec<Vec<u64>>, Arc<dyn ExecutionPlan>), DataFusionError> {
+) -> Result<(Vec<PartitionGroup>, Arc<dyn ExecutionPlan>), DataFusionError> {
     let mut replacement = plan.clone();
     let children = plan.children();
-    assert!(children.len() == 1, "Unexpected plan structure");
+    assert_eq!(children.len(), 1, "Unexpected plan structure");
 
     let child = children[0];
-    let partition_count = plan.output_partitioning().partition_count() as u64;
+    let partition_count = plan.output_partitioning().partition_count();
     trace!(
         "build_replacement for {}, partition_count: {}",
         displayable(plan.as_ref()).one_line(),
         partition_count
     );
 
-    let partition_groups = match partitions_per_worker {
-        Some(p) => (0..partition_count)
-            .chunks(p)
-            .into_iter()
-            .map(|chunk| chunk.collect())
-            .collect(),
-        None => vec![(0..partition_count).collect()],
-    };
+    let partition_groups = partition_grouper.group(partition_count);
 
     if isolate && partition_groups.len() > 1 {
-        let new_child = Arc::new(PartitionIsolatorExec::new(
-            child.clone(),
-            partitions_per_worker.unwrap(), // we know it is a Some, here.
-        ));
+        let new_child = Arc::new(PartitionIsolatorExec::new(child.clone(), partition_count));
         replacement = replacement.clone().with_new_children(vec![new_child])?;
     }
     // insert a max rows & coalescing batches here too so that we aren't sending
@@ -712,4 +705,216 @@ fn build_replacement(
     )) as Arc<dyn ExecutionPlan>;
 
     Ok((partition_groups, replacement))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record_batch_exec::RecordBatchExec;
+    use arrow::array::{Int32Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::{repartition::RepartitionExec, Partitioning};
+    use std::sync::Arc;
+
+    fn create_test_plan() -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col1",
+            DataType::Int32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let record_batch_exec = Arc::new(RecordBatchExec::new(batch));
+        Arc::new(
+            RepartitionExec::try_new(record_batch_exec, Partitioning::RoundRobinBatch(4)).unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_build_replacement_basic() {
+        let plan = create_test_plan();
+        let grouper = PartitionGrouper::new(2);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, false, 1000, 8192).unwrap();
+        assert_eq!(
+            grouper.group(plan.properties().partitioning.partition_count()),
+            partition_groups
+        );
+        let max_rows_exec = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        assert_eq!(max_rows_exec.max_rows, 1000);
+        let coalesce_batches_exec = max_rows_exec.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        assert_eq!(coalesce_batches_exec.target_batch_size(), 8192);
+    }
+
+    #[test]
+    fn test_build_replacement_with_isolation() {
+        let plan = create_test_plan();
+        let grouper = PartitionGrouper::new(1);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, true, 1000, 8192).unwrap();
+        assert_eq!(
+            grouper.group(plan.properties().partitioning.partition_count()),
+            partition_groups
+        );
+        let max_rows = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        let coalesce = max_rows.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        let repartition = coalesce.children()[0];
+        let isolator = repartition.children()[0]
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .unwrap();
+        assert_eq!(
+            isolator.partition_count,
+            plan.properties().partitioning.partition_count()
+        )
+    }
+
+    // Edge case tests with small batch sizes and controlled partition counts
+    fn create_test_plan_with_partitions(num_partitions: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col1",
+            DataType::Int32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6]))],
+        )
+        .unwrap();
+        let record_batch_exec = Arc::new(RecordBatchExec::new(batch));
+        Arc::new(
+            RepartitionExec::try_new(
+                record_batch_exec,
+                Partitioning::RoundRobinBatch(num_partitions),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_build_replacement_edge_case_uneven_partitions() {
+        // Test: 7 partitions with group size 3 -> groups [0..3), [3..6), [6..7)
+        let plan = create_test_plan_with_partitions(7);
+        let grouper = PartitionGrouper::new(3);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, true, 10, 50).unwrap();
+
+        let expected_groups = vec![
+            PartitionGroup::new(0, 3),
+            PartitionGroup::new(3, 6),
+            PartitionGroup::new(6, 7), // Uneven last group
+        ];
+        assert_eq!(partition_groups, expected_groups);
+
+        // Verify small batch sizes are applied
+        let max_rows = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        assert_eq!(max_rows.max_rows, 10);
+        let coalesce = max_rows.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        assert_eq!(coalesce.target_batch_size(), 50);
+
+        // Verify isolator is inserted since isolate=true and partition_groups.len() > 1
+        let repartition = coalesce.children()[0];
+        let isolator = repartition.children()[0]
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .unwrap();
+        assert_eq!(isolator.partition_count, 7);
+    }
+
+    #[test]
+    fn test_build_replacement_edge_case_single_partition() {
+        // Test: 1 partition with group size 5 -> groups [0..1)
+        let plan = create_test_plan_with_partitions(1);
+        let grouper = PartitionGrouper::new(5);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, true, 5, 20).unwrap();
+
+        let expected_groups = vec![PartitionGroup::new(0, 1)];
+        assert_eq!(partition_groups, expected_groups);
+
+        // With only 1 partition group, isolator should NOT be inserted
+        let max_rows = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        let coalesce = max_rows.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        let repartition = coalesce.children()[0];
+        // Should be the original child, not an isolator
+        assert!(repartition.children()[0]
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .is_none());
+    }
+
+    #[test]
+    fn test_build_replacement_edge_case_group_size_larger_than_partitions() {
+        // Test: 3 partitions with group size 10 -> groups [0..3)
+        let plan = create_test_plan_with_partitions(3);
+        let grouper = PartitionGrouper::new(10);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, false, 2, 15).unwrap();
+
+        let expected_groups = vec![PartitionGroup::new(0, 3)];
+        assert_eq!(partition_groups, expected_groups);
+
+        // With isolate=false, no isolator should be inserted
+        let max_rows = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        let coalesce = max_rows.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        let repartition = coalesce.children()[0];
+        assert!(repartition.children()[0]
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .is_none());
+    }
+
+    #[test]
+    fn test_build_replacement_edge_case_many_small_groups() {
+        // Test: 8 partitions with group size 1 -> 8 groups of size 1
+        let plan = create_test_plan_with_partitions(8);
+        let grouper = PartitionGrouper::new(1);
+        let (partition_groups, replacement) =
+            build_replacement(plan.clone(), grouper, true, 3, 12).unwrap();
+
+        let expected_groups = vec![
+            PartitionGroup::new(0, 1),
+            PartitionGroup::new(1, 2),
+            PartitionGroup::new(2, 3),
+            PartitionGroup::new(3, 4),
+            PartitionGroup::new(4, 5),
+            PartitionGroup::new(5, 6),
+            PartitionGroup::new(6, 7),
+            PartitionGroup::new(7, 8),
+        ];
+        assert_eq!(partition_groups, expected_groups);
+
+        // With 8 groups (> 1), isolator should be inserted
+        let max_rows = replacement.as_any().downcast_ref::<MaxRowsExec>().unwrap();
+        assert_eq!(max_rows.max_rows, 3);
+        let coalesce = max_rows.children()[0]
+            .as_any()
+            .downcast_ref::<CoalesceBatchesExec>()
+            .unwrap();
+        assert_eq!(coalesce.target_batch_size(), 12);
+        let repartition = coalesce.children()[0];
+        let isolator = repartition.children()[0]
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .unwrap();
+        assert_eq!(isolator.partition_count, 8);
+    }
 }

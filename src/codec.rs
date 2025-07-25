@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Field, Schema};
 use datafusion::{
     common::{internal_datafusion_err, internal_err, Result},
     execution::FunctionRegistry,
@@ -243,10 +243,10 @@ mod test {
         isolator::PartitionIsolatorExec, max_rows::MaxRowsExec, stage_reader::DDStageReaderExec,
     };
 
-    fn create_test_schema() -> Arc<arrow::datatypes::Schema> {
-        Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("a", DataType::Int32, false),
-            arrow::datatypes::Field::new("b", DataType::Int32, false),
+    fn create_test_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
         ]))
     }
 
