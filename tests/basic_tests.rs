@@ -41,7 +41,9 @@ async fn get_basic_cluster() -> &'static TestCluster {
             let config = ClusterConfig::new()
                 .with_base_port(33000) // Use different port range from TPC-H tests
                 .with_csv_table("customers", "testdata/mock/customers.csv")
-                .with_csv_table("orders", "testdata/mock/orders.csv");
+                .expect("Failed to configure customers table")
+                .with_csv_table("orders", "testdata/mock/orders.csv")
+                .expect("Failed to configure orders table");
 
             let cluster = TestCluster::start_with_config(config)
                 .await

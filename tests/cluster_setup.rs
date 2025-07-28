@@ -17,7 +17,6 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +27,78 @@ use std::time::{Duration, Instant};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::prelude::*;
 
+/// Supported table formats for the cluster
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableFormat {
+    Parquet,
+    Csv,
+}
+
+impl TableFormat {
+    /// Convert to string representation used in environment variables
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TableFormat::Parquet => "parquet",
+            TableFormat::Csv => "csv",
+        }
+    }
+}
+
+impl std::fmt::Display for TableFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for TableFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "parquet" => Ok(TableFormat::Parquet),
+            "csv" => Ok(TableFormat::Csv),
+            _ => Err(format!(
+                "Unsupported table format: '{}'. Supported formats: parquet, csv",
+                s
+            )),
+        }
+    }
+}
+
+/// Configuration for a table to be registered in the cluster
+#[derive(Debug, Clone)]
+pub struct TableConfig {
+    pub name: String,
+    pub format: TableFormat,
+    pub path: String,
+}
+
+impl TableConfig {
+    pub fn new<S: Into<String>>(name: S, format: TableFormat, path: S) -> Self {
+        Self {
+            name: name.into(),
+            format,
+            path: path.into(),
+        }
+    }
+
+    pub fn parquet<S: Into<String>>(name: S, path: S) -> Self {
+        Self {
+            name: name.into(),
+            format: TableFormat::Parquet,
+            path: path.into(),
+        }
+    }
+
+    pub fn csv<S: Into<String>>(name: S, path: S) -> Self {
+        Self {
+            name: name.into(),
+            format: TableFormat::Csv,
+            path: path.into(),
+        }
+    }
+}
+
 /// Configuration for the integration test cluster
 #[derive(Debug, Clone)]
 pub struct ClusterConfig {
@@ -35,8 +106,8 @@ pub struct ClusterConfig {
     pub num_workers: usize,
     /// Base port for services (proxy will use this, workers will use base_port + 1, base_port + 2, etc.)
     pub base_port: u16,
-    /// Tables to register in the cluster (name -> (format, path))
-    pub tables: HashMap<String, (String, String)>,
+    /// Tables to register in the cluster
+    pub tables: Vec<TableConfig>,
     /// SQL views to create
     pub views: Vec<String>,
     /// Timeout for cluster startup
@@ -48,7 +119,7 @@ impl Default for ClusterConfig {
         Self {
             num_workers: 2,
             base_port: 21000,
-            tables: HashMap::new(),
+            tables: Vec::new(),
             views: Vec::new(),
             startup_timeout: Duration::from_secs(30),
         }
@@ -73,27 +144,86 @@ impl ClusterConfig {
         self
     }
 
-    /// Add a table to register in the cluster
+    /// Add a table to register in the cluster (string format - may fail if format is invalid)
     #[allow(dead_code)]
-    pub fn with_table<S: Into<String>>(mut self, name: S, format: S, path: S) -> Self {
-        self.tables
-            .insert(name.into(), (format.into(), path.into()));
-        self
+    pub fn with_table<S: Into<String>>(
+        mut self,
+        name: S,
+        format: S,
+        path: S,
+    ) -> Result<Self, String> {
+        let format_str = format.into();
+        let table_format = format_str
+            .parse::<TableFormat>()
+            .map_err(|e| format!("Invalid table format '{}': {}", format_str, e))?;
+
+        let table_config = TableConfig::new(name, table_format, path);
+        self.add_table(table_config)?;
+        Ok(self)
+    }
+
+    /// Add a table to register in the cluster (using TableFormat enum)
+    #[allow(dead_code)]
+    pub fn with_table_format<S: Into<String>>(
+        mut self,
+        name: S,
+        format: TableFormat,
+        path: S,
+    ) -> Result<Self, String> {
+        let table_config = TableConfig::new(name, format, path);
+        self.add_table(table_config)?;
+        Ok(self)
     }
 
     /// Add a parquet table (convenience method)
-    pub fn with_parquet_table<S: Into<String>>(mut self, name: S, path: S) -> Self {
-        self.tables
-            .insert(name.into(), ("parquet".to_string(), path.into()));
-        self
+    pub fn with_parquet_table<S: Into<String>>(mut self, name: S, path: S) -> Result<Self, String> {
+        let table_config = TableConfig::parquet(name, path);
+        self.add_table(table_config)?;
+        Ok(self)
     }
 
     /// Add a CSV table (convenience method)  
     #[allow(dead_code)]
-    pub fn with_csv_table<S: Into<String>>(mut self, name: S, path: S) -> Self {
-        self.tables
-            .insert(name.into(), ("csv".to_string(), path.into()));
-        self
+    pub fn with_csv_table<S: Into<String>>(mut self, name: S, path: S) -> Result<Self, String> {
+        let table_config = TableConfig::csv(name, path);
+        self.add_table(table_config)?;
+        Ok(self)
+    }
+
+    /// Helper method to add a table and check for duplicates
+    fn add_table(&mut self, table_config: TableConfig) -> Result<(), String> {
+        // Check for duplicate table names
+        if self.tables.iter().any(|t| t.name == table_config.name) {
+            return Err(format!("Table '{}' already exists", table_config.name));
+        }
+
+        self.tables.push(table_config);
+        Ok(())
+    }
+
+    /// Add a pre-configured table directly
+    #[allow(dead_code)]
+    pub fn with_table_config(mut self, table_config: TableConfig) -> Result<Self, String> {
+        self.add_table(table_config)?;
+        Ok(self)
+    }
+
+    /// Find a table configuration by name
+    #[allow(dead_code)]
+    pub fn find_table(&self, name: &str) -> Option<&TableConfig> {
+        self.tables.iter().find(|t| t.name == name)
+    }
+
+    /// Get all table names
+    #[allow(dead_code)]
+    pub fn table_names(&self) -> Vec<&str> {
+        self.tables.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// Check if a table with the given name exists
+    #[allow(dead_code)]
+    pub fn has_table(&self, name: &str) -> bool {
+        self.tables.iter().any(|t| t.name == name)
     }
 
     /// Add a SQL view
@@ -122,7 +252,14 @@ impl ClusterConfig {
     fn tables_env_string(&self) -> String {
         self.tables
             .iter()
-            .map(|(name, (format, path))| format!("{}:{}:{}", name, format, path))
+            .map(|table_config| {
+                format!(
+                    "{}:{}:{}",
+                    table_config.name,
+                    table_config.format.as_str(),
+                    table_config.path
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -154,14 +291,14 @@ impl TestCluster {
         let config = ClusterConfig::new()
             .with_base_port(32000) // Use unique port range for TPC-H tests
             // Register all TPC-H tables
-            .with_parquet_table("customer", "tpch/data/tpch_customer_small.parquet")
-            .with_parquet_table("lineitem", "tpch/data/tpch_lineitem_small.parquet")
-            .with_parquet_table("nation", "tpch/data/tpch_nation_small.parquet")
-            .with_parquet_table("orders", "tpch/data/tpch_orders_small.parquet")
-            .with_parquet_table("part", "tpch/data/tpch_part_small.parquet")
-            .with_parquet_table("partsupp", "tpch/data/tpch_partsupp_small.parquet")
-            .with_parquet_table("region", "tpch/data/tpch_region_small.parquet")
-            .with_parquet_table("supplier", "tpch/data/tpch_supplier_small.parquet")
+            .with_parquet_table("customer", "tpch/data/tpch_customer_small.parquet")?
+            .with_parquet_table("lineitem", "tpch/data/tpch_lineitem_small.parquet")?
+            .with_parquet_table("nation", "tpch/data/tpch_nation_small.parquet")?
+            .with_parquet_table("orders", "tpch/data/tpch_orders_small.parquet")?
+            .with_parquet_table("part", "tpch/data/tpch_part_small.parquet")?
+            .with_parquet_table("partsupp", "tpch/data/tpch_partsupp_small.parquet")?
+            .with_parquet_table("region", "tpch/data/tpch_region_small.parquet")?
+            .with_parquet_table("supplier", "tpch/data/tpch_supplier_small.parquet")?
             // Add the revenue0 view needed for q15
             .with_view("CREATE VIEW revenue0 (supplier_no, total_revenue) AS SELECT l_suppkey, sum(l_extendedprice * (1 - l_discount)) FROM lineitem WHERE l_shipdate >= date '1996-08-01' AND l_shipdate < date '1996-08-01' + interval '3' month GROUP BY l_suppkey");
 
@@ -377,25 +514,30 @@ impl TestCluster {
         println!("📋 Registering tables and views...");
 
         // Register tables
-        for (table_name, (format, path)) in &self.config.tables {
+        for table_config in &self.config.tables {
             println!(
                 "  Registering {} table: {} from {}",
-                format, table_name, path
+                table_config.format, table_config.name, table_config.path
             );
 
-            match format.as_str() {
-                "parquet" => {
+            match table_config.format {
+                TableFormat::Parquet => {
                     self.session_context
-                        .register_parquet(table_name, path, ParquetReadOptions::default())
+                        .register_parquet(
+                            &table_config.name,
+                            &table_config.path,
+                            ParquetReadOptions::default(),
+                        )
                         .await?;
                 }
-                "csv" => {
+                TableFormat::Csv => {
                     self.session_context
-                        .register_csv(table_name, path, CsvReadOptions::default())
+                        .register_csv(
+                            &table_config.name,
+                            &table_config.path,
+                            CsvReadOptions::default(),
+                        )
                         .await?;
-                }
-                _ => {
-                    return Err(format!("Unsupported table format: {}", format).into());
                 }
             }
         }
@@ -514,7 +656,8 @@ mod tests {
         let config = ClusterConfig::new()
             .with_workers(3) // 3 workers instead of 2
             .with_base_port(23000) // Different port base
-            .with_parquet_table("people", "testdata/parquet/people.parquet");
+            .with_parquet_table("people", "testdata/parquet/people.parquet")
+            .expect("Failed to configure parquet table");
 
         let cluster = TestCluster::start_with_config(config)
             .await
@@ -621,6 +764,7 @@ mod tests {
             .with_workers(3)
             .with_base_port(27000) // Use unique port range
             .with_parquet_table("test_table", "testdata/parquet/people.parquet")
+            .expect("Failed to configure parquet table")
             .with_view("CREATE VIEW test_view AS SELECT * FROM test_table LIMIT 5");
 
         let cluster = TestCluster::start_with_config(config)
@@ -651,5 +795,102 @@ mod tests {
         // TODO: Add proper assertions once SQL execution is implemented
         let total_rows = batches.iter().map(|b| b.num_rows()).sum::<usize>();
         println!("Query returned {} rows", total_rows);
+    }
+
+    /// Test the new Vec-based table configuration API (config-only, no files accessed)
+    #[test]
+    fn test_table_config_api() {
+        println!("🧪 Testing new table configuration API...");
+
+        // Test building configuration with various methods
+        // NOTE: This test only verifies configuration building - no files are actually accessed
+        // Using dummy paths since this is purely testing the configuration API
+        let config = ClusterConfig::new()
+            .with_base_port(29000)
+            .with_parquet_table("table1", "/dummy/path/table1.parquet") // Dummy path - config test only
+            .expect("Failed to add parquet table")
+            .with_table_config(TableConfig::csv("table2", "/dummy/path/table2.csv")) // Dummy path - config test only
+            .expect("Failed to add csv table")
+            .with_table_format("table3", TableFormat::Parquet, "/dummy/path/table3.parquet") // Dummy path - config test only
+            .expect("Failed to add table with format");
+
+        // Test query methods
+        assert_eq!(config.tables.len(), 3);
+        assert!(config.has_table("table1"));
+        assert!(config.has_table("table2"));
+        assert!(config.has_table("table3"));
+        assert!(!config.has_table("nonexistent"));
+
+        let table_names = config.table_names();
+        assert_eq!(table_names.len(), 3);
+        assert!(table_names.contains(&"table1"));
+        assert!(table_names.contains(&"table2"));
+        assert!(table_names.contains(&"table3"));
+
+        // Test finding specific table
+        let table1 = config.find_table("table1").unwrap();
+        assert_eq!(table1.name, "table1");
+        assert_eq!(table1.format, TableFormat::Parquet);
+        assert_eq!(table1.path, "/dummy/path/table1.parquet");
+
+        let table2 = config.find_table("table2").unwrap();
+        assert_eq!(table2.name, "table2");
+        assert_eq!(table2.format, TableFormat::Csv);
+        assert_eq!(table2.path, "/dummy/path/table2.csv");
+
+        let table3 = config.find_table("table3").unwrap();
+        assert_eq!(table3.name, "table3");
+        assert_eq!(table3.format, TableFormat::Parquet);
+        assert_eq!(table3.path, "/dummy/path/table3.parquet");
+
+        println!("✅ Table configuration API test completed");
+    }
+
+    /// Test duplicate table name detection
+    #[test]
+    fn test_duplicate_table_detection() {
+        println!("🧪 Testing duplicate table name detection...");
+
+        // Test duplicate table names (using dummy paths - config test only)
+        let result = ClusterConfig::new()
+            .with_parquet_table("table1", "/dummy/path1.parquet") // Dummy path - config test only
+            .expect("First table should succeed")
+            .with_parquet_table("table1", "/dummy/path2.parquet"); // Same name, dummy path - config test only
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Table 'table1' already exists"));
+
+        println!("✅ Duplicate detection test completed");
+    }
+
+    /// Test TableFormat parsing
+    #[test]
+    fn test_table_format_parsing() {
+        println!("🧪 Testing TableFormat parsing...");
+
+        // Test successful parsing
+        assert_eq!(
+            "parquet".parse::<TableFormat>().unwrap(),
+            TableFormat::Parquet
+        );
+        assert_eq!("csv".parse::<TableFormat>().unwrap(), TableFormat::Csv);
+        assert_eq!(
+            "PARQUET".parse::<TableFormat>().unwrap(),
+            TableFormat::Parquet
+        ); // Case insensitive
+        assert_eq!("CSV".parse::<TableFormat>().unwrap(), TableFormat::Csv);
+
+        // Test failed parsing
+        let result = "invalid".parse::<TableFormat>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported table format"));
+
+        // Test Display trait
+        assert_eq!(TableFormat::Parquet.to_string(), "parquet");
+        assert_eq!(TableFormat::Csv.to_string(), "csv");
+
+        println!("✅ TableFormat parsing test completed");
     }
 }
