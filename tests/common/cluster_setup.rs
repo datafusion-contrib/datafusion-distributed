@@ -41,6 +41,11 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECTION_CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
+const PROCESS_CLEANUP_WAIT: Duration = Duration::from_secs(1);
+const WORKER_STARTUP_WAIT: Duration = Duration::from_secs(5);
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const WORKER_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 /// Supported table formats for the cluster
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,7 +387,7 @@ impl TestCluster {
         }
 
         // Give processes time to die
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(PROCESS_CLEANUP_WAIT);
         Ok(())
     }
 
@@ -441,7 +446,7 @@ impl TestCluster {
 
         // Give workers time to start and be ready for connections
         println!("  Waiting for workers to be ready...");
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(WORKER_STARTUP_WAIT);
 
         // Start proxy
         let proxy_port = self.config.proxy_port();
@@ -473,7 +478,7 @@ impl TestCluster {
 
         let proxy = cmd.spawn()?;
         self.proxy_process = Some(proxy);
-        self.is_running.store(true, Ordering::Relaxed);
+        self.is_running.store(true, Ordering::SeqCst);
 
         Ok(())
     }
@@ -500,14 +505,14 @@ impl TestCluster {
                 );
             }
 
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(READY_POLL_INTERVAL);
         }
 
         Err("Cluster failed to become ready within timeout".into())
     }
 
     async fn is_cluster_ready(&self) -> bool {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return false;
         }
 
@@ -570,7 +575,7 @@ impl TestCluster {
 
         // Give additional time for worker discovery to complete
         println!("  Allowing time for worker discovery...");
-        thread::sleep(Duration::from_secs(3));
+        thread::sleep(WORKER_DISCOVERY_WAIT);
 
         Ok(())
     }
@@ -583,7 +588,7 @@ impl TestCluster {
         &self,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error>> {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return Err("Cluster is not running".into());
         }
 
@@ -600,7 +605,7 @@ impl TestCluster {
         &self,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error>> {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return Err("Cluster is not running".into());
         }
 
@@ -701,13 +706,13 @@ impl TestCluster {
     /// Check if the cluster is running
     #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Relaxed)
+        self.is_running.load(Ordering::SeqCst)
     }
 }
 
 impl Drop for TestCluster {
     fn drop(&mut self) {
-        if self.is_running.load(Ordering::Relaxed) {
+        if self.is_running.load(Ordering::SeqCst) {
             println!("🧹 Shutting down integration test cluster...");
 
             // Kill proxy
@@ -722,7 +727,7 @@ impl Drop for TestCluster {
                 let _ = worker.wait();
             }
 
-            self.is_running.store(false, Ordering::Relaxed);
+            self.is_running.store(false, Ordering::SeqCst);
             println!("✅ Cluster shutdown complete");
         }
     }
@@ -792,7 +797,7 @@ mod tests {
         drop(cluster);
 
         // Give a moment for processes to die
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(SHUTDOWN_WAIT).await;
 
         // Verify the port is now available (should fail to connect)
         use std::net::TcpStream;
