@@ -40,6 +40,7 @@ const DEFAULT_NUM_WORKERS: usize = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
+const CONNECTION_CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Supported table formats for the cluster
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -666,14 +667,18 @@ impl TestCluster {
             println!("✅ Successfully executed distributed query and collected {} batches", batches.len());
 
             // Add a small delay to allow connection cleanup
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(CONNECTION_CLEANUP_TIMEOUT).await;
 
             Ok(batches)
         }).await;
 
         match result {
             Ok(batches_result) => batches_result,
-            Err(_) => Err("Query execution timeout after 120 seconds".into()),
+            Err(_) => Err(format!(
+                "Query execution timeout after {} seconds",
+                QUERY_TIMEOUT.as_secs()
+            )
+            .into()),
         }
     }
 

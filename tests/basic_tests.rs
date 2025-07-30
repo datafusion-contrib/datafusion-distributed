@@ -27,7 +27,6 @@ static TEST_EXECUTION_MUTEX: Mutex<()> = Mutex::const_new(());
 fn ensure_mock_data() {
     MOCK_DATA_INIT.call_once(|| {
         generate_mock_data().expect("Failed to generate mock data");
-        println!("✅ Mock data initialized for all basic tests");
     });
 }
 
