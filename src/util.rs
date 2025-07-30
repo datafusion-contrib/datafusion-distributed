@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Context as anyhowctx};
+use tokio::time::timeout;
+
+use anyhow::{anyhow, Context as anyhowctx, Error};
 use arrow::{
     array::RecordBatch,
     datatypes::SchemaRef,
@@ -53,6 +55,7 @@ use tokio::{
 use tonic::transport::Channel;
 use url::Url;
 
+use crate::result::DDError;
 use crate::{
     logging::{debug, error, trace},
     protobuf::StageAddrs,
@@ -76,59 +79,75 @@ impl Spawner {
         Self { runtime }
     }
 
+    // wait_for_future waits for the future f to complete. If it does not complete, this will
+    // block forever.
     fn wait_for_future<F>(&self, f: F, name: &str) -> Result<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send,
     {
-        let name_c = name.to_owned();
-        trace!("Spawner::wait_for {name_c}");
-        let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
-
-        let func = move || {
-            trace!("spawned fut start {name_c}");
-
-            let out = Handle::current().block_on(f);
-            trace!("spawned fut stop {name_c}");
-            tx.send(out).inspect_err(|e| {
-                error!("ERROR sending future reesult over channel!!!! {e:?}");
-            })
-        };
-
-        {
-            let _guard = self.runtime.enter();
-            let handle = Handle::current();
-
-            trace!("Spawner spawning {name}");
-            handle.spawn_blocking(func);
-            trace!("Spawner spawned {name}");
+        // sanity check that we are not in an async runtime. We don't want the code below to
+        // block an executor accidentally.
+        if Handle::try_current().is_ok() {
+            panic!("cannot call wait_for_future within an async runtime")
         }
 
-        let out = rx
-            .recv_timeout(Duration::from_secs(5))
-            .inspect_err(|e| {
-                error!("Spawner::wait_for {name} timed out waiting for future result: {e:?}");
-            })
-            .context("Spawner::wait_for failed to receive future result")?;
+        let name_c = name.to_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<F::Output>(1);
 
-        debug!("Spawner::wait_for {name} returning");
-        Ok(out)
+        let func = async move || {
+            trace!("spawned fut start {name_c}");
+            let out = f.await;
+            trace!("spawned fut stop {name_c}");
+            let result = tx.send(out).await;
+
+            // This should never happen. An error occurs if the channel was closed or the receiver
+            // was dropped. Neither happens before this line in this function.
+            if let Err(e) = result {
+                error!("ERROR sending future {name_c} result over channel! {e:?}");
+            }
+            // tx is dropped, channel is closed.
+        };
+
+        // Spawn the task in the runtime.
+        {
+            let _guard = self.runtime.enter();
+            trace!("Spawner spawning {name} (sync)");
+            tokio::spawn(func());
+            trace!("Spawner spawned {name} (sync)");
+        }
+
+        match rx.blocking_recv() {
+            // Channel was closed without any messages.
+            None => {
+                error!("Spawner::wait_for {name} timed out waiting for future result");
+                Err(DDError::Other(anyhow!("future {} did not complete", name)))
+            }
+            Some(result) => Ok(result),
+        }
     }
 }
 
+// SPAWNER is used to run futures in a synchronous runtime.
 static SPAWNER: OnceLock<Spawner> = OnceLock::new();
 
+// wait_for blocks on the future and returns when the future is complete. It will return an error
+// if called in an async runtime, since the async runtime should simply await f.
 pub fn wait_for<F>(f: F, name: &str) -> Result<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send,
 {
-    let spawner = SPAWNER.get_or_init(Spawner::new);
+    if Handle::try_current().is_ok() {
+        return Err(DDError::Other(anyhow!(
+            "cannot call wait_for in async runtime. consider awaitiing the future {} instead",
+            name
+        )));
+    }
 
-    trace!("waiting for future: {name}");
+    let spawner = SPAWNER.get_or_init(Spawner::new);
     let name = name.to_owned();
     let out = spawner.wait_for_future(f, &name);
-    trace!("done waiting for future: {name}");
     out
 }
 
@@ -653,19 +672,27 @@ mod test {
     }
 
     #[test]
-    fn test_wait_for_nested() {
-        println!("test_wait_for_nested");
+    fn test_wait_for_nested_error() {
         let fut = async || {
-            println!("in outter fut");
-            let fut5 = async || {
-                println!("in inner fut");
-                5
-            };
+            let fut5 = async || 5;
             wait_for(fut5(), "inner").unwrap()
         };
 
-        let out = wait_for(fut(), "outer").unwrap();
-        assert_eq!(out, 5);
+        // Return an error because the nested wait_for is called in an async runtime.
+        let out = wait_for(fut(), "outer");
+        assert!(out.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_errors_in_async_runtime() {
+        let fut5 = async || {
+            println!("in inner fut");
+            5
+        };
+
+        // Return an error because the nested wait_for is called in an async runtime.
+        let out = wait_for(fut5(), "fut5");
+        assert!(out.is_err());
     }
 
     #[test(tokio::test)]

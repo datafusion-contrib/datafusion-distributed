@@ -121,8 +121,9 @@ impl DDProxyHandler {
         stage_id: u64,
         addrs: Addrs,
     ) -> Result<Response<crate::flight::DoGetStream>, Status> {
-        let mut ctx =
-            get_ctx().map_err(|e| Status::internal(format!("Could not create context {e:?}")))?;
+        let mut ctx = get_ctx()
+            .await
+            .map_err(|e| Status::internal(format!("Could not create context {e:?}")))?;
 
         add_ctx_extentions(&mut ctx, &self.host, &query_id, stage_id, addrs, vec![])
             .map_err(|e| Status::internal(format!("Could not add context extensions {e:?}")))?;

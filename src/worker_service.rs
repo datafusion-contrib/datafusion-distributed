@@ -261,7 +261,7 @@ impl DDWorkerHandler {
         stage_addrs: Addrs,
         partition_group: Vec<u64>,
     ) -> Result<SessionContext> {
-        let mut ctx = get_ctx()?;
+        let mut ctx = get_ctx().await?;
         let host = Host {
             addr: self.addr.clone(),
             name: self.name.clone(),

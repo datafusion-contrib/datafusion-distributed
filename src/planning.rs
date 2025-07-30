@@ -3,6 +3,7 @@ use std::{
     env,
     sync::{Arc, LazyLock},
 };
+use tokio::sync::OnceCell;
 
 use anyhow::{anyhow, Context};
 use arrow_flight::Action;
@@ -89,17 +90,23 @@ impl DDStage {
     }
 }
 
-static STATE: LazyLock<Result<SessionState>> = LazyLock::new(|| {
-    let wait_result = wait_for(make_state(), "make_state");
-    match wait_result {
-        Ok(Ok(state)) => Ok(state),
-        Ok(Err(e)) => Err(anyhow!("Failed to initialize state: {}", e).into()),
-        Err(e) => Err(anyhow!("Failed to initialize state: {}", e).into()),
-    }
-});
+// STATE contains the global SessionState which contains table information and config options.
+//
+// Note that the OnceCell is thead safe (it is Sync + Send): https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html
+static STATE: OnceCell<Result<SessionState>> = OnceCell::const_new();
 
-pub fn get_ctx() -> Result<SessionContext> {
-    match &*STATE {
+// get_ctx returns the global SessionContext.
+pub async fn get_ctx() -> Result<SessionContext> {
+    let result = STATE
+        .get_or_init(|| async {
+            match make_state().await {
+                Ok(state) => Ok(state),
+                Err(e) => Err(anyhow!("Failed to initialize state: {}", e).into()),
+            }
+        })
+        .await;
+
+    match result {
         Ok(state) => Ok(SessionContext::new_with_state(state.clone())),
         Err(e) => Err(anyhow!("Context initialization failed: {}", e).into()),
     }

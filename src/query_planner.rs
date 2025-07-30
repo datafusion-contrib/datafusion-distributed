@@ -91,7 +91,9 @@ impl QueryPlanner {
     /// distributed plan, and distributed stages, but it does not yet contain
     /// worker addresses or tasks, as they are filled in later by `distribute_plan()`.
     pub async fn prepare(&self, sql: &str) -> Result<QueryPlan> {
-        let mut ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        let mut ctx = get_ctx()
+            .await
+            .map_err(|e| anyhow!("Could not create context: {e}"))?;
         if let Some(customizer) = &self.customizer {
             customizer
                 .customize(&mut ctx)
@@ -119,7 +121,9 @@ impl QueryPlanner {
     /// distributed plan, and distributed stages, but it does not yet contain
     /// worker addresses or tasks, as they are filled in later by `distribute_plan()`.
     pub async fn prepare_substrait(&self, substrait_plan: Plan) -> Result<QueryPlan> {
-        let mut ctx = get_ctx().map_err(|e| anyhow!("Could not create context: {e}"))?;
+        let mut ctx = get_ctx()
+            .await
+            .map_err(|e| anyhow!("Could not create context: {e}"))?;
         if let Some(customizer) = &self.customizer {
             customizer
                 .customize(&mut ctx)
