@@ -44,6 +44,8 @@ pub mod vocab;
 pub mod worker_discovery;
 pub mod worker_service;
 
+// Test utilities - available for integration tests
+
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 

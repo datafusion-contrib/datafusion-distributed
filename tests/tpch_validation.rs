@@ -30,8 +30,8 @@
 //! ```
 use std::time::Instant;
 
-mod common;
-use common::*;
+mod tpch_validation_helpers;
+use tpch_validation_helpers::*;
 
 /// Main validation test that runs all TPC-H queries
 ///

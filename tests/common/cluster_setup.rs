@@ -8,11 +8,11 @@
 //! #[tokio::test]
 //! async fn test_simple_query() {
 //!     let cluster = TestCluster::start().await.unwrap();
-//!     
+//!
 //!     // Execute a simple query
-//!     let batches = cluster.execute_sql("SELECT 1 as test_column").await.unwrap();
+//!     let batches = cluster.execute_sql_distributed("SELECT 1 as test_column").await.unwrap();
 //!     // your assertions here
-//!     
+//!
 //!     // Cluster automatically shuts down when dropped
 //! }
 //! ```
@@ -25,7 +25,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
+
+use super::test_utils::allocate_port_range;
+
+use arrow_flight::sql::client::FlightSqlServiceClient;
+use futures::StreamExt;
+use insta::assert_snapshot;
+use tonic::transport::Channel;
+
+/// CLUSTER CONFIG CONSTANTS
+const DEFAULT_NUM_WORKERS: usize = 2;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Supported table formats for the cluster
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,11 +131,11 @@ pub struct ClusterConfig {
 impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
-            num_workers: 2,
-            base_port: 21000,
+            num_workers: DEFAULT_NUM_WORKERS,
+            base_port: allocate_port_range(),
             tables: Vec::new(),
             views: Vec::new(),
-            startup_timeout: Duration::from_secs(30),
+            startup_timeout: STARTUP_TIMEOUT,
         }
     }
 }
@@ -182,7 +196,7 @@ impl ClusterConfig {
         Ok(self)
     }
 
-    /// Add a CSV table (convenience method)  
+    /// Add a CSV table (convenience method)
     #[allow(dead_code)]
     pub fn with_csv_table<S: Into<String>>(mut self, name: S, path: S) -> Result<Self, String> {
         let table_config = TableConfig::csv(name, path);
@@ -249,7 +263,7 @@ impl ClusterConfig {
             .collect()
     }
 
-    fn tables_env_string(&self) -> String {
+    fn tables_from_env(&self) -> String {
         self.tables
             .iter()
             .map(|table_config| {
@@ -264,7 +278,7 @@ impl ClusterConfig {
             .join(",")
     }
 
-    fn views_env_string(&self) -> String {
+    fn views_from_env(&self) -> String {
         self.views.join(";")
     }
 }
@@ -289,7 +303,8 @@ impl TestCluster {
     #[allow(dead_code)]
     pub async fn start_tpch_small_cluster() -> Result<Self, Box<dyn std::error::Error>> {
         let config = ClusterConfig::new()
-            .with_base_port(32000) // Use unique port range for TPC-H tests
+            // Use dynamically allocated port
+            .with_base_port(allocate_port_range())
             // Register all TPC-H tables
             .with_parquet_table("customer", "tpch/data/tpch_customer_small.parquet")?
             .with_parquet_table("lineitem", "tpch/data/tpch_lineitem_small.parquet")?
@@ -398,8 +413,8 @@ impl TestCluster {
 
     async fn start_cluster_processes(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let binary_path = self.get_binary_path();
-        let tables_env = self.config.tables_env_string();
-        let views_env = self.config.views_env_string();
+        let tables_env = self.config.tables_from_env();
+        let views_env = self.config.views_from_env();
 
         // Start workers first
         println!("  Starting {} workers...", self.config.num_workers);
@@ -423,8 +438,9 @@ impl TestCluster {
             self.worker_processes.push(worker);
         }
 
-        // Give workers time to start
-        thread::sleep(Duration::from_secs(2));
+        // Give workers time to start and be ready for connections
+        println!("  Waiting for workers to be ready...");
+        thread::sleep(Duration::from_secs(5));
 
         // Start proxy
         let proxy_port = self.config.proxy_port();
@@ -434,10 +450,11 @@ impl TestCluster {
             .config
             .worker_ports()
             .iter()
-            .enumerate()
-            .map(|(i, &port)| format!("worker{}/127.0.0.1:{}", i + 1, port))
+            .map(|&port| format!("127.0.0.1:{}", port))
             .collect::<Vec<_>>()
             .join(",");
+
+        println!("  Setting DD_WORKER_ADDRESSES: {}", worker_addresses);
 
         let mut cmd = Command::new(&binary_path);
         cmd.args(["--mode", "proxy", "--port", &proxy_port.to_string()])
@@ -549,11 +566,19 @@ impl TestCluster {
         }
 
         println!("✅ Tables and views registered successfully!");
+
+        // Give additional time for worker discovery to complete
+        println!("  Allowing time for worker discovery...");
+        thread::sleep(Duration::from_secs(3));
+
         Ok(())
     }
 
-    /// Execute a SQL query on the cluster
-    pub async fn execute_sql(
+    /// Execute a SQL query using single-node DataFusion
+    /// This has nothing to do with the distributed cluster, it is just a helper function
+    /// to execute a query using the single-node DataFusion SessionContext for output comparison
+    /// Use the same SessionContext to access the same tables and views as the distributed cluster
+    pub async fn execute_sql_single_node(
         &self,
         sql: &str,
     ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error>> {
@@ -561,11 +586,95 @@ impl TestCluster {
             return Err("Cluster is not running".into());
         }
 
-        // Execute query using DataFusion SessionContext
+        // Execute query using LOCAL DataFusion SessionContext - NOT distributed!
         let dataframe = self.session_context.sql(sql).await?;
         let batches = dataframe.collect().await?;
 
         Ok(batches)
+    }
+
+    /// Execute a SQL query using the distributed cluster via Flight SQL
+    /// This communicates with the running proxy to issue query, prepare, plan and execute it
+    pub async fn execute_sql_distributed(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error>> {
+        if !self.is_running.load(Ordering::Relaxed) {
+            return Err("Cluster is not running".into());
+        }
+
+        println!("🔍 Executing distributed query: {}", sql);
+
+        // Wrap the entire operation in a timeout
+        let result = tokio::time::timeout(QUERY_TIMEOUT, async {
+            // Scope the connection to ensure it gets dropped
+            let batches = {
+                // Connect to the RUNNING proxy via Flight SQL
+                let proxy_url = format!("http://{}", self.proxy_address());
+
+                let channel = Channel::from_shared(proxy_url)?
+                    .tcp_nodelay(true)
+                    .tcp_keepalive(Some(CHANNEL_TIMEOUT))
+                    .http2_keep_alive_interval(CHANNEL_TIMEOUT)
+                    .keep_alive_timeout(CHANNEL_TIMEOUT)
+                    .connect_timeout(CHANNEL_TIMEOUT)
+                    .connect()
+                    .await?;
+
+                // Use Flight SQL service client
+                let mut client = FlightSqlServiceClient::new(channel);
+
+                // get_flight_info_statement - proxy calls prepare() and distribute_plan()
+                let flight_info = client
+                    .execute(sql.to_string(), None)
+                    .await?;
+
+                // do_get_statement - proxy executes distributed plan and returns results
+                let mut batches = Vec::new();
+
+                // The proxy should return exactly one endpoint (itself)
+                if flight_info.endpoint.len() != 1 {
+                    return Err(format!("Expected exactly 1 endpoint from proxy, got {}", flight_info.endpoint.len()).into());
+                }
+
+                let endpoint = &flight_info.endpoint[0];
+                if let Some(ticket) = &endpoint.ticket {
+                    let mut stream = client.do_get(ticket.clone()).await?;
+
+                    // Collect all batches from the proxy's coordinated stream
+                    while let Some(batch_result) = stream.next().await {
+                        match batch_result {
+                            Ok(batch) => {
+                                println!("📦 Received RecordBatch with {} rows, {} columns from distributed cluster",
+                                       batch.num_rows(), batch.num_columns());
+                                batches.push(batch);
+                            }
+                            Err(e) => {
+                                return Err(format!("Failed to decode batch from distributed cluster: {}", e).into());
+                            }
+                        }
+                    }
+                } else {
+                    return Err("No ticket found in flight endpoint".into());
+                }
+
+                // Explicitly drop the client to ensure connection cleanup
+                drop(client);
+                batches
+            }; // Channel and client should be dropped here
+
+            println!("✅ Successfully executed distributed query and collected {} batches", batches.len());
+
+            // Add a small delay to allow connection cleanup
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            Ok(batches)
+        }).await;
+
+        match result {
+            Ok(batches_result) => batches_result,
+            Err(_) => Err("Query execution timeout after 120 seconds".into()),
+        }
     }
 
     /// Get the proxy address for direct connections
@@ -621,8 +730,6 @@ mod tests {
     /// Test basic cluster startup and shutdown
     #[tokio::test]
     async fn test_basic_cluster_lifecycle() {
-        println!("🧪 Testing basic cluster lifecycle...");
-
         // Start a cluster with default settings (2 workers)
         let cluster = TestCluster::start().await.expect("Failed to start cluster");
 
@@ -633,29 +740,23 @@ mod tests {
         let proxy_addr = cluster.proxy_address();
         let worker_addrs = cluster.worker_addresses();
 
-        println!("✅ Cluster started successfully:");
-        println!("   Proxy: {}", proxy_addr);
-        println!("   Workers: {:?}", worker_addrs);
+        // check proxy address is valid
+        // we do not check port because it is dynamically allocated
+        assert!(proxy_addr.contains("127.0.0.1:"));
 
         // Verify we have the expected number of workers
         assert_eq!(worker_addrs.len(), 2);
 
-        // Verify proxy is on expected port (21000 is default)
-        assert!(proxy_addr.contains("21000"));
-
         // Cluster automatically shuts down when dropped
         drop(cluster);
-        println!("✅ Cluster lifecycle test completed");
     }
 
     /// Test cluster with custom configuration
     #[tokio::test]
     async fn test_custom_cluster_config() {
-        println!("🧪 Testing cluster with custom configuration...");
-
         let config = ClusterConfig::new()
             .with_workers(3) // 3 workers instead of 2
-            .with_base_port(23000) // Different port base
+            .with_base_port(allocate_port_range()) // Dynamically allocated port base
             .with_parquet_table("people", "testdata/parquet/people.parquet")
             .expect("Failed to configure parquet table");
 
@@ -666,11 +767,7 @@ mod tests {
         // Verify custom configuration
         assert!(cluster.is_running());
         assert_eq!(cluster.worker_addresses().len(), 3);
-        assert!(cluster.proxy_address().contains("23000"));
-
-        println!("✅ Custom configuration test completed");
-        println!("   Proxy: {}", cluster.proxy_address());
-        println!("   Workers: {:?}", cluster.worker_addresses());
+        assert!(cluster.proxy_address().contains("127.0.0.1:"));
     }
 
     /// Test that cluster properly handles shutdown
@@ -678,7 +775,7 @@ mod tests {
     async fn test_cluster_shutdown() {
         println!("🧪 Testing cluster shutdown...");
 
-        let config = ClusterConfig::new().with_base_port(31000); // Use unique port range
+        let config = ClusterConfig::new().with_base_port(allocate_port_range()); // Use dynamically allocated port range
         let cluster = TestCluster::start_with_config(config)
             .await
             .expect("Failed to start cluster");
@@ -708,8 +805,8 @@ mod tests {
     async fn test_multiple_clusters() {
         println!("🧪 Testing multiple clusters simultaneously...");
 
-        let config1 = ClusterConfig::new().with_base_port(24000);
-        let config2 = ClusterConfig::new().with_base_port(25000);
+        let config1 = ClusterConfig::new().with_base_port(allocate_port_range());
+        let config2 = ClusterConfig::new().with_base_port(allocate_port_range());
 
         let cluster1 = TestCluster::start_with_config(config1)
             .await
@@ -723,9 +820,12 @@ mod tests {
         assert!(cluster1.is_running());
         assert!(cluster2.is_running());
 
-        // They should use different ports
-        assert!(cluster1.proxy_address().contains("24000"));
-        assert!(cluster2.proxy_address().contains("25000"));
+        // They should use different ports (dynamically allocated)
+        let proxy1_addr = cluster1.proxy_address();
+        let proxy2_addr = cluster2.proxy_address();
+        let proxy1_port = proxy1_addr.split(':').last().unwrap();
+        let proxy2_port = proxy2_addr.split(':').last().unwrap();
+        assert_ne!(proxy1_port, proxy2_port);
 
         println!("✅ Multiple clusters test completed");
         println!("   Cluster 1: {}", cluster1.proxy_address());
@@ -737,7 +837,7 @@ mod tests {
     /// Simple test to verify cluster startup
     #[tokio::test]
     async fn test_cluster_startup() {
-        let config = ClusterConfig::new().with_base_port(26000); // Use unique port range
+        let config = ClusterConfig::new().with_base_port(allocate_port_range()); // Use dynamically allocated port range
         let cluster = TestCluster::start_with_config(config)
             .await
             .expect("Failed to start cluster");
@@ -762,7 +862,7 @@ mod tests {
     async fn test_cluster_custom_config_original() {
         let config = ClusterConfig::new()
             .with_workers(3)
-            .with_base_port(27000) // Use unique port range
+            .with_base_port(allocate_port_range()) // Use dynamically allocated port range
             .with_parquet_table("test_table", "testdata/parquet/people.parquet")
             .expect("Failed to configure parquet table")
             .with_view("CREATE VIEW test_view AS SELECT * FROM test_table LIMIT 5");
@@ -774,27 +874,48 @@ mod tests {
         assert!(cluster.is_running());
         assert_eq!(cluster.worker_addresses().len(), 3);
 
-        // Check that proxy is on the expected port
-        assert!(cluster.proxy_address().contains("27000"));
+        // Check that proxy is on a valid port (dynamically allocated)
+        assert!(cluster.proxy_address().contains("127.0.0.1:"));
     }
 
-    /// Test SQL execution (original version)
+    /// Test distributed SQL execution
     #[tokio::test]
-    async fn test_simple_sql_execution() {
-        let config = ClusterConfig::new().with_base_port(28000); // Use unique port range
+    async fn test_distributed_sql_execution() {
+        let config = ClusterConfig::new()
+            .with_base_port(allocate_port_range()) // Use dynamically allocated port range
+            .with_parquet_table("test_table", "testdata/parquet/people.parquet")
+            .expect("Failed to configure test table");
+
         let cluster = TestCluster::start_with_config(config)
             .await
             .expect("Failed to start cluster");
 
-        let batches = cluster
-            .execute_sql("SELECT 1 as test_column")
-            .await
-            .expect("Failed to execute SQL");
+        let single_result = cluster
+            .execute_sql_single_node("SELECT COUNT(*) as count FROM test_table")
+            .await;
 
-        // For now, this just tests that the method doesn't crash
-        // TODO: Add proper assertions once SQL execution is implemented
-        let total_rows = batches.iter().map(|b| b.num_rows()).sum::<usize>();
-        println!("Query returned {} rows", total_rows);
+        let distributed_result = cluster
+            .execute_sql_distributed("SELECT COUNT(*) as count FROM test_table")
+            .await;
+
+        // Compare the results
+        let single_result_formatted = pretty_format_batches(&single_result.unwrap()).unwrap();
+        let distributed_result_formatted =
+            pretty_format_batches(&distributed_result.unwrap()).unwrap();
+        assert_snapshot!(distributed_result_formatted, @r"
+        +-------+
+        | count |
+        +-------+
+        | 2     |
+        +-------+
+        ");
+        assert_snapshot!(single_result_formatted, @r"
+        +-------+
+        | count |
+        +-------+
+        | 2     |
+        +-------+
+        ");
     }
 
     /// Test the new Vec-based table configuration API (config-only, no files accessed)

@@ -133,6 +133,10 @@ async fn make_state() -> Result<SessionState> {
         .await
         .context("Failed to add tables from environment")?;
 
+    add_views_from_env(&mut state)
+        .await
+        .context("Failed to add views from environment")?;
+
     Ok(state)
 }
 
@@ -203,6 +207,31 @@ pub async fn add_tables_from_env(state: &mut SessionState) -> Result<()> {
         state
             .schema_for_ref(name.clone())?
             .register_table(name, table)?;
+    }
+
+    Ok(())
+}
+
+pub async fn add_views_from_env(state: &mut SessionState) -> Result<()> {
+    // this string is formatted as a semicolon separated list of SQL CREATE VIEW statements
+    let views_str = env::var("DD_VIEWS");
+    if views_str.is_err() {
+        info!("No DD_VIEWS environment variable set, skipping view registration");
+        return Ok(());
+    }
+
+    for view_sql in views_str.unwrap().split(';') {
+        if view_sql.trim().is_empty() {
+            continue;
+        }
+        info!("creating view from env: {}", view_sql);
+
+        // Create a temporary session context to execute the CREATE VIEW statement
+        let ctx = SessionContext::new_with_state(state.clone());
+        ctx.sql(view_sql.trim()).await?;
+
+        // Update the state with the new view
+        *state = ctx.state();
     }
 
     Ok(())
