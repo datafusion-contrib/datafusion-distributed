@@ -1,27 +1,2 @@
-# Rust build artifacts
-target/
-
-# IDE and editor files
-.idea/
-
-# Python virtual environments and files
-.venv/
-.python_startup.py
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Log files
-*.log
-proxy.log
-worker*.log
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+/.idea
+/target
