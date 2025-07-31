@@ -21,5 +21,5 @@ pub struct ActorContext {
     #[prost(uint64, tag = "1")]
     pub caller_actor_idx: u64,
     #[prost(uint64, tag = "2")]
-    pub actor_idx: u64
+    pub actor_idx: u64,
 }

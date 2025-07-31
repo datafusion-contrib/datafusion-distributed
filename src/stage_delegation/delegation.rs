@@ -238,13 +238,9 @@ mod tests {
         let id1 = stage_id1.clone();
         let id2 = stage_id2.clone();
         let wait_task1 =
-            tokio::spawn(
-                async move { delegation_clone1.wait_for_delegate_info(id1, 0).await },
-            );
+            tokio::spawn(async move { delegation_clone1.wait_for_delegate_info(id1, 0).await });
         let wait_task2 =
-            tokio::spawn(
-                async move { delegation_clone2.wait_for_delegate_info(id2, 0).await },
-            );
+            tokio::spawn(async move { delegation_clone2.wait_for_delegate_info(id2, 0).await });
 
         // Give wait tasks a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;

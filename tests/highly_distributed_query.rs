@@ -14,9 +14,12 @@ mod tests {
 
     #[tokio::test]
     async fn highly_distributed_query() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context([
-            50050, 50051, 50053, 50054, 50055, 50056, 50057, 50058, 50059,
-        ], NoopSessionBuilder)
+        let (ctx, _guard) = start_localhost_context(
+            [
+                50050, 50051, 50053, 50054, 50055, 50056, 50057, 50058, 50059,
+            ],
+            NoopSessionBuilder,
+        )
         .await;
         register_parquet_tables(&ctx).await?;
 
@@ -62,7 +65,10 @@ mod tests {
 
         assert_eq!(
             batches.iter().map(|v| v.num_rows()).sum::<usize>(),
-            batches_distributed.iter().map(|v| v.num_rows()).sum::<usize>(),
+            batches_distributed
+                .iter()
+                .map(|v| v.num_rows())
+                .sum::<usize>(),
         );
 
         Ok(())
