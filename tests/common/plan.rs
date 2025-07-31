@@ -4,7 +4,7 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_distributed_experiment::ArrowFlightReadExec;
+use datafusion_distributed::ArrowFlightReadExec;
 use std::sync::Arc;
 
 pub fn distribute_aggregate(

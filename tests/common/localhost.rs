@@ -4,7 +4,7 @@ use datafusion::common::runtime::JoinSet;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed_experiment::{
+use datafusion_distributed::{
     ArrowFlightChannel, ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
     SessionBuilder,
 };

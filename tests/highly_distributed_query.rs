@@ -7,7 +7,7 @@ mod tests {
     use crate::common::parquet::register_parquet_tables;
     use datafusion::physical_expr::Partitioning;
     use datafusion::physical_plan::{displayable, execute_stream};
-    use datafusion_distributed_experiment::ArrowFlightReadExec;
+    use datafusion_distributed::ArrowFlightReadExec;
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;

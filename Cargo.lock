@@ -998,7 +998,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-distributed-experiment"
+name = "datafusion-distributed"
 version = "0.1.0"
 dependencies = [
  "arrow-flight",

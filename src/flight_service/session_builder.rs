@@ -16,7 +16,7 @@ pub trait SessionBuilder {
     /// # use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed_experiment::{SessionBuilder};
+    /// # use datafusion_distributed::{SessionBuilder};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
