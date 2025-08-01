@@ -3,49 +3,52 @@ use datafusion::arrow::error::ArrowError;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrowErrorProto {
-    #[prost(oneof = "ArrowErrorInnerProto", tags = "1")]
-    pub inner: Option<ArrowErrorInnerProto>,
-    #[prost(string, optional, tag = "2")]
+    #[prost(string, optional, tag = "1")]
     pub ctx: Option<String>,
+    #[prost(
+        oneof = "ArrowErrorInnerProto",
+        tags = "2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19"
+    )]
+    pub inner: Option<ArrowErrorInnerProto>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub enum ArrowErrorInnerProto {
-    #[prost(string, tag = "1")]
-    NotYetImplemented(String),
     #[prost(string, tag = "2")]
-    ExternalError(String),
+    NotYetImplemented(String),
     #[prost(string, tag = "3")]
-    CastError(String),
+    ExternalError(String),
     #[prost(string, tag = "4")]
-    MemoryError(String),
+    CastError(String),
     #[prost(string, tag = "5")]
-    ParseError(String),
+    MemoryError(String),
     #[prost(string, tag = "6")]
-    SchemaError(String),
+    ParseError(String),
     #[prost(string, tag = "7")]
+    SchemaError(String),
+    #[prost(string, tag = "8")]
     ComputeError(String),
-    #[prost(bool, tag = "8")]
+    #[prost(bool, tag = "9")]
     DivideByZero(bool),
-    #[prost(string, tag = "9")]
-    ArithmeticOverflow(String),
     #[prost(string, tag = "10")]
-    CsvError(String),
+    ArithmeticOverflow(String),
     #[prost(string, tag = "11")]
+    CsvError(String),
+    #[prost(string, tag = "12")]
     JsonError(String),
-    #[prost(message, tag = "12")]
-    IoError(IoErrorProto),
     #[prost(message, tag = "13")]
-    IpcError(String),
+    IoError(IoErrorProto),
     #[prost(message, tag = "14")]
-    InvalidArgumentError(String),
+    IpcError(String),
     #[prost(message, tag = "15")]
-    ParquetError(String),
+    InvalidArgumentError(String),
     #[prost(message, tag = "16")]
+    ParquetError(String),
+    #[prost(message, tag = "17")]
     CDataInterface(String),
-    #[prost(bool, tag = "17")]
-    DictionaryKeyOverflowError(bool),
     #[prost(bool, tag = "18")]
+    DictionaryKeyOverflowError(bool),
+    #[prost(bool, tag = "19")]
     RunEndIndexOverflowError(bool),
 }
 
@@ -180,6 +183,7 @@ impl ArrowErrorProto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
     use std::io::{Error as IoError, ErrorKind};
 
     #[test]
@@ -216,12 +220,20 @@ mod tests {
                 &original_error,
                 Some(&"test context".to_string()),
             );
+            let proto = ArrowErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let (recovered_error, recovered_ctx) = proto.to_arrow_error();
+
+            if original_error.to_string() != recovered_error.to_string() {
+                println!("original error: {}", original_error.to_string());
+                println!("recovered error: {}", recovered_error.to_string());
+            }
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
             assert_eq!(recovered_ctx, Some("test context".to_string()));
 
             let proto_no_ctx = ArrowErrorProto::from_arrow_error(&original_error, None);
+            let proto_no_ctx =
+                ArrowErrorProto::decode(proto_no_ctx.encode_to_vec().as_ref()).unwrap();
             let (recovered_error_no_ctx, recovered_ctx_no_ctx) = proto_no_ctx.to_arrow_error();
 
             assert_eq!(

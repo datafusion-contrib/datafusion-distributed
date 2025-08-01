@@ -2,7 +2,7 @@ use datafusion::parquet::errors::ParquetError;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParquetErrorProto {
-    #[prost(oneof = "ParquetErrorInnerProto", tags = "1")]
+    #[prost(oneof = "ParquetErrorInnerProto", tags = "1,2,3,4,5,6,7")]
     pub inner: Option<ParquetErrorInnerProto>,
 }
 
@@ -113,20 +113,11 @@ mod tests {
 
         for original_error in test_cases {
             let proto = ParquetErrorProto::from_parquet_error(&original_error);
+            let proto = ParquetErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_error = proto.to_parquet_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
         }
-    }
-
-    #[test]
-    fn test_protobuf_serialization() {
-        let original_error = ParquetError::General("general error".to_string());
-        let proto = ParquetErrorProto::from_parquet_error(&original_error);
-        let proto = ParquetErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
-        let recovered_error = proto.to_parquet_error();
-
-        assert_eq!(original_error.to_string(), recovered_error.to_string());
     }
 
     #[test]

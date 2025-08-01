@@ -2,7 +2,7 @@ use datafusion::sql::sqlparser::parser::ParserError;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParserErrorProto {
-    #[prost(oneof = "ParserErrorInnerProto", tags = "1")]
+    #[prost(oneof = "ParserErrorInnerProto", tags = "1,2,3")]
     pub inner: Option<ParserErrorInnerProto>,
 }
 
@@ -50,6 +50,7 @@ impl ParserErrorProto {
 mod tests {
     use super::*;
     use datafusion::sql::sqlparser::parser::ParserError;
+    use prost::Message;
 
     #[test]
     fn test_parser_error_roundtrip() {
@@ -61,6 +62,7 @@ mod tests {
 
         for original_error in test_cases {
             let proto = ParserErrorProto::from_parser_error(&original_error);
+            let proto = ParserErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_error = proto.to_parser_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
