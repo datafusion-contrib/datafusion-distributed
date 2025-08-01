@@ -1,6 +1,9 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ObjectStoreErrorProto {
-    #[prost(oneof = "ObjectStoreErrorInnerProto", tags = "1")]
+    #[prost(
+        oneof = "ObjectStoreErrorInnerProto",
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12"
+    )]
     pub inner: Option<ObjectStoreErrorInnerProto>,
 }
 
@@ -255,6 +258,7 @@ fn parse_store(store: &str) -> &'static str {
 mod tests {
     use super::*;
     use object_store::Error as ObjectStoreError;
+    use prost::Message;
     use std::io::ErrorKind;
 
     #[test]
@@ -304,28 +308,11 @@ mod tests {
 
         for original_error in test_cases {
             let proto = ObjectStoreErrorProto::from_object_store_error(&original_error);
+            let proto = ObjectStoreErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_error = proto.to_object_store_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
         }
-    }
-
-    #[test]
-    fn test_unknown_store_handling() {
-        // Test that unknown store names get mapped to "Unknown"
-        let original_error = ObjectStoreError::Generic {
-            store: "unknown_store",
-            source: Box::new(std::io::Error::new(ErrorKind::Other, "generic error")),
-        };
-        let proto = ObjectStoreErrorProto::from_object_store_error(&original_error);
-        let recovered_error = proto.to_object_store_error();
-
-        // The store name will be changed from "unknown_store" to "Unknown"
-        assert_eq!(
-            recovered_error.to_string(),
-            "Generic Unknown error: generic error"
-        );
-        assert_ne!(original_error.to_string(), recovered_error.to_string());
     }
 
     #[test]

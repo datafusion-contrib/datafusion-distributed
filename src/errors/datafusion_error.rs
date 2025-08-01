@@ -11,7 +11,10 @@ use std::sync::Arc;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DataFusionErrorProto {
-    #[prost(oneof = "DataFusionErrorInnerProto", tags = "1")]
+    #[prost(
+        oneof = "DataFusionErrorInnerProto",
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19"
+    )]
     pub inner: Option<DataFusionErrorInnerProto>,
 }
 
@@ -175,9 +178,7 @@ impl DataFusionErrorProto {
 
     pub fn to_datafusion_err(&self) -> DataFusionError {
         let Some(ref inner) = self.inner else {
-            return DataFusionError::Internal(
-                "Malformed DataFusion error proto message".to_string(),
-            );
+            return DataFusionError::Internal("DataFusionError proto message is empty".to_string());
         };
 
         match inner {
@@ -274,6 +275,7 @@ mod tests {
     use datafusion::logical_expr::sqlparser::parser::ParserError;
     use datafusion::parquet::errors::ParquetError;
     use object_store::Error as ObjectStoreError;
+    use prost::Message;
     use std::io::{Error as IoError, ErrorKind};
     use std::sync::Arc;
 
@@ -326,6 +328,7 @@ mod tests {
 
         for original_error in test_cases {
             let proto = DataFusionErrorProto::from_datafusion_error(&original_error);
+            let proto = DataFusionErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_error = proto.to_datafusion_err();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
@@ -350,6 +353,7 @@ mod tests {
         );
 
         let proto = DataFusionErrorProto::from_datafusion_error(&nested_error);
+        let proto = DataFusionErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
         let recovered_error = proto.to_datafusion_err();
 
         assert_eq!(nested_error.to_string(), recovered_error.to_string());
@@ -364,6 +368,7 @@ mod tests {
         ]);
 
         let proto = DataFusionErrorProto::from_datafusion_error(&collection_error);
+        let proto = DataFusionErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
         let recovered_error = proto.to_datafusion_err();
 
         assert_eq!(collection_error.to_string(), recovered_error.to_string());
@@ -377,6 +382,7 @@ mod tests {
         );
 
         let proto = DataFusionErrorProto::from_datafusion_error(&sql_error);
+        let proto = DataFusionErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
         let recovered_error = proto.to_datafusion_err();
 
         if let DataFusionError::SQL(_, backtrace) = recovered_error {

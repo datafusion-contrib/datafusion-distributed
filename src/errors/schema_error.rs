@@ -2,21 +2,21 @@ use datafusion::common::{Column, SchemaError, TableReference};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SchemaErrorProto {
-    #[prost(oneof = "SchemaErrorInnerProto", tags = "1")]
-    pub inner: Option<SchemaErrorInnerProto>,
-    #[prost(string, optional, tag = "2")]
+    #[prost(string, optional, tag = "1")]
     pub backtrace: Option<String>,
+    #[prost(oneof = "SchemaErrorInnerProto", tags = "2,3,4,5")]
+    pub inner: Option<SchemaErrorInnerProto>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub enum SchemaErrorInnerProto {
-    #[prost(message, tag = "1")]
-    AmbiguousReference(AmbiguousReferenceProto),
     #[prost(message, tag = "2")]
-    DuplicateQualifiedField(DuplicateQualifiedFieldProto),
+    AmbiguousReference(AmbiguousReferenceProto),
     #[prost(message, tag = "3")]
-    DuplicateUnqualifiedField(DuplicateUnqualifiedFieldProto),
+    DuplicateQualifiedField(DuplicateQualifiedFieldProto),
     #[prost(message, tag = "4")]
+    DuplicateUnqualifiedField(DuplicateUnqualifiedFieldProto),
+    #[prost(message, tag = "5")]
     FieldNotFound(FieldNotFoundProto),
 }
 
@@ -75,7 +75,7 @@ impl ColumnProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TableReferenceProto {
-    #[prost(oneof = "TableReferenceInnerProto", tags = "1")]
+    #[prost(oneof = "TableReferenceInnerProto", tags = "1,2,3")]
     pub inner: Option<TableReferenceInnerProto>,
 }
 
@@ -260,6 +260,7 @@ impl SchemaErrorProto {
 mod tests {
     use super::*;
     use datafusion::common::{Column, SchemaError, TableReference};
+    use prost::Message;
 
     #[test]
     fn test_schema_error_roundtrip() {
@@ -291,12 +292,15 @@ mod tests {
                 &original_error,
                 Some(&"test backtrace".to_string()),
             );
+            let proto = SchemaErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let (recovered_error, recovered_backtrace) = proto.to_schema_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
             assert_eq!(recovered_backtrace, Some("test backtrace".to_string()));
 
             let proto_no_backtrace = SchemaErrorProto::from_schema_error(&original_error, None);
+            let proto_no_backtrace =
+                SchemaErrorProto::decode(proto_no_backtrace.encode_to_vec().as_ref()).unwrap();
             let (recovered_error_no_backtrace, recovered_backtrace_no_backtrace) =
                 proto_no_backtrace.to_schema_error();
 
@@ -328,6 +332,7 @@ mod tests {
 
         for original_ref in test_cases {
             let proto = TableReferenceProto::from_table_reference(&original_ref);
+            let proto = TableReferenceProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_ref = proto.to_table_reference();
 
             assert_eq!(original_ref.to_string(), recovered_ref.to_string());
@@ -344,6 +349,7 @@ mod tests {
 
         for original_column in test_cases {
             let proto = ColumnProto::from_column(&original_column);
+            let proto = ColumnProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let recovered_column = proto.to_column();
 
             assert_eq!(original_column.name, recovered_column.name);

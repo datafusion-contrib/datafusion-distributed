@@ -140,6 +140,7 @@ mod tests {
         for (kind, msg) in test_cases {
             let original_error = IoError::new(kind, msg);
             let proto = IoErrorProto::from_io_error("test message", &original_error);
+            let proto = IoErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
             let (recovered_error, recovered_message) = proto.to_io_error();
 
             assert_eq!(original_error.kind(), recovered_error.kind());
