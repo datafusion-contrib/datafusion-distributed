@@ -1,5 +1,6 @@
 use crate::channel_manager::{ArrowFlightChannel, ChannelManager};
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, DoPut};
 use crate::plan::arrow_flight_read_proto::ArrowFlightReadExecProtoCodec;
 use crate::stage_delegation::{ActorContext, StageContext, StageDelegation};
@@ -189,14 +190,18 @@ impl ExecutionPlan for ArrowFlightReadExec {
             let stream = client
                 .do_get(ticket.into_request())
                 .await
-                .map_err(|err| DataFusionError::External(Box::new(err)))?
+                .map_err(|err| tonic_status_to_datafusion_error(&err).unwrap_or_else(|| {
+                    DataFusionError::External(Box::new(err))
+                }))?
                 .into_inner()
                 .map_err(|err| FlightError::Tonic(Box::new(err)));
 
             Ok(FlightRecordBatchStream::new_from_flight_data(stream)
-                // TODO: propagate the error from the service to here, probably serializing it
-                //  somehow.
-                .map_err(|err| DataFusionError::External(Box::new(err))))
+                .map_err(|err| match err {
+                    FlightError::Tonic(status) => tonic_status_to_datafusion_error(&status)
+                        .unwrap_or_else(|| DataFusionError::External(Box::new(status))),
+                    err => DataFusionError::External(Box::new(err))
+                }))
         }.try_flatten_stream();
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
