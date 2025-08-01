@@ -1,4 +1,5 @@
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::ArrowFlightReadExecProtoCodec;
 use crate::stage_delegation::{ActorContext, StageContext};
@@ -140,22 +141,24 @@ impl ArrowFlightEndpoint {
         let stream_partitioner = self
             .partitioner_registry
             .get_or_create_stream_partitioner(stage_id, actor_idx, plan, partitioning)
-            .map_err(|err| {
-                Status::internal(format!("Could not create stream partitioner: {err}"))
-            })?;
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
         let stream = stream_partitioner
             .execute(caller_actor_idx, state.task_ctx())
-            .map_err(|err| Status::internal(format!("Cannot get stream partition: {err}")))?;
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
-        // TODO: error propagation
         let flight_data_stream = FlightDataEncoderBuilder::new()
             .with_schema(stream_partitioner.schema())
-            .build(stream.map_err(|err| FlightError::ExternalError(Box::new(err))));
+            .build(stream.map_err(|err| {
+                FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
+            }));
 
-        Ok(Response::new(Box::pin(flight_data_stream.map_err(|err| {
-            Status::internal(format!("Error during flight stream: {err}"))
-        }))))
+        Ok(Response::new(Box::pin(flight_data_stream.map_err(
+            |err| match err {
+                FlightError::Tonic(status) => *status,
+                _ => Status::internal(format!("Error during flight stream: {err}")),
+            },
+        ))))
     }
 }
 
