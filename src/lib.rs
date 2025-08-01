@@ -1,13 +1,16 @@
 mod channel_manager;
-mod composed_extension_codec;
-mod flight_service;
+mod common;
+mod exec;
+//mod flight_service;
 mod plan;
-mod stage_delegation;
-#[cfg(test)]
-pub mod test_utils;
+mod remote;
+mod stage;
+pub mod task;
+mod test_utils;
 
 pub use channel_manager::{
     ArrowFlightChannel, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
 };
-pub use flight_service::{ArrowFlightEndpoint, SessionBuilder};
+
 pub use plan::ArrowFlightReadExec;
+pub use stage::{display_stage, display_stage_tree, ExecutionStage, StagePlanner};
