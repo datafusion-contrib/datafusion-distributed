@@ -89,3 +89,50 @@ impl ParquetErrorProto {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::parquet::errors::ParquetError;
+    use prost::Message;
+
+    #[test]
+    fn test_parquet_error_roundtrip() {
+        let test_cases = vec![
+            ParquetError::General("general error".to_string()),
+            ParquetError::NYI("not yet implemented".to_string()),
+            ParquetError::EOF("end of file".to_string()),
+            ParquetError::ArrowError("arrow error".to_string()),
+            ParquetError::IndexOutOfBound(42, 100),
+            ParquetError::External(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "external error",
+            ))),
+            ParquetError::NeedMoreData(1024),
+        ];
+
+        for original_error in test_cases {
+            let proto = ParquetErrorProto::from_parquet_error(&original_error);
+            let recovered_error = proto.to_parquet_error();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+        }
+    }
+
+    #[test]
+    fn test_protobuf_serialization() {
+        let original_error = ParquetError::General("general error".to_string());
+        let proto = ParquetErrorProto::from_parquet_error(&original_error);
+        let proto = ParquetErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
+        let recovered_error = proto.to_parquet_error();
+
+        assert_eq!(original_error.to_string(), recovered_error.to_string());
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = ParquetErrorProto { inner: None };
+        let recovered_error = malformed_proto.to_parquet_error();
+        assert!(matches!(recovered_error, ParquetError::External(_)));
+    }
+}

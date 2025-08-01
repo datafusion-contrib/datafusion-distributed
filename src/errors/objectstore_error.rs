@@ -250,3 +250,88 @@ fn parse_store(store: &str) -> &'static str {
         _ => "Unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::Error as ObjectStoreError;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn test_object_store_error_roundtrip() {
+        let test_cases = vec![
+            // Use known store names that will be preserved
+            ObjectStoreError::Generic {
+                store: "S3",
+                source: Box::new(std::io::Error::new(ErrorKind::Other, "generic error")),
+            },
+            ObjectStoreError::NotFound {
+                path: "test/path".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::NotFound, "not found")),
+            },
+            ObjectStoreError::AlreadyExists {
+                path: "existing/path".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::AlreadyExists, "exists")),
+            },
+            ObjectStoreError::Precondition {
+                path: "precondition/path".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::Other, "precondition failed")),
+            },
+            ObjectStoreError::NotSupported {
+                source: Box::new(std::io::Error::new(ErrorKind::Unsupported, "not supported")),
+            },
+            ObjectStoreError::NotModified {
+                path: "not/modified".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::Other, "not modified")),
+            },
+            ObjectStoreError::NotImplemented,
+            ObjectStoreError::PermissionDenied {
+                path: "denied/path".to_string(),
+                source: Box::new(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "permission denied",
+                )),
+            },
+            ObjectStoreError::Unauthenticated {
+                path: "auth/path".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::Other, "unauthenticated")),
+            },
+            ObjectStoreError::UnknownConfigurationKey {
+                key: "unknown_key".to_string(),
+                store: "S3",
+            },
+        ];
+
+        for original_error in test_cases {
+            let proto = ObjectStoreErrorProto::from_object_store_error(&original_error);
+            let recovered_error = proto.to_object_store_error();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+        }
+    }
+
+    #[test]
+    fn test_unknown_store_handling() {
+        // Test that unknown store names get mapped to "Unknown"
+        let original_error = ObjectStoreError::Generic {
+            store: "unknown_store",
+            source: Box::new(std::io::Error::new(ErrorKind::Other, "generic error")),
+        };
+        let proto = ObjectStoreErrorProto::from_object_store_error(&original_error);
+        let recovered_error = proto.to_object_store_error();
+
+        // The store name will be changed from "unknown_store" to "Unknown"
+        assert_eq!(
+            recovered_error.to_string(),
+            "Generic Unknown error: generic error"
+        );
+        assert_ne!(original_error.to_string(), recovered_error.to_string());
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = ObjectStoreErrorProto { inner: None };
+        let recovered_error = malformed_proto.to_object_store_error();
+        assert!(matches!(recovered_error, ObjectStoreError::Generic { .. }));
+    }
+}

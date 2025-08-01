@@ -45,3 +45,32 @@ impl ParserErrorProto {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::sql::sqlparser::parser::ParserError;
+
+    #[test]
+    fn test_parser_error_roundtrip() {
+        let test_cases = vec![
+            ParserError::ParserError("syntax error".to_string()),
+            ParserError::TokenizerError("tokenizer error".to_string()),
+            ParserError::RecursionLimitExceeded,
+        ];
+
+        for original_error in test_cases {
+            let proto = ParserErrorProto::from_parser_error(&original_error);
+            let recovered_error = proto.to_parser_error();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+        }
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = ParserErrorProto { inner: None };
+        let recovered_error = malformed_proto.to_parser_error();
+        assert!(matches!(recovered_error, ParserError::ParserError(_)));
+    }
+}

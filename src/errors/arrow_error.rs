@@ -176,3 +176,69 @@ impl ArrowErrorProto {
         (err, self.ctx.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error as IoError, ErrorKind};
+
+    #[test]
+    fn test_arrow_error_roundtrip() {
+        let test_cases = vec![
+            ArrowError::NotYetImplemented("test not implemented".to_string()),
+            ArrowError::ExternalError(Box::new(std::io::Error::new(
+                ErrorKind::Other,
+                "external error",
+            ))),
+            ArrowError::CastError("cast error".to_string()),
+            ArrowError::MemoryError("memory error".to_string()),
+            ArrowError::ParseError("parse error".to_string()),
+            ArrowError::SchemaError("schema error".to_string()),
+            ArrowError::ComputeError("compute error".to_string()),
+            ArrowError::DivideByZero,
+            ArrowError::ArithmeticOverflow("overflow".to_string()),
+            ArrowError::CsvError("csv error".to_string()),
+            ArrowError::JsonError("json error".to_string()),
+            ArrowError::IoError(
+                "io message".to_string(),
+                IoError::new(ErrorKind::NotFound, "file not found"),
+            ),
+            ArrowError::IpcError("ipc error".to_string()),
+            ArrowError::InvalidArgumentError("invalid arg".to_string()),
+            ArrowError::ParquetError("parquet error".to_string()),
+            ArrowError::CDataInterface("cdata error".to_string()),
+            ArrowError::DictionaryKeyOverflowError,
+            ArrowError::RunEndIndexOverflowError,
+        ];
+
+        for original_error in test_cases {
+            let proto = ArrowErrorProto::from_arrow_error(
+                &original_error,
+                Some(&"test context".to_string()),
+            );
+            let (recovered_error, recovered_ctx) = proto.to_arrow_error();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+            assert_eq!(recovered_ctx, Some("test context".to_string()));
+
+            let proto_no_ctx = ArrowErrorProto::from_arrow_error(&original_error, None);
+            let (recovered_error_no_ctx, recovered_ctx_no_ctx) = proto_no_ctx.to_arrow_error();
+
+            assert_eq!(
+                original_error.to_string(),
+                recovered_error_no_ctx.to_string()
+            );
+            assert_eq!(recovered_ctx_no_ctx, None);
+        }
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = ArrowErrorProto {
+            inner: None,
+            ctx: None,
+        };
+        let (recovered_error, _) = malformed_proto.to_arrow_error();
+        assert!(matches!(recovered_error, ArrowError::ExternalError(_)));
+    }
+}

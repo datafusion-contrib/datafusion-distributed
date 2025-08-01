@@ -265,3 +265,134 @@ impl std::fmt::Display for DistributedDataFusionGenericError {
 }
 
 impl Error for DistributedDataFusionGenericError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::common::{DataFusionError, SchemaError};
+    use datafusion::logical_expr::sqlparser::parser::ParserError;
+    use datafusion::parquet::errors::ParquetError;
+    use object_store::Error as ObjectStoreError;
+    use std::io::{Error as IoError, ErrorKind};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_datafusion_error_roundtrip() {
+        let test_cases = vec![
+            DataFusionError::ArrowError(
+                ArrowError::ComputeError("compute".to_string()),
+                Some("arrow context".to_string()),
+            ),
+            DataFusionError::ParquetError(ParquetError::General("parquet error".to_string())),
+            DataFusionError::ObjectStore(ObjectStoreError::NotFound {
+                path: "test/path".to_string(),
+                source: Box::new(std::io::Error::new(ErrorKind::NotFound, "not found")),
+            }),
+            DataFusionError::IoError(IoError::new(
+                ErrorKind::PermissionDenied,
+                "permission denied",
+            )),
+            DataFusionError::SQL(
+                ParserError::ParserError("sql parse error".to_string()),
+                Some("sql backtrace".to_string()),
+            ),
+            DataFusionError::NotImplemented("not implemented".to_string()),
+            DataFusionError::Internal("internal error".to_string()),
+            DataFusionError::Plan("plan error".to_string()),
+            DataFusionError::Configuration("config error".to_string()),
+            DataFusionError::SchemaError(
+                SchemaError::AmbiguousReference {
+                    field: datafusion::common::Column::new_unqualified("test_field"),
+                },
+                Box::new(None),
+            ),
+            DataFusionError::Execution("execution error".to_string()),
+            DataFusionError::ResourcesExhausted("resources exhausted".to_string()),
+            DataFusionError::External(Box::new(std::io::Error::new(ErrorKind::Other, "external"))),
+            DataFusionError::Context(
+                "context message".to_string(),
+                Box::new(DataFusionError::Internal("nested".to_string())),
+            ),
+            DataFusionError::Substrait("substrait error".to_string()),
+            DataFusionError::Collection(vec![
+                DataFusionError::Internal("error 1".to_string()),
+                DataFusionError::Internal("error 2".to_string()),
+            ]),
+            DataFusionError::Shared(Arc::new(DataFusionError::Internal(
+                "shared error".to_string(),
+            ))),
+        ];
+
+        for original_error in test_cases {
+            let proto = DataFusionErrorProto::from_datafusion_error(&original_error);
+            let recovered_error = proto.to_datafusion_err();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+        }
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = DataFusionErrorProto { inner: None };
+        let recovered_error = malformed_proto.to_datafusion_err();
+        assert!(matches!(recovered_error, DataFusionError::Internal(_)));
+    }
+
+    #[test]
+    fn test_nested_datafusion_errors() {
+        let nested_error = DataFusionError::Context(
+            "outer context".to_string(),
+            Box::new(DataFusionError::Context(
+                "inner context".to_string(),
+                Box::new(DataFusionError::Internal("deepest error".to_string())),
+            )),
+        );
+
+        let proto = DataFusionErrorProto::from_datafusion_error(&nested_error);
+        let recovered_error = proto.to_datafusion_err();
+
+        assert_eq!(nested_error.to_string(), recovered_error.to_string());
+    }
+
+    #[test]
+    fn test_collection_errors() {
+        let collection_error = DataFusionError::Collection(vec![
+            DataFusionError::Internal("error 1".to_string()),
+            DataFusionError::Plan("error 2".to_string()),
+            DataFusionError::Execution("error 3".to_string()),
+        ]);
+
+        let proto = DataFusionErrorProto::from_datafusion_error(&collection_error);
+        let recovered_error = proto.to_datafusion_err();
+
+        assert_eq!(collection_error.to_string(), recovered_error.to_string());
+    }
+
+    #[test]
+    fn test_sql_error_with_backtrace() {
+        let sql_error = DataFusionError::SQL(
+            ParserError::ParserError("syntax error".to_string()),
+            Some("test backtrace".to_string()),
+        );
+
+        let proto = DataFusionErrorProto::from_datafusion_error(&sql_error);
+        let recovered_error = proto.to_datafusion_err();
+
+        if let DataFusionError::SQL(_, backtrace) = recovered_error {
+            assert_eq!(backtrace, Some("test backtrace".to_string()));
+        } else {
+            panic!("Expected SQL error");
+        }
+    }
+
+    #[test]
+    fn test_distributed_generic_error() {
+        let generic_error = DistributedDataFusionGenericError {
+            message: "test message".to_string(),
+        };
+
+        assert_eq!(generic_error.to_string(), "test message");
+        assert!(Error::source(&generic_error).is_none());
+    }
+}
