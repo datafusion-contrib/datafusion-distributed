@@ -255,3 +255,102 @@ impl SchemaErrorProto {
         (err, self.backtrace.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::common::{Column, SchemaError, TableReference};
+
+    #[test]
+    fn test_schema_error_roundtrip() {
+        let test_cases = vec![
+            SchemaError::AmbiguousReference {
+                field: Column::new_unqualified("test_field"),
+            },
+            SchemaError::DuplicateQualifiedField {
+                qualifier: Box::new(TableReference::bare("table")),
+                name: "field".to_string(),
+            },
+            SchemaError::DuplicateUnqualifiedField {
+                name: "field".to_string(),
+            },
+            SchemaError::FieldNotFound {
+                field: Box::new(Column::new(
+                    Some(TableReference::bare("table")),
+                    "missing_field",
+                )),
+                valid_fields: vec![
+                    Column::new_unqualified("field1"),
+                    Column::new_unqualified("field2"),
+                ],
+            },
+        ];
+
+        for original_error in test_cases {
+            let proto = SchemaErrorProto::from_schema_error(
+                &original_error,
+                Some(&"test backtrace".to_string()),
+            );
+            let (recovered_error, recovered_backtrace) = proto.to_schema_error();
+
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+            assert_eq!(recovered_backtrace, Some("test backtrace".to_string()));
+
+            let proto_no_backtrace = SchemaErrorProto::from_schema_error(&original_error, None);
+            let (recovered_error_no_backtrace, recovered_backtrace_no_backtrace) =
+                proto_no_backtrace.to_schema_error();
+
+            assert_eq!(
+                original_error.to_string(),
+                recovered_error_no_backtrace.to_string()
+            );
+            assert_eq!(recovered_backtrace_no_backtrace, None);
+        }
+    }
+
+    #[test]
+    fn test_malformed_protobuf_message() {
+        let malformed_proto = SchemaErrorProto {
+            inner: None,
+            backtrace: None,
+        };
+        let (recovered_error, _) = malformed_proto.to_schema_error();
+        assert!(matches!(recovered_error, SchemaError::FieldNotFound { .. }));
+    }
+
+    #[test]
+    fn test_table_reference_roundtrip() {
+        let test_cases = vec![
+            TableReference::bare("table"),
+            TableReference::partial("schema", "table"),
+            TableReference::full("catalog", "schema", "table"),
+        ];
+
+        for original_ref in test_cases {
+            let proto = TableReferenceProto::from_table_reference(&original_ref);
+            let recovered_ref = proto.to_table_reference();
+
+            assert_eq!(original_ref.to_string(), recovered_ref.to_string());
+        }
+    }
+
+    #[test]
+    fn test_column_roundtrip() {
+        let test_cases = vec![
+            Column::new_unqualified("test_field"),
+            Column::new(Some(TableReference::bare("table")), "field"),
+            Column::new(Some(TableReference::partial("schema", "table")), "field"),
+        ];
+
+        for original_column in test_cases {
+            let proto = ColumnProto::from_column(&original_column);
+            let recovered_column = proto.to_column();
+
+            assert_eq!(original_column.name, recovered_column.name);
+            assert_eq!(
+                original_column.relation.is_some(),
+                recovered_column.relation.is_some()
+            );
+        }
+    }
+}

@@ -107,3 +107,69 @@ impl IoErrorProto {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+    use std::io::{Error as IoError, ErrorKind};
+
+    #[test]
+    fn test_io_error_roundtrip() {
+        let test_cases = vec![
+            (ErrorKind::NotFound, "file not found"),
+            (ErrorKind::PermissionDenied, "permission denied"),
+            (ErrorKind::ConnectionRefused, "connection refused"),
+            (ErrorKind::ConnectionReset, "connection reset"),
+            (ErrorKind::ConnectionAborted, "connection aborted"),
+            (ErrorKind::NotConnected, "not connected"),
+            (ErrorKind::AddrInUse, "address in use"),
+            (ErrorKind::AddrNotAvailable, "address not available"),
+            (ErrorKind::BrokenPipe, "broken pipe"),
+            (ErrorKind::AlreadyExists, "already exists"),
+            (ErrorKind::WouldBlock, "would block"),
+            (ErrorKind::InvalidInput, "invalid input"),
+            (ErrorKind::InvalidData, "invalid data"),
+            (ErrorKind::TimedOut, "timed out"),
+            (ErrorKind::WriteZero, "write zero"),
+            (ErrorKind::Interrupted, "interrupted"),
+            (ErrorKind::UnexpectedEof, "unexpected eof"),
+            (ErrorKind::Other, "other error"),
+        ];
+
+        for (kind, msg) in test_cases {
+            let original_error = IoError::new(kind, msg);
+            let proto = IoErrorProto::from_io_error("test message", &original_error);
+            let (recovered_error, recovered_message) = proto.to_io_error();
+
+            assert_eq!(original_error.kind(), recovered_error.kind());
+            assert_eq!(original_error.to_string(), recovered_error.to_string());
+            assert_eq!(recovered_message, "test message");
+        }
+    }
+
+    #[test]
+    fn test_protobuf_serialization() {
+        let original_error = IoError::new(ErrorKind::NotFound, "file not found");
+        let proto = IoErrorProto::from_io_error("test message", &original_error);
+        let proto = IoErrorProto::decode(proto.encode_to_vec().as_ref()).unwrap();
+        let (recovered_error, recovered_message) = proto.to_io_error();
+
+        assert_eq!(original_error.kind(), recovered_error.kind());
+        assert_eq!(original_error.to_string(), recovered_error.to_string());
+        assert_eq!(recovered_message, "test message");
+    }
+
+    #[test]
+    fn test_unknown_error_kind() {
+        let proto = IoErrorProto {
+            msg: "test message".to_string(),
+            code: -1,
+            err: "unknown error".to_string(),
+        };
+        let (recovered_error, recovered_message) = proto.to_io_error();
+
+        assert_eq!(recovered_error.kind(), ErrorKind::Other);
+        assert_eq!(recovered_message, "test message");
+    }
+}
