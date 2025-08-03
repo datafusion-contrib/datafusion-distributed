@@ -4,13 +4,14 @@ mod exec;
 //mod flight_service;
 mod plan;
 mod remote;
-mod stage;
-pub mod task;
+#[cfg(test)]
 mod test_utils;
 
 pub use channel_manager::{
     ArrowFlightChannel, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
 };
 
+pub mod physical_optimizer;
+pub mod stage;
+pub mod task;
 pub use plan::ArrowFlightReadExec;
-pub use stage::{display_stage, display_stage_tree, ExecutionStage, StagePlanner};

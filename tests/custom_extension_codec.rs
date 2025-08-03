@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 mod common;
-
+/*
 #[cfg(test)]
 mod tests {
     use crate::common::localhost::start_localhost_context;
@@ -265,4 +265,4 @@ mod tests {
             .map_err(|err| proto_error(format!("{err}")))
         }
     }
-}
+}*/

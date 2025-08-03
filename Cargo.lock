@@ -1010,6 +1010,7 @@ dependencies = [
  "futures",
  "http",
  "insta",
+ "itertools",
  "prost",
  "tokio",
  "tonic",

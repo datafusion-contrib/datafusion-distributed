@@ -6,15 +6,27 @@ mod tests {
     use crate::tpch::tpch_query;
     use crate::{assert_snapshot, tpch};
     use datafusion::arrow::util::pretty::pretty_format_batches;
+    use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::physical_plan::{displayable, execute_stream};
-    use datafusion::prelude::SessionContext;
-    use datafusion_distributed::{display_stage, display_stage_tree, ExecutionStage, StagePlanner};
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
     use futures::TryStreamExt;
     use std::error::Error;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn stage_planning() -> Result<(), Box<dyn Error>> {
-        let ctx = SessionContext::new();
+        let rule = DistributedPhysicalOptimizerRule::default(); //.with_maximum_partitions_per_task(3);
+
+        let config = SessionConfig::new().with_target_partitions(10);
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_physical_optimizer_rule(Arc::new(rule))
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
 
         for table_name in [
             "lineitem", "orders", "part", "partsupp", "customer", "nation", "region", "supplier",
@@ -27,27 +39,25 @@ mod tests {
             )
             .await?;
         }
+
         let sql = tpch_query(2);
+        //let sql = "select 1;";
         println!("SQL Query:\n{}", sql);
 
         let df = ctx.sql(&sql).await?;
 
         let physical = df.create_physical_plan().await?;
 
-        println!(
-            "\n\nPhysical Plan:\n{}",
-            displayable(physical.as_ref()).indent(false)
-        );
+        let physical_str = displayable(physical.as_ref()).tree_render();
+        println!("\n\nPhysical Plan:\n{}", physical_str);
 
-        let stage_plan: ExecutionStage = physical.try_into()?;
+        let physical_str = displayable(physical.as_ref()).indent(false);
+        println!("\n\nPhysical Plan:\n{}", physical_str);
 
-        let stage_str = display_stage_tree(&stage_plan)?;
-        println!("\n\nStage Plan Tree:\n{}", stage_str);
-        let stage_str = display_stage(&stage_plan)?;
+        let physical_str = displayable(physical.as_ref()).indent(true);
+        println!("\n\nPhysical Plan:\n{}", physical_str);
 
-        println!("\n\nStage Plan:\n{}", stage_str);
-
-        assert_snapshot!(stage_str,
+        assert_snapshot!(physical_str,
             @r"
         ",
         );
