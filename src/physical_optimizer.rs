@@ -105,12 +105,12 @@ struct StagePlanner {
     plan_head: Option<Arc<dyn ExecutionPlan>>,
     /// Current depth in the plan tree, as we walk the tree
     depth: usize,
-    /// Input stages collected so far. Each entry is a tuple of (tree depth, stage).
+    /// Input stages collected so far. Each entry is a tuple of (plan tree depth, stage).
     /// This allows us to keep track of the depth in the plan tree
     /// where we created the stage.   That way when we create a new
     /// stage, we can tell if it is a peer to the current input stages or
     /// should be a parent (if its depth is a smaller number)
-    input_stages: Vec<(usize, Arc<ExecutionStage>)>,
+    input_stages: Vec<(usize, ExecutionStage)>,
     /// current stage number
     stage_counter: usize,
     /// Optional codec to assist in serializing and deserializing any custom
@@ -135,32 +135,45 @@ impl StagePlanner {
     }
 
     fn finish(mut self) -> Result<Arc<ExecutionStage>> {
-        if self.input_stages.is_empty() {
-            Ok(Arc::new(ExecutionStage::new(
+        let stage = if self.input_stages.is_empty() {
+            ExecutionStage::new(
                 self.stage_counter,
                 self.plan_head
                     .take()
                     .ok_or_else(|| internal_datafusion_err!("No plan head set"))?,
                 vec![],
-            )))
+            )
         } else if self.depth < self.input_stages[0].0 {
             // There is more plan above the last stage we created, so we need to
             // create a new stage that includes the last plan head
-            Ok(Arc::new(ExecutionStage::new(
+            ExecutionStage::new(
                 self.stage_counter,
                 self.plan_head
                     .take()
                     .ok_or_else(|| internal_datafusion_err!("No plan head set"))?,
                 self.input_stages
-                    .iter()
-                    .map(|(_, stage)| stage.clone())
+                    .into_iter()
+                    .map(|(_, stage)| Arc::new(stage))
                     .collect(),
-            )))
+            )
         } else {
             // We have a plan head, and we are at the same depth as the last stage we created,
             // so we can just return the last stage
-            Ok(self.input_stages.last().unwrap().1.clone())
+            self.input_stages.last().unwrap().1.clone()
+        };
+
+        // assign the proper tree depth to each stage in the tree
+        fn assign_tree_depth(stage: &ExecutionStage, depth: usize) {
+            stage
+                .depth
+                .store(depth as u64, std::sync::atomic::Ordering::Relaxed);
+            for input in stage.child_stages_iter() {
+                assign_tree_depth(input, depth + 1);
+            }
         }
+        assign_tree_depth(&stage, 0);
+
+        Ok(Arc::new(stage))
     }
 }
 
@@ -191,26 +204,13 @@ impl TreeNodeRewriter for StagePlanner {
                 .map(|(_, stage)| stage.clone())
                 .collect::<Vec<_>>();
 
-            println!(
-                "\n\n\n ---------------------- \ncreating a stage, depth = {}, input_stages ={}, child_stages = {}, plan=\n{}",
-                self.depth,
-                self.input_stages
-                    .iter()
-                    .map(|(depth, stage)| format!("({},{})", depth, stage.num))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                child_stages
-                    .iter()
-                    .map(|stage| format!("{}", stage.num))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-
-                displayable(plan.as_ref()).indent(false)
-            );
-
             self.input_stages.retain(|(depth, _)| *depth <= self.depth);
 
-            let mut stage = ExecutionStage::new(self.stage_counter, plan.clone(), child_stages);
+            let mut stage = ExecutionStage::new(
+                self.stage_counter,
+                plan.clone(),
+                child_stages.into_iter().map(Arc::new).collect(),
+            );
 
             if let Some(partitions_per_task) = self.partitions_per_task {
                 stage = stage.with_maximum_partitions_per_task(partitions_per_task);
@@ -219,7 +219,7 @@ impl TreeNodeRewriter for StagePlanner {
                 stage = stage.with_codec(codec.clone());
             }
 
-            self.input_stages.push((self.depth, Arc::new(stage)));
+            self.input_stages.push((self.depth, stage));
 
             // As we are walking up the plan tree, we've now put what we've encountered so far
             // into a stage.   We want to replace this plan now with an ArrowFlightReadExec

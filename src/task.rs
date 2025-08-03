@@ -96,7 +96,7 @@ impl Display for ExecutionTask {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Task[partitions: {}, {}]",
+            "Task: partitions: {}\n{}]",
             format_pg(&self.partition_group),
             self.worker_addr
                 .as_ref()
