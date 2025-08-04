@@ -1,7 +1,9 @@
 mod channel_manager;
 mod common;
+mod composed_extension_codec;
+mod errors;
 mod exec;
-//mod flight_service;
+mod flight_service;
 mod plan;
 mod remote;
 #[cfg(test)]

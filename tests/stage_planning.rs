@@ -17,7 +17,7 @@ mod tests {
 
     #[tokio::test]
     async fn stage_planning() -> Result<(), Box<dyn Error>> {
-        let config = SessionConfig::new().with_target_partitions(10);
+        let config = SessionConfig::new().with_target_partitions(3);
 
         let rule = DistributedPhysicalOptimizerRule::default().with_maximum_partitions_per_task(4);
 
