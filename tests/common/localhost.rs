@@ -5,8 +5,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ArrowFlightChannel, ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
-    SessionBuilder,
+    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver, SessionBuilder,
 };
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
@@ -78,29 +77,17 @@ impl LocalHostChannelResolver {
 
 #[async_trait]
 impl ChannelResolver for LocalHostChannelResolver {
-    async fn get_n_channels(&self, n: usize) -> Result<Vec<ArrowFlightChannel>, DataFusionError> {
-        let mut result = vec![];
-        for _ in 0..n {
-            let i = self.i.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % self.ports.len();
-            let port = self.ports[i];
-            let url = format!("http://localhost:{port}");
-            let endpoint = Channel::from_shared(url.clone()).map_err(external_err)?;
-            let channel = endpoint.connect().await.map_err(external_err)?;
-            result.push(ArrowFlightChannel {
-                url: Url::parse(&url).map_err(external_err)?,
-                channel: BoxCloneSyncChannel::new(channel),
-            })
-        }
-        Ok(result)
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.ports
+            .iter()
+            .map(|port| format!("http://localhost:{port}"))
+            .map(|url| Url::parse(&url).map_err(external_err))
+            .collect::<Result<Vec<Url>, _>>()
     }
-
-    async fn get_channel_for_url(&self, url: &Url) -> Result<ArrowFlightChannel, DataFusionError> {
+    async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
         let endpoint = Channel::from_shared(url.to_string()).map_err(external_err)?;
         let channel = endpoint.connect().await.map_err(external_err)?;
-        Ok(ArrowFlightChannel {
-            url: url.clone(),
-            channel: BoxCloneSyncChannel::new(channel),
-        })
+        Ok(BoxCloneSyncChannel::new(channel))
     }
 }
 

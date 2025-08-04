@@ -1,8 +1,8 @@
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::context::StageTaskContext;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::ArrowFlightReadExecProtoCodec;
-use crate::stage_delegation::{ActorContext, StageContext};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -10,15 +10,17 @@ use arrow_flight::Ticket;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::optimizer::OptimizerConfig;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
+use datafusion_proto::physical_plan::from_proto::parse_physical_exprs;
+use datafusion_proto::physical_plan::to_proto::serialize_physical_exprs;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use datafusion_proto::protobuf::PhysicalPlanNode;
+use datafusion_proto::protobuf::{PhysicalExprNode, PhysicalPlanNode};
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
@@ -35,26 +37,38 @@ pub enum DoGetInner {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemotePlanExec {
     #[prost(message, optional, boxed, tag = "1")]
-    plan: Option<Box<PhysicalPlanNode>>,
-    #[prost(message, optional, tag = "2")]
-    stage_context: Option<StageContext>,
-    #[prost(message, optional, tag = "3")]
-    actor_context: Option<ActorContext>,
+    pub plan: Option<Box<PhysicalPlanNode>>,
+    #[prost(string, tag = "2")]
+    pub stage_id: String,
+    #[prost(uint64, tag = "3")]
+    pub task_idx: u64,
+    #[prost(uint64, tag = "4")]
+    pub output_task_idx: u64,
+    #[prost(uint64, tag = "5")]
+    pub output_tasks: u64,
+    #[prost(message, repeated, tag = "6")]
+    pub hash_expr: Vec<PhysicalExprNode>,
 }
 
 impl DoGet {
     pub fn new_remote_plan_exec_ticket(
         plan: Arc<dyn ExecutionPlan>,
-        stage_context: StageContext,
-        actor_context: ActorContext,
+        stage_id: Uuid,
+        task_idx: usize,
+        output_task_idx: usize,
+        output_tasks: usize,
+        hash_expr: &[Arc<dyn PhysicalExpr>],
         extension_codec: &dyn PhysicalExtensionCodec,
     ) -> Result<Ticket, DataFusionError> {
         let node = PhysicalPlanNode::try_from_physical_plan(plan, extension_codec)?;
         let do_get = Self {
             inner: Some(DoGetInner::RemotePlanExec(RemotePlanExec {
                 plan: Some(Box::new(node)),
-                stage_context: Some(stage_context),
-                actor_context: Some(actor_context),
+                stage_id: stage_id.to_string(),
+                task_idx: task_idx as u64,
+                output_task_idx: output_task_idx as u64,
+                output_tasks: output_tasks as u64,
+                hash_expr: serialize_physical_exprs(hash_expr, extension_codec)?,
             })),
         };
         Ok(Ticket::new(do_get.encode_to_vec()))
@@ -91,14 +105,6 @@ impl ArrowFlightEndpoint {
             return invalid_argument("RemotePlanExec is missing the plan");
         };
 
-        let Some(stage_context) = action.stage_context else {
-            return invalid_argument("RemotePlanExec is missing the stage context");
-        };
-
-        let Some(actor_context) = action.actor_context else {
-            return invalid_argument("RemotePlanExec is missing the actor context");
-        };
-
         let mut codec = ComposedPhysicalExtensionCodec::default();
         codec.push(ArrowFlightReadExecProtoCodec);
         codec.push_from_config(state.config());
@@ -107,40 +113,34 @@ impl ArrowFlightEndpoint {
             .try_into_physical_plan(function_registry, &self.runtime, &codec)
             .map_err(|err| Status::internal(format!("Cannot deserialize plan: {err}")))?;
 
-        let stage_id = stage_context.id.clone();
-        let caller_actor_idx = actor_context.caller_actor_idx as usize;
-        let actor_idx = actor_context.actor_idx as usize;
-        let prev_n = stage_context.prev_actors as usize;
-        let partitioning = match parse_protobuf_partitioning(
-            stage_context.partitioning.as_ref(),
+        let stage_id = Uuid::parse_str(&action.stage_id).map_err(|err| {
+            Status::invalid_argument(format!(
+                "Cannot parse stage id '{}': {err}",
+                action.stage_id
+            ))
+        })?;
+
+        let task_idx = action.task_idx as usize;
+        let caller_actor_idx = action.output_task_idx as usize;
+        let prev_n = action.output_tasks as usize;
+        let partitioning = match parse_physical_exprs(
+            &action.hash_expr,
             function_registry,
             &plan.schema(),
             &codec,
         ) {
-            // We need to replace the partition count in the provided Partitioning scheme with
-            // the number of actors in the previous stage. ArrowFlightReadExec might be declaring
-            // N partitions, but each ArrowFlightReadExec::execute(n) call will go to a different
-            // actor in the next stage.
-            //
-            // Each actor in that next stage (us here) needs to expose as many partitioned streams
-            // as actors exist on its previous stage.
-            Ok(Some(partitioning)) => match partitioning {
-                Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(prev_n),
-                Partitioning::Hash(expr, _) => Partitioning::Hash(expr, prev_n),
-                Partitioning::UnknownPartitioning(_) => Partitioning::UnknownPartitioning(prev_n),
-            },
-            Ok(None) => return invalid_argument("Missing partitioning"),
-            Err(err) => return invalid_argument(format!("Cannot parse partitioning {err}")),
+            Ok(expr) if expr.is_empty() => Partitioning::Hash(expr, prev_n),
+            Ok(_) => Partitioning::RoundRobinBatch(prev_n),
+            Err(err) => return invalid_argument(format!("Cannot parse hash expressions {err}")),
         };
+
         let config = state.config_mut();
-        config.set_extension(Arc::clone(&self.stage_delegation));
         config.set_extension(Arc::clone(&self.channel_manager));
-        config.set_extension(Arc::new(stage_context));
-        config.set_extension(Arc::new(actor_context));
+        config.set_extension(Arc::new(StageTaskContext { task_idx }));
 
         let stream_partitioner = self
             .partitioner_registry
-            .get_or_create_stream_partitioner(stage_id, actor_idx, plan, partitioning)
+            .get_or_create_stream_partitioner(stage_id, task_idx, plan, partitioning)
             .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
         let stream = stream_partitioner
