@@ -94,56 +94,101 @@ impl DisplayAs for ExecutionStage {
 pub fn display_stage_graphviz(stage: &ExecutionStage) -> Result<String> {
     let mut f = String::new();
 
+    let num_colors = 5; // this should aggree with the colorscheme chosen from
+                        // https://graphviz.org/doc/info/colors.html
+    let colorscheme = "spectral5";
+
     writeln!(f, "digraph G {{")?;
     writeln!(f, "  node[shape=rect];")?;
     writeln!(f, "  rankdir=BT;")?;
     writeln!(f, "  ranksep=2;")?;
-    writeln!(f, "  edge[colorscheme=rdylbu11, penwidth=2.0];")?;
+    writeln!(f, "  edge[colorscheme={},penwidth=2.0];", colorscheme)?;
 
     // we'll keep a stack of stage ref, parrent stage ref
     let mut stack: Vec<(&ExecutionStage, Option<&ExecutionStage>)> = vec![(stage, None)];
 
     while let Some((stage, parent)) = stack.pop() {
         writeln!(f, "  subgraph cluster_{} {{", stage.num)?;
+        writeln!(f, "    node[shape=record];")?;
         writeln!(f, "    label=\"{}\";", stage.name())?;
-        writeln!(f, "    labeljust=l;")?;
+        writeln!(f, "    labeljust=r;")?;
+        writeln!(f, "    labelloc=b;")?; // this will put the label at the top as our
+                                         // rankdir=BT
 
         stage.tasks.iter().try_for_each(|task| {
+            let lab = task
+                .partition_group
+                .iter()
+                .map(|p| format!("<p{}>{}", p, p))
+                .collect::<Vec<_>>()
+                .join("|");
             writeln!(
                 f,
                 "    \"{}_{}\"[label = \"{}\"]",
                 stage.num,
                 format_pg(&task.partition_group),
-                format_pg(&task.partition_group)
+                lab,
             )?;
 
             if let Some(our_parent) = parent {
                 our_parent.tasks.iter().try_for_each(|ptask| {
-                    ptask.partition_group.iter().try_for_each(|partition| {
-                        writeln!(
-                            f,
-                            "    \"{}_{}\" -> \"{}_{}\"[tailport=n, headport=s, color={}]",
-                            stage.num,
-                            format_pg(&task.partition_group),
-                            our_parent.num,
-                            format_pg(&ptask.partition_group),
-                            partition + 1
-                        )
-                    })?;
-                    writeln!(
-                        f,
-                        "    \"{}_{}\" -> \"{}_{}\"[tailport=n, headport=s, color={}]",
-                        stage.num,
-                        format_pg(&task.partition_group),
-                        our_parent.num,
-                        format_pg(&ptask.partition_group),
-                        &ptask.partition_group[0] + 1,
-                    )
+                    task.partition_group.iter().try_for_each(|partition| {
+                        ptask.partition_group.iter().try_for_each(|ppartition| {
+                            writeln!(
+                                f,
+                                "    \"{}_{}\":p{}:n -> \"{}_{}\":p{}:s[color={}]",
+                                stage.num,
+                                format_pg(&task.partition_group),
+                                partition,
+                                our_parent.num,
+                                format_pg(&ptask.partition_group),
+                                ppartition,
+                                (partition) % num_colors + 1
+                            )
+                        })
+                    })
                 })?;
             }
 
             Ok::<(), std::fmt::Error>(())
         })?;
+
+        // now we try to force the left right nature of tasks to be honored
+        writeln!(f, "    {{")?;
+        writeln!(f, "         rank = same;")?;
+        stage.tasks.iter().try_for_each(|task| {
+            writeln!(
+                f,
+                "         \"{}_{}\"",
+                stage.num,
+                format_pg(&task.partition_group)
+            )?;
+
+            Ok::<(), std::fmt::Error>(())
+        })?;
+        writeln!(f, "    }}")?;
+        // combined with rank = same, the invisible edges will force the tasks to be
+        // laid out in a single row within the stage
+        for i in 0..stage.tasks.len() - 1 {
+            writeln!(
+                f,
+                "    \"{}_{}\":w -> \"{}_{}\":e[style=invis]",
+                stage.num,
+                format_pg(&stage.tasks[i].partition_group),
+                stage.num,
+                format_pg(&stage.tasks[i + 1].partition_group),
+            )?;
+        }
+
+        // add a node for the plan, its way too big!   Alternatives to add it?
+        /*writeln!(
+            f,
+            "    \"{}_plan\"[label = \"{}\", shape=box];",
+            stage.num,
+            displayable(stage.plan.as_ref()).indent(false)
+        )?;
+        */
+
         writeln!(f, "  }}")?;
 
         for child in stage.child_stages_iter() {
