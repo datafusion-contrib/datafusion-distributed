@@ -10,15 +10,16 @@ mod tests {
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
+    use datafusion_distributed::stage::{display_stage_graphviz, ExecutionStage};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn stage_planning() -> Result<(), Box<dyn Error>> {
-        let rule = DistributedPhysicalOptimizerRule::default(); //.with_maximum_partitions_per_task(3);
+        let config = SessionConfig::new().with_target_partitions(3);
 
-        let config = SessionConfig::new().with_target_partitions(10);
+        let rule = DistributedPhysicalOptimizerRule::default().with_maximum_partitions_per_task(2);
 
         let state = SessionStateBuilder::new()
             .with_default_features()
@@ -55,6 +56,10 @@ mod tests {
         println!("\n\nPhysical Plan:\n{}", physical_str);
 
         let physical_str = displayable(physical.as_ref()).indent(true);
+        println!("\n\nPhysical Plan:\n{}", physical_str);
+
+        let physical_str =
+            display_stage_graphviz(physical.as_any().downcast_ref::<ExecutionStage>().unwrap())?;
         println!("\n\nPhysical Plan:\n{}", physical_str);
 
         assert_snapshot!(physical_str,

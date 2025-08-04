@@ -106,7 +106,7 @@ impl Display for ExecutionTask {
     }
 }
 
-fn format_pg(partition_group: &[u64]) -> String {
+pub(crate) fn format_pg(partition_group: &[u64]) -> String {
     if partition_group.len() > 2 {
         format!(
             "{}..{}",

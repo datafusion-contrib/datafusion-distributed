@@ -29,7 +29,7 @@ use datafusion::{
     },
 };
 
-use crate::common::util::display_plan_with_partition_in_out;
+use crate::{common::util::display_plan_with_partition_in_out, task::format_pg};
 
 use super::ExecutionStage;
 
@@ -96,14 +96,59 @@ pub fn display_stage_graphviz(stage: &ExecutionStage) -> Result<String> {
 
     writeln!(f, "digraph G {{")?;
     writeln!(f, "  node[shape=rect];")?;
+    writeln!(f, "  rankdir=BT;")?;
+    writeln!(f, "  ranksep=2;")?;
+    writeln!(f, "  edge[colorscheme=rdylbu11, penwidth=2.0];")?;
 
-    let mut stack = vec![stage];
+    // we'll keep a stack of stage ref, parrent stage ref
+    let mut stack: Vec<(&ExecutionStage, Option<&ExecutionStage>)> = vec![(stage, None)];
 
-    while !stack.is_empty() {
-        writeln!(f, "  subgraph cluster_{} {{];", stage.num)?;
+    while let Some((stage, parent)) = stack.pop() {
+        writeln!(f, "  subgraph cluster_{} {{", stage.num)?;
         writeln!(f, "    label=\"{}\";", stage.name())?;
-        writeln!(f, "    labeljust=l")?;
+        writeln!(f, "    labeljust=l;")?;
+
+        stage.tasks.iter().try_for_each(|task| {
+            writeln!(
+                f,
+                "    \"{}_{}\"[label = \"{}\"]",
+                stage.num,
+                format_pg(&task.partition_group),
+                format_pg(&task.partition_group)
+            )?;
+
+            if let Some(our_parent) = parent {
+                our_parent.tasks.iter().try_for_each(|ptask| {
+                    ptask.partition_group.iter().try_for_each(|partition| {
+                        writeln!(
+                            f,
+                            "    \"{}_{}\" -> \"{}_{}\"[tailport=n, headport=s, color={}]",
+                            stage.num,
+                            format_pg(&task.partition_group),
+                            our_parent.num,
+                            format_pg(&ptask.partition_group),
+                            partition + 1
+                        )
+                    })?;
+                    writeln!(
+                        f,
+                        "    \"{}_{}\" -> \"{}_{}\"[tailport=n, headport=s, color={}]",
+                        stage.num,
+                        format_pg(&task.partition_group),
+                        our_parent.num,
+                        format_pg(&ptask.partition_group),
+                        &ptask.partition_group[0] + 1,
+                    )
+                })?;
+            }
+
+            Ok::<(), std::fmt::Error>(())
+        })?;
         writeln!(f, "  }}")?;
+
+        for child in stage.child_stages_iter() {
+            stack.push((child, Some(stage)));
+        }
     }
 
     writeln!(f, "}}")?;
