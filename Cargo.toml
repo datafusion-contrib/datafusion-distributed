@@ -24,3 +24,7 @@ prost = "0.13.5"
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["filters"] }
 
+[[bin]]
+name = "distributed_join_example"
+path = "src/examples/distributed_join.rs"
+
