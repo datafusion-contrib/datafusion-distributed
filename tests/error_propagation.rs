@@ -15,7 +15,7 @@ mod tests {
     use datafusion::physical_plan::{
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
-    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{assign_stages, ArrowFlightReadExec, SessionBuilder};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -54,7 +54,7 @@ mod tests {
                 Partitioning::RoundRobinBatch(size),
             ));
         }
-
+        let plan = assign_stages(plan, &ctx)?;
         let stream = execute_stream(plan, ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {

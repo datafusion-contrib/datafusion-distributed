@@ -1,4 +1,6 @@
+use crate::context::StageContext;
 use crate::plan::arrow_flight_read::ArrowFlightReadExec;
+use datafusion::error::DataFusionError;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
@@ -8,6 +10,8 @@ use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
 use std::sync::Arc;
+use url::Url;
+use uuid::Uuid;
 
 /// DataFusion [PhysicalExtensionCodec] implementation that allows sending and receiving
 /// [ArrowFlightReadExecProto] over the wire.
@@ -21,8 +25,10 @@ impl PhysicalExtensionCodec for ArrowFlightReadExecProtoCodec {
         inputs: &[Arc<dyn ExecutionPlan>],
         registry: &dyn FunctionRegistry,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        let ArrowFlightReadExecProto { partitioning } =
-            ArrowFlightReadExecProto::decode(buf).map_err(|err| proto_error(format!("{err}")))?;
+        let ArrowFlightReadExecProto {
+            partitioning,
+            stage_context,
+        } = ArrowFlightReadExecProto::decode(buf).map_err(|err| proto_error(format!("{err}")))?;
 
         if inputs.len() != 1 {
             return Err(proto_error(format!(
@@ -30,6 +36,10 @@ impl PhysicalExtensionCodec for ArrowFlightReadExecProtoCodec {
                 inputs.len()
             )));
         }
+
+        let Some(stage_context) = stage_context else {
+            return Err(proto_error("Missing stage context"));
+        };
 
         let Some(partitioning) = parse_protobuf_partitioning(
             partitioning.as_ref(),
@@ -40,10 +50,26 @@ impl PhysicalExtensionCodec for ArrowFlightReadExecProtoCodec {
         else {
             return Err(proto_error("Partitioning not specified"));
         };
-        Ok(Arc::new(ArrowFlightReadExec::new(
-            inputs[0].clone(),
-            partitioning,
-        )))
+        let mut node = ArrowFlightReadExec::new(inputs[0].clone(), partitioning);
+
+        fn parse_uuid(uuid: &str) -> Result<Uuid, DataFusionError> {
+            uuid.parse::<Uuid>()
+                .map_err(|err| proto_error(format!("{err}")))
+        }
+
+        node.stage_context = Some(StageContext {
+            id: parse_uuid(&stage_context.id)?,
+            n_tasks: stage_context.n_tasks as usize,
+            input_id: parse_uuid(&stage_context.input_id)?,
+            input_urls: stage_context
+                .input_urls
+                .iter()
+                .map(|url| Url::parse(url))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| proto_error(format!("{err}")))?,
+        });
+
+        Ok(Arc::new(node))
     }
 
     fn try_encode(
@@ -57,12 +83,27 @@ impl PhysicalExtensionCodec for ArrowFlightReadExecProtoCodec {
                 node.name()
             )));
         };
+        let Some(stage_context) = &node.stage_context else {
+            return Err(proto_error(
+                "Upon serializing the ArrowFlightReadExec, the stage context must be set.",
+            ));
+        };
 
         ArrowFlightReadExecProto {
             partitioning: Some(serialize_partitioning(
                 &node.properties().partitioning,
                 &DefaultPhysicalExtensionCodec {},
             )?),
+            stage_context: Some(StageContextProto {
+                id: stage_context.id.to_string(),
+                n_tasks: stage_context.n_tasks as u64,
+                input_id: stage_context.input_id.to_string(),
+                input_urls: stage_context
+                    .input_urls
+                    .iter()
+                    .map(|url| url.to_string())
+                    .collect(),
+            }),
         }
         .encode(buf)
         .map_err(|err| proto_error(format!("{err}")))
@@ -74,6 +115,20 @@ impl PhysicalExtensionCodec for ArrowFlightReadExecProtoCodec {
 /// to send them over the wire.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrowFlightReadExecProto {
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     partitioning: Option<protobuf::Partitioning>,
+    #[prost(message, tag = "2")]
+    stage_context: Option<StageContextProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StageContextProto {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(uint64, tag = "2")]
+    pub n_tasks: u64,
+    #[prost(string, tag = "3")]
+    pub input_id: String,
+    #[prost(string, repeated, tag = "4")]
+    pub input_urls: Vec<String>,
 }

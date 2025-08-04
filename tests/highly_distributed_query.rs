@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod common;
 
 #[cfg(test)]
@@ -7,7 +8,7 @@ mod tests {
     use crate::common::parquet::register_parquet_tables;
     use datafusion::physical_expr::Partitioning;
     use datafusion::physical_plan::{displayable, execute_stream};
-    use datafusion_distributed::ArrowFlightReadExec;
+    use datafusion_distributed::{assign_stages, ArrowFlightReadExec};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
@@ -34,6 +35,7 @@ mod tests {
                 Partitioning::RoundRobinBatch(size),
             ));
         }
+        let physical_distributed = assign_stages(physical_distributed, &ctx)?;
         let physical_distributed_str = displayable(physical_distributed.as_ref())
             .indent(true)
             .to_string();
@@ -44,9 +46,9 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ArrowFlightReadExec: input_actors=5
-          ArrowFlightReadExec: input_actors=10
-            ArrowFlightReadExec: input_actors=1
+        ArrowFlightReadExec: input_tasks=5 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50050/, http://localhost:50051/, http://localhost:50053/, http://localhost:50054/, http://localhost:50055/]
+          ArrowFlightReadExec: input_tasks=10 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50056/, http://localhost:50057/, http://localhost:50058/, http://localhost:50059/, http://localhost:50050/, http://localhost:50051/, http://localhost:50053/, http://localhost:50054/, http://localhost:50055/, http://localhost:50056/]
+            ArrowFlightReadExec: input_tasks=1 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50057/]
               DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[FL_DATE, DEP_DELAY, ARR_DELAY, AIR_TIME, DISTANCE, DEP_TIME, ARR_TIME], file_type=parquet
         ",
         );
