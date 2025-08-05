@@ -10,7 +10,6 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
-use prost::Message;
 
 use crate::{plan::DistributedCodec, task::ExecutionTask};
 

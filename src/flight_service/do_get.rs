@@ -8,7 +8,6 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::optimizer::OptimizerConfig;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::TryStreamExt;
 use prost::Message;
