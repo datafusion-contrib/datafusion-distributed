@@ -84,22 +84,30 @@ impl PhysicalExtensionCodec for DistributedCodec {
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
         if let Some(node) = node.as_any().downcast_ref::<ArrowFlightReadExec>() {
-            ArrowFlightReadExecProto {
+            let inner = ArrowFlightReadExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
                 )?),
                 stage_num: node.stage_num as u64,
-            }
-            .encode(buf)
-            .map_err(|err| proto_error(format!("{err}")))
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::ArrowFlightReadExec(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
-            PartitionIsolatorExecProto {
+            let inner = PartitionIsolatorExecProto {
                 partition_count: node.partition_count as u64,
-            }
-            .encode(buf)
-            .map_err(|err| proto_error(format!("{err}")))
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::PartitionIsolatorExec(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
