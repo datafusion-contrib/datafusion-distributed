@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 mod common;
-/*
+
 #[cfg(test)]
 mod tests {
     use crate::common::localhost::start_localhost_context;
@@ -26,6 +26,7 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    #[ignore]
     async fn test_error_propagation() -> Result<(), Box<dyn Error>> {
         #[derive(Clone)]
         struct CustomSessionBuilder;
@@ -48,14 +49,13 @@ mod tests {
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 
-        for size in [1, 2, 3] {
+        for (i, size) in [1, 2, 3].iter().enumerate() {
             plan = Arc::new(ArrowFlightReadExec::new(
-                Partitioning::RoundRobinBatch(size),
+                Partitioning::RoundRobinBatch(*size as usize),
                 plan.schema(),
-                0,
+                i,
             ));
         }
-        let plan = assign_stages(plan, &ctx)?;
         let stream = execute_stream(plan, ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {
@@ -170,4 +170,4 @@ mod tests {
             .map_err(|err| proto_error(format!("{err}")))
         }
     }
-}*/
+}
