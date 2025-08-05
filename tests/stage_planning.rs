@@ -1,8 +1,6 @@
 mod common;
 mod tpch;
 
-// FIXME: commented out until we figure out how to integrate best with tpch
-/*
 #[cfg(test)]
 mod tests {
     use crate::tpch::tpch_query;
@@ -17,7 +15,9 @@ mod tests {
     use std::error::Error;
     use std::sync::Arc;
 
+    // FIXME: ignored out until we figure out how to integrate best with tpch
     #[tokio::test]
+    #[ignore]
     async fn stage_planning() -> Result<(), Box<dyn Error>> {
         let config = SessionConfig::new().with_target_partitions(3);
 
@@ -86,4 +86,4 @@ mod tests {
 
         Ok(())
     }
-}*/
+}

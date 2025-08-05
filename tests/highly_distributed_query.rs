@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 mod common;
-/*
+
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
@@ -8,12 +8,13 @@ mod tests {
     use crate::common::parquet::register_parquet_tables;
     use datafusion::physical_expr::Partitioning;
     use datafusion::physical_plan::{displayable, execute_stream};
-    use datafusion_distributed::{assign_stages, ArrowFlightReadExec};
+    use datafusion_distributed::ArrowFlightReadExec;
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
 
     #[tokio::test]
+    #[ignore]
     async fn highly_distributed_query() -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(
             [
@@ -29,13 +30,13 @@ mod tests {
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
         let mut physical_distributed = physical.clone();
-        for size in [1, 10, 5] {
+        for (i, size) in [1, 10, 5].iter().enumerate() {
             physical_distributed = Arc::new(ArrowFlightReadExec::new(
-                physical_distributed.clone(),
-                Partitioning::RoundRobinBatch(size),
+                Partitioning::RoundRobinBatch(*size as usize),
+                physical_distributed.schema(),
+                i,
             ));
         }
-        let physical_distributed = assign_stages(physical_distributed, &ctx)?;
         let physical_distributed_str = displayable(physical_distributed.as_ref())
             .indent(true)
             .to_string();
@@ -75,4 +76,4 @@ mod tests {
 
         Ok(())
     }
-}*/
+}

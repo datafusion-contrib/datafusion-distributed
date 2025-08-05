@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 mod common;
-/*
+
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
@@ -27,7 +27,7 @@ mod tests {
     use datafusion::physical_plan::{
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
-    use datafusion_distributed::{assign_stages, ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -37,6 +37,7 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    #[ignore]
     async fn custom_extension_codec() -> Result<(), Box<dyn std::error::Error>> {
         #[derive(Clone)]
         struct CustomSessionBuilder;
@@ -66,7 +67,6 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
-        let distributed_plan = assign_stages(distributed_plan, &ctx)?;
 
         assert_snapshot!(displayable(distributed_plan.as_ref()).indent(true).to_string(), @r"
         SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
@@ -124,8 +124,9 @@ mod tests {
 
         if distributed {
             plan = Arc::new(ArrowFlightReadExec::new(
-                plan.clone(),
                 Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
+                plan.clone().schema(),
+                0, // TODO: stage num should be assigned by someone else
             ));
         }
 
@@ -139,8 +140,9 @@ mod tests {
 
         if distributed {
             plan = Arc::new(ArrowFlightReadExec::new(
-                plan.clone(),
                 Partitioning::RoundRobinBatch(10),
+                plan.clone().schema(),
+                1, // TODO: stage num should be assigned by someone else
             ));
 
             plan = Arc::new(RepartitionExec::try_new(
@@ -266,4 +268,4 @@ mod tests {
             .map_err(|err| proto_error(format!("{err}")))
         }
     }
-}*/
+}
