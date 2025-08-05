@@ -1,7 +1,6 @@
 use std::{fmt::Formatter, sync::Arc};
 
 use datafusion::{
-    common::internal_datafusion_err,
     error::Result,
     execution::SendableRecordBatchStream,
     physical_plan::{

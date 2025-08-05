@@ -1,17 +1,14 @@
 use crate::plan::arrow_flight_read::ArrowFlightReadExec;
-use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::error::DataFusionError;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
 use std::sync::Arc;
-use url::Url;
-use uuid::Uuid;
 
 use super::PartitionIsolatorExec;
 

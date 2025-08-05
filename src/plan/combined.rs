@@ -4,13 +4,13 @@ use std::{
     task::{Context, Poll},
 };
 
+use datafusion::error::Result;
 use datafusion::{
     arrow::{array::RecordBatch, datatypes::SchemaRef},
     common::internal_err,
     error::DataFusionError,
     execution::{RecordBatchStream, SendableRecordBatchStream},
 };
-use datafusion::{common::internal_datafusion_err, error::Result};
 use futures::Stream;
 
 pub(crate) struct CombinedRecordBatchStream {

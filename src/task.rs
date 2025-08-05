@@ -1,19 +1,11 @@
 use core::fmt;
-use std::collections::{self, HashMap};
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::sync::Arc;
 
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{internal_datafusion_err, internal_err};
-use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
-use datafusion::{execution::SendableRecordBatchStream, physical_plan::ExecutionPlan};
-use datafusion_proto::physical_plan::{DefaultPhysicalExtensionCodec, PhysicalExtensionCodec};
+use datafusion::common::internal_datafusion_err;
 use prost::Message;
 
 use datafusion::error::Result;
-use datafusion_proto::protobuf::PhysicalPlanNode;
 use url::Url;
 
 #[derive(Clone, PartialEq, ::prost::Message)]

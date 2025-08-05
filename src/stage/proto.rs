@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use datafusion::{
-    common::{internal_datafusion_err, internal_err},
+    common::internal_datafusion_err,
     error::{DataFusionError, Result},
     execution::{runtime_env::RuntimeEnv, FunctionRegistry},
     physical_plan::ExecutionPlan,
 };
 use datafusion_proto::{
-    physical_plan::{AsExecutionPlan, DefaultPhysicalExtensionCodec, PhysicalExtensionCodec},
+    physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
 use prost::Message;

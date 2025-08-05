@@ -1,19 +1,16 @@
 use std::sync::Arc;
 
 use datafusion::{
-    catalog::memory::DataSourceExec,
     common::{
-        internal_datafusion_err, internal_err,
-        tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeRewriter, TreeNodeVisitor},
-        DataFusionError,
+        internal_datafusion_err,
+        tree_node::{Transformed, TreeNode, TreeNodeRewriter},
     },
     config::ConfigOptions,
-    datasource::physical_plan::{FileScanConfig, FileSource},
+    datasource::physical_plan::FileSource,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        displayable, execution_plan::need_data_exchange, repartition::RepartitionExec,
-        ExecutionPlan, ExecutionPlanProperties,
+        displayable, repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
     },
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;

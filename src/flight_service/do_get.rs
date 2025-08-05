@@ -1,26 +1,19 @@
-use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::DistributedCodec;
-use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
+use crate::stage::{stage_from_proto, ExecutionStageProto};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
-use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::optimizer::OptimizerConfig;
-use datafusion::physical_expr::{Partitioning, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::from_proto::parse_physical_exprs;
-use datafusion_proto::physical_plan::to_proto::serialize_physical_exprs;
-use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use datafusion_proto::protobuf::{PhysicalExprNode, PhysicalPlanNode};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use uuid::Uuid;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {

@@ -10,23 +10,11 @@
 ///
 /// In the meantime, we can make a dummy ExecutionPlan that will let us render
 /// the Stage tree.
-use std::{
-    fmt::{Display, Formatter, Write},
-    sync::Arc,
-};
+use std::fmt::Write;
 
 use datafusion::{
-    common::{
-        internal_datafusion_err,
-        tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeRewriter, TreeNodeVisitor},
-    },
     error::Result,
-    physical_expr::EquivalenceProperties,
-    physical_plan::{
-        displayable,
-        execution_plan::{Boundedness, EmissionType},
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    },
+    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan},
 };
 
 use crate::{

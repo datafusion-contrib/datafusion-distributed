@@ -1,18 +1,15 @@
-use std::any::Any;
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use datafusion::common::internal_err;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{displayable, DisplayAs, DisplayFormatType, ExecutionPlan};
+use datafusion::physical_plan::{displayable, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use itertools::Itertools;
 use rand::Rng;
-use tokio::sync::RwLock;
 use url::Url;
 
 use crate::task::ExecutionTask;
@@ -150,7 +147,7 @@ impl ExecutionStage {
     }
 
     pub fn try_assign(
-        mut self,
+        self,
         channel_manager: impl TryInto<ChannelManager, Error = DataFusionError>,
     ) -> Result<Self> {
         let urls: Vec<Url> = channel_manager.try_into()?.get_urls()?;
