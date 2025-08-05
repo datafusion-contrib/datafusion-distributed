@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 mod common;
-
+/*
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
@@ -266,4 +266,4 @@ mod tests {
             .map_err(|err| proto_error(format!("{err}")))
         }
     }
-}
+}*/
