@@ -99,9 +99,7 @@ pub fn stage_from_proto(
 }
 
 // add tests for round trip to and from a proto message for ExecutionStage
-/* TODO: broken for now
 #[cfg(test)]
-
 mod tests {
     use std::sync::Arc;
 
@@ -110,19 +108,13 @@ mod tests {
             array::{RecordBatch, StringArray, UInt8Array},
             datatypes::{DataType, Field, Schema},
         },
-        catalog::memory::DataSourceExec,
-        common::{internal_datafusion_err, internal_err},
+        common::internal_datafusion_err,
         datasource::MemTable,
-        error::{DataFusionError, Result},
+        error::Result,
         execution::context::SessionContext,
-        prelude::SessionConfig,
     };
-    use datafusion_proto::{
-        physical_plan::{AsExecutionPlan, DefaultPhysicalExtensionCodec},
-        protobuf::PhysicalPlanNode,
-    };
+    use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::Message;
-    use uuid::Uuid;
 
     use crate::stage::{proto::stage_from_proto, ExecutionStage, ExecutionStageProto};
 
@@ -147,6 +139,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_execution_stage_proto_round_trip() -> Result<()> {
         let ctx = SessionContext::new();
         let mem_table = create_mem_table();
@@ -195,4 +188,4 @@ mod tests {
         assert_eq!(stage.name, round_trip_stage.name);
         Ok(())
     }
-}*/
+}
