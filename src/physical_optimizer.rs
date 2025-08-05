@@ -6,7 +6,6 @@ use datafusion::{
         tree_node::{Transformed, TreeNode, TreeNodeRewriter},
     },
     config::ConfigOptions,
-    datasource::physical_plan::FileSource,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{

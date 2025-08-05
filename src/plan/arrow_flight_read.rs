@@ -5,7 +5,7 @@ use arrow_flight::{FlightClient, Ticket};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{internal_datafusion_err, plan_err};
 use datafusion::error::Result;
-use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;

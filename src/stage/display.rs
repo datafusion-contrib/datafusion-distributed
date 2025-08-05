@@ -14,7 +14,7 @@ use std::fmt::Write;
 
 use datafusion::{
     error::Result,
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan},
+    physical_plan::{DisplayAs, DisplayFormatType},
 };
 
 use crate::{

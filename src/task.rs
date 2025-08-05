@@ -3,9 +3,8 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 use datafusion::common::internal_datafusion_err;
-use prost::Message;
-
 use datafusion::error::Result;
+
 use url::Url;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
