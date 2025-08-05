@@ -29,7 +29,10 @@ use datafusion::{
     },
 };
 
-use crate::{common::util::display_plan_with_partition_in_out, task::format_pg};
+use crate::{
+    common::util::display_plan_with_partition_in_out,
+    task::{format_pg, ExecutionTask},
+};
 
 use super::ExecutionStage;
 
@@ -59,7 +62,7 @@ impl DisplayAs for ExecutionStage {
                     LTCORNER,
                     HORIZONTAL.repeat(5),
                     format!(" {} ", self.name),
-                    HORIZONTAL.repeat(50 - 7 - self.name.len())
+                    format_tasks(&self.tasks),
                 )?;
                 let plan_str = display_plan_with_partition_in_out(self.plan.as_ref())
                     .map_err(|_| std::fmt::Error {})?;
@@ -198,4 +201,12 @@ pub fn display_stage_graphviz(stage: &ExecutionStage) -> Result<String> {
 
     writeln!(f, "}}")?;
     Ok(f)
+}
+
+fn format_tasks(tasks: &[ExecutionTask]) -> String {
+    tasks
+        .iter()
+        .map(|task| format!("{task}"))
+        .collect::<Vec<String>>()
+        .join(",")
 }

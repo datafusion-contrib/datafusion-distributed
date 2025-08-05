@@ -14,94 +14,51 @@ use prost::Message;
 
 use datafusion::error::Result;
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use url::Url;
 
-use crate::remote::WorkerAssignment;
-
-/// An ExecutionTask is a finer grained unit of work compared to an ExecutionStage.
-/// One ExecutionStage will create one or more ExecutionTasks
-///
-/// When a task is execute()'d if will execute its plan and return a stream of record batches.
-///
-/// If the task has input tasks, then it those input tasks will be executed on remote resources
-/// and will be provided the remainder of the task tree.
-///
-/// For example if our task tree looks like this:
-///
-/// ```text
-///                       ┌────────┐
-///                       │ Task 1 │
-///                       └───┬────┘
-///                           │
-///                    ┌──────┴───────┐
-///               ┌────┴───┐     ┌────┴───┐
-///               │ Task 2 │     │ Task 3 │
-///               └────┬───┘     └────────┘
-///                    │
-///             ┌──────┴───────┐
-///        ┌────┴───┐     ┌────┴───┐
-///        │ Task 4 │     │ Task 5 │
-///        └────────┘     └────────┘                    
-///
-/// ```
-///  
-/// Then executing Task 1 will run its plan locally.  Task 1 has two inputs, Task 2 and Task 3.  We
-/// know these will execute on remote resources.   As such the plan for Task 1 must contain an
-/// [`ArrowFlightReadExec`] node that will read the results of Task 2 and Task 3 and coalese the
-/// results.
-///
-/// When Task 1's [`ArrowFlightReadExec`] node is executed, it makes an ArrowFlightRequest to the
-/// host assigned in the Task.  It provides the following Task tree serialilzed in the body of the
-/// Arrow Flight Ticket:
-///
-/// ```text
-///               ┌────────┐     
-///               │ Task 2 │    
-///               └────┬───┘   
-///                    │
-///             ┌──────┴───────┐
-///        ┌────┴───┐     ┌────┴───┐
-///        │ Task 4 │     │ Task 5 │
-///        └────────┘     └────────┘                    
-///
-/// ```
-///
-/// The receiving ArrowFlightEndpoint will then execute Task 2 and will repeated this process.
-///
-/// When Task 4 is executed, it has no input tasks, so it is assumed that the plan included in that
-/// Task can complete on its own; its likely holding a leaf node in the overall phyysical plan and
-/// producing data from a [`DataSourceExec`].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionTask {
-    /// The address of the worker that will execute this task.  A None value is interpreted as
+    /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassinged.
-    #[prost(message, optional, tag = "1")]
-    pub worker_addr: Option<WorkerAddr>,
+    #[prost(string, optional, tag = "1")]
+    pub url_str: Option<String>,
     /// The partitions that we can execute from this plan
     #[prost(uint64, repeated, tag = "2")]
     pub partition_group: Vec<u64>,
 }
 
-/// The host and port of a worker that will execute the task.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct WorkerAddr {
-    /// The host name or IP address of the worker.
-    #[prost(string, tag = "1")]
-    pub host: String,
-    /// The port number of the worker, a u32 vs u16 as prost doesn't like u16
-    #[prost(uint32, tag = "2")]
-    pub port: u32,
+impl ExecutionTask {
+    pub fn new(partition_group: Vec<u64>) -> Self {
+        ExecutionTask {
+            url_str: None,
+            partition_group,
+        }
+    }
+
+    pub fn with_assignment(mut self, url: &Url) -> Self {
+        self.url_str = Some(format!("{url}"));
+        self
+    }
+
+    /// Returns the url of this worker, a None is unassigned
+    pub fn url(&self) -> Result<Option<Url>> {
+        self.url_str
+            .as_ref()
+            .map(|u| Url::parse(u).map_err(|_| internal_datafusion_err!("Invalid URL: {}", u)))
+            .transpose()
+    }
 }
 
 impl Display for ExecutionTask {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Task: partitions: {}\n{}]",
+            "Task: partitions: {},{}]",
             format_pg(&self.partition_group),
-            self.worker_addr
-                .as_ref()
-                .map(|addr| format!("worker: {}:{}", addr.host, addr.port))
-                .unwrap_or("worker: unassigned".to_string())
+            self.url()
+                .map_err(|_| std::fmt::Error {})?
+                .map(|u| u.to_string())
+                .unwrap_or("unassigned".to_string())
         )
     }
 }

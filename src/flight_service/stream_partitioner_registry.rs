@@ -3,14 +3,14 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
-
+use uuid::Uuid;
 // TODO: find some way of cleaning up abandoned partitioners
 
 /// Keeps track of all the [StreamPartitioner] currently running in the program, identifying them
 /// by stage id.
 #[derive(Default)]
 pub struct StreamPartitionerRegistry {
-    map: DashMap<(String, usize), Arc<RepartitionExec>>,
+    map: DashMap<(Uuid, usize), Arc<RepartitionExec>>,
 }
 
 impl StreamPartitionerRegistry {
@@ -18,7 +18,7 @@ impl StreamPartitionerRegistry {
     /// If there was already one, return a reference to it.
     pub fn get_or_create_stream_partitioner(
         &self,
-        id: String,
+        id: Uuid,
         actor_idx: usize,
         plan: Arc<dyn ExecutionPlan>,
         partitioning: Partitioning,
@@ -48,7 +48,7 @@ mod tests {
 
         let registry = StreamPartitionerRegistry::default();
         let partitioner = registry.get_or_create_stream_partitioner(
-            "test".to_string(),
+            Uuid::new_v4(),
             0,
             mock_exec(15, 10),
             Partitioning::RoundRobinBatch(PARTITIONS),
@@ -69,7 +69,7 @@ mod tests {
 
         let registry = StreamPartitionerRegistry::default();
         let partitioner = registry.get_or_create_stream_partitioner(
-            "test".to_string(),
+            Uuid::new_v4(),
             0,
             mock_exec(5, 10),
             Partitioning::RoundRobinBatch(PARTITIONS),
@@ -87,7 +87,7 @@ mod tests {
 
         let registry = StreamPartitionerRegistry::default();
         let partitioner = registry.get_or_create_stream_partitioner(
-            "test".to_string(),
+            Uuid::new_v4(),
             0,
             mock_exec(15, 10),
             Partitioning::Hash(vec![col("c0", &test_schema())?], PARTITIONS),
@@ -108,7 +108,7 @@ mod tests {
 
         let registry = StreamPartitionerRegistry::default();
         let partitioner = registry.get_or_create_stream_partitioner(
-            "test".to_string(),
+            Uuid::new_v4(),
             0,
             mock_exec(5, 10),
             Partitioning::Hash(vec![col("c0", &test_schema())?], PARTITIONS),

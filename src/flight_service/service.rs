@@ -2,7 +2,6 @@ use crate::channel_manager::ChannelManager;
 use crate::flight_service::session_builder::NoopSessionBuilder;
 use crate::flight_service::stream_partitioner_registry::StreamPartitionerRegistry;
 use crate::flight_service::SessionBuilder;
-use crate::stage_delegation::StageDelegation;
 use crate::ChannelResolver;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
@@ -17,7 +16,6 @@ use tonic::{Request, Response, Status, Streaming};
 
 pub struct ArrowFlightEndpoint {
     pub(super) channel_manager: Arc<ChannelManager>,
-    pub(super) stage_delegation: Arc<StageDelegation>,
     pub(super) runtime: Arc<RuntimeEnv>,
     pub(super) partitioner_registry: Arc<StreamPartitionerRegistry>,
     pub(super) session_builder: Arc<dyn SessionBuilder + Send + Sync>,
@@ -27,7 +25,6 @@ impl ArrowFlightEndpoint {
     pub fn new(channel_resolver: impl ChannelResolver + Send + Sync + 'static) -> Self {
         Self {
             channel_manager: Arc::new(ChannelManager::new(channel_resolver)),
-            stage_delegation: Arc::new(StageDelegation::default()),
             runtime: Arc::new(RuntimeEnv::default()),
             partitioner_registry: Arc::new(StreamPartitionerRegistry::default()),
             session_builder: Arc::new(NoopSessionBuilder),
@@ -96,9 +93,9 @@ impl FlightService for ArrowFlightEndpoint {
 
     async fn do_put(
         &self,
-        request: Request<Streaming<FlightData>>,
+        _: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
-        self.put(request).await
+        Err(Status::unimplemented("Not yet implemented"))
     }
 
     type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;

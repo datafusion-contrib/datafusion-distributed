@@ -12,12 +12,13 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        displayable, execution_plan::need_data_exchange, ExecutionPlan, ExecutionPlanProperties,
+        displayable, execution_plan::need_data_exchange, repartition::RepartitionExec,
+        ExecutionPlan, ExecutionPlanProperties,
     },
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
-use crate::ArrowFlightReadExec;
+use crate::{plan::PartitionIsolatorExec, ArrowFlightReadExec};
 
 use super::stage::ExecutionStage;
 
@@ -193,7 +194,7 @@ impl TreeNodeRewriter for StagePlanner {
 
         // determine if we need to shuffle data, and thus create a new stage
         // at this shuffle boundary
-        if need_data_exchange(plan.clone()) {
+        if let Some(repartition_exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
             // time to create a stage here so include all previous seen stages deeper than us as
             // our input stages
             let child_stages = self
@@ -206,9 +207,24 @@ impl TreeNodeRewriter for StagePlanner {
 
             self.input_stages.retain(|(depth, _)| *depth <= self.depth);
 
+            let maybe_isolated_plan = if let Some(partitions_per_task) = self.partitions_per_task {
+                let child = repartition_exec
+                    .children()
+                    .first()
+                    .ok_or(internal_datafusion_err!(
+                        "RepartitionExec has no children, cannot create PartitionIsolatorExec"
+                    ))?
+                    .clone()
+                    .clone(); // just clone the Arcs
+                let isolated = Arc::new(PartitionIsolatorExec::new(child, partitions_per_task));
+                plan.clone().with_new_children(vec![isolated])?
+            } else {
+                plan.clone()
+            };
+
             let mut stage = ExecutionStage::new(
                 self.stage_counter,
-                plan.clone(),
+                maybe_isolated_plan,
                 child_stages.into_iter().map(Arc::new).collect(),
             );
 
@@ -227,8 +243,16 @@ impl TreeNodeRewriter for StagePlanner {
             //
             // That way as we walk further up the tree and build the next stage, the leaf
             // node in that plan will be an ArrowFlightReadExec that can read from
+            //
+            // Note that we use the original plans partitioning and schema for ArrowFlightReadExec.
+            // If we divide it up in to tasks, then that parittion will need to be gathered from
+            // among them
             let name = format!("Stage {:<3}", self.stage_counter);
-            let read = Arc::new(ArrowFlightReadExec::new(plan.properties(), &name));
+            let read = Arc::new(ArrowFlightReadExec::new(
+                plan.output_partitioning().clone(),
+                plan.schema(),
+                self.stage_counter,
+            ));
 
             self.stage_counter += 1;
 

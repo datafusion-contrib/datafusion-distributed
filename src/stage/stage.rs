@@ -1,17 +1,22 @@
 use std::any::Any;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use datafusion::error::Result;
+use datafusion::common::internal_err;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
+use datafusion::physical_plan::{displayable, DisplayAs, DisplayFormatType, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use itertools::Itertools;
+use rand::Rng;
 use tokio::sync::RwLock;
+use url::Url;
 
 use crate::task::ExecutionTask;
+use crate::ChannelManager;
 
 /// A unit of isolation for a portion of a physical execution plan
 /// that can be executed independently.
@@ -79,10 +84,7 @@ impl ExecutionStage {
                 .into_iter()
                 .map(|s| s as Arc<dyn ExecutionPlan>)
                 .collect(),
-            tasks: vec![ExecutionTask {
-                worker_addr: None,
-                partition_group,
-            }],
+            tasks: vec![ExecutionTask::new(partition_group)],
             codec: None,
             depth: AtomicU64::new(0),
         }
@@ -98,13 +100,14 @@ impl ExecutionStage {
         self.tasks = (0..partitions)
             .chunks(max_partitions_per_task)
             .into_iter()
-            .map(|partition_group| ExecutionTask {
-                worker_addr: None,
-                partition_group: partition_group
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .map(|p| p as u64)
-                    .collect(),
+            .map(|partition_group| {
+                ExecutionTask::new(
+                    partition_group
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .map(|p| p as u64)
+                        .collect(),
+                )
             })
             .collect();
         self
@@ -146,6 +149,58 @@ impl ExecutionStage {
         format!("Stage {:<3}{}", self.num, child_str)
     }
 
+    pub fn try_assign(
+        mut self,
+        channel_manager: impl TryInto<ChannelManager, Error = DataFusionError>,
+    ) -> Result<Self> {
+        let urls: Vec<Url> = channel_manager.try_into()?.get_urls()?;
+        if urls.is_empty() {
+            return internal_err!("No URLs found in ChannelManager");
+        }
+
+        Ok(self)
+    }
+
+    fn try_assign_urls(&self, urls: &[Url]) -> Result<Self> {
+        let assigned_children = self
+            .child_stages_iter()
+            .map(|child| {
+                child
+                    .clone() // TODO: avoid cloning if possible
+                    .try_assign_urls(urls)
+                    .map(|c| Arc::new(c) as Arc<dyn ExecutionPlan>)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // pick a random starting position
+        let mut rng = rand::thread_rng();
+        let start_idx = rng.gen_range(0..urls.len());
+
+        let assigned_tasks = self
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(i, task)| {
+                let url = &urls[(start_idx + i) % urls.len()];
+                task.clone().with_assignment(url)
+            })
+            .collect::<Vec<_>>();
+
+        println!("stage {} assigned_tasks: {:?}", self.num, assigned_tasks);
+
+        let assigned_stage = ExecutionStage {
+            num: self.num,
+            name: self.name.clone(),
+            plan: self.plan.clone(),
+            inputs: assigned_children,
+            tasks: assigned_tasks,
+            codec: self.codec.clone(),
+            depth: AtomicU64::new(self.depth.load(Ordering::Relaxed)),
+        };
+
+        Ok(assigned_stage)
+    }
+
     pub(crate) fn depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed) as usize
     }
@@ -180,7 +235,7 @@ impl ExecutionPlan for ExecutionStage {
     }
 
     fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
-        &self.plan.properties()
+        self.plan.properties()
     }
 
     fn execute(
@@ -193,16 +248,35 @@ impl ExecutionPlan for ExecutionStage {
             .downcast_ref::<ExecutionStage>()
             .expect("Unwrapping myself should always work");
 
+        let channel_manager = context
+            .session_config()
+            .get_extension::<ChannelManager>()
+            .ok_or(DataFusionError::Execution(
+                "ChannelManager not found in session config".to_string(),
+            ))?;
+
+        let urls = channel_manager.get_urls()?;
+
+        let assigned_stage = stage
+            .try_assign_urls(&urls)
+            .map(Arc::new)
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
         // insert the stage into the context so that ExecutionPlan nodes
         // that care about the stage can access it
         let config = context
             .session_config()
             .clone()
-            .with_extension(Arc::new(stage.clone()));
+            .with_extension(assigned_stage.clone());
 
         let new_ctx =
             SessionContext::new_with_config_rt(config, context.runtime_env().clone()).task_ctx();
 
-        stage.plan.execute(partition, new_ctx)
+        println!(
+            "assinged_stage:\n{}",
+            displayable(assigned_stage.as_ref()).indent(true)
+        );
+
+        assigned_stage.plan.execute(partition, new_ctx)
     }
 }

@@ -3,6 +3,7 @@ mod common;
 /*
 #[cfg(test)]
 mod tests {
+    use crate::assert_snapshot;
     use crate::common::localhost::start_localhost_context;
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::compute::SortOptions;
@@ -26,11 +27,10 @@ mod tests {
     use datafusion::physical_plan::{
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
-    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{assign_stages, ArrowFlightReadExec, SessionBuilder};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
-    use insta::assert_snapshot;
     use prost::Message;
     use std::any::Any;
     use std::fmt::Formatter;
@@ -66,13 +66,14 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
+        let distributed_plan = assign_stages(distributed_plan, &ctx)?;
 
         assert_snapshot!(displayable(distributed_plan.as_ref()).indent(true).to_string(), @r"
         SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
           RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
-            ArrowFlightReadExec: input_actors=10
+            ArrowFlightReadExec: input_tasks=10 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/]
               SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-                ArrowFlightReadExec: input_actors=1 hash=[numbers@0]
+                ArrowFlightReadExec: input_tasks=1 hash_expr=[numbers@0] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50051/]
                   FilterExec: numbers@0 > 1
                     Int64ListExec: length=6
         ");
@@ -80,7 +81,7 @@ mod tests {
         let stream = execute_stream(single_node_plan, ctx.task_ctx())?;
         let batches_single_node = stream.try_collect::<Vec<_>>().await?;
 
-        assert_snapshot!(pretty_format_batches(&batches_single_node)?, @r"
+        assert_snapshot!(pretty_format_batches(&batches_single_node).unwrap(), @r"
         +---------+
         | numbers |
         +---------+
@@ -95,7 +96,7 @@ mod tests {
         let stream = execute_stream(distributed_plan, ctx.task_ctx())?;
         let batches_distributed = stream.try_collect::<Vec<_>>().await?;
 
-        assert_snapshot!(pretty_format_batches(&batches_distributed)?, @r"
+        assert_snapshot!(pretty_format_batches(&batches_distributed).unwrap(), @r"
         +---------+
         | numbers |
         +---------+
