@@ -1,12 +1,12 @@
+#[allow(dead_code)]
 mod common;
-mod tpch;
 
 #[cfg(test)]
 mod tests {
-    use crate::tpch::tpch_query;
-    use crate::{assert_snapshot, tpch};
+    use crate::assert_snapshot;
+    use crate::common::tpch::tpch_query;
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::{SessionState, SessionStateBuilder};
+    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
@@ -69,20 +69,14 @@ mod tests {
         ",
         );
 
-        /*let batches = pretty_format_batches(
-            &execute_stream(physical, ctx.task_ctx())?
+        let batches = pretty_format_batches(
+            &execute_stream(physical.clone(), ctx.task_ctx())?
                 .try_collect::<Vec<_>>()
                 .await?,
         )?;
 
         assert_snapshot!(batches, @r"
-        +----------+-----------+
-        | count(*) | RainToday |
-        +----------+-----------+
-        | 66       | Yes       |
-        | 300      | No        |
-        +----------+-----------+
-        ");*/
+        ");
 
         Ok(())
     }
