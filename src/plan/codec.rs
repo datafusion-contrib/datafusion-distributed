@@ -157,12 +157,6 @@ mod tests {
         physical_plan::{displayable, sorts::sort::SortExec, union::UnionExec, ExecutionPlan},
     };
 
-    type TestCase = (
-        &'static str,
-        Arc<dyn ExecutionPlan>,
-        Vec<Arc<dyn ExecutionPlan>>,
-    );
-
     fn schema_i32(name: &str) -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]))
     }
@@ -172,29 +166,51 @@ mod tests {
     }
 
     #[test]
-    fn distributed_codec_roundtrips() -> datafusion::common::Result<()> {
+    fn test_roundtrip_single_flight() -> datafusion::common::Result<()> {
         let codec = DistributedCodec;
         let registry = MemoryFunctionRegistry::new();
 
-        let mut cases: Vec<TestCase> = Vec::new();
-
-        // ArrowFlightReadExec
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(ArrowFlightReadExec::new(part, schema, 0));
-        cases.push(("single_flight", plan, vec![]));
 
-        // PartitionIsolatorExec -> ArrowFlightReadExec
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[], &registry)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_isolator_flight() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let registry = MemoryFunctionRegistry::new();
+
         let schema = schema_i32("b");
         let flight = Arc::new(ArrowFlightReadExec::new(
             Partitioning::UnknownPartitioning(1),
             schema,
             0,
         ));
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 3));
-        cases.push(("isolator_flight", plan, vec![flight]));
 
-        // PartitionIsolatorExec -> UnionExec(ArrowFlightReadExec)
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 3));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[flight], &registry)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_isolator_union() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let registry = MemoryFunctionRegistry::new();
+
         let schema = schema_i32("c");
         let left = Arc::new(ArrowFlightReadExec::new(
             Partitioning::RoundRobinBatch(2),
@@ -206,38 +222,45 @@ mod tests {
             schema.clone(),
             1,
         ));
+
         let union = Arc::new(UnionExec::new(vec![left.clone(), right.clone()]));
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(union.clone(), 5));
-        cases.push(("isolator_union", plan, vec![union]));
 
-        // PartitionIsolatorExec -> SortExec -> ArrowFlightReadExec
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[union], &registry)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_isolator_sort_flight() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let registry = MemoryFunctionRegistry::new();
+
         let schema = schema_i32("d");
         let flight = Arc::new(ArrowFlightReadExec::new(
             Partitioning::UnknownPartitioning(1),
             schema.clone(),
             0,
         ));
+
         let sort_expr = PhysicalSortExpr {
             expr: col("d", &schema)?,
             options: Default::default(),
         };
         let sort = Arc::new(SortExec::new(vec![sort_expr].into(), flight.clone()));
+
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(sort.clone(), 2));
-        cases.push(("isolator_sort_flight", plan, vec![sort]));
 
-        // Test each case
-        for (name, original, inputs) in cases {
-            let mut buf = Vec::new();
-            codec.try_encode(original.clone(), &mut buf)?;
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
 
-            let decoded = codec.try_decode(&buf, &inputs, &registry)?;
+        let decoded = codec.try_decode(&buf, &[sort], &registry)?;
+        assert_eq!(repr(&plan), repr(&decoded));
 
-            assert_eq!(
-                repr(&original),
-                repr(&decoded),
-                "mismatch after round-trip for {name}"
-            );
-        }
         Ok(())
     }
 }
