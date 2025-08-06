@@ -125,33 +125,32 @@ impl DistributedPhysicalOptimizerRule {
         &self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<ExecutionStage, DataFusionError> {
-        self._distribute_plan(plan, &mut 1, 0)
+        self._distribute_plan_inner(plan, &mut 1, 0)
     }
 
-    fn _distribute_plan(
+    fn _distribute_plan_inner(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         num: &mut usize,
         depth: usize,
     ) -> Result<ExecutionStage, DataFusionError> {
         let mut inputs = vec![];
-        for reader in find_children::<ArrowFlightReadExec>(&plan) {
-            let child = Arc::clone(reader.children().first().cloned().ok_or(
-                internal_datafusion_err!("Expected ArrowFlightExecRead to have a child"),
-            )?);
-            inputs.push(self._distribute_plan(child, num, depth + 1)?);
-        }
-        let mut input_index = 0;
-        let ready = plan.transform_down(|plan| {
+
+        let distributed = plan.transform_down(|plan| {
             let Some(node) = plan.as_any().downcast_ref::<ArrowFlightReadExec>() else {
                 return Ok(Transformed::no(plan));
             };
-            let node = Arc::new(node.to_distributed(inputs[input_index].num)?);
-            input_index += 1;
+            let child = Arc::clone(node.children().first().cloned().ok_or(
+                internal_datafusion_err!("Expected ArrowFlightExecRead to have a child"),
+            )?);
+            let stage = self._distribute_plan_inner(child, num, depth + 1)?;
+            let node = Arc::new(node.to_distributed(stage.num)?);
+            inputs.push(stage);
             Ok(Transformed::new(node, true, TreeNodeRecursion::Stop))
         })?;
+
         let inputs = inputs.into_iter().map(Arc::new).collect();
-        let mut stage = ExecutionStage::new(*num, ready.data, inputs);
+        let mut stage = ExecutionStage::new(*num, distributed.data, inputs);
         *num += 1;
 
         if let Some(partitions_per_task) = self.partitions_per_task {
@@ -164,19 +163,6 @@ impl DistributedPhysicalOptimizerRule {
 
         Ok(stage)
     }
-}
-
-fn find_children<T: ExecutionPlan + 'static>(
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Vec<&Arc<dyn ExecutionPlan>> {
-    if plan.as_any().is::<T>() {
-        return vec![plan];
-    }
-    let mut result = vec![];
-    for child in plan.children() {
-        result.extend(find_children::<T>(child));
-    }
-    result
 }
 
 #[cfg(test)]
