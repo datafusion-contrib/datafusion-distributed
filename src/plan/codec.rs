@@ -177,7 +177,8 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(ArrowFlightReadExec::new(part, schema, 0));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(ArrowFlightReadExec::new_ready(part, schema, 0));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -194,7 +195,7 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("b");
-        let flight = Arc::new(ArrowFlightReadExec::new(
+        let flight = Arc::new(ArrowFlightReadExec::new_ready(
             Partitioning::UnknownPartitioning(1),
             schema,
             0,
@@ -217,12 +218,12 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("c");
-        let left = Arc::new(ArrowFlightReadExec::new(
+        let left = Arc::new(ArrowFlightReadExec::new_ready(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             0,
         ));
-        let right = Arc::new(ArrowFlightReadExec::new(
+        let right = Arc::new(ArrowFlightReadExec::new_ready(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             1,
@@ -246,7 +247,7 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("d");
-        let flight = Arc::new(ArrowFlightReadExec::new(
+        let flight = Arc::new(ArrowFlightReadExec::new_ready(
             Partitioning::UnknownPartitioning(1),
             schema.clone(),
             0,
