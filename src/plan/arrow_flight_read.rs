@@ -8,8 +8,8 @@ use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{internal_datafusion_err, plan_err};
-use datafusion::error::{DataFusionError, Result};
+use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -22,32 +22,86 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 use url::Url;
 
+/// This node has two variants.
+/// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
+/// 2. Ready: runs within a distributed stage and queries the next input stage over the network
+///     using Arrow Flight.
 #[derive(Debug, Clone)]
-pub struct ArrowFlightReadExec {
-    /// the number of the stage we are reading from
-    pub stage_num: usize,
+pub enum ArrowFlightReadExec {
+    Pending(ArrowFlightReadPendingExec),
+    Ready(ArrowFlightReadReadyExec),
+}
+
+/// Placeholder version of the [ArrowFlightReadExec] node. It acts as a marker for the
+/// distributed optimization step, which will replace it with the appropriate
+/// [ArrowFlightReadReadyExec] node.
+#[derive(Debug, Clone)]
+pub struct ArrowFlightReadPendingExec {
+    properties: PlanProperties,
+    child: Arc<dyn ExecutionPlan>,
+}
+
+/// Ready version of the [ArrowFlightReadExec] node. This node can be created in
+/// just two ways:
+/// - by the distributed optimization step based on an original [ArrowFlightReadPendingExec]
+/// - deserialized from a protobuf plan sent over the network.
+#[derive(Debug, Clone)]
+pub struct ArrowFlightReadReadyExec {
     /// the properties we advertise for this execution plan
     properties: PlanProperties,
+    pub(crate) stage_num: usize,
 }
 
 impl ArrowFlightReadExec {
-    pub fn new(partitioning: Partitioning, schema: SchemaRef, stage_num: usize) -> Self {
+    pub fn new_pending(child: Arc<dyn ExecutionPlan>, partitioning: Partitioning) -> Self {
+        Self::Pending(ArrowFlightReadPendingExec {
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(child.schema()),
+                partitioning,
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
+            child,
+        })
+    }
+
+    pub(crate) fn new_ready(
+        partitioning: Partitioning,
+        schema: SchemaRef,
+        stage_num: usize,
+    ) -> Self {
         let properties = PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
         );
-        Self {
+        Self::Ready(ArrowFlightReadReadyExec {
             properties,
             stage_num,
+        })
+    }
+
+    pub(crate) fn to_distributed(&self, stage_num: usize) -> Result<Self, DataFusionError> {
+        match self {
+            ArrowFlightReadExec::Pending(p) => Ok(Self::new_ready(
+                p.properties.partitioning.clone(),
+                p.child.schema(),
+                stage_num,
+            )),
+            _ => internal_err!("ArrowFlightReadExec is already distributed"),
         }
     }
 }
 
 impl DisplayAs for ArrowFlightReadExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "ArrowFlightReadExec: Stage {:<3}", self.stage_num)
+        match self {
+            ArrowFlightReadExec::Pending(_) => write!(f, "ArrowFlightReadExec"),
+            ArrowFlightReadExec::Ready(v) => {
+                write!(f, "ArrowFlightReadExec: Stage {:<3}", v.stage_num)
+            }
+        }
     }
 }
 
@@ -61,17 +115,23 @@ impl ExecutionPlan for ArrowFlightReadExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        &self.properties
+        match self {
+            ArrowFlightReadExec::Pending(v) => &v.properties,
+            ArrowFlightReadExec::Ready(v) => &v.properties,
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![]
+        match self {
+            ArrowFlightReadExec::Pending(v) => vec![&v.child],
+            ArrowFlightReadExec::Ready(_) => vec![],
+        }
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         if !children.is_empty() {
             return plan_err!(
                 "ArrowFlightReadExec: wrong number of children, expected 0, got {}",
@@ -85,9 +145,14 @@ impl ExecutionPlan for ArrowFlightReadExec {
         &self,
         partition: usize,
         context: Arc<TaskContext>,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        /// get the channel manager and current stage from our context
+    ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let ArrowFlightReadExec::Ready(this) = self else {
+            return exec_err!("ArrowFlightReadExec is not ready, was the distributed optimization step performed?");
+        };
+
+        // get the channel manager and current stage from our context
         let channel_manager: ChannelManager = context.as_ref().try_into()?;
+
         let stage = context
             .session_config()
             .get_extension::<ExecutionStage>()
@@ -99,10 +164,10 @@ impl ExecutionPlan for ArrowFlightReadExec {
         // reading from
         let child_stage = stage
             .child_stages_iter()
-            .find(|s| s.num == self.stage_num)
+            .find(|s| s.num == this.stage_num)
             .ok_or(internal_datafusion_err!(
                 "ArrowFlightReadExec: no child stage with num {}",
-                self.stage_num
+                this.stage_num
             ))?;
 
         let child_stage_tasks = child_stage.tasks.clone();
@@ -127,7 +192,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let schema = child_stage.plan.schema();
 
         let stream = async move {
-            let futs = child_stage_tasks.iter().map(|task| async {
+            let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| async {
                 let url = task.url()?.ok_or(internal_datafusion_err!(
                     "ArrowFlightReadExec: task is unassigned, cannot proceed"
                 ))?;

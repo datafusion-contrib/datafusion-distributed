@@ -54,15 +54,13 @@ impl DisplayAs for ExecutionStage {
                 )?;
                 let plan_str = display_plan_with_partition_in_out(self.plan.as_ref())
                     .map_err(|_| std::fmt::Error {})?;
-                let plan_str = plan_str.replace(
-                    '\n',
-                    &format!("\n{}{}", "  ".repeat(self.depth()), VERTICAL),
-                );
-                writeln!(f, "{}{}{}", "  ".repeat(self.depth()), VERTICAL, plan_str)?;
+                let plan_str =
+                    plan_str.replace('\n', &format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
+                writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
                 write!(
                     f,
                     "{}{}{}",
-                    "  ".repeat(self.depth()),
+                    "  ".repeat(self.depth),
                     LDCORNER,
                     HORIZONTAL.repeat(50)
                 )?;

@@ -79,7 +79,3 @@ impl ArrowFlightEndpoint {
         ))))
     }
 }
-
-fn invalid_argument<T>(msg: impl Into<String>) -> Result<T, Status> {
-    Err(Status::invalid_argument(msg))
-}
