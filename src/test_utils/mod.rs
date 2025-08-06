@@ -1,5 +1,6 @@
-#[cfg(test)]
+pub mod insta;
 mod mock_exec;
+mod parquet;
 
-#[cfg(test)]
 pub use mock_exec::MockExec;
+pub use parquet::register_parquet_tables;
