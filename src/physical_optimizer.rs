@@ -321,12 +321,12 @@ mod tests {
         │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2  
+        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2
         │
         └──────────────────────────────────────────────────
           ┌───── Stage 2   Task: partitions: 0..3,unassigned]
           │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
-          │partitions [out:4            ]   ArrowFlightReadExec: Stage 1  
+          │partitions [out:4            ]   ArrowFlightReadExec: Stage 1
           │
           └──────────────────────────────────────────────────
             ┌───── Stage 1   Task: partitions: 0..3,unassigned]
@@ -351,13 +351,13 @@ mod tests {
         │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2  
+        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2
         │
         └──────────────────────────────────────────────────
           ┌───── Stage 2   Task: partitions: 0,1,unassigned],Task: partitions: 2,3,unassigned]
           │partitions [out:4  <-- in:2  ] RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=2
           │partitions [out:2  <-- in:4  ]   PartitionIsolatorExec [providing upto 2 partitions]
-          │partitions [out:4            ]     ArrowFlightReadExec: Stage 1  
+          │partitions [out:4            ]     ArrowFlightReadExec: Stage 1
           │
           └──────────────────────────────────────────────────
             ┌───── Stage 1   Task: partitions: 0,1,unassigned],Task: partitions: 2,3,unassigned]
@@ -420,11 +420,11 @@ mod tests {
         │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
         │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
         │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2  
+        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2
         │partitions [out:4  <-- in:4  ]     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
         │partitions [out:4  <-- in:4  ]       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
         │partitions [out:4  <-- in:4  ]         CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:4            ]           ArrowFlightReadExec: Stage 4  
+        │partitions [out:4            ]           ArrowFlightReadExec: Stage 4
         │
         └──────────────────────────────────────────────────
           ┌───── Stage 4   Task: partitions: 0..3,unassigned]
@@ -432,7 +432,7 @@ mod tests {
           │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
           │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
           │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
-          │partitions [out:4            ]         ArrowFlightReadExec: Stage 3  
+          │partitions [out:4            ]         ArrowFlightReadExec: Stage 3
           │
           └──────────────────────────────────────────────────
             ┌───── Stage 3   Task: partitions: 0..3,unassigned]
@@ -446,7 +446,7 @@ mod tests {
             │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
             │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
             │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
-            │partitions [out:4            ]         ArrowFlightReadExec: Stage 1  
+            │partitions [out:4            ]         ArrowFlightReadExec: Stage 1
             │
             └──────────────────────────────────────────────────
               ┌───── Stage 1   Task: partitions: 0..3,unassigned]
@@ -479,12 +479,12 @@ mod tests {
         ┌───── Stage 3   Task: partitions: 0..3,unassigned]
         │partitions [out:4  <-- in:4  ] AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
         │partitions [out:4  <-- in:4  ]   CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:4            ]     ArrowFlightReadExec: Stage 2  
+        │partitions [out:4            ]     ArrowFlightReadExec: Stage 2
         │
         └──────────────────────────────────────────────────
           ┌───── Stage 2   Task: partitions: 0..3,unassigned]
           │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 4), input_partitions=4
-          │partitions [out:4            ]   ArrowFlightReadExec: Stage 1  
+          │partitions [out:4            ]   ArrowFlightReadExec: Stage 1
           │
           └──────────────────────────────────────────────────
             ┌───── Stage 1   Task: partitions: 0..3,unassigned]
