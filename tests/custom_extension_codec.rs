@@ -27,6 +27,7 @@ mod tests {
     use datafusion::physical_plan::{
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
+    use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
     use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -67,8 +68,10 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
+        let distributed_plan =
+            DistributedPhysicalOptimizerRule::default().distribute_plan(distributed_plan)?;
 
-        assert_snapshot!(displayable(distributed_plan.as_ref()).indent(true).to_string(), @r"
+        assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
         SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
           RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
             ArrowFlightReadExec: input_tasks=10 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/]
@@ -93,7 +96,7 @@ mod tests {
         +---------+
         ");
 
-        let stream = execute_stream(distributed_plan, ctx.task_ctx())?;
+        let stream = execute_stream(Arc::new(distributed_plan), ctx.task_ctx())?;
         let batches_distributed = stream.try_collect::<Vec<_>>().await?;
 
         assert_snapshot!(pretty_format_batches(&batches_distributed).unwrap(), @r"
@@ -123,10 +126,9 @@ mod tests {
         )?);
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new(
+            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+                plan.clone(),
                 Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
-                plan.clone().schema(),
-                0, // TODO: stage num should be assigned by someone else
             ));
         }
 
@@ -139,10 +141,9 @@ mod tests {
         ));
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new(
+            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+                plan.clone(),
                 Partitioning::RoundRobinBatch(10),
-                plan.clone().schema(),
-                1, // TODO: stage num should be assigned by someone else
             ));
 
             plan = Arc::new(RepartitionExec::try_new(

@@ -94,7 +94,7 @@ pub fn stage_from_proto(
         inputs,
         tasks: msg.tasks,
         codec: Some(codec),
-        depth: std::sync::atomic::AtomicU64::new(0),
+        depth: 0,
     })
 }
 
@@ -159,7 +159,7 @@ mod tests {
             inputs: vec![],
             tasks: vec![],
             codec: Some(Arc::new(DefaultPhysicalExtensionCodec {})),
-            depth: std::sync::atomic::AtomicU64::new(0),
+            depth: 0,
         };
 
         // Convert to proto message

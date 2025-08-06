@@ -15,6 +15,7 @@ mod tests {
     use datafusion::physical_plan::{
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
+    use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
     use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -49,14 +50,14 @@ mod tests {
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 
-        for (i, size) in [1, 2, 3].iter().enumerate() {
-            plan = Arc::new(ArrowFlightReadExec::new(
-                Partitioning::RoundRobinBatch(*size as usize),
-                plan.schema(),
-                i,
+        for size in [1, 2, 3] {
+            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+                plan,
+                Partitioning::RoundRobinBatch(size),
             ));
         }
-        let stream = execute_stream(plan, ctx.task_ctx())?;
+        let plan = DistributedPhysicalOptimizerRule::default().distribute_plan(plan)?;
+        let stream = execute_stream(Arc::new(plan), ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {
             panic!("Should have failed")

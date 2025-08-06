@@ -30,11 +30,10 @@ mod tests {
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
         let mut physical_distributed = physical.clone();
-        for (i, size) in [1, 10, 5].iter().enumerate() {
-            physical_distributed = Arc::new(ArrowFlightReadExec::new(
-                Partitioning::RoundRobinBatch(*size as usize),
-                physical_distributed.schema(),
-                i,
+        for size in [1, 10, 5] {
+            physical_distributed = Arc::new(ArrowFlightReadExec::new_single_node(
+                physical_distributed,
+                Partitioning::RoundRobinBatch(size),
             ));
         }
         let physical_distributed_str = displayable(physical_distributed.as_ref())

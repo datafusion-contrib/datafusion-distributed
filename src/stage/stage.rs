@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use datafusion::common::internal_err;
@@ -20,7 +19,7 @@ use crate::ChannelManager;
 ///
 /// see https://howqueryengineswork.com/13-distributed-query.html
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExecutionStage {
     /// Our stage number
     pub num: usize,
@@ -36,23 +35,7 @@ pub struct ExecutionStage {
     /// An optional codec to assist in serializing and deserializing this stage
     pub codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// tree depth of our location in the stage tree, used for display only
-    pub(crate) depth: AtomicU64,
-}
-
-impl Clone for ExecutionStage {
-    /// Creates a shallow clone of this `ExecutionStage`.   The plan, input stages,
-    /// and codec are cloned Arcs as we dont need to duplicate the underlying data,
-    fn clone(&self) -> Self {
-        ExecutionStage {
-            num: self.num,
-            name: self.name.clone(),
-            plan: self.plan.clone(),
-            inputs: self.inputs.to_vec(),
-            tasks: self.tasks.clone(),
-            codec: self.codec.clone(),
-            depth: AtomicU64::new(self.depth.load(Ordering::Relaxed)),
-        }
-    }
+    pub depth: usize,
 }
 
 impl ExecutionStage {
@@ -83,7 +66,7 @@ impl ExecutionStage {
                 .collect(),
             tasks: vec![ExecutionTask::new(partition_group)],
             codec: None,
-            depth: AtomicU64::new(0),
+            depth: 0,
         }
     }
 
@@ -192,14 +175,10 @@ impl ExecutionStage {
             inputs: assigned_children,
             tasks: assigned_tasks,
             codec: self.codec.clone(),
-            depth: AtomicU64::new(self.depth.load(Ordering::Relaxed)),
+            depth: self.depth,
         };
 
         Ok(assigned_stage)
-    }
-
-    pub(crate) fn depth(&self) -> usize {
-        self.depth.load(Ordering::Relaxed) as usize
     }
 }
 
@@ -227,7 +206,7 @@ impl ExecutionPlan for ExecutionStage {
             inputs: children,
             tasks: self.tasks.clone(),
             codec: self.codec.clone(),
-            depth: AtomicU64::new(self.depth.load(Ordering::Relaxed)),
+            depth: self.depth,
         }))
     }
 

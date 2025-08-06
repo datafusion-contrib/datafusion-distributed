@@ -4,7 +4,6 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion::{common::runtime::JoinSet, prelude::SessionConfig};
-use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver, SessionBuilder,
 };
@@ -50,12 +49,9 @@ where
 
     let config = SessionConfig::new().with_target_partitions(3);
 
-    let rule = DistributedPhysicalOptimizerRule::default().with_maximum_partitions_per_task(4);
-
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_physical_optimizer_rule(Arc::new(rule))
         .build();
 
     let ctx = SessionContext::new_with_state(state);
