@@ -109,7 +109,7 @@ impl DistributedPhysicalOptimizerRule {
                 };
 
                 return Ok(Transformed::yes(Arc::new(
-                    ArrowFlightReadExec::new_single_node(
+                    ArrowFlightReadExec::new_pending(
                         Arc::clone(&maybe_isolated_plan),
                         maybe_isolated_plan.output_partitioning().clone(),
                     ),

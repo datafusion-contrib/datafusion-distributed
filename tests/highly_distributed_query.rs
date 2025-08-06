@@ -31,7 +31,7 @@ mod tests {
 
         let mut physical_distributed = physical.clone();
         for size in [1, 10, 5] {
-            physical_distributed = Arc::new(ArrowFlightReadExec::new_single_node(
+            physical_distributed = Arc::new(ArrowFlightReadExec::new_pending(
                 physical_distributed,
                 Partitioning::RoundRobinBatch(size),
             ));

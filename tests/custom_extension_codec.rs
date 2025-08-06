@@ -126,7 +126,7 @@ mod tests {
         )?);
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+            plan = Arc::new(ArrowFlightReadExec::new_pending(
                 plan.clone(),
                 Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
             ));
@@ -141,7 +141,7 @@ mod tests {
         ));
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+            plan = Arc::new(ArrowFlightReadExec::new_pending(
                 plan.clone(),
                 Partitioning::RoundRobinBatch(10),
             ));

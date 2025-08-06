@@ -51,7 +51,7 @@ mod tests {
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 
         for size in [1, 2, 3] {
-            plan = Arc::new(ArrowFlightReadExec::new_single_node(
+            plan = Arc::new(ArrowFlightReadExec::new_pending(
                 plan,
                 Partitioning::RoundRobinBatch(size),
             ));

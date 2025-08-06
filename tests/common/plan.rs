@@ -36,7 +36,7 @@ pub fn distribute_aggregate(
                 let child = node.children()[0].clone();
 
                 let node = node.with_new_children(vec![Arc::new(
-                    ArrowFlightReadExec::new_single_node(child, Partitioning::Hash(expr, 1)),
+                    ArrowFlightReadExec::new_pending(child, Partitioning::Hash(expr, 1)),
                 )])?;
                 Ok(Transformed::yes(node))
             }
@@ -54,7 +54,7 @@ pub fn distribute_aggregate(
                 let child = node.children()[0].clone();
 
                 let node = node.with_new_children(vec![Arc::new(
-                    ArrowFlightReadExec::new_single_node(child, Partitioning::RoundRobinBatch(8)),
+                    ArrowFlightReadExec::new_pending(child, Partitioning::RoundRobinBatch(8)),
                 )])?;
                 Ok(Transformed::yes(node))
             }

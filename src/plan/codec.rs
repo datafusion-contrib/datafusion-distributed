@@ -52,7 +52,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?
                 .ok_or(proto_error("ArrowFlightReadExec is missing partitioning"))?;
 
-                Ok(Arc::new(ArrowFlightReadExec::new_distributed(
+                Ok(Arc::new(ArrowFlightReadExec::new_ready(
                     partioning,
                     Arc::new(schema),
                     stage_num as usize,
@@ -84,9 +84,9 @@ impl PhysicalExtensionCodec for DistributedCodec {
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
         if let Some(node) = node.as_any().downcast_ref::<ArrowFlightReadExec>() {
-            let ArrowFlightReadExec::Distributed(ready_node) = node else {
+            let ArrowFlightReadExec::Ready(ready_node) = node else {
                 return Err(proto_error(
-                    "deserialized an ArrowFlightReadExec that is not distributed",
+                    "deserialized an ArrowFlightReadExec that is not ready",
                 ));
             };
             let inner = ArrowFlightReadExecProto {
