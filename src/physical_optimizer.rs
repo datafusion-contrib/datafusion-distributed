@@ -386,6 +386,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_left_join_distributed() {
+        let query = r#"
+        WITH a AS (
+            SELECT
+                AVG("MinTemp") as "MinTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'yes'
+            GROUP BY "RainTomorrow"
+        ), b AS (
+            SELECT
+                AVG("MaxTemp") as "MaxTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'no'
+            GROUP BY "RainTomorrow"
+        )
+        SELECT
+            a."MinTemp",
+            b."MaxTemp"
+        FROM a
+        LEFT JOIN b
+        ON a."RainTomorrow" = b."RainTomorrow"
+
+        "#;
+        let plan = sql_to_explain(query).await.unwrap();
+        assert_snapshot!(plan, @r"
+        ┌───── Stage 5   Task: partitions: 0..3,unassigned]
+        │partitions [out:4  <-- in:4  ] CoalesceBatchesExec: target_batch_size=8192
+        │partitions [out:4  <-- in:1  ]   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
+        │partitions [out:1  <-- in:4  ]     CoalescePartitionsExec
+        │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
+        │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+        │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192
+        │partitions [out:4            ]             ArrowFlightReadExec: Stage 2  
+        │partitions [out:4  <-- in:4  ]     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
+        │partitions [out:4  <-- in:4  ]       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
+        │partitions [out:4  <-- in:4  ]         CoalesceBatchesExec: target_batch_size=8192
+        │partitions [out:4            ]           ArrowFlightReadExec: Stage 4  
+        │
+        └──────────────────────────────────────────────────
+          ┌───── Stage 4   Task: partitions: 0..3,unassigned]
+          │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
+          │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
+          │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
+          │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
+          │partitions [out:4            ]         ArrowFlightReadExec: Stage 3  
+          │
+          └──────────────────────────────────────────────────
+            ┌───── Stage 3   Task: partitions: 0..3,unassigned]
+            │partitions [out:4  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+            │partitions [out:1            ]   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = no, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
+            │
+            │
+            └──────────────────────────────────────────────────
+            ┌───── Stage 2   Task: partitions: 0..3,unassigned]
+            │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
+            │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+            │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
+            │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
+            │partitions [out:4            ]         ArrowFlightReadExec: Stage 1  
+            │
+            └──────────────────────────────────────────────────
+              ┌───── Stage 1   Task: partitions: 0..3,unassigned]
+              │partitions [out:4  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+              │partitions [out:1            ]   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
+              │
+              │
+              └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
     async fn test_sort() {
         let query = r#"SELECT * FROM weather ORDER BY "MinTemp" DESC "#;
         let plan = sql_to_explain(query).await.unwrap();
