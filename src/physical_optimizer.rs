@@ -146,7 +146,7 @@ impl DistributedPhysicalOptimizerRule {
             let stage = self._distribute_plan_inner(child, num, depth + 1)?;
             let node = Arc::new(node.to_distributed(stage.num)?);
             inputs.push(stage);
-            Ok(Transformed::new(node, true, TreeNodeRecursion::Stop))
+            Ok(Transformed::new(node, true, TreeNodeRecursion::Jump))
         })?;
 
         let inputs = inputs.into_iter().map(Arc::new).collect();
@@ -333,6 +333,20 @@ mod tests {
         │partitions [out:4            ]           ArrowFlightReadExec: Stage 4
         │
         └──────────────────────────────────────────────────
+          ┌───── Stage 2   Task: partitions: 0..3,unassigned]
+          │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
+          │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+          │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
+          │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
+          │partitions [out:4            ]         ArrowFlightReadExec: Stage 1
+          │
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1   Task: partitions: 0..3,unassigned]
+            │partitions [out:4  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+            │partitions [out:1            ]   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
+            │
+            │
+            └──────────────────────────────────────────────────
           ┌───── Stage 4   Task: partitions: 0..3,unassigned]
           │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
           │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
@@ -347,20 +361,6 @@ mod tests {
             │
             │
             └──────────────────────────────────────────────────
-            ┌───── Stage 2   Task: partitions: 0..3,unassigned]
-            │partitions [out:4  <-- in:4  ] RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
-            │partitions [out:4  <-- in:4  ]   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-            │partitions [out:4  <-- in:4  ]     CoalesceBatchesExec: target_batch_size=8192
-            │partitions [out:4  <-- in:4  ]       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
-            │partitions [out:4            ]         ArrowFlightReadExec: Stage 1
-            │
-            └──────────────────────────────────────────────────
-              ┌───── Stage 1   Task: partitions: 0..3,unassigned]
-              │partitions [out:4  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-              │partitions [out:1            ]   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
-              │
-              │
-              └──────────────────────────────────────────────────
         ");
     }
 
