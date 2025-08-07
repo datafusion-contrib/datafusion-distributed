@@ -81,7 +81,6 @@ pub fn stage_from_proto(
         plan,
         inputs,
         tasks: msg.tasks,
-        user_codec: None,
         depth: 0,
     })
 }
@@ -147,7 +146,6 @@ mod tests {
             plan: physical_plan,
             inputs: vec![],
             tasks: vec![],
-            user_codec: Some(Arc::new(DefaultPhysicalExtensionCodec {})),
             depth: 0,
         };
 

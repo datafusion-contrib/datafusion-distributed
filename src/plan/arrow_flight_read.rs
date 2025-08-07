@@ -3,6 +3,7 @@ use crate::channel_manager::ChannelManager;
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::DoGet;
+use crate::get_user_codec;
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -174,7 +175,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let mut combined_codec = ComposedPhysicalExtensionCodec::default();
         combined_codec.push(DistributedCodec {});
-        if let Some(ref user_codec) = stage.user_codec {
+        if let Some(ref user_codec) = get_user_codec(context.session_config()) {
             combined_codec.push_arc(Arc::clone(user_codec));
         }
 

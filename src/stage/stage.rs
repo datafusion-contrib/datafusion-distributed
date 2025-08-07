@@ -5,7 +5,6 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{displayable, ExecutionPlan};
 use datafusion::prelude::SessionContext;
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use itertools::Itertools;
 use rand::Rng;
@@ -32,8 +31,6 @@ pub struct ExecutionStage {
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
-    /// An optional codec to assist in serializing and deserializing this stage
-    pub user_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
 }
@@ -65,7 +62,6 @@ impl ExecutionStage {
                 .map(|s| s as Arc<dyn ExecutionPlan>)
                 .collect(),
             tasks: vec![ExecutionTask::new(partition_group)],
-            user_codec: None,
             depth: 0,
         }
     }
@@ -90,13 +86,6 @@ impl ExecutionStage {
                 )
             })
             .collect();
-        self
-    }
-
-    /// Sets the codec for this stage, which is used to serialize and deserialize the plan
-    /// and its inputs.
-    pub fn with_user_codec(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        self.user_codec = Some(codec);
         self
     }
 
@@ -174,7 +163,6 @@ impl ExecutionStage {
             plan: self.plan.clone(),
             inputs: assigned_children,
             tasks: assigned_tasks,
-            user_codec: self.user_codec.clone(),
             depth: self.depth,
         };
 
@@ -205,7 +193,6 @@ impl ExecutionPlan for ExecutionStage {
             plan: self.plan.clone(),
             inputs: children,
             tasks: self.tasks.clone(),
-            user_codec: self.user_codec.clone(),
             depth: self.depth,
         }))
     }

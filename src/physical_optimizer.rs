@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::stage::ExecutionStage;
 use crate::{plan::PartitionIsolatorExec, ArrowFlightReadExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
@@ -15,15 +16,9 @@ use datafusion::{
         displayable, repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
     },
 };
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-
-use super::stage::ExecutionStage;
 
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule {
-    /// Optional codec to assist in serializing and deserializing any custom
-    /// ExecutionPlan nodes
-    codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// maximum number of partitions per task. This is used to determine how many
     /// tasks to create for each stage
     partitions_per_task: Option<usize>,
@@ -32,16 +27,8 @@ pub struct DistributedPhysicalOptimizerRule {
 impl DistributedPhysicalOptimizerRule {
     pub fn new() -> Self {
         DistributedPhysicalOptimizerRule {
-            codec: None,
             partitions_per_task: None,
         }
-    }
-
-    /// Set a codec to use to assist in serializing and deserializing
-    /// custom ExecutionPlan nodes.
-    pub fn with_codec(mut self, codec: impl PhysicalExtensionCodec + 'static) -> Self {
-        self.codec = Some(Arc::new(codec));
-        self
     }
 
     /// Set the maximum number of partitions per task. This is used to determine how many
@@ -155,9 +142,6 @@ impl DistributedPhysicalOptimizerRule {
 
         if let Some(partitions_per_task) = self.partitions_per_task {
             stage = stage.with_maximum_partitions_per_task(partitions_per_task);
-        }
-        if let Some(codec) = self.codec.as_ref() {
-            stage = stage.with_user_codec(codec.clone());
         }
         stage.depth = depth;
 

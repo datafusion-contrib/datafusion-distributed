@@ -1,6 +1,7 @@
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
+use crate::get_user_codec;
 use crate::plan::DistributedCodec;
 use crate::stage::{stage_from_proto, ExecutionStageProto};
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -48,10 +49,9 @@ impl ArrowFlightEndpoint {
             "FunctionRegistry not present in newly built SessionState",
         ))?;
 
-        let user_codec = self.session_builder.codec();
         let mut combined_codec = ComposedPhysicalExtensionCodec::default();
         combined_codec.push(DistributedCodec);
-        if let Some(ref user_codec) = user_codec {
+        if let Some(ref user_codec) = get_user_codec(state.config()) {
             combined_codec.push_arc(Arc::clone(&user_codec));
         }
 
@@ -62,9 +62,6 @@ impl ArrowFlightEndpoint {
             &combined_codec,
         )
         .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
-        if let Some(user_codec) = user_codec {
-            stage = stage.with_user_codec(user_codec)
-        }
         let inner_plan = Arc::clone(&stage.plan);
 
         // Add the extensions that might be required for ExecutionPlan nodes in the plan

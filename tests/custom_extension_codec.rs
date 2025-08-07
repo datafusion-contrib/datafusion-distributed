@@ -28,7 +28,9 @@ mod tests {
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{
+        add_user_codec, with_user_codec, ArrowFlightReadExec, SessionBuilder,
+    };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -40,17 +42,17 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn custom_extension_codec() -> Result<(), Box<dyn std::error::Error>> {
-        // 1. The codec should be added to the extension builder.
         #[derive(Clone)]
         struct CustomSessionBuilder;
         impl SessionBuilder for CustomSessionBuilder {
-            fn codec(&self) -> Option<Arc<dyn PhysicalExtensionCodec>> {
-                Some(Arc::new(Int64ListExecCodec))
+            fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
+                with_user_codec(builder, Int64ListExecCodec)
             }
         }
 
-        let (ctx, _guard) =
+        let (mut ctx, _guard) =
             start_localhost_context([50050, 50051, 50052], CustomSessionBuilder).await;
+        add_user_codec(&mut ctx, Int64ListExecCodec);
 
         let single_node_plan = build_plan(false)?;
         assert_snapshot!(displayable(single_node_plan.as_ref()).indent(true).to_string(), @r"
@@ -60,10 +62,8 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
-        let distributed_plan = DistributedPhysicalOptimizerRule::default()
-            // 1. The codec should be added to the DistributedPhysicalOptimizerRule.
-            .with_codec(Int64ListExecCodec)
-            .distribute_plan(distributed_plan)?;
+        let distributed_plan =
+            DistributedPhysicalOptimizerRule::default().distribute_plan(distributed_plan)?;
 
         assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
         ┌───── Stage 3   Task: partitions: 0,unassigned]
