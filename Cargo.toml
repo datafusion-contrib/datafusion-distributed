@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-datafusion = { version = "48.0.0" }
-datafusion-proto = { version = "48.0.0" }
+datafusion = { version = "49.0.0" }
+datafusion-proto = { version = "49.0.0" }
 arrow-flight = "55.2.0"
 async-trait = "0.1.88"
 tokio = { version = "1.46.1", features = ["full"] }

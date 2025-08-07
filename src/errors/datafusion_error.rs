@@ -184,13 +184,13 @@ impl DataFusionErrorProto {
         match inner {
             DataFusionErrorInnerProto::ArrowError(err) => {
                 let (err, ctx) = err.to_arrow_error();
-                DataFusionError::ArrowError(err, ctx)
+                DataFusionError::ArrowError(Box::new(err), ctx)
             }
             DataFusionErrorInnerProto::ParquetError(err) => {
-                DataFusionError::ParquetError(err.to_parquet_error())
+                DataFusionError::ParquetError(Box::new(err.to_parquet_error()))
             }
             DataFusionErrorInnerProto::ObjectStoreError(err) => {
-                DataFusionError::ObjectStore(err.to_object_store_error())
+                DataFusionError::ObjectStore(Box::new(err.to_object_store_error()))
             }
             DataFusionErrorInnerProto::IoError(err) => {
                 let (err, _) = err.to_io_error();
@@ -200,7 +200,7 @@ impl DataFusionErrorProto {
                 let backtrace = err.backtrace.clone();
                 let err = err.err.as_ref().map(|err| err.to_parser_error());
                 let err = err.unwrap_or(ParserError::ParserError("".to_string()));
-                DataFusionError::SQL(err, backtrace)
+                DataFusionError::SQL(Box::new(err), backtrace)
             }
             DataFusionErrorInnerProto::NotImplemented(msg) => {
                 DataFusionError::NotImplemented(msg.clone())
@@ -212,7 +212,7 @@ impl DataFusionErrorProto {
             }
             DataFusionErrorInnerProto::Schema(err) => {
                 let (err, backtrace) = err.to_schema_error();
-                DataFusionError::SchemaError(err, Box::new(backtrace))
+                DataFusionError::SchemaError(Box::new(err), Box::new(backtrace))
             }
             DataFusionErrorInnerProto::Execution(msg) => DataFusionError::Execution(msg.clone()),
             // We cannot build JoinErrors ourselves, so instead we map it to internal.
@@ -283,20 +283,22 @@ mod tests {
     fn test_datafusion_error_roundtrip() {
         let test_cases = vec![
             DataFusionError::ArrowError(
-                ArrowError::ComputeError("compute".to_string()),
+                Box::new(ArrowError::ComputeError("compute".to_string())),
                 Some("arrow context".to_string()),
             ),
-            DataFusionError::ParquetError(ParquetError::General("parquet error".to_string())),
-            DataFusionError::ObjectStore(ObjectStoreError::NotFound {
+            DataFusionError::ParquetError(Box::new(ParquetError::General(
+                "parquet error".to_string(),
+            ))),
+            DataFusionError::ObjectStore(Box::new(ObjectStoreError::NotFound {
                 path: "test/path".to_string(),
                 source: Box::new(std::io::Error::new(ErrorKind::NotFound, "not found")),
-            }),
+            })),
             DataFusionError::IoError(IoError::new(
                 ErrorKind::PermissionDenied,
                 "permission denied",
             )),
             DataFusionError::SQL(
-                ParserError::ParserError("sql parse error".to_string()),
+                Box::new(ParserError::ParserError("sql parse error".to_string())),
                 Some("sql backtrace".to_string()),
             ),
             DataFusionError::NotImplemented("not implemented".to_string()),
@@ -304,9 +306,9 @@ mod tests {
             DataFusionError::Plan("plan error".to_string()),
             DataFusionError::Configuration("config error".to_string()),
             DataFusionError::SchemaError(
-                SchemaError::AmbiguousReference {
-                    field: datafusion::common::Column::new_unqualified("test_field"),
-                },
+                Box::new(SchemaError::AmbiguousReference {
+                    field: Box::new(datafusion::common::Column::new_unqualified("test_field")),
+                }),
                 Box::new(None),
             ),
             DataFusionError::Execution("execution error".to_string()),
@@ -377,7 +379,7 @@ mod tests {
     #[test]
     fn test_sql_error_with_backtrace() {
         let sql_error = DataFusionError::SQL(
-            ParserError::ParserError("syntax error".to_string()),
+            Box::new(ParserError::ParserError("syntax error".to_string())),
             Some("test backtrace".to_string()),
         );
 
