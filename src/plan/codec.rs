@@ -156,6 +156,7 @@ pub struct ArrowFlightReadExecProto {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::physical_expr::LexOrdering;
     use datafusion::{
         execution::registry::MemoryFunctionRegistry,
         physical_expr::{expressions::col, expressions::Column, Partitioning, PhysicalSortExpr},
@@ -257,7 +258,10 @@ mod tests {
             expr: col("d", &schema)?,
             options: Default::default(),
         };
-        let sort = Arc::new(SortExec::new(vec![sort_expr].into(), flight.clone()));
+        let sort = Arc::new(SortExec::new(
+            LexOrdering::new(vec![sort_expr]).unwrap(),
+            flight.clone(),
+        ));
 
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(sort.clone(), 2));
 

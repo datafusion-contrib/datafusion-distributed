@@ -220,11 +220,12 @@ impl SchemaErrorProto {
 
         let err = match inner {
             SchemaErrorInnerProto::AmbiguousReference(err) => SchemaError::AmbiguousReference {
-                field: err
-                    .field
-                    .as_ref()
-                    .map(|v| v.to_column())
-                    .unwrap_or(Column::new_unqualified("".to_string())),
+                field: Box::new(
+                    err.field
+                        .as_ref()
+                        .map(|v| v.to_column())
+                        .unwrap_or(Column::new_unqualified("".to_string())),
+                ),
             },
             SchemaErrorInnerProto::DuplicateQualifiedField(err) => {
                 SchemaError::DuplicateQualifiedField {
@@ -266,7 +267,7 @@ mod tests {
     fn test_schema_error_roundtrip() {
         let test_cases = vec![
             SchemaError::AmbiguousReference {
-                field: Column::new_unqualified("test_field"),
+                field: Box::new(Column::new_unqualified("test_field")),
             },
             SchemaError::DuplicateQualifiedField {
                 qualifier: Box::new(TableReference::bare("table")),
