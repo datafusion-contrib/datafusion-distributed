@@ -25,7 +25,7 @@ use crate::ChannelManager;
 /// When an [`ExecutionStage`] is execute()'d if will execute its plan and return a stream
 /// of record batches.
 ///
-/// If the stage has input stages, then it those input stages will be executed on remote resources
+/// If the stage has input stages, then those input stages will be executed on remote resources
 /// and will be provided the remainder of the stage tree.
 ///
 /// For example if our stage tree looks like this:
@@ -70,7 +70,7 @@ use crate::ChannelManager;
 ///
 /// The receiving ArrowFlightEndpoint will then execute Stage 2 and will repeat this process.
 ///
-/// When Stage 4 4 is executed, it has no input tasks, so it is assumed that the plan included in that
+/// When Stage 4 is executed, it has no input tasks, so it is assumed that the plan included in that
 /// Stage can complete on its own; its likely holding a leaf node in the overall phyysical plan and
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]

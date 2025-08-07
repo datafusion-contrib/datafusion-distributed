@@ -13,9 +13,8 @@ mod tests {
     use std::error::Error;
 
     #[tokio::test]
-    #[ignore]
     async fn distributed_aggregation() -> Result<(), Box<dyn Error>> {
-        // FIXME these ports are in use on my machine, we should find unused ports
+        // FIXME: these ports are in use on my machine, we should find unused ports
         // Changed them for now
         let (ctx, _guard) =
             start_localhost_context([40050, 40051, 40052], NoopSessionBuilder).await;
