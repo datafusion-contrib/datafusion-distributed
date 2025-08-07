@@ -28,7 +28,9 @@ mod tests {
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{
+        add_user_codec, with_user_codec, ArrowFlightReadExec, SessionBuilder,
+    };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -43,22 +45,14 @@ mod tests {
         #[derive(Clone)]
         struct CustomSessionBuilder;
         impl SessionBuilder for CustomSessionBuilder {
-            fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
-                let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(Int64ListExecCodec);
-                let config = builder.config().get_or_insert_default();
-                config.set_extension(Arc::new(codec));
-                builder
+            fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
+                with_user_codec(builder, Int64ListExecCodec)
             }
         }
 
-        let (ctx, _guard) =
+        let (mut ctx, _guard) =
             start_localhost_context([50050, 50051, 50052], CustomSessionBuilder).await;
-
-        let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(Int64ListExecCodec);
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .set_extension(Arc::new(codec));
+        add_user_codec(&mut ctx, Int64ListExecCodec);
 
         let single_node_plan = build_plan(false)?;
         assert_snapshot!(displayable(single_node_plan.as_ref()).indent(true).to_string(), @r"
@@ -72,13 +66,22 @@ mod tests {
             DistributedPhysicalOptimizerRule::default().distribute_plan(distributed_plan)?;
 
         assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
-        SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-          RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
-            ArrowFlightReadExec: input_tasks=10 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/]
-              SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-                ArrowFlightReadExec: input_tasks=1 hash_expr=[numbers@0] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50051/]
-                  FilterExec: numbers@0 > 1
-                    Int64ListExec: length=6
+        ┌───── Stage 3   Task: partitions: 0,unassigned]
+        │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
+        │partitions [out:1  <-- in:10 ]   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
+        │partitions [out:10           ]     ArrowFlightReadExec: Stage 2  
+        │
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2   Task: partitions: 0,unassigned]
+          │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
+          │partitions [out:1            ]   ArrowFlightReadExec: Stage 1  
+          │
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1   Task: partitions: 0,unassigned]
+            │partitions [out:1  <-- in:1  ] FilterExec: numbers@0 > 1
+            │partitions [out:1            ]   Int64ListExec: length=6
+            │
+            └──────────────────────────────────────────────────
         ");
 
         let stream = execute_stream(single_node_plan, ctx.task_ctx())?;

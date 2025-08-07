@@ -16,7 +16,7 @@ pub trait SessionBuilder {
     /// # use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{SessionBuilder};
+    /// # use datafusion_distributed::{with_user_codec, SessionBuilder};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -35,10 +35,8 @@ pub trait SessionBuilder {
     /// struct CustomSessionBuilder;
     /// impl SessionBuilder for CustomSessionBuilder {
     ///     fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
-    ///         let config = builder.config().get_or_insert_default();
-    ///         let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(CustomExecCodec);
-    ///         config.set_extension(Arc::new(codec));
-    ///         builder
+    ///         // Add your UDFs, optimization rules, etc...
+    ///         with_user_codec(builder, CustomExecCodec)
     ///     }
     /// }
     /// ```

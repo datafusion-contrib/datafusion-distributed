@@ -16,7 +16,9 @@ mod tests {
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use datafusion_distributed::{ArrowFlightReadExec, SessionBuilder};
+    use datafusion_distributed::{
+        add_user_codec, with_user_codec, ArrowFlightReadExec, SessionBuilder,
+    };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -27,26 +29,17 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    #[ignore]
     async fn test_error_propagation() -> Result<(), Box<dyn Error>> {
         #[derive(Clone)]
         struct CustomSessionBuilder;
         impl SessionBuilder for CustomSessionBuilder {
-            fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
-                let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(ErrorExecCodec);
-                let config = builder.config().get_or_insert_default();
-                config.set_extension(Arc::new(codec));
-                builder
+            fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
+                with_user_codec(builder, ErrorExecCodec)
             }
         }
-        let (ctx, _guard) =
+        let (mut ctx, _guard) =
             start_localhost_context([50050, 50051, 50053], CustomSessionBuilder).await;
-
-        let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(ErrorExecCodec);
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .set_extension(Arc::new(codec));
+        add_user_codec(&mut ctx, ErrorExecCodec);
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 
