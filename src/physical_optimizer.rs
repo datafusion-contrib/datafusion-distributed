@@ -39,8 +39,8 @@ impl DistributedPhysicalOptimizerRule {
 
     /// Set a codec to use to assist in serializing and deserializing
     /// custom ExecutionPlan nodes.
-    pub fn with_codec(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        self.codec = Some(codec);
+    pub fn with_codec(mut self, codec: impl PhysicalExtensionCodec + 'static) -> Self {
+        self.codec = Some(Arc::new(codec));
         self
     }
 
@@ -157,7 +157,7 @@ impl DistributedPhysicalOptimizerRule {
             stage = stage.with_maximum_partitions_per_task(partitions_per_task);
         }
         if let Some(codec) = self.codec.as_ref() {
-            stage = stage.with_codec(codec.clone());
+            stage = stage.with_user_codec(codec.clone());
         }
         stage.depth = depth;
 

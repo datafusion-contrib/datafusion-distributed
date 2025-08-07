@@ -33,7 +33,7 @@ pub struct ExecutionStage {
     /// the plan
     pub tasks: Vec<ExecutionTask>,
     /// An optional codec to assist in serializing and deserializing this stage
-    pub codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+    pub user_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
 }
@@ -65,7 +65,7 @@ impl ExecutionStage {
                 .map(|s| s as Arc<dyn ExecutionPlan>)
                 .collect(),
             tasks: vec![ExecutionTask::new(partition_group)],
-            codec: None,
+            user_codec: None,
             depth: 0,
         }
     }
@@ -95,8 +95,8 @@ impl ExecutionStage {
 
     /// Sets the codec for this stage, which is used to serialize and deserialize the plan
     /// and its inputs.
-    pub fn with_codec(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        self.codec = Some(codec);
+    pub fn with_user_codec(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
+        self.user_codec = Some(codec);
         self
     }
 
@@ -174,7 +174,7 @@ impl ExecutionStage {
             plan: self.plan.clone(),
             inputs: assigned_children,
             tasks: assigned_tasks,
-            codec: self.codec.clone(),
+            user_codec: self.user_codec.clone(),
             depth: self.depth,
         };
 
@@ -205,7 +205,7 @@ impl ExecutionPlan for ExecutionStage {
             plan: self.plan.clone(),
             inputs: children,
             tasks: self.tasks.clone(),
-            codec: self.codec.clone(),
+            user_codec: self.user_codec.clone(),
             depth: self.depth,
         }))
     }

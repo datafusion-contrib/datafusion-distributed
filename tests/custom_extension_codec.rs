@@ -40,25 +40,17 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn custom_extension_codec() -> Result<(), Box<dyn std::error::Error>> {
+        // 1. The codec should be added to the extension builder.
         #[derive(Clone)]
         struct CustomSessionBuilder;
         impl SessionBuilder for CustomSessionBuilder {
-            fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
-                let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(Int64ListExecCodec);
-                let config = builder.config().get_or_insert_default();
-                config.set_extension(Arc::new(codec));
-                builder
+            fn codec(&self) -> Option<Arc<dyn PhysicalExtensionCodec>> {
+                Some(Arc::new(Int64ListExecCodec))
             }
         }
 
         let (ctx, _guard) =
             start_localhost_context([50050, 50051, 50052], CustomSessionBuilder).await;
-
-        let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(Int64ListExecCodec);
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .set_extension(Arc::new(codec));
 
         let single_node_plan = build_plan(false)?;
         assert_snapshot!(displayable(single_node_plan.as_ref()).indent(true).to_string(), @r"
@@ -68,17 +60,28 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
-        let distributed_plan =
-            DistributedPhysicalOptimizerRule::default().distribute_plan(distributed_plan)?;
+        let distributed_plan = DistributedPhysicalOptimizerRule::default()
+            // 1. The codec should be added to the DistributedPhysicalOptimizerRule.
+            .with_codec(Int64ListExecCodec)
+            .distribute_plan(distributed_plan)?;
 
         assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
-        SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-          RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
-            ArrowFlightReadExec: input_tasks=10 hash_expr=[] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/, http://localhost:50051/, http://localhost:50052/, http://localhost:50050/]
-              SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-                ArrowFlightReadExec: input_tasks=1 hash_expr=[numbers@0] stage_id=UUID input_stage_id=UUID input_hosts=[http://localhost:50051/]
-                  FilterExec: numbers@0 > 1
-                    Int64ListExec: length=6
+        ┌───── Stage 3   Task: partitions: 0,unassigned]
+        │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
+        │partitions [out:1  <-- in:10 ]   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
+        │partitions [out:10           ]     ArrowFlightReadExec: Stage 2  
+        │
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2   Task: partitions: 0,unassigned]
+          │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
+          │partitions [out:1            ]   ArrowFlightReadExec: Stage 1  
+          │
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1   Task: partitions: 0,unassigned]
+            │partitions [out:1  <-- in:1  ] FilterExec: numbers@0 > 1
+            │partitions [out:1            ]   Int64ListExec: length=6
+            │
+            └──────────────────────────────────────────────────
         ");
 
         let stream = execute_stream(single_node_plan, ctx.task_ctx())?;

@@ -1,3 +1,4 @@
+use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::DistributedCodec;
@@ -8,7 +9,6 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::optimizer::OptimizerConfig;
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -48,25 +48,36 @@ impl ArrowFlightEndpoint {
             "FunctionRegistry not present in newly built SessionState",
         ))?;
 
-        let codec = DistributedCodec {};
-        let codec = Arc::new(codec) as Arc<dyn PhysicalExtensionCodec>;
+        let user_codec = self.session_builder.codec();
+        let mut combined_codec = ComposedPhysicalExtensionCodec::default();
+        combined_codec.push(DistributedCodec);
+        if let Some(ref user_codec) = user_codec {
+            combined_codec.push_arc(Arc::clone(&user_codec));
+        }
 
-        let stage = stage_from_proto(stage_msg, function_registry, &self.runtime.as_ref(), codec)
-            .map(Arc::new)
-            .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
+        let mut stage = stage_from_proto(
+            stage_msg,
+            function_registry,
+            &self.runtime.as_ref(),
+            &combined_codec,
+        )
+        .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
+        if let Some(user_codec) = user_codec {
+            stage = stage.with_user_codec(user_codec)
+        }
+        let inner_plan = Arc::clone(&stage.plan);
 
         // Add the extensions that might be required for ExecutionPlan nodes in the plan
         let config = state.config_mut();
         config.set_extension(Arc::clone(&self.channel_manager));
-        config.set_extension(stage.clone());
+        config.set_extension(Arc::new(stage));
 
-        let stream = stage
-            .plan
+        let stream = inner_plan
             .execute(doget.partition as usize, state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
         let flight_data_stream = FlightDataEncoderBuilder::new()
-            .with_schema(stage.plan.schema().clone())
+            .with_schema(inner_plan.schema().clone())
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));

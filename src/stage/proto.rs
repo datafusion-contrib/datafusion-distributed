@@ -11,7 +11,7 @@ use datafusion_proto::{
     protobuf::PhysicalPlanNode,
 };
 
-use crate::{plan::DistributedCodec, task::ExecutionTask};
+use crate::task::ExecutionTask;
 
 use super::ExecutionStage;
 
@@ -35,54 +35,42 @@ pub struct ExecutionStageProto {
     pub tasks: Vec<ExecutionTask>,
 }
 
-impl TryFrom<&ExecutionStage> for ExecutionStageProto {
-    type Error = DataFusionError;
+pub fn proto_from_stage(
+    stage: &ExecutionStage,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<ExecutionStageProto, DataFusionError> {
+    let proto_plan = PhysicalPlanNode::try_from_physical_plan(stage.plan.clone(), codec)?;
+    let inputs = stage
+        .child_stages_iter()
+        .map(|s| Ok(Box::new(proto_from_stage(s, codec)?)))
+        .collect::<Result<Vec<_>>>()?;
 
-    fn try_from(stage: &ExecutionStage) -> Result<Self, Self::Error> {
-        let codec = stage.codec.clone().unwrap_or(Arc::new(DistributedCodec {}));
-
-        let proto_plan =
-            PhysicalPlanNode::try_from_physical_plan(stage.plan.clone(), codec.as_ref())?;
-        let inputs = stage
-            .child_stages_iter()
-            .map(|s| Box::new(ExecutionStageProto::try_from(s).unwrap()))
-            .collect();
-
-        Ok(ExecutionStageProto {
-            num: stage.num as u64,
-            name: stage.name(),
-            plan: Some(Box::new(proto_plan)),
-            inputs,
-            tasks: stage.tasks.clone(),
-        })
-    }
-}
-
-impl TryFrom<ExecutionStage> for ExecutionStageProto {
-    type Error = DataFusionError;
-
-    fn try_from(stage: ExecutionStage) -> Result<Self, Self::Error> {
-        ExecutionStageProto::try_from(&stage)
-    }
+    Ok(ExecutionStageProto {
+        num: stage.num as u64,
+        name: stage.name(),
+        plan: Some(Box::new(proto_plan)),
+        inputs,
+        tasks: stage.tasks.clone(),
+    })
 }
 
 pub fn stage_from_proto(
     msg: ExecutionStageProto,
     registry: &dyn FunctionRegistry,
     runtime: &RuntimeEnv,
-    codec: Arc<dyn PhysicalExtensionCodec>,
+    codec: &dyn PhysicalExtensionCodec,
 ) -> Result<ExecutionStage> {
     let plan_node = msg.plan.ok_or(internal_datafusion_err!(
         "ExecutionStageMsg is missing the plan"
     ))?;
 
-    let plan = plan_node.try_into_physical_plan(registry, runtime, codec.as_ref())?;
+    let plan = plan_node.try_into_physical_plan(registry, runtime, codec)?;
 
     let inputs = msg
         .inputs
         .into_iter()
         .map(|s| {
-            stage_from_proto(*s, registry, runtime, codec.clone())
+            stage_from_proto(*s, registry, runtime, codec)
                 .map(|s| Arc::new(s) as Arc<dyn ExecutionPlan>)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -93,7 +81,7 @@ pub fn stage_from_proto(
         plan,
         inputs,
         tasks: msg.tasks,
-        codec: Some(codec),
+        user_codec: None,
         depth: 0,
     })
 }
@@ -116,6 +104,7 @@ mod tests {
     use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::Message;
 
+    use crate::stage::proto::proto_from_stage;
     use crate::stage::{proto::stage_from_proto, ExecutionStage, ExecutionStageProto};
 
     // create a simple mem table
@@ -158,12 +147,12 @@ mod tests {
             plan: physical_plan,
             inputs: vec![],
             tasks: vec![],
-            codec: Some(Arc::new(DefaultPhysicalExtensionCodec {})),
+            user_codec: Some(Arc::new(DefaultPhysicalExtensionCodec {})),
             depth: 0,
         };
 
         // Convert to proto message
-        let stage_msg = ExecutionStageProto::try_from(&stage)?;
+        let stage_msg = proto_from_stage(&stage, &DefaultPhysicalExtensionCodec {})?;
 
         // Serialize to bytes
         let mut buf = Vec::new();
@@ -180,7 +169,7 @@ mod tests {
             decoded_msg,
             &ctx,
             ctx.runtime_env().as_ref(),
-            Arc::new(DefaultPhysicalExtensionCodec {}),
+            &DefaultPhysicalExtensionCodec {},
         )?;
 
         // Compare original and round-tripped stages

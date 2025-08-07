@@ -1,16 +1,35 @@
 use datafusion::execution::SessionStateBuilder;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use std::sync::Arc;
 
 /// Trait called by the Arrow Flight endpoint that handles distributed parts of a DataFusion
 /// plan for building a DataFusion's [datafusion::prelude::SessionContext].
 pub trait SessionBuilder {
     /// Takes a [SessionStateBuilder] and adds whatever is necessary for it to work, like
-    /// custom extension codecs, custom physical optimization rules, UDFs, UDAFs, config
-    /// extensions, etc...
+    /// custom physical optimization rules, UDFs, UDAFs, config extensions, etc...
     ///
-    /// Example: adding some custom extension plan codecs
+    /// Example:
     ///
     /// ```rust
+    /// # use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
+    /// # use datafusion_distributed::{SessionBuilder};
     ///
+    /// #[derive(Clone)]
+    /// struct CustomSessionBuilder;
+    /// impl SessionBuilder for CustomSessionBuilder {
+    ///     fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
+    ///         // add your own UDFs, optimization rules, etc...
+    ///         builder
+    ///     }
+    /// }
+    /// ```
+    fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
+        builder
+    }
+
+    /// Allows users to provide their own codecs.
+    ///
+    /// ```rust
     /// # use std::sync::Arc;
     /// # use datafusion::execution::runtime_env::RuntimeEnv;
     /// # use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
@@ -34,15 +53,14 @@ pub trait SessionBuilder {
     /// #[derive(Clone)]
     /// struct CustomSessionBuilder;
     /// impl SessionBuilder for CustomSessionBuilder {
-    ///     fn on_new_session(&self, mut builder: SessionStateBuilder) -> SessionStateBuilder {
-    ///         let config = builder.config().get_or_insert_default();
-    ///         let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(CustomExecCodec);
-    ///         config.set_extension(Arc::new(codec));
-    ///         builder
+    ///     fn codec(&self) -> Option<Arc<dyn PhysicalExtensionCodec + 'static>> {
+    ///         Some(Arc::new(CustomExecCodec))
     ///     }
     /// }
     /// ```
-    fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder;
+    fn codec(&self) -> Option<Arc<dyn PhysicalExtensionCodec + 'static>> {
+        None
+    }
 }
 
 /// Noop implementation of the [SessionBuilder]. Used by default if no [SessionBuilder] is provided
