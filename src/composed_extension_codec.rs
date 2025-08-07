@@ -3,7 +3,6 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -25,42 +24,10 @@ impl ComposedPhysicalExtensionCodec {
         self.codecs.push(Arc::new(codec));
     }
 
-    /// Adds a new [PhysicalExtensionCodec] from DataFusion's [SessionConfig] extensions.
-    ///
-    /// If users have a custom [PhysicalExtensionCodec] for their own nodes, they should
-    /// populate the config extensions with a [PhysicalExtensionCodec] so that we can use
-    /// it while encoding/decoding plans to/from protobuf.
-    ///
-    /// Example:
-    /// ```rust
-    /// # use std::sync::Arc;
-    /// # use datafusion::execution::FunctionRegistry;
-    /// # use datafusion::physical_plan::ExecutionPlan;
-    /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    ///
-    /// #[derive(Debug)]
-    /// struct CustomUserCodec {}
-    ///
-    /// impl PhysicalExtensionCodec for CustomUserCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    ///         todo!()
-    ///     }
-    ///
-    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
-    ///         todo!()
-    ///     }
-    /// }
-    ///
-    /// let mut config = SessionConfig::new();
-    ///
-    /// let codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(CustomUserCodec {});
-    /// config.set_extension(Arc::new(codec));
-    /// ```
-    pub(crate) fn push_from_config(&mut self, config: &SessionConfig) {
-        if let Some(user_codec) = config.get_extension::<Arc<dyn PhysicalExtensionCodec>>() {
-            self.codecs.push(user_codec.as_ref().clone());
-        }
+    /// Adds a new [PhysicalExtensionCodec] to the list. These codecs will be tried
+    /// sequentially until one works.
+    pub(crate) fn push_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>) {
+        self.codecs.push(codec);
     }
 
     fn try_any<T>(

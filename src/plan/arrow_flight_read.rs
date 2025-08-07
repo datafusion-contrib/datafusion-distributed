@@ -1,8 +1,11 @@
 use super::combined::CombinedRecordBatchStream;
 use crate::channel_manager::ChannelManager;
+use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::DoGet;
-use crate::stage::{ExecutionStage, ExecutionStageProto};
+use crate::plan::DistributedCodec;
+use crate::stage::{proto_from_stage, ExecutionStage};
+use crate::user_provided_codec::get_user_codec;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -170,12 +173,14 @@ impl ExecutionPlan for ArrowFlightReadExec {
                 this.stage_num
             ))?;
 
-        let child_stage_tasks = child_stage.tasks.clone();
-        let child_stage_proto = ExecutionStageProto::try_from(child_stage).map_err(|e| {
-            internal_datafusion_err!(
-                "ArrowFlightReadExec: failed to convert stage to proto: {}",
-                e
-            )
+        let mut combined_codec = ComposedPhysicalExtensionCodec::default();
+        combined_codec.push(DistributedCodec {});
+        if let Some(ref user_codec) = get_user_codec(context.session_config()) {
+            combined_codec.push_arc(Arc::clone(user_codec));
+        }
+
+        let child_stage_proto = proto_from_stage(child_stage, &combined_codec).map_err(|e| {
+            internal_datafusion_err!("ArrowFlightReadExec: failed to convert stage to proto: {e}")
         })?;
 
         let ticket_bytes = DoGet {
@@ -191,6 +196,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let schema = child_stage.plan.schema();
 
+        let child_stage_tasks = child_stage.tasks.clone();
         let stream = async move {
             let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| async {
                 let url = task.url()?.ok_or(internal_datafusion_err!(
