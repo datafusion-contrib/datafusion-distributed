@@ -1,9 +1,9 @@
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
-use crate::get_user_codec;
 use crate::plan::DistributedCodec;
 use crate::stage::{stage_from_proto, ExecutionStageProto};
+use crate::user_provided_codec::get_user_codec;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;

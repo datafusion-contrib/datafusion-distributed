@@ -5,6 +5,36 @@ use std::sync::Arc;
 
 pub struct UserProvidedCodec(Arc<dyn PhysicalExtensionCodec>);
 
+/// Injects a user-defined codec that is capable of encoding/decoding custom execution nodes.
+/// It will inject the codec as a config extension in the provided [SessionConfig], [SessionContext]
+/// or [SessionStateBuilder].
+///
+/// Example:
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder};
+/// # use datafusion::physical_plan::ExecutionPlan;
+/// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+/// # use datafusion_distributed::{add_user_codec};
+///
+/// #[derive(Debug)]
+/// struct CustomExecCodec;
+///
+/// impl PhysicalExtensionCodec for CustomExecCodec {
+///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+///         todo!()
+///     }
+///
+///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+///         todo!()
+///     }
+/// }
+///
+/// let builder = SessionStateBuilder::new();
+/// let mut state = builder.build();
+/// add_user_codec(state.config_mut(), CustomExecCodec);
+/// ```
 #[allow(private_bounds)]
 pub fn add_user_codec(
     transport: &mut impl UserCodecTransport,
@@ -13,6 +43,36 @@ pub fn add_user_codec(
     transport.set(codec);
 }
 
+/// Adds a user-defined codec that is capable of encoding/decoding custom execution nodes.
+/// It returns the [SessionContext], [SessionConfig] or [SessionStateBuilder] passed on the first
+/// argument with the user-defined codec already placed into the config extensions.
+///
+/// Example:
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder};
+/// # use datafusion::physical_plan::ExecutionPlan;
+/// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+/// # use datafusion_distributed::with_user_codec;
+///
+/// #[derive(Debug)]
+/// struct CustomExecCodec;
+///
+/// impl PhysicalExtensionCodec for CustomExecCodec {
+///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+///         todo!()
+///     }
+///
+///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+///         todo!()
+///     }
+/// }
+///
+/// let builder = SessionStateBuilder::new();
+/// let builder = with_user_codec(builder, CustomExecCodec);
+/// let state = builder.build();
+/// ```
 #[allow(private_bounds)]
 pub fn with_user_codec<T: UserCodecTransport>(
     mut transport: T,
@@ -23,7 +83,7 @@ pub fn with_user_codec<T: UserCodecTransport>(
 }
 
 #[allow(private_bounds)]
-pub fn get_user_codec(
+pub(crate) fn get_user_codec(
     transport: &impl UserCodecTransport,
 ) -> Option<Arc<dyn PhysicalExtensionCodec>> {
     transport.get()
