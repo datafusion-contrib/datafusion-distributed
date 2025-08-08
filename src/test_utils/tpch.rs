@@ -5,18 +5,33 @@ use datafusion::{
     catalog::{MemTable, TableProvider},
 };
 
-pub fn tpch_table(name: &str) -> Arc<dyn TableProvider> {
-    let schema = Arc::new(get_tpch_table_schema(name));
-    Arc::new(MemTable::try_new(schema, vec![]).unwrap())
-}
+use std::fs;
 
-pub fn tpch_query(num: u8) -> String {
-    // read the query from the test/tpch/queries/ directory and return it
-    let query_path = format!("testing/tpch/queries/q{}.sql", num);
-    std::fs::read_to_string(query_path)
+use arrow::record_batch::RecordBatch;
+use parquet::{arrow::arrow_writer::ArrowWriter, file::properties::WriterProperties};
+use tpchgen::generators::{
+    CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
+    PartSuppGenerator, RegionGenerator, SupplierGenerator,
+};
+use tpchgen_arrow::{
+    CustomerArrow, LineItemArrow, NationArrow, OrderArrow, PartArrow, PartSuppArrow, RegionArrow,
+    SupplierArrow,
+};
+
+pub fn tpch_query_from_dir(queries_dir: &std::path::Path, num: u8) -> String {
+    let query_path = queries_dir.join(format!("q{num}.sql"));
+    fs::read_to_string(query_path)
         .unwrap_or_else(|_| panic!("Failed to read TPCH query file: q{}.sql", num))
         .trim()
         .to_string()
+}
+pub const NUM_QUERIES: u8 = 22; // number of queries in the TPCH benchmark numbered from 1 to 22
+
+const SCALE_FACTOR: f64 = 0.001;
+
+pub fn tpch_table(name: &str) -> Arc<dyn TableProvider> {
+    let schema = Arc::new(get_tpch_table_schema(name));
+    Arc::new(MemTable::try_new(schema, vec![]).unwrap())
 }
 
 pub fn get_tpch_table_schema(table: &str) -> Schema {
@@ -112,4 +127,59 @@ pub fn get_tpch_table_schema(table: &str) -> Schema {
 
         _ => unimplemented!(),
     }
+}
+
+// generate_table creates a parquet file in the data directory from an arrow RecordBatch row
+// source.
+fn generate_table<A>(
+    mut data_source: A,
+    table_name: &str,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    A: Iterator<Item = RecordBatch>,
+{
+    let output_path = data_dir.join(format!("{}.parquet", table_name));
+
+    if let Some(first_batch) = data_source.next() {
+        let file = fs::File::create(&output_path)?;
+        let props = WriterProperties::builder().build();
+        let mut writer = ArrowWriter::try_new(file, first_batch.schema(), Some(props))?;
+
+        writer.write(&first_batch)?;
+
+        while let Some(batch) = data_source.next() {
+            writer.write(&batch)?;
+        }
+
+        writer.close()?;
+    }
+
+    Ok(())
+}
+
+macro_rules! must_generate_tpch_table {
+    ($generator:ident, $arrow:ident, $name:literal, $data_dir:expr) => {
+        generate_table(
+            // TODO: Consider adjusting the partitions and batch sizes.
+            $arrow::new($generator::new(SCALE_FACTOR, 1, 1)).with_batch_size(1000),
+            $name,
+            $data_dir,
+        )
+        .expect(concat!("Failed to generate ", $name, " table"));
+    };
+}
+
+// generate_tpch_data generates all TPC-H tables in the specified data directory.
+pub fn generate_tpch_data(data_dir: &std::path::Path) {
+    fs::create_dir_all(data_dir).expect("Failed to create data directory");
+
+    must_generate_tpch_table!(RegionGenerator, RegionArrow, "region", data_dir);
+    must_generate_tpch_table!(NationGenerator, NationArrow, "nation", data_dir);
+    must_generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer", data_dir);
+    must_generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier", data_dir);
+    must_generate_tpch_table!(PartGenerator, PartArrow, "part", data_dir);
+    must_generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp", data_dir);
+    must_generate_tpch_table!(OrderGenerator, OrderArrow, "orders", data_dir);
+    must_generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem", data_dir);
 }

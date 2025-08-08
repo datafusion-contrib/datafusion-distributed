@@ -1,3 +1,4 @@
 /.idea
 /target
 /benchmarks/data/
+testdata/tpch/data/

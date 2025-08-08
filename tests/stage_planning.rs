@@ -1,11 +1,14 @@
+mod common;
+
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use crate::common::get_test_queries_dir;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::assert_snapshot;
-    use datafusion_distributed::test_utils::tpch::tpch_query;
+    use datafusion_distributed::test_utils::tpch::tpch_query_from_dir;
     use datafusion_distributed::DistributedPhysicalOptimizerRule;
     use datafusion_distributed::{display_stage_graphviz, ExecutionStage};
     use futures::TryStreamExt;
@@ -40,7 +43,8 @@ mod tests {
             .await?;
         }
 
-        let sql = tpch_query(2);
+        let queries_dir = get_test_queries_dir();
+        let sql = tpch_query_from_dir(&queries_dir, 2);
         //let sql = "select 1;";
         println!("SQL Query:\n{}", sql);
 
