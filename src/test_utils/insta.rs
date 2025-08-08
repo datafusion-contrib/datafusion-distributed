@@ -1,10 +1,12 @@
 use std::env;
 
+pub use insta;
+
 #[macro_export]
 macro_rules! assert_snapshot {
     ($($arg:tt)*) => {
-        crate::test_utils::insta::settings().bind(|| {
-            insta::assert_snapshot!($($arg)*);
+        $crate::test_utils::insta::settings().bind(|| {
+            $crate::test_utils::insta::insta::assert_snapshot!($($arg)*);
         })
     };
 }

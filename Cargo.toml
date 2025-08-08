@@ -23,5 +23,13 @@ prost = "0.13.5"
 rand = "0.8.5"
 object_store = "0.12.3"
 
+# integration_tests deps
+insta = { version = "1.43.1", features = ["filters"], optional = true }
+
+[features]
+integration = [
+    "insta"
+]
+
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["filters"] }

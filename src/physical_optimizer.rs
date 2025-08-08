@@ -153,7 +153,7 @@ impl DistributedPhysicalOptimizerRule {
 mod tests {
     use crate::assert_snapshot;
     use crate::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use crate::test_utils::register_parquet_tables;
+    use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::displayable;

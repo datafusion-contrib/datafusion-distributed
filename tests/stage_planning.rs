@@ -1,16 +1,13 @@
-#[allow(dead_code)]
-mod common;
-
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
-    use crate::assert_snapshot;
-    use crate::common::tpch::tpch_query;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use datafusion_distributed::stage::{display_stage_graphviz, ExecutionStage};
+    use datafusion_distributed::assert_snapshot;
+    use datafusion_distributed::test_utils::tpch::tpch_query;
+    use datafusion_distributed::DistributedPhysicalOptimizerRule;
+    use datafusion_distributed::{display_stage_graphviz, ExecutionStage};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;

@@ -1,12 +1,12 @@
+use crate::{
+    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver, SessionBuilder,
+};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion::{common::runtime::JoinSet, prelude::SessionConfig};
-use datafusion_distributed::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver, SessionBuilder,
-};
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;

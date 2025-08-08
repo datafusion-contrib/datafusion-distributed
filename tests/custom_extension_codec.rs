@@ -1,10 +1,5 @@
-#[allow(dead_code)]
-mod common;
-
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
-    use crate::assert_snapshot;
-    use crate::common::localhost::start_localhost_context;
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -27,9 +22,11 @@ mod tests {
     use datafusion::physical_plan::{
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
-    use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
+    use datafusion_distributed::assert_snapshot;
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        add_user_codec, with_user_codec, ArrowFlightReadExec, SessionBuilder,
+        add_user_codec, with_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule,
+        SessionBuilder,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;

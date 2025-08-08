@@ -1,11 +1,10 @@
+use crate::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_distributed::physical_optimizer::DistributedPhysicalOptimizerRule;
-use datafusion_distributed::ArrowFlightReadExec;
 use std::sync::Arc;
 
 pub fn distribute_aggregate(
