@@ -2,7 +2,7 @@ use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::{DistributedCodec, PartitionGroup};
-use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto, StageKey};
+use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
 use crate::user_provided_codec::get_user_codec;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
@@ -16,6 +16,8 @@ use prost::Message;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
+
+use super::service::StageKey;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
@@ -66,6 +68,13 @@ impl ArrowFlightEndpoint {
 
         let inner_plan = stage.plan.clone();
 
+        /*println!(
+            "{} Task {:?} executing partition {}",
+            stage.name(),
+            task.partition_group,
+            partition
+        );*/
+
         let stream = inner_plan
             .execute(partition, state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
@@ -102,8 +111,17 @@ impl ArrowFlightEndpoint {
                 let state_builder = SessionStateBuilder::new()
                     .with_runtime_env(Arc::clone(&self.runtime))
                     .with_default_features();
+                let state_builder = self
+                    .session_builder
+                    .session_state_builder(state_builder)
+                    .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
-                let mut state = self.session_builder.on_new_session(state_builder).build();
+                let state = state_builder.build();
+                let mut state = self
+                    .session_builder
+                    .session_state(state)
+                    .await
+                    .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
                 let function_registry =
                     state.function_registry().ok_or(Status::invalid_argument(

@@ -59,10 +59,6 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         if plan.as_any().is::<ExecutionStage>() {
             return Ok(plan);
         }
-        println!(
-            "DistributedPhysicalOptimizerRule: optimizing plan: {}",
-            displayable(plan.as_ref()).indent(false)
-        );
 
         let plan = self.apply_network_boundaries(plan)?;
         let plan = self.distribute_plan(plan)?;
@@ -156,7 +152,7 @@ impl DistributedPhysicalOptimizerRule {
 mod tests {
     use crate::assert_snapshot;
     use crate::physical_optimizer::DistributedPhysicalOptimizerRule;
-    use crate::test_utils::register_parquet_tables;
+    use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::displayable;
@@ -210,7 +206,7 @@ mod tests {
         ┌───── Stage 3   Task: partitions: 0,unassigned]
         │partitions [out:1  <-- in:1  ] ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │partitions [out:1  <-- in:4  ]   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │partitions [out:4  <-- in:4  ]     SortExec: expr=[count(Int64(1))@2 ASC NULLS LAST], preserve_partitioning=[true]
+        │partitions [out:4  <-- in:4  ]     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192
@@ -240,7 +236,7 @@ mod tests {
         ┌───── Stage 3   Task: partitions: 0,unassigned]
         │partitions [out:1  <-- in:1  ] ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │partitions [out:1  <-- in:4  ]   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │partitions [out:4  <-- in:4  ]     SortExec: expr=[count(Int64(1))@2 ASC NULLS LAST], preserve_partitioning=[true]
+        │partitions [out:4  <-- in:4  ]     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │partitions [out:4  <-- in:4  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │partitions [out:4  <-- in:4  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │partitions [out:4  <-- in:4  ]           CoalesceBatchesExec: target_batch_size=8192

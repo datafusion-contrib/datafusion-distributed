@@ -4,5 +4,5 @@ mod session_builder;
 
 pub(crate) use do_get::DoGet;
 
-pub use service::ArrowFlightEndpoint;
-pub use session_builder::SessionBuilder;
+pub use service::{ArrowFlightEndpoint, StageKey};
+pub use session_builder::{NoopSessionBuilder, SessionBuilder};

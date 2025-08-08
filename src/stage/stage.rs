@@ -70,7 +70,7 @@ use crate::ChannelManager;
 ///
 /// The receiving ArrowFlightEndpoint will then execute Stage 2 and will repeat this process.
 ///
-/// When Stage 4 4 is executed, it has no input tasks, so it is assumed that the plan included in that
+/// When Stage 4 is executed, it has no input tasks, so it is assumed that the plan included in that
 /// Stage can complete on its own; its likely holding a leaf node in the overall phyysical plan and
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
@@ -92,17 +92,6 @@ pub struct ExecutionStage {
     pub depth: usize,
 }
 
-/// A key that uniquely identifies a stage in a query
-#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
-pub struct StageKey {
-    /// Our query id
-    #[prost(string, tag = "1")]
-    pub query_id: String,
-    /// Our stage id
-    #[prost(uint64, tag = "2")]
-    pub stage_id: u64,
-}
-
 impl ExecutionStage {
     /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
     /// responsible for partitions in the plan.
@@ -112,16 +101,6 @@ impl ExecutionStage {
         plan: Arc<dyn ExecutionPlan>,
         inputs: Vec<Arc<ExecutionStage>>,
     ) -> Self {
-        println!(
-            "Creating ExecutionStage: {}, with inputs {}",
-            num,
-            inputs
-                .iter()
-                .map(|s| format!("{}", s.num))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
         let name = format!("Stage {:<3}", num);
         let partition_group = (0..plan.properties().partitioning.partition_count())
             .map(|p| p as u64)
@@ -166,13 +145,6 @@ impl ExecutionStage {
     /// Returns the name of this stage
     pub fn name(&self) -> String {
         format!("Stage {:<3}", self.num)
-    }
-
-    pub fn key(&self) -> StageKey {
-        StageKey {
-            query_id: self.query_id.to_string(),
-            stage_id: self.num as u64,
-        }
     }
 
     /// Returns an iterator over the child stages of this stage cast as &ExecutionStage
@@ -235,8 +207,6 @@ impl ExecutionStage {
                 task.clone().with_assignment(url)
             })
             .collect::<Vec<_>>();
-
-        println!("stage {} assigned_tasks: {:?}", self.num, assigned_tasks);
 
         let assigned_stage = ExecutionStage {
             query_id: self.query_id,
@@ -317,11 +287,6 @@ impl ExecutionPlan for ExecutionStage {
 
         let new_ctx =
             SessionContext::new_with_config_rt(config, context.runtime_env().clone()).task_ctx();
-
-        println!(
-            "assinged_stage:\n{}",
-            displayable(assigned_stage.as_ref()).indent(true)
-        );
 
         assigned_stage.plan.execute(partition, new_ctx)
     }

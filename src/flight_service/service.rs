@@ -1,7 +1,7 @@
 use crate::channel_manager::ChannelManager;
 use crate::flight_service::session_builder::NoopSessionBuilder;
 use crate::flight_service::SessionBuilder;
-use crate::stage::{ExecutionStage, StageKey};
+use crate::stage::ExecutionStage;
 use crate::ChannelResolver;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
@@ -16,6 +16,20 @@ use futures::stream::BoxStream;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status, Streaming};
+
+/// A key that uniquely identifies a stage in a query
+#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
+pub struct StageKey {
+    /// Our query id
+    #[prost(string, tag = "1")]
+    pub query_id: String,
+    /// Our stage id
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+    /// The task number within the stage
+    #[prost(uint64, tag = "3")]
+    pub task_number: u64,
+}
 
 pub struct ArrowFlightEndpoint {
     pub(super) channel_manager: Arc<ChannelManager>,

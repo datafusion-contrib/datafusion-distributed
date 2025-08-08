@@ -2,7 +2,7 @@ use super::combined::CombinedRecordBatchStream;
 use crate::channel_manager::ChannelManager;
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::errors::tonic_status_to_datafusion_error;
-use crate::flight_service::DoGet;
+use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use crate::user_provided_codec::get_user_codec;
@@ -187,22 +187,21 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let schema = child_stage.plan.schema();
 
         let child_stage_tasks = child_stage.tasks.clone();
-        let stage_name = stage.name().to_string();
-        let child_stage_name = child_stage.name().to_string();
+        let child_stage_num = child_stage.num as u64;
+        let query_id = stage.query_id.to_string();
 
-        println!("I am ArrowFlightReadExec: stage={stage_name}, child_stage={child_stage_name}, partition={partition}
-                  tasks={:?}", child_stage_tasks);
-
-        let key = child_stage.key().clone();
         let stream = async move {
             let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
                 let i_capture = i;
                 let child_stage_proto_capture = child_stage_proto.clone();
                 let channel_manager_capture = channel_manager.clone();
                 let schema = schema.clone();
-                let stage_name = stage_name.clone();
-                let child_stage_name = child_stage_name.clone();
-                let key = key.clone();
+                let query_id = query_id.clone();
+                let key = StageKey {
+                    query_id,
+                    stage_id: child_stage_num,
+                    task_number: i as u64,
+                };
                 async move {
                     let url = task.url()?.ok_or(internal_datafusion_err!(
                         "ArrowFlightReadExec: task is unassigned, cannot proceed"
@@ -223,13 +222,6 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
                     stream_from_stage_task(ticket, &url, schema.clone(), &channel_manager_capture)
                         .await
-                        .map(|stream| {
-                            reporting_stream(
-                                format!("s={}:cs={}:p={}", stage_name, child_stage_name, partition)
-                                    .as_str(),
-                                stream,
-                            )
-                        })
                 }
             });
 
@@ -246,26 +238,6 @@ impl ExecutionPlan for ArrowFlightReadExec {
             stream,
         )))
     }
-}
-
-fn reporting_stream(name: &str, in_stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
-    let schema = in_stream.schema();
-    let mut stream = Box::pin(in_stream);
-    let name = name.to_owned();
-
-    let out_stream = async_stream::stream! {
-        println!("stream:{name}: attempting to read");
-        while let Some(batch) = stream.next().await {
-            match batch {
-                Ok(ref b) => println!("stream:{name}: got batch of {} rows:\n{}", b.num_rows(),
-        pretty_format_batches(&[b.clone()]).unwrap()),
-                Err(ref e) => println!("stream:{name}: got error {e}"),
-            };
-            yield batch;
-        };
-    };
-
-    Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
 }
 
 async fn stream_from_stage_task(
