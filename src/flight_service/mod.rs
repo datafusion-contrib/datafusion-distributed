@@ -6,4 +6,4 @@ mod stream_partitioner_registry;
 pub(crate) use do_get::DoGet;
 
 pub use service::ArrowFlightEndpoint;
-pub use session_builder::SessionBuilder;
+pub use session_builder::{NoopSessionBuilder, SessionBuilder};

@@ -31,7 +31,7 @@ jobs:
         with:
           lfs: true
       - uses: ./.github/actions/setup
-      - run: cargo test
+      - run: cargo test --features integration
 
   format-check:
     runs-on: ubuntu-latest

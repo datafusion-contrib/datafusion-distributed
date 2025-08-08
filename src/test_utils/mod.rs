@@ -1,6 +1,6 @@
 pub mod insta;
-mod mock_exec;
-mod parquet;
-
-pub use mock_exec::MockExec;
-pub use parquet::register_parquet_tables;
+pub mod localhost;
+pub mod mock_exec;
+pub mod parquet;
+pub mod plan;
+pub mod tpch;

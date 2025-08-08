@@ -35,7 +35,7 @@ impl StreamPartitionerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::MockExec;
+    use crate::test_utils::mock_exec::MockExec;
     use datafusion::arrow::array::{RecordBatch, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::TaskContext;
