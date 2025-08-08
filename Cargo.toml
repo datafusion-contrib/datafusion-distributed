@@ -33,11 +33,23 @@ object_store = "0.12.3"
 
 # integration_tests deps
 insta = { version = "1.43.1", features = ["filters"], optional = true }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8", optional = true }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8", optional = true }
+parquet = { version = "55.2.0", optional = true }
+arrow = { version = "55.2.0", optional = true }
 
 [features]
 integration = [
-    "insta"
+    "insta",
+    "tpchgen",
+    "tpchgen-arrow", 
+    "parquet",
+    "arrow"
 ]
 
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["filters"] }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8" }
+parquet = "55.2.0"
+arrow = "55.2.0"
