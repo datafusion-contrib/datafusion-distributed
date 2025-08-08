@@ -2,12 +2,10 @@
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::physical_plan::{displayable, execute_stream};
-    use datafusion_distributed::assert_snapshot;
-    use datafusion_distributed::test_utils::localhost::{
-        start_localhost_context, NoopSessionBuilder,
-    };
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::plan::distribute_aggregate;
+    use datafusion_distributed::{assert_snapshot, NoopSessionBuilder};
     use futures::TryStreamExt;
     use std::error::Error;
 

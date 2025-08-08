@@ -13,8 +13,7 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        add_user_codec, with_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule,
-        SessionBuilder,
+        with_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule, SessionBuilder,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -30,13 +29,15 @@ mod tests {
         #[derive(Clone)]
         struct CustomSessionBuilder;
         impl SessionBuilder for CustomSessionBuilder {
-            fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
-                with_user_codec(builder, ErrorExecCodec)
+            fn session_state_builder(
+                &self,
+                builder: SessionStateBuilder,
+            ) -> Result<SessionStateBuilder, DataFusionError> {
+                Ok(with_user_codec(builder, ErrorExecCodec))
             }
         }
-        let (mut ctx, _guard) =
+        let (ctx, _guard) =
             start_localhost_context([50050, 50051, 50053], CustomSessionBuilder).await;
-        add_user_codec(&mut ctx, ErrorExecCodec);
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 

@@ -1,10 +1,18 @@
+[workspace]
+members = [
+    "benchmarks"
+]
+
+[workspace.dependencies]
+datafusion = { version = "49.0.0" }
+
 [package]
 name = "datafusion-distributed"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-datafusion = { version = "49.0.0" }
+datafusion = { workspace = true }
 datafusion-proto = { version = "49.0.0" }
 arrow-flight = "55.2.0"
 async-trait = "0.1.88"

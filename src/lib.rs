@@ -13,7 +13,7 @@ mod user_provided_codec;
 pub mod test_utils;
 
 pub use channel_manager::{BoxCloneSyncChannel, ChannelManager, ChannelResolver};
-pub use flight_service::{ArrowFlightEndpoint, SessionBuilder};
+pub use flight_service::{ArrowFlightEndpoint, NoopSessionBuilder, SessionBuilder};
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;
 pub use stage::{display_stage_graphviz, ExecutionStage};
