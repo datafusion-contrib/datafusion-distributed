@@ -23,7 +23,6 @@ use datafusion::{
     common::plan_err,
     error::Result,
 };
-use std::fs;
 mod run;
 pub use run::RunOpt;
 
@@ -140,28 +139,24 @@ pub fn get_tpch_table_schema(table: &str) -> Schema {
     }
 }
 
+fn get_benchmark_queries_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/tpch/queries")
+}
+
 /// Get the SQL statements from the specified query file
 pub fn get_query_sql(query: usize) -> Result<Vec<String>> {
     if query > 0 && query < 23 {
-        let possibilities = vec![
-            format!("queries/q{query}.sql"),
-            format!("benchmarks/queries/q{query}.sql"),
-        ];
-        let mut errors = vec![];
-        for filename in possibilities {
-            match fs::read_to_string(&filename) {
-                Ok(contents) => {
-                    return Ok(contents
-                        .split(';')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect());
-                }
-                Err(e) => errors.push(format!("{filename}: {e}")),
-            };
-        }
-        plan_err!("invalid query. Could not find query: {:?}", errors)
+        let queries_dir = get_benchmark_queries_dir();
+        let contents = datafusion_distributed::test_utils::tpch::tpch_query_from_dir(
+            &queries_dir,
+            query as u8,
+        );
+        Ok(contents
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect())
     } else {
         plan_err!("invalid query. Expected value between 1 and 22")
     }

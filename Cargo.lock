@@ -1113,6 +1113,7 @@ dependencies = [
 name = "datafusion-distributed"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "arrow-flight",
  "async-trait",
  "dashmap",
@@ -1124,11 +1125,14 @@ dependencies = [
  "insta",
  "itertools",
  "object_store",
+ "parquet",
  "prost",
  "rand 0.8.5",
  "tokio",
  "tonic",
  "tower 0.5.2",
+ "tpchgen",
+ "tpchgen-arrow",
  "url",
  "uuid",
 ]
@@ -3468,6 +3472,20 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tpchgen"
+version = "1.1.1"
+source = "git+https://github.com/clflushopt/tpchgen-rs?rev=c8d823432528eed4f70fca5a1296a66c68a389a8#c8d823432528eed4f70fca5a1296a66c68a389a8"
+
+[[package]]
+name = "tpchgen-arrow"
+version = "1.1.1"
+source = "git+https://github.com/clflushopt/tpchgen-rs?rev=c8d823432528eed4f70fca5a1296a66c68a389a8#c8d823432528eed4f70fca5a1296a66c68a389a8"
+dependencies = [
+ "arrow",
+ "tpchgen",
+]
 
 [[package]]
 name = "tracing"
