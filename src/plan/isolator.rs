@@ -1,6 +1,7 @@
 use std::{fmt::Formatter, sync::Arc};
 
 use datafusion::{
+    common::internal_datafusion_err,
     error::Result,
     execution::SendableRecordBatchStream,
     physical_plan::{
@@ -11,7 +12,7 @@ use datafusion::{
 
 /// We will add this as an extension to the SessionConfig whenever we need
 /// to execute a plan that might include this node.
-pub struct PartitionGroup(Vec<usize>);
+pub struct PartitionGroup(pub Vec<usize>);
 
 /// This is a simple execution plan that isolates a partition from the input
 /// plan It will advertise that it has a single partition and when
@@ -88,9 +89,19 @@ impl ExecutionPlan for PartitionIsolatorExec {
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let config = context.session_config();
-        let partition_group = &[0, 1];
+        let partition_group = config
+            .get_extension::<PartitionGroup>()
+            .ok_or(internal_datafusion_err!(
+                "No extension PartitionGroup in SessionConfig"
+            ))?
+            .0
+            .clone();
 
-        let partitions_in_input = self.input.output_partitioning().partition_count() as u64;
+        let partitions_in_input = self
+            .input
+            .properties()
+            .output_partitioning()
+            .partition_count();
 
         // if our partition group is [7,8,9] and we are asked for parittion 1,
         // then look up that index in our group and execute that partition, in this
@@ -103,8 +114,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
                     Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
                         as SendableRecordBatchStream)
                 } else {
-                    self.input
-                        .execute(*actual_partition_number as usize, context)
+                    self.input.execute(*actual_partition_number, context)
                 }
             }
             None => Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))

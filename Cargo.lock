@@ -1002,6 +1002,7 @@ name = "datafusion-distributed"
 version = "0.1.0"
 dependencies = [
  "arrow-flight",
+ "async-stream",
  "async-trait",
  "dashmap",
  "datafusion",

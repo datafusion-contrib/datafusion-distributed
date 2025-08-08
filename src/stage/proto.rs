@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io::Bytes, sync::Arc};
 
 use datafusion::{
     common::internal_datafusion_err,
@@ -10,6 +10,7 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
+use uuid::Uuid;
 
 use crate::task::ExecutionTask;
 
@@ -17,21 +18,24 @@ use super::ExecutionStage;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStageProto {
+    /// Our query id
+    #[prost(bytes, tag = "1")]
+    pub query_id: Vec<u8>,
     /// Our stage number
-    #[prost(uint64, tag = "1")]
+    #[prost(uint64, tag = "2")]
     pub num: u64,
     /// Our stage name
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "3")]
     pub name: String,
     /// The physical execution plan that this stage will execute.
-    #[prost(message, optional, boxed, tag = "3")]
+    #[prost(message, optional, boxed, tag = "4")]
     pub plan: Option<Box<PhysicalPlanNode>>,
     /// The input stages to this stage
-    #[prost(repeated, message, tag = "4")]
+    #[prost(repeated, message, tag = "5")]
     pub inputs: Vec<Box<ExecutionStageProto>>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
-    #[prost(message, repeated, tag = "5")]
+    #[prost(message, repeated, tag = "6")]
     pub tasks: Vec<ExecutionTask>,
 }
 
@@ -46,6 +50,7 @@ pub fn proto_from_stage(
         .collect::<Result<Vec<_>>>()?;
 
     Ok(ExecutionStageProto {
+        query_id: stage.query_id.as_bytes().to_vec(),
         num: stage.num as u64,
         name: stage.name(),
         plan: Some(Box::new(proto_plan)),
@@ -76,6 +81,10 @@ pub fn stage_from_proto(
         .collect::<Result<Vec<_>>>()?;
 
     Ok(ExecutionStage {
+        query_id: msg
+            .query_id
+            .try_into()
+            .map_err(|_| internal_datafusion_err!("Invalid query_id in ExecutionStageProto"))?,
         num: msg.num as usize,
         name: msg.name,
         plan,
@@ -102,6 +111,7 @@ mod tests {
     };
     use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::Message;
+    use uuid::Uuid;
 
     use crate::stage::proto::proto_from_stage;
     use crate::stage::{proto::stage_from_proto, ExecutionStage, ExecutionStageProto};
@@ -141,6 +151,7 @@ mod tests {
 
         // Wrap it in an ExecutionStage
         let stage = ExecutionStage {
+            query_id: Uuid::new_v4(),
             num: 1,
             name: "TestStage".to_string(),
             plan: physical_plan,

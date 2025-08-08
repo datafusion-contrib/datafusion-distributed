@@ -22,6 +22,7 @@ dashmap = "6.1.0"
 prost = "0.13.5"
 rand = "0.8.5"
 object_store = "0.12.3"
+async-stream = "0.3.6"
 
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["filters"] }

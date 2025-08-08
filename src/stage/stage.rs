@@ -9,6 +9,7 @@ use datafusion::prelude::SessionContext;
 use itertools::Itertools;
 use rand::Rng;
 use url::Url;
+use uuid::Uuid;
 
 use crate::task::ExecutionTask;
 use crate::ChannelManager;
@@ -74,6 +75,8 @@ use crate::ChannelManager;
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
 pub struct ExecutionStage {
+    /// Our query_id
+    pub query_id: Uuid,
     /// Our stage number
     pub num: usize,
     /// Our stage name
@@ -89,10 +92,26 @@ pub struct ExecutionStage {
     pub depth: usize,
 }
 
+/// A key that uniquely identifies a stage in a query
+#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
+pub struct StageKey {
+    /// Our query id
+    #[prost(string, tag = "1")]
+    pub query_id: String,
+    /// Our stage id
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+}
+
 impl ExecutionStage {
     /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
     /// responsible for partitions in the plan.
-    pub fn new(num: usize, plan: Arc<dyn ExecutionPlan>, inputs: Vec<Arc<ExecutionStage>>) -> Self {
+    pub fn new(
+        query_id: Uuid,
+        num: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        inputs: Vec<Arc<ExecutionStage>>,
+    ) -> Self {
         println!(
             "Creating ExecutionStage: {}, with inputs {}",
             num,
@@ -108,6 +127,7 @@ impl ExecutionStage {
             .map(|p| p as u64)
             .collect();
         ExecutionStage {
+            query_id,
             num,
             name,
             plan,
@@ -146,6 +166,13 @@ impl ExecutionStage {
     /// Returns the name of this stage
     pub fn name(&self) -> String {
         format!("Stage {:<3}", self.num)
+    }
+
+    pub fn key(&self) -> StageKey {
+        StageKey {
+            query_id: self.query_id.to_string(),
+            stage_id: self.num as u64,
+        }
     }
 
     /// Returns an iterator over the child stages of this stage cast as &ExecutionStage
@@ -212,6 +239,7 @@ impl ExecutionStage {
         println!("stage {} assigned_tasks: {:?}", self.num, assigned_tasks);
 
         let assigned_stage = ExecutionStage {
+            query_id: self.query_id,
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),
@@ -242,6 +270,7 @@ impl ExecutionPlan for ExecutionStage {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(ExecutionStage {
+            query_id: self.query_id,
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),

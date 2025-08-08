@@ -11,6 +11,7 @@ use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -18,7 +19,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{future, TryFutureExt, TryStreamExt};
+use futures::{future, StreamExt, TryFutureExt, TryStreamExt};
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
@@ -183,26 +184,53 @@ impl ExecutionPlan for ArrowFlightReadExec {
             internal_datafusion_err!("ArrowFlightReadExec: failed to convert stage to proto: {e}")
         })?;
 
-        let ticket_bytes = DoGet {
-            stage_proto: Some(child_stage_proto),
-            partition: partition as u64,
-        }
-        .encode_to_vec()
-        .into();
-
-        let ticket = Ticket {
-            ticket: ticket_bytes,
-        };
-
         let schema = child_stage.plan.schema();
 
         let child_stage_tasks = child_stage.tasks.clone();
+        let stage_name = stage.name().to_string();
+        let child_stage_name = child_stage.name().to_string();
+
+        println!("I am ArrowFlightReadExec: stage={stage_name}, child_stage={child_stage_name}, partition={partition}
+                  tasks={:?}", child_stage_tasks);
+
+        let key = child_stage.key().clone();
         let stream = async move {
-            let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| async {
-                let url = task.url()?.ok_or(internal_datafusion_err!(
-                    "ArrowFlightReadExec: task is unassigned, cannot proceed"
-                ))?;
-                stream_from_stage_task(ticket.clone(), &url, schema.clone(), &channel_manager).await
+            let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
+                let i_capture = i;
+                let child_stage_proto_capture = child_stage_proto.clone();
+                let channel_manager_capture = channel_manager.clone();
+                let schema = schema.clone();
+                let stage_name = stage_name.clone();
+                let child_stage_name = child_stage_name.clone();
+                let key = key.clone();
+                async move {
+                    let url = task.url()?.ok_or(internal_datafusion_err!(
+                        "ArrowFlightReadExec: task is unassigned, cannot proceed"
+                    ))?;
+
+                    let ticket_bytes = DoGet {
+                        stage_proto: Some(child_stage_proto_capture),
+                        partition: partition as u64,
+                        stage_key: Some(key),
+                        task_number: i_capture as u64,
+                    }
+                    .encode_to_vec()
+                    .into();
+
+                    let ticket = Ticket {
+                        ticket: ticket_bytes,
+                    };
+
+                    stream_from_stage_task(ticket, &url, schema.clone(), &channel_manager_capture)
+                        .await
+                        .map(|stream| {
+                            reporting_stream(
+                                format!("s={}:cs={}:p={}", stage_name, child_stage_name, partition)
+                                    .as_str(),
+                                stream,
+                            )
+                        })
+                }
             });
 
             let streams = future::try_join_all(futs).await?;
@@ -220,13 +248,33 @@ impl ExecutionPlan for ArrowFlightReadExec {
     }
 }
 
+fn reporting_stream(name: &str, in_stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
+    let schema = in_stream.schema();
+    let mut stream = Box::pin(in_stream);
+    let name = name.to_owned();
+
+    let out_stream = async_stream::stream! {
+        println!("stream:{name}: attempting to read");
+        while let Some(batch) = stream.next().await {
+            match batch {
+                Ok(ref b) => println!("stream:{name}: got batch of {} rows:\n{}", b.num_rows(),
+        pretty_format_batches(&[b.clone()]).unwrap()),
+                Err(ref e) => println!("stream:{name}: got error {e}"),
+            };
+            yield batch;
+        };
+    };
+
+    Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
+}
+
 async fn stream_from_stage_task(
     ticket: Ticket,
     url: &Url,
     schema: SchemaRef,
     channel_manager: &ChannelManager,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
-    let channel = channel_manager.get_channel_for_url(&url).await?;
+    let channel = channel_manager.get_channel_for_url(url).await?;
 
     let mut client = FlightServiceClient::new(channel);
     let stream = client
