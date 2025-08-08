@@ -10,6 +10,7 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::optimizer::OptimizerConfig;
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -42,8 +43,17 @@ impl ArrowFlightEndpoint {
         let state_builder = SessionStateBuilder::new()
             .with_runtime_env(Arc::clone(&self.runtime))
             .with_default_features();
+        let state_builder = self
+            .session_builder
+            .session_state_builder(state_builder)
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
-        let mut state = self.session_builder.on_new_session(state_builder).build();
+        let state = state_builder.build();
+        let mut state = self
+            .session_builder
+            .session_state(state)
+            .await
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
         let function_registry = state.function_registry().ok_or(Status::invalid_argument(
             "FunctionRegistry not present in newly built SessionState",
@@ -55,7 +65,7 @@ impl ArrowFlightEndpoint {
             combined_codec.push_arc(Arc::clone(&user_codec));
         }
 
-        let mut stage = stage_from_proto(
+        let stage = stage_from_proto(
             stage_msg,
             function_registry,
             &self.runtime.as_ref(),
@@ -69,8 +79,16 @@ impl ArrowFlightEndpoint {
         config.set_extension(Arc::clone(&self.channel_manager));
         config.set_extension(Arc::new(stage));
 
+        let ctx = SessionContext::new_with_state(state);
+
+        let ctx = self
+            .session_builder
+            .session_context(ctx)
+            .await
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+
         let stream = inner_plan
-            .execute(doget.partition as usize, state.task_ctx())
+            .execute(doget.partition as usize, ctx.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
         let flight_data_stream = FlightDataEncoderBuilder::new()

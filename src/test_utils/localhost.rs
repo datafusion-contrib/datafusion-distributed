@@ -14,14 +14,6 @@ use std::time::Duration;
 use tonic::transport::{Channel, Server};
 use url::Url;
 
-#[derive(Debug, Clone)]
-pub struct NoopSessionBuilder;
-impl SessionBuilder for NoopSessionBuilder {
-    fn on_new_session(&self, builder: SessionStateBuilder) -> SessionStateBuilder {
-        builder
-    }
-}
-
 pub async fn start_localhost_context<N, I, B>(
     ports: I,
     session_builder: B,
@@ -49,12 +41,16 @@ where
 
     let config = SessionConfig::new().with_target_partitions(3);
 
-    let state = SessionStateBuilder::new()
+    let builder = SessionStateBuilder::new()
         .with_default_features()
-        .with_config(config)
-        .build();
+        .with_config(config);
+    let builder = session_builder.session_state_builder(builder).unwrap();
+
+    let state = builder.build();
+    let state = session_builder.session_state(state).await.unwrap();
 
     let ctx = SessionContext::new_with_state(state);
+    let ctx = session_builder.session_context(ctx).await.unwrap();
 
     ctx.state_ref()
         .write()
