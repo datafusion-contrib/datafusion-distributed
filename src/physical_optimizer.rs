@@ -12,9 +12,7 @@ use datafusion::{
     config::ConfigOptions,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{
-        repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
-    },
+    physical_plan::{repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties},
 };
 use uuid::Uuid;
 
