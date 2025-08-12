@@ -34,7 +34,8 @@ pub struct StageKey {
 pub struct ArrowFlightEndpoint {
     pub(super) channel_manager: Arc<ChannelManager>,
     pub(super) runtime: Arc<RuntimeEnv>,
-    pub(super) stages: DashMap<StageKey, OnceCell<(SessionState, Arc<ExecutionStage>)>>,
+    #[allow(clippy::type_complexity)]
+    pub(super) stages: DashMap<StageKey, Arc<OnceCell<(SessionState, Arc<ExecutionStage>)>>>,
     pub(super) session_builder: Arc<dyn SessionBuilder + Send + Sync>,
 }
 

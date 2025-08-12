@@ -91,7 +91,10 @@ impl ArrowFlightEndpoint {
         let key = doget
             .stage_key
             .ok_or(Status::invalid_argument("DoGet is missing the stage key"))?;
-        let once_stage = self.stages.entry(key).or_default();
+        let once_stage = {
+            let entry = self.stages.entry(key).or_default();
+            Arc::clone(&entry)
+        };
 
         let (state, stage) = once_stage
             .get_or_try_init(|| async {
