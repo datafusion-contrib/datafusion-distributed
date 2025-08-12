@@ -187,7 +187,7 @@ impl RunOpt {
                 }
             }
         }
-        benchmark_run.compare_with_previous(self.output_path.as_ref())?;
+        benchmark_run.maybe_compare_with_previous(self.output_path.as_ref())?;
         benchmark_run.maybe_write_json(self.output_path.as_ref())?;
         benchmark_run.maybe_print_failures();
         Ok(())

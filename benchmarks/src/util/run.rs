@@ -209,7 +209,7 @@ impl BenchmarkRun {
         Ok(())
     }
 
-    pub fn compare_with_previous(&self, maybe_path: Option<impl AsRef<Path>>) -> Result<()> {
+    pub fn maybe_compare_with_previous(&self, maybe_path: Option<impl AsRef<Path>>) -> Result<()> {
         let Some(path) = maybe_path else {
             return Ok(());
         };
