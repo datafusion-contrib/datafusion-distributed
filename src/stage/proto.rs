@@ -31,7 +31,7 @@ pub struct ExecutionStageProto {
     pub plan: Option<Box<PhysicalPlanNode>>,
     /// The input stages to this stage
     #[prost(repeated, message, tag = "5")]
-    pub inputs: Vec<Box<ExecutionStageProto>>,
+    pub inputs: Vec<ExecutionStageProto>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     #[prost(message, repeated, tag = "6")]
@@ -45,7 +45,7 @@ pub fn proto_from_stage(
     let proto_plan = PhysicalPlanNode::try_from_physical_plan(stage.plan.clone(), codec)?;
     let inputs = stage
         .child_stages_iter()
-        .map(|s| Ok(Box::new(proto_from_stage(s, codec)?)))
+        .map(|s| proto_from_stage(s, codec))
         .collect::<Result<Vec<_>>>()?;
 
     Ok(ExecutionStageProto {
@@ -74,7 +74,7 @@ pub fn stage_from_proto(
         .inputs
         .into_iter()
         .map(|s| {
-            stage_from_proto(*s, registry, runtime, codec)
+            stage_from_proto(s, registry, runtime, codec)
                 .map(|s| Arc::new(s) as Arc<dyn ExecutionPlan>)
         })
         .collect::<Result<Vec<_>>>()?;

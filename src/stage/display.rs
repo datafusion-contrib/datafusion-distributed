@@ -26,19 +26,13 @@ use super::ExecutionStage;
 
 // Unicode box-drawing characters for creating borders and connections.
 const LTCORNER: &str = "┌"; // Left top corner
-const RTCORNER: &str = "┐"; // Right top corner
 const LDCORNER: &str = "└"; // Left bottom corner
-const RDCORNER: &str = "┘"; // Right bottom corner
-
-const TMIDDLE: &str = "┬"; // Top T-junction (connects down)
-const LMIDDLE: &str = "├"; // Left T-junction (connects right)
-const DMIDDLE: &str = "┴"; // Bottom T-junction (connects up)
-
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
 
 impl DisplayAs for ExecutionStage {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        #[allow(clippy::format_in_format_args)]
         match t {
             DisplayFormatType::Default => {
                 write!(f, "{}", self.name)
