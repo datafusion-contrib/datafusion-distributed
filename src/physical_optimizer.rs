@@ -13,7 +13,7 @@ use datafusion::{
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        displayable, repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
+        repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
     },
 };
 use uuid::Uuid;

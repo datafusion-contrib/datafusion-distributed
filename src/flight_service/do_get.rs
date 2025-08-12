@@ -10,11 +10,9 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::optimizer::OptimizerConfig;
-use datafusion::physical_plan::ExecutionPlan;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
 
 use super::service::StageKey;
@@ -67,13 +65,6 @@ impl ArrowFlightEndpoint {
         state.config_mut().set_extension(Arc::new(partition_group));
 
         let inner_plan = stage.plan.clone();
-
-        /*println!(
-            "{} Task {:?} executing partition {}",
-            stage.name(),
-            task.partition_group,
-            partition
-        );*/
 
         let stream = inner_plan
             .execute(partition, state.task_ctx())

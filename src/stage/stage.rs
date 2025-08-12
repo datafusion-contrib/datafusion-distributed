@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::common::internal_err;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{displayable, ExecutionPlan};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use itertools::Itertools;

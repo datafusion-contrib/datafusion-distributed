@@ -103,9 +103,6 @@ pub struct RunOpt {
     /// The maximum number of partitions per task.
     #[structopt(long = "ppt")]
     partitions_per_task: Option<usize>,
-
-    #[structopt(long = "validate")]
-    validate: bool,
 }
 
 #[async_trait]
@@ -157,7 +154,7 @@ impl SessionBuilder for RunOpt {
 
 impl RunOpt {
     pub async fn run(self) -> Result<()> {
-        let (ctx, _guard) = start_localhost_context([40051], self.clone()).await;
+        let (ctx, _guard) = start_localhost_context(1, self.clone()).await;
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
             Some(query_id) => query_id..=query_id,
@@ -225,42 +222,11 @@ impl RunOpt {
                 "Query {query_id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
             );
 
-            let valid = if self.validate {
-                let mut single_node_result = vec![];
-                for (i, query) in sql.iter().enumerate() {
-                    if i == result_stmt {
-                        single_node_result = self.execute_query(&single_node_ctx, query).await?;
-                    } else {
-                        self.execute_query(&single_node_ctx, query).await?;
-                    }
-                }
-
-                let res = pretty::pretty_format_batches(&result)?.to_string();
-                let single_node_res =
-                    pretty::pretty_format_batches(&single_node_result)?.to_string();
-                res == single_node_res
-            } else {
-                false
-            };
-
-            query_results.push(QueryResult {
-                valid,
-                elapsed,
-                row_count,
-            });
+            query_results.push(QueryResult { elapsed, row_count });
         }
 
         let avg = millis.iter().sum::<f64>() / millis.len() as f64;
-        let valid_str = if self.validate {
-            if query_results[query_results.len() - 1].valid {
-                "valid"
-            } else {
-                "invalid"
-            }
-        } else {
-            ""
-        };
-        println!("Query {query_id} avg time: {avg:.2} ms {valid_str}");
+        println!("Query {query_id} avg time: {avg:.2} ms");
 
         // Print memory stats using mimalloc (only when compiled with --features mimalloc_extended)
         print_memory_stats();

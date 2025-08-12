@@ -1,4 +1,4 @@
-use std::{io::Bytes, sync::Arc};
+use std::sync::Arc;
 
 use datafusion::{
     common::internal_datafusion_err,
@@ -10,7 +10,6 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
-use uuid::Uuid;
 
 use crate::task::ExecutionTask;
 

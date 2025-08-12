@@ -96,7 +96,6 @@ pub struct BenchQuery {
 pub struct QueryResult {
     pub elapsed: Duration,
     pub row_count: usize,
-    pub valid: bool,
 }
 /// collects benchmark run data and then serializes it at the end
 pub struct BenchmarkRun {

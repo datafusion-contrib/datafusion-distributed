@@ -198,7 +198,7 @@ impl SchemaErrorProto {
                 valid_fields,
             } => SchemaErrorProto {
                 inner: Some(SchemaErrorInnerProto::FieldNotFound(FieldNotFoundProto {
-                    field: Some(Box::new(ColumnProto::from_column(&field))),
+                    field: Some(Box::new(ColumnProto::from_column(field))),
                     valid_fields: valid_fields.iter().map(ColumnProto::from_column).collect(),
                 })),
                 backtrace: backtrace.cloned(),

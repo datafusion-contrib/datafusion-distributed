@@ -1,4 +1,3 @@
-use datafusion::common::utils::get_available_parallelism;
 use std::env;
 
 pub use insta;

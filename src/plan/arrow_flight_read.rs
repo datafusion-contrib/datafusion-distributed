@@ -11,7 +11,6 @@ use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -19,7 +18,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{future, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{future, TryFutureExt, TryStreamExt};
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
@@ -192,7 +191,6 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let stream = async move {
             let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
-                let i_capture = i;
                 let child_stage_proto_capture = child_stage_proto.clone();
                 let channel_manager_capture = channel_manager.clone();
                 let schema = schema.clone();
@@ -211,7 +209,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
                         stage_proto: Some(child_stage_proto_capture),
                         partition: partition as u64,
                         stage_key: Some(key),
-                        task_number: i_capture as u64,
+                        task_number: i as u64,
                     }
                     .encode_to_vec()
                     .into();
