@@ -3,12 +3,13 @@ use std::sync::Arc;
 use datafusion::common::internal_err;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{displayable, ExecutionPlan};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use itertools::Itertools;
 use rand::Rng;
 use url::Url;
+use uuid::Uuid;
 
 use crate::task::ExecutionTask;
 use crate::ChannelManager;
@@ -24,7 +25,7 @@ use crate::ChannelManager;
 /// When an [`ExecutionStage`] is execute()'d if will execute its plan and return a stream
 /// of record batches.
 ///
-/// If the stage has input stages, then those input stages will be executed on remote resources
+/// If the stage has input stages, then it those input stages will be executed on remote resources
 /// and will be provided the remainder of the stage tree.
 ///
 /// For example if our stage tree looks like this:
@@ -74,6 +75,8 @@ use crate::ChannelManager;
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
 pub struct ExecutionStage {
+    /// Our query_id
+    pub query_id: Uuid,
     /// Our stage number
     pub num: usize,
     /// Our stage name
@@ -92,22 +95,18 @@ pub struct ExecutionStage {
 impl ExecutionStage {
     /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
     /// responsible for partitions in the plan.
-    pub fn new(num: usize, plan: Arc<dyn ExecutionPlan>, inputs: Vec<Arc<ExecutionStage>>) -> Self {
-        println!(
-            "Creating ExecutionStage: {}, with inputs {}",
-            num,
-            inputs
-                .iter()
-                .map(|s| format!("{}", s.num))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
+    pub fn new(
+        query_id: Uuid,
+        num: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        inputs: Vec<Arc<ExecutionStage>>,
+    ) -> Self {
         let name = format!("Stage {:<3}", num);
         let partition_group = (0..plan.properties().partitioning.partition_count())
             .map(|p| p as u64)
             .collect();
         ExecutionStage {
+            query_id,
             num,
             name,
             plan,
@@ -209,9 +208,8 @@ impl ExecutionStage {
             })
             .collect::<Vec<_>>();
 
-        println!("stage {} assigned_tasks: {:?}", self.num, assigned_tasks);
-
         let assigned_stage = ExecutionStage {
+            query_id: self.query_id,
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),
@@ -242,6 +240,7 @@ impl ExecutionPlan for ExecutionStage {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(ExecutionStage {
+            query_id: self.query_id,
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),
@@ -288,11 +287,6 @@ impl ExecutionPlan for ExecutionStage {
 
         let new_ctx =
             SessionContext::new_with_config_rt(config, context.runtime_env().clone()).task_ctx();
-
-        println!(
-            "assinged_stage:\n{}",
-            displayable(assigned_stage.as_ref()).indent(true)
-        );
 
         assigned_stage.plan.execute(partition, new_ctx)
     }

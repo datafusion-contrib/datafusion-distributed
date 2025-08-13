@@ -1129,6 +1129,7 @@ dependencies = [
  "prost",
  "rand 0.8.5",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower 0.5.2",
  "tpchgen",

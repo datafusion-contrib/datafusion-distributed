@@ -5,5 +5,5 @@ mod stream_partitioner_registry;
 
 pub(crate) use do_get::DoGet;
 
-pub use service::ArrowFlightEndpoint;
+pub use service::{ArrowFlightEndpoint, StageKey};
 pub use session_builder::{NoopSessionBuilder, SessionBuilder};

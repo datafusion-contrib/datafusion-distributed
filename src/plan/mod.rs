@@ -5,4 +5,4 @@ mod isolator;
 
 pub use arrow_flight_read::ArrowFlightReadExec;
 pub use codec::DistributedCodec;
-pub use isolator::PartitionIsolatorExec;
+pub use isolator::{PartitionGroup, PartitionIsolatorExec};

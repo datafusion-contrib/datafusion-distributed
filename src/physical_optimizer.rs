@@ -12,10 +12,9 @@ use datafusion::{
     config::ConfigOptions,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{
-        displayable, repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties,
-    },
+    physical_plan::{repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties},
 };
+use uuid::Uuid;
 
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule {
@@ -58,10 +57,6 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         if plan.as_any().is::<ExecutionStage>() {
             return Ok(plan);
         }
-        println!(
-            "DistributedPhysicalOptimizerRule: optimizing plan: {}",
-            displayable(plan.as_ref()).indent(false)
-        );
 
         let plan = self.apply_network_boundaries(plan)?;
         let plan = self.distribute_plan(plan)?;
@@ -112,11 +107,13 @@ impl DistributedPhysicalOptimizerRule {
         &self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<ExecutionStage, DataFusionError> {
-        self._distribute_plan_inner(plan, &mut 1, 0)
+        let query_id = Uuid::new_v4();
+        self._distribute_plan_inner(query_id, plan, &mut 1, 0)
     }
 
     fn _distribute_plan_inner(
         &self,
+        query_id: Uuid,
         plan: Arc<dyn ExecutionPlan>,
         num: &mut usize,
         depth: usize,
@@ -130,14 +127,14 @@ impl DistributedPhysicalOptimizerRule {
             let child = Arc::clone(node.children().first().cloned().ok_or(
                 internal_datafusion_err!("Expected ArrowFlightExecRead to have a child"),
             )?);
-            let stage = self._distribute_plan_inner(child, num, depth + 1)?;
+            let stage = self._distribute_plan_inner(query_id, child, num, depth + 1)?;
             let node = Arc::new(node.to_distributed(stage.num)?);
             inputs.push(stage);
             Ok(Transformed::new(node, true, TreeNodeRecursion::Jump))
         })?;
 
         let inputs = inputs.into_iter().map(Arc::new).collect();
-        let mut stage = ExecutionStage::new(*num, distributed.data, inputs);
+        let mut stage = ExecutionStage::new(query_id, *num, distributed.data, inputs);
         *num += 1;
 
         if let Some(partitions_per_task) = self.partitions_per_task {

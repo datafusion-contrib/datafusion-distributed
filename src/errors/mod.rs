@@ -17,8 +17,8 @@ mod schema_error;
 pub fn datafusion_error_to_tonic_status(err: &DataFusionError) -> tonic::Status {
     let err = DataFusionErrorProto::from_datafusion_error(err);
     let err = err.encode_to_vec();
-    let status = tonic::Status::with_details(tonic::Code::Internal, "DataFusionError", err.into());
-    status
+
+    tonic::Status::with_details(tonic::Code::Internal, "DataFusionError", err.into())
 }
 
 /// Decodes a [DataFusionError] from a [tonic::Status] error. If the provided [tonic::Status]

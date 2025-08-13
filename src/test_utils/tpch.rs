@@ -148,7 +148,7 @@ where
 
         writer.write(&first_batch)?;
 
-        while let Some(batch) = data_source.next() {
+        for batch in data_source {
             writer.write(&batch)?;
         }
 

@@ -8,31 +8,45 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion::{common::runtime::JoinSet, prelude::SessionConfig};
 use std::error::Error;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use url::Url;
 
-pub async fn start_localhost_context<N, I, B>(
-    ports: I,
+pub async fn start_localhost_context<B>(
+    num_workers: usize,
     session_builder: B,
 ) -> (SessionContext, JoinSet<()>)
 where
-    N::Error: std::fmt::Debug,
-    N: TryInto<u16>,
-    I: IntoIterator<Item = N>,
     B: SessionBuilder + Send + Sync + 'static,
     B: Clone,
 {
-    let ports: Vec<u16> = ports.into_iter().map(|x| x.try_into().unwrap()).collect();
+    let listeners = futures::future::try_join_all(
+        (0..num_workers)
+            .map(|_| TcpListener::bind("127.0.0.1:0"))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .expect("Failed to bind to address");
+
+    let ports: Vec<u16> = listeners
+        .iter()
+        .map(|listener| {
+            listener
+                .local_addr()
+                .expect("Failed to get local address")
+                .port()
+        })
+        .collect();
+
     let channel_resolver = LocalHostChannelResolver::new(ports.clone());
     let mut join_set = JoinSet::new();
-    for port in ports {
+    for listener in listeners {
         let channel_resolver = channel_resolver.clone();
         let session_builder = session_builder.clone();
         join_set.spawn(async move {
-            spawn_flight_service(channel_resolver, session_builder, port)
+            spawn_flight_service(channel_resolver, session_builder, listener)
                 .await
                 .unwrap();
         });
@@ -63,7 +77,6 @@ where
 #[derive(Clone)]
 pub struct LocalHostChannelResolver {
     ports: Vec<u16>,
-    i: Arc<AtomicUsize>,
 }
 
 impl LocalHostChannelResolver {
@@ -72,7 +85,6 @@ impl LocalHostChannelResolver {
         N::Error: std::fmt::Debug,
     {
         Self {
-            i: Arc::new(AtomicUsize::new(0)),
             ports: ports.into_iter().map(|v| v.try_into().unwrap()).collect(),
         }
     }
@@ -97,13 +109,16 @@ impl ChannelResolver for LocalHostChannelResolver {
 pub async fn spawn_flight_service(
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
     session_builder: impl SessionBuilder + Send + Sync + 'static,
-    port: u16,
+    incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut endpoint = ArrowFlightEndpoint::new(channel_resolver);
     endpoint.with_session_builder(session_builder);
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
+
     Ok(Server::builder()
         .add_service(FlightServiceServer::new(endpoint))
-        .serve(format!("127.0.0.1:{port}").parse()?)
+        .serve_with_incoming(incoming)
         .await?)
 }
 

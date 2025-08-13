@@ -1,7 +1,5 @@
 [workspace]
-members = [
-    "benchmarks"
-]
+members = ["benchmarks"]
 
 [workspace.dependencies]
 datafusion = { version = "49.0.0" }
@@ -37,14 +35,16 @@ tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d82343252
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8", optional = true }
 parquet = { version = "55.2.0", optional = true }
 arrow = { version = "55.2.0", optional = true }
+tokio-stream = { version = "0.1.17", optional = true }
 
 [features]
 integration = [
     "insta",
     "tpchgen",
-    "tpchgen-arrow", 
+    "tpchgen-arrow",
     "parquet",
-    "arrow"
+    "arrow",
+    "tokio-stream",
 ]
 
 [dev-dependencies]

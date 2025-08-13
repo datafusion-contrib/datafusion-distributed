@@ -224,8 +224,8 @@ mod tests {
             let (recovered_error, recovered_ctx) = proto.to_arrow_error();
 
             if original_error.to_string() != recovered_error.to_string() {
-                println!("original error: {}", original_error.to_string());
-                println!("recovered error: {}", recovered_error.to_string());
+                println!("original error: {}", original_error);
+                println!("recovered error: {}", recovered_error);
             }
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());

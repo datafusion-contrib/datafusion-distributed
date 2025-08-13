@@ -49,8 +49,7 @@ mod tests {
             }
         }
 
-        let (ctx, _guard) =
-            start_localhost_context([50050, 50051, 50052], CustomSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(3, CustomSessionBuilder).await;
 
         let single_node_plan = build_plan(false)?;
         assert_snapshot!(displayable(single_node_plan.as_ref()).indent(true).to_string(), @r"

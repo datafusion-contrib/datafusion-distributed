@@ -100,8 +100,7 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Mark the first column of each table as sorted in ascending order.
-    /// The tables should have been created with the `--sort` option for this to have any effect.
+    /// The maximum number of partitions per task.
     #[structopt(long = "ppt")]
     partitions_per_task: Option<usize>,
 }
@@ -115,8 +114,23 @@ impl SessionBuilder for RunOpt {
         let mut config = self
             .common
             .config()?
-            .with_collect_statistics(!self.disable_statistics);
+            .with_collect_statistics(!self.disable_statistics)
+            .with_target_partitions(self.partitions());
+
+        // FIXME: these three options are critical for the correct function of the library
+        // but we are not enforcing that the user sets them.  They are here at the moment
+        // but we should figure out a way to do this better.
+        config
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        config
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
+
         config.options_mut().optimizer.prefer_hash_join = self.prefer_hash_join;
+        // end critical options section
         let rt_builder = self.common.runtime_env_builder()?;
 
         let mut rule = DistributedPhysicalOptimizerRule::new();
@@ -140,7 +154,7 @@ impl SessionBuilder for RunOpt {
 
 impl RunOpt {
     pub async fn run(self) -> Result<()> {
-        let (ctx, _guard) = start_localhost_context([50051], self.clone()).await;
+        let (ctx, _guard) = start_localhost_context(1, self.clone()).await;
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
             Some(query_id) => query_id..=query_id,
@@ -180,23 +194,22 @@ impl RunOpt {
 
         let sql = &get_query_sql(query_id)?;
 
+        let single_node_ctx = SessionContext::new();
+        self.register_tables(&single_node_ctx).await?;
+
         for i in 0..self.iterations() {
             let start = Instant::now();
+            let mut result = vec![];
 
             // query 15 is special, with 3 statements. the second statement is the one from which we
             // want to capture the results
-            let mut result = vec![];
-            if query_id == 15 {
-                for (n, query) in sql.iter().enumerate() {
-                    if n == 1 {
-                        result = self.execute_query(ctx, query).await?;
-                    } else {
-                        self.execute_query(ctx, query).await?;
-                    }
-                }
-            } else {
-                for query in sql {
+            let result_stmt = if query_id == 15 { 1 } else { sql.len() - 1 };
+
+            for (i, query) in sql.iter().enumerate() {
+                if i == result_stmt {
                     result = self.execute_query(ctx, query).await?;
+                } else {
+                    self.execute_query(ctx, query).await?;
                 }
             }
 
@@ -208,6 +221,7 @@ impl RunOpt {
             println!(
                 "Query {query_id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
             );
+
             query_results.push(QueryResult { elapsed, row_count });
         }
 

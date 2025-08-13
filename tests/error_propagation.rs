@@ -36,8 +36,7 @@ mod tests {
                 Ok(with_user_codec(builder, ErrorExecCodec))
             }
         }
-        let (ctx, _guard) =
-            start_localhost_context([50050, 50051, 50053], CustomSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(3, CustomSessionBuilder).await;
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 
