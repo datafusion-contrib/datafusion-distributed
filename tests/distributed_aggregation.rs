@@ -53,7 +53,6 @@ mod tests {
         │partitions [out:8  <-- in:8  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │partitions [out:8  <-- in:8  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │partitions [out:8            ]           ArrowFlightReadExec: Stage 2  
-        │
         └──────────────────────────────────────────────────
           ┌───── Stage 2   Task: partitions: 0..2,unassigned]
           │partitions [out:3  <-- in:3  ] CoalesceBatchesExec: target_batch_size=8192
@@ -61,11 +60,9 @@ mod tests {
           │partitions [out:3  <-- in:1  ]     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
           │partitions [out:1  <-- in:1  ]       AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │partitions [out:1            ]         ArrowFlightReadExec: Stage 1  
-          │
           └──────────────────────────────────────────────────
             ┌───── Stage 1   Task: partitions: 0,unassigned]
             │partitions [out:1            ] DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
-            │
             └──────────────────────────────────────────────────
         ",
         );
