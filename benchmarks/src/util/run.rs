@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use chrono::{DateTime, Utc};
 use datafusion::common::utils::get_available_parallelism;
+use datafusion::error::DataFusionError;
 use datafusion::{error::Result, DATAFUSION_VERSION};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use std::error::Error;
 use std::{
     collections::HashMap,
     path::Path,
@@ -36,6 +39,14 @@ where
             .as_secs(),
     )
 }
+fn deserialize_start_time<'de, D>(des: D) -> Result<SystemTime, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs = u64::deserialize(des)?;
+    Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+}
+
 fn serialize_elapsed<S>(elapsed: &Duration, ser: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -43,7 +54,14 @@ where
     let ms = elapsed.as_secs_f64() * 1000.0;
     ser.serialize_f64(ms)
 }
-#[derive(Debug, Serialize)]
+fn deserialize_elapsed<'de, D>(des: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let ms = f64::deserialize(des)?;
+    Ok(Duration::from_secs_f64(ms / 1000.0))
+}
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunContext {
     /// Benchmark crate version
     pub benchmark_version: String,
@@ -52,7 +70,10 @@ pub struct RunContext {
     /// Number of CPU cores
     pub num_cpus: usize,
     /// Start time
-    #[serde(serialize_with = "serialize_start_time")]
+    #[serde(
+        serialize_with = "serialize_start_time",
+        deserialize_with = "deserialize_start_time"
+    )]
     pub start_time: SystemTime,
     /// CLI arguments
     pub arguments: Vec<String>,
@@ -77,18 +98,24 @@ impl RunContext {
 }
 
 /// A single iteration of a benchmark query
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct QueryIter {
-    #[serde(serialize_with = "serialize_elapsed")]
+    #[serde(
+        serialize_with = "serialize_elapsed",
+        deserialize_with = "deserialize_elapsed"
+    )]
     elapsed: Duration,
     row_count: usize,
 }
 /// A single benchmark case
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BenchQuery {
     query: String,
     iterations: Vec<QueryIter>,
-    #[serde(serialize_with = "serialize_start_time")]
+    #[serde(
+        serialize_with = "serialize_start_time",
+        deserialize_with = "deserialize_start_time"
+    )]
     start_time: SystemTime,
     success: bool,
 }
@@ -181,4 +208,71 @@ impl BenchmarkRun {
         };
         Ok(())
     }
+
+    pub fn maybe_compare_with_previous(&self, maybe_path: Option<impl AsRef<Path>>) -> Result<()> {
+        let Some(path) = maybe_path else {
+            return Ok(());
+        };
+        let Ok(prev) = std::fs::read(path) else {
+            return Ok(());
+        };
+
+        let mut prev_output: HashMap<&str, Value> =
+            serde_json::from_slice(&prev).map_err(external)?;
+
+        let prev_queries: Vec<BenchQuery> =
+            serde_json::from_value(prev_output.remove("queries").unwrap()).map_err(external)?;
+
+        let mut header_printed = false;
+        for query in self.queries.iter() {
+            let Some(prev_query) = prev_queries.iter().find(|v| v.query == query.query) else {
+                continue;
+            };
+            if prev_query.iterations.is_empty() {
+                continue;
+            }
+            if query.iterations.is_empty() {
+                println!("{}: Failed ❌", query.query);
+                continue;
+            }
+
+            let avg_prev = prev_query.avg();
+            let avg = query.avg();
+            let (f, tag, emoji) = if avg < avg_prev {
+                let f = avg_prev as f64 / avg as f64;
+                (f, "faster", if f > 1.2 { "✅" } else { "✔" })
+            } else {
+                let f = avg as f64 / avg_prev as f64;
+                (f, "slower", if f > 1.2 { "❌" } else { "✖" })
+            };
+            if !header_printed {
+                header_printed = true;
+                let datetime: DateTime<Utc> = prev_query.start_time.into();
+                println!(
+                    "==== Comparison with the previous benchmark from {} ====",
+                    datetime.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+            }
+            println!(
+                "{:>8}: prev={avg_prev:>4} ms, new={avg:>4} ms, diff={f:.2} {tag} {emoji}",
+                query.query
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl BenchQuery {
+    fn avg(&self) -> u128 {
+        self.iterations
+            .iter()
+            .map(|v| v.elapsed.as_millis())
+            .sum::<u128>()
+            / self.iterations.len() as u128
+    }
+}
+
+fn external(err: impl Error + Send + Sync + 'static) -> DataFusionError {
+    DataFusionError::External(Box::new(err))
 }

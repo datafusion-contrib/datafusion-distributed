@@ -36,7 +36,7 @@ use datafusion::datasource::listing::{
 };
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
@@ -75,7 +75,7 @@ pub struct RunOpt {
     path: PathBuf,
 
     /// File format: `csv` or `parquet`
-    #[structopt(short = "f", long = "format", default_value = "csv")]
+    #[structopt(short = "f", long = "format", default_value = "parquet")]
     file_format: String,
 
     /// Load the data into a MemTable before executing the query
@@ -100,7 +100,11 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// The maximum number of partitions per task.
+    /// Run in distributed mode.
+    #[structopt(short = "D", long = "distributed")]
+    distributed: bool,
+
+    /// Number of partitions per task.
     #[structopt(long = "ppt")]
     partitions_per_task: Option<usize>,
 }
@@ -109,7 +113,7 @@ pub struct RunOpt {
 impl SessionBuilder for RunOpt {
     fn session_state_builder(
         &self,
-        builder: SessionStateBuilder,
+        mut builder: SessionStateBuilder,
     ) -> Result<SessionStateBuilder, DataFusionError> {
         let mut config = self
             .common
@@ -133,13 +137,16 @@ impl SessionBuilder for RunOpt {
         // end critical options section
         let rt_builder = self.common.runtime_env_builder()?;
 
-        let mut rule = DistributedPhysicalOptimizerRule::new();
-        if let Some(ppt) = self.partitions_per_task {
-            rule = rule.with_maximum_partitions_per_task(ppt);
+        if self.distributed {
+            let mut rule = DistributedPhysicalOptimizerRule::new();
+            if let Some(partitions_per_task) = self.partitions_per_task {
+                rule = rule.with_maximum_partitions_per_task(partitions_per_task)
+            }
+            builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
+
         Ok(builder
             .with_config(config)
-            .with_physical_optimizer_rule(Arc::new(rule))
             .with_runtime_env(rt_builder.build_arc()?))
     }
 
@@ -153,7 +160,7 @@ impl SessionBuilder for RunOpt {
 }
 
 impl RunOpt {
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         let (ctx, _guard) = start_localhost_context(1, self.clone()).await;
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
@@ -161,6 +168,8 @@ impl RunOpt {
             None => TPCH_QUERY_START_ID..=TPCH_QUERY_END_ID,
         };
 
+        self.output_path
+            .get_or_insert_with(|| self.path.join("results.json"));
         let mut benchmark_run = BenchmarkRun::new();
 
         for query_id in query_range {
@@ -178,6 +187,7 @@ impl RunOpt {
                 }
             }
         }
+        benchmark_run.maybe_compare_with_previous(self.output_path.as_ref())?;
         benchmark_run.maybe_write_json(self.output_path.as_ref())?;
         benchmark_run.maybe_print_failures();
         Ok(())

@@ -16,6 +16,7 @@ serde_json = "1.0.141"
 env_logger = "0.11.8"
 async-trait = "0.1.88"
 datafusion-proto = { version = "49.0.0", optional = true }
+chrono = "0.4.41"
 
 [[bin]]
 name = "dfbench"

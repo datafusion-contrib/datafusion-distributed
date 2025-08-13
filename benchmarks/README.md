@@ -13,12 +13,5 @@ Generate TPCH data into the `data/` dir
 After generating the data with the command above:
 
 ```shell
-cargo run -p datafusion-distributed-benchmarks --release -- tpch --path data/tpch_sf1
-```
-
-In order to validate the correctness of the results against single node execution, add
-`--validate`
-
-```shell
-cargo run -p datafusion-distributed-benchmarks --release -- tpch --path data/tpch_sf1 --validate
+cargo run -p datafusion-distributed-benchmarks --release -- tpch --path benchmarks/data/tpch_sf1
 ```
