@@ -90,7 +90,7 @@ where
     }
 
     async fn _new(tick: Duration, ttl: Duration) -> Self {
-        let bucket_count = (ttl.as_millis() / tick.as_millis()) as usize;
+        let bucket_count = (ttl.as_nanos() / tick.as_nanos()) as usize;
         let mut buckets = Vec::with_capacity(bucket_count);
         for _ in 0..bucket_count {
             buckets.push(HashSet::new());
@@ -340,4 +340,70 @@ mod tests {
         let final_time = ttl_map.time.load(Ordering::SeqCst);
         assert!(final_time < 100);
     }
+
+ 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bench_lock_contention() {
+        use std::time::Instant;
+
+        let ttl_map = TTLMap::<String, i32>::new(TTLMapParams {
+            tick: Duration::from_micros(1),
+            ttl: Duration::from_micros(2),
+        })
+        .await
+        .unwrap();
+
+        let ttl_map = Arc::new(ttl_map);
+
+        let key_count = 10;
+        let start_time = Instant::now();
+        let operations_per_task = 1_000_000;
+        let task_count = 100;
+
+        // Spawn 10 tasks that repeatedly read the same keys
+        let mut handles = Vec::new();
+        for task_id in 0..task_count {
+            let map = Arc::clone(&ttl_map);
+            let handle = tokio::spawn(async move {
+                let mut local_ops = 0;
+                for i in 0..operations_per_task {
+                    // All tasks fight for the same keys - maximum contention
+                    let key = format!("key{}", i % key_count);
+                    let _value = map.get_or_init(key, || task_id * 1000 + i).await;
+                    local_ops += 1;
+
+                    // Small yield to allow GC to run frequently
+                    if i % 10 == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                local_ops
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks and collect operation counts
+        let mut total_operations = 0;
+        for handle in handles {
+            total_operations += handle.await.unwrap();
+        }
+
+        let elapsed = start_time.elapsed();
+        let ops_per_second = total_operations as f64 / elapsed.as_secs_f64();
+        let avg_latency_us = elapsed.as_micros() as f64 / total_operations as f64;
+
+        println!("\n=== TTLMap Lock Contention Benchmark ===");
+        println!("Tasks: {}", task_count);
+        println!("Operations per task: {}", operations_per_task);
+        println!("Total operations: {}", total_operations);
+        println!("Total time: {:.2?}", elapsed);
+        println!("Throughput: {:.0} ops/sec", ops_per_second);
+        println!("Average latency: {:.2} μs per operation", avg_latency_us);
+        println!("Entries remaining: {}", ttl_map.data.len());
+
+        // The benchmark passes if it completes without deadlocks
+        // Performance metrics are printed for analysis
+        assert!(ops_per_second > 0.0); // Sanity check
+    }
+
 }
