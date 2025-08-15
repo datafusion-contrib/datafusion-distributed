@@ -27,6 +27,7 @@ url = "2.5.4"
 uuid = "1.17.0"
 delegate = "0.13.4"
 dashmap = "6.1.0"
+moka = { version = "0.12", features = ["future"] }
 prost = "0.13.5"
 rand = "0.8.5"
 object_store = "0.12.3"
