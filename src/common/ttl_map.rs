@@ -131,10 +131,7 @@ where
     {
         let mut new_entry = false;
         let start = std::time::Instant::now();
-        let entry = self.data.entry(key.clone());
-        self.dash_map_lock_contention_time
-            .fetch_add(start.elapsed().as_nanos() as usize, Relaxed);
-        let value = match entry {
+        let value = match self.data.entry(key.clone()) {
             Entry::Vacant(entry) => {
                 let value = f();
                 entry.insert(value.clone());
@@ -143,6 +140,8 @@ where
             }
             Entry::Occupied(entry) => entry.get().clone(),
         };
+        self.dash_map_lock_contention_time
+            .fetch_add(start.elapsed().as_nanos() as usize, Relaxed);
 
         // Insert the key into the previous bucket, meaning the key will be evicted
         // when the wheel completes a full rotation.
@@ -369,6 +368,7 @@ mod tests {
 
         let start_time = Instant::now();
         let task_count = 100_000;
+        let contention_factor = 10;
 
         // Spawn 10 tasks that repeatedly read the same keys
         let mut handles = Vec::new();
@@ -377,7 +377,7 @@ mod tests {
             let handle = tokio::spawn(async move {
                 // All tasks fight for the same keys - maximum contention
                 let start = Instant::now();
-                let _value = map.get_or_init(rand::random(), || task_id * 1000).await;
+                let _value = map.get_or_init(task_id % (task_count / contention_factor), || task_id * 1000).await;
                 start.elapsed().as_nanos()
             });
             handles.push(handle);
