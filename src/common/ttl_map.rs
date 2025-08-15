@@ -368,7 +368,6 @@ mod tests {
 
         let start_time = Instant::now();
         let task_count = 100_000;
-        let contention_factor = 10;
 
         // Spawn 10 tasks that repeatedly read the same keys
         let mut handles = Vec::new();
@@ -377,7 +376,7 @@ mod tests {
             let handle = tokio::spawn(async move {
                 // All tasks fight for the same keys - maximum contention
                 let start = Instant::now();
-                let _value = map.get_or_init(task_id % (task_count / contention_factor), || task_id * 1000).await;
+                let _value = map.get_or_init(rand::random(), || task_id * 1000).await;
                 start.elapsed().as_nanos()
             });
             handles.push(handle);
