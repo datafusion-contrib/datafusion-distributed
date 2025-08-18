@@ -1,4 +1,6 @@
+use super::service::StageKey;
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::plan::{DistributedCodec, PartitionGroup};
@@ -10,12 +12,12 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::optimizer::OptimizerConfig;
+use datafusion::prelude::SessionConfig;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
+use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
-
-use super::service::StageKey;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
@@ -41,14 +43,15 @@ impl ArrowFlightEndpoint {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<<ArrowFlightEndpoint as FlightService>::DoGetStream>, Status> {
-        let Ticket { ticket } = request.into_inner();
+        let (metadata, _ext, ticket) = request.into_parts();
+        let Ticket { ticket } = ticket;
         let doget = DoGet::decode(ticket).map_err(|err| {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
 
         let partition = doget.partition as usize;
         let task_number = doget.task_number as usize;
-        let (mut state, stage) = self.get_state_and_stage(doget).await?;
+        let (mut state, stage) = self.get_state_and_stage(doget, metadata).await?;
 
         // find out which partition group we are executing
         let task = stage
@@ -87,6 +90,7 @@ impl ArrowFlightEndpoint {
     async fn get_state_and_stage(
         &self,
         doget: DoGet,
+        metadata: MetadataMap,
     ) -> Result<(SessionState, Arc<ExecutionStage>), Status> {
         let key = doget
             .stage_key
@@ -102,9 +106,16 @@ impl ArrowFlightEndpoint {
                     .stage_proto
                     .ok_or(Status::invalid_argument("DoGet is missing the stage proto"))?;
 
+                let mut config = SessionConfig::default();
+                config.set_extension(Arc::new(ContextGrpcMetadata::from_headers(
+                    metadata.into_headers(),
+                )));
+
                 let state_builder = SessionStateBuilder::new()
                     .with_runtime_env(Arc::clone(&self.runtime))
+                    .with_config(config)
                     .with_default_features();
+
                 let state_builder = self
                     .session_builder
                     .session_state_builder(state_builder)
