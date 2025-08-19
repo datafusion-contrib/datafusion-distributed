@@ -283,9 +283,9 @@ mod tests {
         assert!(metadata.contains_key("x-datafusion-distributed-custom.baz"));
 
         let get = |key: &str| metadata.get(key).unwrap().to_str().unwrap();
-        assert_eq!(get("x-datafusion-distributed-custom.foo"), "");
-        assert_eq!(get("x-datafusion-distributed-custom.bar"), "0");
-        assert_eq!(get("x-datafusion-distributed-custom.baz"), "false");
+        assert_eq!(get("x-datafusion-distributed-config-custom.foo"), "");
+        assert_eq!(get("x-datafusion-distributed-config-custom.bar"), "0");
+        assert_eq!(get("x-datafusion-distributed-config-custom.baz"), "false");
 
         Ok(())
     }
@@ -306,9 +306,9 @@ mod tests {
         let metadata = &flight_metadata.0;
 
         let get = |key: &str| metadata.get(key).unwrap().to_str().unwrap();
-        assert_eq!(get("x-datafusion-distributed-custom.foo"), "");
-        assert_eq!(get("x-datafusion-distributed-custom.bar"), "42");
-        assert_eq!(get("x-datafusion-distributed-custom.baz"), "false");
+        assert_eq!(get("x-datafusion-distributed-config-custom.foo"), "");
+        assert_eq!(get("x-datafusion-distributed-config-custom.bar"), "42");
+        assert_eq!(get("x-datafusion-distributed-config-custom.baz"), "false");
 
         Ok(())
     }
