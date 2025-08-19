@@ -3,9 +3,7 @@ use datafusion::common::plan_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
-use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
