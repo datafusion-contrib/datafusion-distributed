@@ -278,9 +278,9 @@ mod tests {
         assert!(flight_metadata.is_some());
 
         let metadata = &flight_metadata.unwrap().0;
-        assert!(metadata.contains_key("x-datafusion-distributed-custom.foo"));
-        assert!(metadata.contains_key("x-datafusion-distributed-custom.bar"));
-        assert!(metadata.contains_key("x-datafusion-distributed-custom.baz"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-custom.foo"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-custom.bar"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-custom.baz"));
 
         let get = |key: &str| metadata.get(key).unwrap().to_str().unwrap();
         assert_eq!(get("x-datafusion-distributed-config-custom.foo"), "");
@@ -362,17 +362,26 @@ mod tests {
         let flight_metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
         let metadata = &flight_metadata.0;
 
-        assert!(metadata.contains_key("x-datafusion-distributed-custom.foo"));
-        assert!(metadata.contains_key("x-datafusion-distributed-custom.bar"));
-        assert!(metadata.contains_key("x-datafusion-distributed-another.setting1"));
-        assert!(metadata.contains_key("x-datafusion-distributed-another.setting2"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-custom.foo"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-custom.bar"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-another.setting1"));
+        assert!(metadata.contains_key("x-datafusion-distributed-config-another.setting2"));
 
         let get = |key: &str| metadata.get(key).unwrap().to_str().unwrap();
 
-        assert_eq!(get("x-datafusion-distributed-custom.foo"), "custom_value");
-        assert_eq!(get("x-datafusion-distributed-custom.bar"), "123");
-        assert_eq!(get("x-datafusion-distributed-another.setting1"), "other");
-        assert_eq!(get("x-datafusion-distributed-another.setting2"), "456");
+        assert_eq!(
+            get("x-datafusion-distributed-config-custom.foo"),
+            "custom_value"
+        );
+        assert_eq!(get("x-datafusion-distributed-config-custom.bar"), "123");
+        assert_eq!(
+            get("x-datafusion-distributed-config-another.setting1"),
+            "other"
+        );
+        assert_eq!(
+            get("x-datafusion-distributed-config-another.setting2"),
+            "456"
+        );
 
         let mut new_config = SessionConfig::new();
         new_config.set_extension(flight_metadata);
