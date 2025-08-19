@@ -53,3 +53,4 @@ tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d82343252
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d823432528eed4f70fca5a1296a66c68a389a8" }
 parquet = "55.2.0"
 arrow = "55.2.0"
+tokio-stream = "0.1.17"
