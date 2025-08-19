@@ -162,10 +162,11 @@ impl ConfigExtensionExt for SessionConfig {
         let mut found_some = false;
         for (k, v) in flight_metadata.0.iter() {
             let key = k.as_str().trim_start_matches(FLIGHT_METADATA_CONFIG_PREFIX);
-            if key.starts_with(T::PREFIX) {
+            let prefix = format!("{}.", T::PREFIX);
+            if key.starts_with(&prefix) {
                 found_some = true;
                 result.set(
-                    &key.trim_start_matches(T::PREFIX).trim_start_matches("."),
+                    &key.trim_start_matches(&prefix),
                     v.to_str().map_err(|err| {
                         internal_datafusion_err!("Cannot parse header value: {err}")
                     })?,
