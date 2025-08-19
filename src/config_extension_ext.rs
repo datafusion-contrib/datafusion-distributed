@@ -8,7 +8,7 @@ use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
 
-const FLIGHT_METADATA_PREFIX: &str = "x-datafusion-distributed-";
+const FLIGHT_METADATA_CONFIG_PREFIX: &str = "x-datafusion-distributed-config-";
 
 /// Extension trait for `SessionConfig` to add support for propagating [ConfigExtension]s across
 /// network calls.
@@ -130,7 +130,7 @@ impl ConfigExtensionExt for SessionConfig {
                 meta.insert(
                     HeaderName::from_str(&format!(
                         "{}{}.{}",
-                        FLIGHT_METADATA_PREFIX,
+                        FLIGHT_METADATA_CONFIG_PREFIX,
                         T::PREFIX,
                         entry.key
                     ))
@@ -161,7 +161,7 @@ impl ConfigExtensionExt for SessionConfig {
         let mut result = T::default();
         let mut found_some = false;
         for (k, v) in flight_metadata.0.iter() {
-            let key = k.as_str().trim_start_matches(FLIGHT_METADATA_PREFIX);
+            let key = k.as_str().trim_start_matches(FLIGHT_METADATA_CONFIG_PREFIX);
             if key.starts_with(T::PREFIX) {
                 found_some = true;
                 result.set(
@@ -215,7 +215,7 @@ impl ContextGrpcMetadata {
         let mut new = HeaderMap::new();
         for (k, v) in metadata.into_iter() {
             let Some(k) = k else { continue };
-            if k.as_str().starts_with(FLIGHT_METADATA_PREFIX) {
+            if k.as_str().starts_with(FLIGHT_METADATA_CONFIG_PREFIX) {
                 new.insert(k, v);
             }
         }
