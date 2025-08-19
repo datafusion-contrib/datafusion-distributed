@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms, clippy::vec_box)]
+
 use crate::errors::datafusion_error::DataFusionErrorProto;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;

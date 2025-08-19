@@ -1,3 +1,5 @@
+#![deny(clippy::all)]
+
 mod channel_manager;
 mod common;
 mod composed_extension_codec;
