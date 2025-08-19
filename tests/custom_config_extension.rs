@@ -37,7 +37,7 @@ mod tests {
                 &self,
                 mut state: SessionState,
             ) -> Result<SessionState, DataFusionError> {
-                state.propagate_distributed_option_extension::<CustomExtension>()?;
+                state.retrieve_distributed_option_extension::<CustomExtension>()?;
                 add_user_codec(state.config_mut(), CustomConfigExtensionRequiredExecCodec);
                 Ok(state)
             }
