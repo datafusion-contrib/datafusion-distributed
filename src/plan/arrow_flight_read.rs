@@ -203,7 +203,10 @@ impl ExecutionPlan for ArrowFlightReadExec {
                 let channel_manager_capture = channel_manager.clone();
                 let schema = schema.clone();
                 let query_id = query_id.clone();
-                let flight_metadata = flight_metadata.clone().unwrap_or_default().as_ref().clone();
+                let flight_metadata = flight_metadata
+                    .as_ref()
+                    .map(|v| v.as_ref().clone())
+                    .unwrap_or_default();
                 let key = StageKey {
                     query_id,
                     stage_id: child_stage_num,
