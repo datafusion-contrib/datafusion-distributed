@@ -2,14 +2,14 @@
 
 set -e
 
-SCALE_FACTOR=1
+SCALE_FACTOR=10
 
 # https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 DATA_DIR=${DATA_DIR:-$SCRIPT_DIR/data}
 CARGO_COMMAND=${CARGO_COMMAND:-"cargo run --release"}
 
-if [ -z "$SCALE_FACTOR" ] ; then
+if [ -z "$SCALE_FACTOR" ]; then
     echo "Internal error: Scale factor not specified"
     exit 1
 fi
@@ -36,7 +36,7 @@ if test -f "${FILE}"; then
 else
     echo " Copying answers to ${TPCH_DIR}/answers"
     mkdir -p "${TPCH_DIR}/answers"
-    docker run -v "${TPCH_DIR}":/data -it --entrypoint /bin/bash --rm ghcr.io/scalytics/tpch-docker:main  -c "cp -f /opt/tpch/2.18.0_rc2/dbgen/answers/* /data/answers/"
+    docker run -v "${TPCH_DIR}":/data -it --entrypoint /bin/bash --rm ghcr.io/scalytics/tpch-docker:main -c "cp -f /opt/tpch/2.18.0_rc2/dbgen/answers/* /data/answers/"
 fi
 
 # Create 'parquet' files from tbl
@@ -45,9 +45,9 @@ if test -d "${FILE}"; then
     echo " parquet files exist ($FILE exists)."
 else
     echo " creating parquet files using benchmark binary ..."
-    pushd "${SCRIPT_DIR}" > /dev/null
+    pushd "${SCRIPT_DIR}" >/dev/null
     $CARGO_COMMAND -- tpch-convert --input "${TPCH_DIR}" --output "${TPCH_DIR}" --format parquet
-    popd > /dev/null
+    popd >/dev/null
 fi
 
 # Create 'csv' files from tbl
@@ -56,8 +56,7 @@ if test -d "${FILE}"; then
     echo " csv files exist ($FILE exists)."
 else
     echo " creating csv files using benchmark binary ..."
-    pushd "${SCRIPT_DIR}" > /dev/null
+    pushd "${SCRIPT_DIR}" >/dev/null
     $CARGO_COMMAND -- tpch-convert --input "${TPCH_DIR}" --output "${TPCH_DIR}/csv" --format csv
-    popd > /dev/null
+    popd >/dev/null
 fi
-

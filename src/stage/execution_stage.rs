@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::common::internal_err;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;

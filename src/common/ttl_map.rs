@@ -94,7 +94,7 @@ where
                     shard.insert(key);
                 }
                 BucketOp::Clear => {
-                    let keys_to_delete = mem::replace(&mut shard, HashSet::new());
+                    let keys_to_delete = mem::take(&mut shard);
                     for key in keys_to_delete {
                         data.remove(&key);
                     }
