@@ -132,22 +132,7 @@ mod tests {
     async fn build_state(
         ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
-        let mut config = SessionConfig::new().with_target_partitions(3);
-
-        // FIXME: these three options are critical for the correct function of the library
-        // but we are not enforcing that the user sets them.  They are here at the moment
-        // but we should figure out a way to do this better.
-        config
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        config
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-
-        config.options_mut().optimizer.prefer_hash_join = true;
-        // end critical options section
+        let config = SessionConfig::new().with_target_partitions(3);
 
         let rule = DistributedPhysicalOptimizerRule::new().with_maximum_partitions_per_task(2);
         Ok(SessionStateBuilder::new()

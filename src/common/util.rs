@@ -1,9 +1,7 @@
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::error::Result;
 use datafusion::physical_plan::{displayable, ExecutionPlan, ExecutionPlanProperties};
 
 use std::fmt::Write;
-use std::sync::Arc;
 
 pub fn display_plan_with_partition_in_out(plan: &dyn ExecutionPlan) -> Result<String> {
     let mut f = String::new();
