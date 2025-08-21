@@ -1,12 +1,11 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use async_trait::async_trait;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{extensions_options, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
-        FunctionRegistry, SendableRecordBatchStream, SessionState, TaskContext,
+        FunctionRegistry, SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
     use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -15,10 +14,10 @@ mod tests {
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{add_user_codec, ConfigExtensionExt};
     use datafusion_distributed::{
-        ArrowFlightReadExec, DistributedPhysicalOptimizerRule, SessionBuilder,
+        add_user_codec, ConfigExtensionExt, DistributedSessionBuilderContext,
     };
+    use datafusion_distributed::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -28,23 +27,19 @@ mod tests {
 
     #[tokio::test]
     async fn custom_config_extension() -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Clone)]
-        struct CustomSessionBuilder;
-
-        #[async_trait]
-        impl SessionBuilder for CustomSessionBuilder {
-            async fn session_state(
-                &self,
-                mut state: SessionState,
-            ) -> Result<SessionState, DataFusionError> {
-                state.retrieve_distributed_option_extension::<CustomExtension>()?;
-                add_user_codec(state.config_mut(), CustomConfigExtensionRequiredExecCodec);
-                Ok(state)
-            }
+        async fn build_state(
+            ctx: DistributedSessionBuilderContext,
+        ) -> Result<SessionState, DataFusionError> {
+            let mut state = SessionStateBuilder::new()
+                .with_runtime_env(ctx.runtime_env)
+                .with_default_features()
+                .build();
+            state.retrieve_distributed_option_extension::<CustomExtension>(&ctx.headers)?;
+            add_user_codec(state.config_mut(), CustomConfigExtensionRequiredExecCodec);
+            Ok(state)
         }
 
-        let (mut ctx, _guard) = start_localhost_context(3, CustomSessionBuilder).await;
-        add_user_codec(&mut ctx, CustomConfigExtensionRequiredExecCodec);
+        let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
         ctx.add_distributed_option_extension(CustomExtension {
             foo: "foo".to_string(),
             bar: 1,

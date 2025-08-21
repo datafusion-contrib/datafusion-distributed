@@ -3,6 +3,7 @@ use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
+use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::plan::{DistributedCodec, PartitionGroup};
 use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
 use crate::user_provided_codec::get_user_codec;
@@ -10,9 +11,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
-use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::optimizer::OptimizerConfig;
-use datafusion::prelude::SessionConfig;
+use datafusion::execution::SessionState;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -90,7 +89,7 @@ impl ArrowFlightEndpoint {
     async fn get_state_and_stage(
         &self,
         doget: DoGet,
-        metadata: MetadataMap,
+        metadata_map: MetadataMap,
     ) -> Result<(SessionState, Arc<ExecutionStage>), Status> {
         let key = doget
             .stage_key
@@ -106,32 +105,15 @@ impl ArrowFlightEndpoint {
                     .stage_proto
                     .ok_or(Status::invalid_argument("DoGet is missing the stage proto"))?;
 
-                let mut config = SessionConfig::default();
-                config.set_extension(Arc::new(ContextGrpcMetadata::from_headers(
-                    metadata.into_headers(),
-                )));
-
-                let state_builder = SessionStateBuilder::new()
-                    .with_runtime_env(Arc::clone(&self.runtime))
-                    .with_config(config)
-                    .with_default_features();
-
-                let state_builder = self
-                    .session_builder
-                    .session_state_builder(state_builder)
-                    .map_err(|err| datafusion_error_to_tonic_status(&err))?;
-
-                let state = state_builder.build();
+                let headers = metadata_map.into_headers();
                 let mut state = self
                     .session_builder
-                    .session_state(state)
+                    .build_session_state(DistributedSessionBuilderContext {
+                        runtime_env: Arc::clone(&self.runtime),
+                        headers: headers.clone(),
+                    })
                     .await
                     .map_err(|err| datafusion_error_to_tonic_status(&err))?;
-
-                let function_registry =
-                    state.function_registry().ok_or(Status::invalid_argument(
-                        "FunctionRegistry not present in newly built SessionState",
-                    ))?;
 
                 let mut combined_codec = ComposedPhysicalExtensionCodec::default();
                 combined_codec.push(DistributedCodec);
@@ -139,21 +121,18 @@ impl ArrowFlightEndpoint {
                     combined_codec.push_arc(Arc::clone(user_codec));
                 }
 
-                let stage = stage_from_proto(
-                    stage_proto,
-                    function_registry,
-                    self.runtime.as_ref(),
-                    &combined_codec,
-                )
-                .map(Arc::new)
-                .map_err(|err| {
-                    Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
-                })?;
+                let stage =
+                    stage_from_proto(stage_proto, &state, self.runtime.as_ref(), &combined_codec)
+                        .map(Arc::new)
+                        .map_err(|err| {
+                            Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
+                        })?;
 
                 // Add the extensions that might be required for ExecutionPlan nodes in the plan
                 let config = state.config_mut();
                 config.set_extension(Arc::clone(&self.channel_manager));
                 config.set_extension(stage.clone());
+                config.set_extension(Arc::new(ContextGrpcMetadata(headers)));
 
                 Ok::<_, Status>((state, stage))
             })
