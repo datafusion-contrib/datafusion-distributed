@@ -1,6 +1,7 @@
 use super::combined::CombinedRecordBatchStream;
 use crate::channel_manager::ChannelManager;
 use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
@@ -19,10 +20,13 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{future, TryFutureExt, TryStreamExt};
+use http::Extensions;
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use tonic::metadata::MetadataMap;
+use tonic::Request;
 use url::Url;
 
 /// This node has two variants.
@@ -173,6 +177,10 @@ impl ExecutionPlan for ArrowFlightReadExec {
                 this.stage_num
             ))?;
 
+        let flight_metadata = context
+            .session_config()
+            .get_extension::<ContextGrpcMetadata>();
+
         let mut combined_codec = ComposedPhysicalExtensionCodec::default();
         combined_codec.push(DistributedCodec {});
         if let Some(ref user_codec) = get_user_codec(context.session_config()) {
@@ -195,6 +203,10 @@ impl ExecutionPlan for ArrowFlightReadExec {
                 let channel_manager_capture = channel_manager.clone();
                 let schema = schema.clone();
                 let query_id = query_id.clone();
+                let flight_metadata = flight_metadata
+                    .as_ref()
+                    .map(|v| v.as_ref().clone())
+                    .unwrap_or_default();
                 let key = StageKey {
                     query_id,
                     stage_id: child_stage_num,
@@ -218,8 +230,14 @@ impl ExecutionPlan for ArrowFlightReadExec {
                         ticket: ticket_bytes,
                     };
 
-                    stream_from_stage_task(ticket, &url, schema.clone(), &channel_manager_capture)
-                        .await
+                    stream_from_stage_task(
+                        ticket,
+                        flight_metadata,
+                        &url,
+                        schema.clone(),
+                        &channel_manager_capture,
+                    )
+                    .await
                 }
             });
 
@@ -240,11 +258,18 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
 async fn stream_from_stage_task(
     ticket: Ticket,
+    metadata: ContextGrpcMetadata,
     url: &Url,
     schema: SchemaRef,
     channel_manager: &ChannelManager,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
     let channel = channel_manager.get_channel_for_url(url).await?;
+
+    let ticket = Request::from_parts(
+        MetadataMap::from_headers(metadata.0),
+        Extensions::default(),
+        ticket,
+    );
 
     let mut client = FlightServiceClient::new(channel);
     let stream = client
