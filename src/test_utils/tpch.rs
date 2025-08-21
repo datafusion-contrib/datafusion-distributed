@@ -160,13 +160,18 @@ where
 
 macro_rules! must_generate_tpch_table {
     ($generator:ident, $arrow:ident, $name:literal, $data_dir:expr) => {
-        generate_table(
-            // TODO: Consider adjusting the partitions and batch sizes.
-            $arrow::new($generator::new(SCALE_FACTOR, 1, 1)).with_batch_size(1000),
-            $name,
-            $data_dir,
-        )
-        .expect(concat!("Failed to generate ", $name, " table"));
+        let data_dir = $data_dir.join(format!("{}.parquet", $name));
+        fs::create_dir_all(data_dir.clone()).expect("Failed to create data directory");
+        // create three partitions for the table
+        (1..=3).for_each(|part| {
+            generate_table(
+                // TODO: Consider adjusting the partitions and batch sizes.
+                $arrow::new($generator::new(SCALE_FACTOR, part, 3)).with_batch_size(1000),
+                &format!("{}.parquet", part),
+                &data_dir.clone().into_boxed_path(),
+            )
+            .expect(concat!("Failed to generate ", $name, " table"));
+        });
     };
 }
 
