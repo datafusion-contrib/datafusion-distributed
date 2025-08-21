@@ -56,7 +56,7 @@ where
     /// new creates a new Bucket
     fn new<V>(data: Arc<DashMap<K, V>>) -> Self
     where
-        V: Default + Clone + Send + Sync + 'static,
+        V: Send + Sync + 'static,
     {
         // TODO: To avoid unbounded growth, consider making this bounded. Alternatively, we can
         // introduce a dynamic GC period to ensure that GC can keep up.
@@ -84,7 +84,7 @@ where
     /// task is responsible for managing a subset of keys in the map.
     async fn task<V>(mut rx: UnboundedReceiver<BucketOp<K>>, data: Arc<DashMap<K, V>>)
     where
-        V: Default + Clone + Send + Sync + 'static,
+        V: Send + Sync + 'static,
     {
         let mut shard = HashSet::new();
         while let Some(op) = rx.recv().await {
@@ -207,7 +207,7 @@ where
 
     /// get_or_default executes the provided closure with a reference to the map entry for the given key.
     /// If the key does not exist, it inserts a new entry with the default value.
-    pub fn get_or_init<F>(&self, key: K, f: F) -> V
+    pub fn get_or_init<F>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> V,
     {
@@ -218,7 +218,7 @@ where
 
         let value = match self.data.entry(key.clone()) {
             Entry::Vacant(entry) => {
-                let value = f();
+                let value = init();
                 entry.insert(value.clone());
                 new_entry = true;
                 value
@@ -255,6 +255,18 @@ where
     /// bucket the key was in to do this. One idea is to store the bucket idx in the map value.
     pub fn remove(&self, key: K) {
         self.data.remove(&key);
+    }
+
+    /// Returns the number of entries currently stored in the map
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns an iterator over the keys currently stored in the map
+    #[cfg(test)]
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.data.iter().map(|entry| entry.key().clone())
     }
 
     /// run_gc_loop will continuously clear expired entries from the map, checking every `period`. The

@@ -109,7 +109,7 @@ pub async fn spawn_flight_service(
     session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let endpoint = ArrowFlightEndpoint::new(session_builder);
+    let endpoint = ArrowFlightEndpoint::new(session_builder)?;
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 
