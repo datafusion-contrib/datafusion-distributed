@@ -27,7 +27,6 @@ use dashmap::{DashMap, Entry};
 use datafusion::error::DataFusionError;
 use std::collections::HashSet;
 use std::hash::Hash;
-use std::mem;
 use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -94,7 +93,7 @@ where
                     shard.insert(key);
                 }
                 BucketOp::Clear => {
-                    let keys_to_delete = mem::take(&mut shard);
+                    let keys_to_delete = std::mem::take(&mut shard);
                     for key in keys_to_delete {
                         data.remove(&key);
                     }

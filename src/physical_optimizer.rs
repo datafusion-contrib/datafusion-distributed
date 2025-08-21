@@ -83,12 +83,14 @@ impl DistributedPhysicalOptimizerRule {
                     internal_datafusion_err!("Expected RepartitionExec to have a child"),
                 )?);
 
-                let maybe_isolated_plan = if let Some(ppt) = self.partitions_per_task {
-                    let isolated = Arc::new(PartitionIsolatorExec::new(child, ppt));
-                    plan.with_new_children(vec![isolated])?
-                } else {
-                    plan
-                };
+                let maybe_isolated_plan =
+                    if can_be_divided(&plan)? && self.partitions_per_task.is_some() {
+                        let ppt = self.partitions_per_task.unwrap();
+                        let isolated = Arc::new(PartitionIsolatorExec::new(child, ppt));
+                        plan.with_new_children(vec![isolated])?
+                    } else {
+                        plan
+                    };
 
                 return Ok(Transformed::yes(Arc::new(
                     ArrowFlightReadExec::new_pending(
@@ -120,7 +122,7 @@ impl DistributedPhysicalOptimizerRule {
     ) -> Result<ExecutionStage, DataFusionError> {
         let mut inputs = vec![];
 
-        let distributed = plan.transform_down(|plan| {
+        let distributed = plan.clone().transform_down(|plan| {
             let Some(node) = plan.as_any().downcast_ref::<ArrowFlightReadExec>() else {
                 return Ok(Transformed::no(plan));
             };
@@ -137,13 +139,43 @@ impl DistributedPhysicalOptimizerRule {
         let mut stage = ExecutionStage::new(query_id, *num, distributed.data, inputs);
         *num += 1;
 
-        if let Some(partitions_per_task) = self.partitions_per_task {
-            stage = stage.with_maximum_partitions_per_task(partitions_per_task);
-        }
+        stage = match (self.partitions_per_task, can_be_divided(&plan)?) {
+            (Some(partitions_per_task), true) => {
+                stage.with_maximum_partitions_per_task(partitions_per_task)
+            }
+            (_, _) => stage,
+        };
+
         stage.depth = depth;
 
         Ok(stage)
     }
+}
+
+/// Returns a boolean indicating if this stage can be divided into more than one task.
+///
+/// Some Plan nodes need to materialize all partitions inorder to execute such as
+/// NestedLoopJoinExec.   Rewriting the plan to accommodate dividing it into tasks
+/// would result in redundant work.
+///
+/// The plans we cannot split are:
+/// - NestedLoopJoinExec
+pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
+    // recursively check to see if this stages plan contains a NestedLoopJoinExec
+    let mut has_unsplittable_plan = false;
+    let search = |f: &Arc<dyn ExecutionPlan>| {
+        if f.as_any()
+            .downcast_ref::<datafusion::physical_plan::joins::NestedLoopJoinExec>()
+            .is_some()
+        {
+            has_unsplittable_plan = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+
+        Ok(TreeNodeRecursion::Continue)
+    };
+    plan.apply(search)?;
+    Ok(!has_unsplittable_plan)
 }
 
 #[cfg(test)]

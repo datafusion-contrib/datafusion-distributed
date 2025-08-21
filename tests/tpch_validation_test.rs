@@ -120,8 +120,6 @@ mod tests {
     }
 
     #[tokio::test]
-    // TODO: Add support for NestedLoopJoinExec to support query 22.
-    #[ignore]
     async fn test_tpch_22() -> Result<(), Box<dyn Error>> {
         test_tpch_query(22).await
     }
@@ -164,7 +162,6 @@ mod tests {
     // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(ctx2: SessionContext, query_id: u8) -> Result<(), Box<dyn Error>> {
         ensure_tpch_data().await;
-
         let sql = get_test_tpch_query(query_id);
 
         // Context 1: Non-distributed execution.
@@ -195,6 +192,9 @@ mod tests {
             .await?;
         }
 
+        // Query 15 has three queries in it, one creating the view, the second
+        // executing, which we want to capture the output of, and the third
+        // tearing down the view
         let (stream1, stream2) = if query_id == 15 {
             let queries: Vec<&str> = sql
                 .split(';')
@@ -202,12 +202,11 @@ mod tests {
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            println!("queryies: {:?}", queries);
-
             ctx1.sql(queries[0]).await?.collect().await?;
             ctx2.sql(queries[0]).await?.collect().await?;
             let df1 = ctx1.sql(queries[1]).await?;
             let df2 = ctx2.sql(queries[1]).await?;
+
             let stream1 = df1.execute_stream().await?;
             let stream2 = df2.execute_stream().await?;
 
@@ -217,6 +216,7 @@ mod tests {
         } else {
             let stream1 = ctx1.sql(&sql).await?.execute_stream().await?;
             let stream2 = ctx2.sql(&sql).await?.execute_stream().await?;
+
             (stream1, stream2)
         };
 
