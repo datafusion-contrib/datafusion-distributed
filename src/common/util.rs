@@ -1,6 +1,5 @@
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::error::Result;
-use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::physical_plan::{displayable, ExecutionPlan, ExecutionPlanProperties};
 
 use std::fmt::Write;

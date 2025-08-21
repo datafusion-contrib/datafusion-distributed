@@ -6,12 +6,10 @@ mod tests {
     use async_trait::async_trait;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_plan::displayable;
+
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{
-        display_stage_graphviz, DistributedPhysicalOptimizerRule, ExecutionStage, SessionBuilder,
-    };
+    use datafusion_distributed::{DistributedPhysicalOptimizerRule, SessionBuilder};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
