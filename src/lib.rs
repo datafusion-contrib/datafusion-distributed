@@ -3,6 +3,7 @@
 mod channel_manager;
 mod common;
 mod composed_extension_codec;
+mod config_extension_ext;
 mod errors;
 mod flight_service;
 mod physical_optimizer;
@@ -15,6 +16,7 @@ mod user_provided_codec;
 pub mod test_utils;
 
 pub use channel_manager::{BoxCloneSyncChannel, ChannelManager, ChannelResolver};
+pub use config_extension_ext::ConfigExtensionExt;
 pub use flight_service::{ArrowFlightEndpoint, NoopSessionBuilder, SessionBuilder};
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;
