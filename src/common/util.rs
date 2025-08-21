@@ -46,7 +46,10 @@ pub fn display_plan_with_partition_in_out(plan: &dyn ExecutionPlan) -> Result<St
 ///
 /// The plans we cannot split are:
 /// - NestedLoopJoinExec
+<<<<<<< HEAD
 /// - HashJoinExec when not in Partitioned mode
+=======
+>>>>>>> robtandy/nested_loop_joins
 pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
     // recursively check to see if this stages plan contains a NestedLoopJoinExec
     let mut has_unsplittable_plan = false;
@@ -57,6 +60,7 @@ pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
         {
             has_unsplittable_plan = true;
             return Ok(TreeNodeRecursion::Stop);
+<<<<<<< HEAD
         } else if let Some(hash_join) = f
             .as_any()
             .downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
@@ -65,6 +69,8 @@ pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
                 has_unsplittable_plan = true;
                 return Ok(TreeNodeRecursion::Stop);
             }
+=======
+>>>>>>> robtandy/nested_loop_joins
         }
 
         Ok(TreeNodeRecursion::Continue)
