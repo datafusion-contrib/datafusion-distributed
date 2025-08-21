@@ -167,7 +167,7 @@ impl ConfigExtensionExt for SessionConfig {
             if key.starts_with(&prefix) {
                 found_some = true;
                 result.set(
-                    &key.trim_start_matches(&prefix),
+                    key.trim_start_matches(&prefix),
                     v.to_str().map_err(|err| {
                         internal_datafusion_err!("Cannot parse header value: {err}")
                     })?,
@@ -236,10 +236,11 @@ mod tests {
     fn test_propagation() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = SessionConfig::new();
 
-        let mut opt = CustomExtension::default();
-        opt.foo = "foo".to_string();
-        opt.bar = 1;
-        opt.baz = true;
+        let opt = CustomExtension {
+            foo: "".to_string(),
+            bar: 0,
+            baz: false,
+        };
 
         config.add_distributed_option_extension(opt)?;
         let metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
@@ -283,12 +284,16 @@ mod tests {
     fn test_new_extension_overwrites_previous() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = SessionConfig::new();
 
-        let mut opt1 = CustomExtension::default();
-        opt1.foo = "first".to_string();
+        let opt1 = CustomExtension {
+            foo: "first".to_string(),
+            ..Default::default()
+        };
         config.add_distributed_option_extension(opt1)?;
 
-        let mut opt2 = CustomExtension::default();
-        opt2.bar = 42;
+        let opt2 = CustomExtension {
+            bar: 42,
+            ..Default::default()
+        };
         config.add_distributed_option_extension(opt2)?;
 
         let flight_metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
@@ -335,13 +340,17 @@ mod tests {
     fn test_multiple_extensions_different_prefixes() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = SessionConfig::new();
 
-        let mut custom_opt = CustomExtension::default();
-        custom_opt.foo = "custom_value".to_string();
-        custom_opt.bar = 123;
+        let custom_opt = CustomExtension {
+            foo: "custom_value".to_string(),
+            bar: 123,
+            ..Default::default()
+        };
 
-        let mut another_opt = AnotherExtension::default();
-        another_opt.setting1 = "other".to_string();
-        another_opt.setting2 = 456;
+        let another_opt = AnotherExtension {
+            setting1: "other".to_string(),
+            setting2: 456,
+            ..Default::default()
+        };
 
         config.add_distributed_option_extension(custom_opt)?;
         config.add_distributed_option_extension(another_opt)?;
@@ -371,8 +380,8 @@ mod tests {
         );
 
         let mut new_config = SessionConfig::new();
-        new_config.retrieve_distributed_option_extension::<CustomExtension>(&metadata)?;
-        new_config.retrieve_distributed_option_extension::<AnotherExtension>(&metadata)?;
+        new_config.retrieve_distributed_option_extension::<CustomExtension>(metadata)?;
+        new_config.retrieve_distributed_option_extension::<AnotherExtension>(metadata)?;
 
         let propagated_custom = get_ext::<CustomExtension>(&new_config);
         let propagated_another = get_ext::<AnotherExtension>(&new_config);
