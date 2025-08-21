@@ -3,7 +3,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
-        FunctionRegistry, SendableRecordBatchStream, SessionStateBuilder, TaskContext,
+        FunctionRegistry, SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
     use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -13,7 +13,8 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        with_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule, SessionBuilder,
+        add_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule,
+        DistributedSessionBuilderContext,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -26,17 +27,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_propagation() -> Result<(), Box<dyn Error>> {
-        #[derive(Clone)]
-        struct CustomSessionBuilder;
-        impl SessionBuilder for CustomSessionBuilder {
-            fn session_state_builder(
-                &self,
-                builder: SessionStateBuilder,
-            ) -> Result<SessionStateBuilder, DataFusionError> {
-                Ok(with_user_codec(builder, ErrorExecCodec))
-            }
+        async fn build_state(
+            ctx: DistributedSessionBuilderContext,
+        ) -> Result<SessionState, DataFusionError> {
+            let mut state = SessionStateBuilder::new()
+                .with_runtime_env(ctx.runtime_env)
+                .with_default_features()
+                .build();
+            add_user_codec(state.config_mut(), ErrorExecCodec);
+            Ok(state)
         }
-        let (ctx, _guard) = start_localhost_context(3, CustomSessionBuilder).await;
+
+        let (ctx, _guard) = start_localhost_context(3, build_state).await;
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ErrorExec::new("something failed"));
 

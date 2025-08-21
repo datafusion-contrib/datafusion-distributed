@@ -5,13 +5,13 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::plan::distribute_aggregate;
-    use datafusion_distributed::{assert_snapshot, NoopSessionBuilder};
+    use datafusion_distributed::{assert_snapshot, DefaultSessionBuilder};
     use futures::TryStreamExt;
     use std::error::Error;
 
     #[tokio::test]
     async fn distributed_aggregation() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(3, NoopSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
         register_parquet_tables(&ctx).await?;
 
         let df = ctx

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use super::stage::ExecutionStage;
-use crate::common::util::can_be_divided;
 use crate::{plan::PartitionIsolatorExec, ArrowFlightReadExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::joins::PartitionMode;
 use datafusion::{
     common::{
         internal_datafusion_err,
@@ -151,6 +151,41 @@ impl DistributedPhysicalOptimizerRule {
 
         Ok(stage)
     }
+}
+
+/// Returns a boolean indicating if this stage can be divided into more than one task.
+///
+/// Some Plan nodes need to materialize all partitions inorder to execute such as
+/// NestedLoopJoinExec.   Rewriting the plan to accommodate dividing it into tasks
+/// would result in redundant work.
+///
+/// The plans we cannot split are:
+/// - NestedLoopJoinExec
+/// - HashJoinExec with PartitionMode != Partitioned, like CollectLeft
+pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
+    // recursively check to see if this stages plan contains a NestedLoopJoinExec
+    let mut has_unsplittable_plan = false;
+    let search = |f: &Arc<dyn ExecutionPlan>| {
+        if f.as_any()
+            .downcast_ref::<datafusion::physical_plan::joins::NestedLoopJoinExec>()
+            .is_some()
+        {
+            has_unsplittable_plan = true;
+            return Ok(TreeNodeRecursion::Stop);
+        } else if let Some(hash_join) = f
+            .as_any()
+            .downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+        {
+            if hash_join.partition_mode() != &PartitionMode::Partitioned {
+                has_unsplittable_plan = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+
+        Ok(TreeNodeRecursion::Continue)
+    };
+    plan.apply(search)?;
+    Ok(!has_unsplittable_plan)
 }
 
 #[cfg(test)]

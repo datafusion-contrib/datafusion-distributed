@@ -1,27 +1,34 @@
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::SessionContext;
+use http::HeaderMap;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Default)]
+pub struct DistributedSessionBuilderContext {
+    pub runtime_env: Arc<RuntimeEnv>,
+    pub headers: HeaderMap,
+}
 
 /// Trait called by the Arrow Flight endpoint that handles distributed parts of a DataFusion
-/// plan for building a DataFusion's [datafusion::prelude::SessionContext].
+/// plan for building a DataFusion's [SessionState].
 #[async_trait]
-pub trait SessionBuilder {
-    /// Takes a [SessionStateBuilder] and adds whatever is necessary for it to work, like
-    /// custom extension codecs, custom physical optimization rules, UDFs, UDAFs, config
-    /// extensions, etc...
+pub trait DistributedSessionBuilder {
+    /// Builds a custom [SessionState] scoped to a single ArrowFlight gRPC call, allowing the
+    /// users to provide a customized DataFusion session with things like custom extension codecs,
+    /// custom physical optimization rules, UDFs, UDAFs, config extensions, etc...
     ///
-    /// Example: adding some custom extension plan codecs
+    /// Example:
     ///
     /// ```rust
     /// # use std::sync::Arc;
     /// # use async_trait::async_trait;
     /// # use datafusion::error::DataFusionError;
-    /// # use datafusion::execution::runtime_env::RuntimeEnv;
-    /// # use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
+    /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{with_user_codec, SessionBuilder};
+    /// # use datafusion_distributed::{with_user_codec, DistributedSessionBuilder, DistributedSessionBuilderContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -40,79 +47,54 @@ pub trait SessionBuilder {
     /// struct CustomSessionBuilder;
     ///
     /// #[async_trait]
-    /// impl SessionBuilder for CustomSessionBuilder {
-    ///     fn session_state_builder(&self, mut builder: SessionStateBuilder) -> Result<SessionStateBuilder, DataFusionError> {
+    /// impl DistributedSessionBuilder for CustomSessionBuilder {
+    ///     async fn build_session_state(&self, ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
+    ///         let builder = SessionStateBuilder::new()
+    ///             .with_runtime_env(ctx.runtime_env.clone())
+    ///             .with_default_features();
+    ///
+    ///         let builder = with_user_codec(builder, CustomExecCodec);
+    ///
     ///         // Add your UDFs, optimization rules, etc...
-    ///         Ok(with_user_codec(builder, CustomExecCodec))
+    ///
+    ///         Ok(builder.build())
     ///     }
     /// }
     /// ```
-    fn session_state_builder(
+    async fn build_session_state(
         &self,
-        builder: SessionStateBuilder,
-    ) -> Result<SessionStateBuilder, DataFusionError> {
-        Ok(builder)
-    }
+        ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError>;
+}
 
-    /// Modifies the [SessionState] and returns it. Same as [SessionBuilder::session_state_builder]
-    /// but operating on an already built [SessionState].
-    ///
-    /// Example:
-    ///
-    /// ```rust
-    /// # use async_trait::async_trait;
-    /// # use datafusion::common::DataFusionError;
-    /// # use datafusion::execution::SessionState;
-    /// # use datafusion_distributed::SessionBuilder;
-    ///
-    /// #[derive(Clone)]
-    /// struct CustomSessionBuilder;
-    ///
-    /// #[async_trait]
-    /// impl SessionBuilder for CustomSessionBuilder {
-    ///     async fn session_state(&self, state: SessionState) -> Result<SessionState, DataFusionError> {
-    ///         // mutate the state adding any custom logic
-    ///         Ok(state)
-    ///     }
-    /// }
-    /// ```
-    async fn session_state(&self, state: SessionState) -> Result<SessionState, DataFusionError> {
-        Ok(state)
-    }
+/// Noop implementation of the [DistributedSessionBuilder]. Used by default if no [DistributedSessionBuilder] is provided
+/// while building the Arrow Flight endpoint.
+#[derive(Debug, Clone)]
+pub struct DefaultSessionBuilder;
 
-    /// Modifies the [SessionContext] and returns it. Same as [SessionBuilder::session_state_builder]
-    /// or [SessionBuilder::session_state] but operation on an already built [SessionContext].
-    ///
-    /// Example:
-    ///
-    /// ```rust
-    /// # use async_trait::async_trait;
-    /// # use datafusion::common::DataFusionError;
-    /// # use datafusion::prelude::SessionContext;
-    /// # use datafusion_distributed::SessionBuilder;
-    ///
-    /// #[derive(Clone)]
-    /// struct CustomSessionBuilder;
-    ///
-    /// #[async_trait]
-    /// impl SessionBuilder for CustomSessionBuilder {
-    ///     async fn session_context(&self, ctx: SessionContext) -> Result<SessionContext, DataFusionError> {
-    ///         // mutate the context adding any custom logic
-    ///         Ok(ctx)
-    ///     }
-    /// }
-    /// ```
-    async fn session_context(
+#[async_trait]
+impl DistributedSessionBuilder for DefaultSessionBuilder {
+    async fn build_session_state(
         &self,
-        ctx: SessionContext,
-    ) -> Result<SessionContext, DataFusionError> {
-        Ok(ctx)
+        ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError> {
+        Ok(SessionStateBuilder::new()
+            .with_runtime_env(ctx.runtime_env.clone())
+            .with_default_features()
+            .build())
     }
 }
 
-/// Noop implementation of the [SessionBuilder]. Used by default if no [SessionBuilder] is provided
-/// while building the Arrow Flight endpoint.
-#[derive(Debug, Clone)]
-pub struct NoopSessionBuilder;
-
-impl SessionBuilder for NoopSessionBuilder {}
+#[async_trait]
+impl<F, Fut> DistributedSessionBuilder for F
+where
+    F: Fn(DistributedSessionBuilderContext) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<SessionState, DataFusionError>> + Send + 'static,
+{
+    async fn build_session_state(
+        &self,
+        ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError> {
+        self(ctx).await
+    }
+}

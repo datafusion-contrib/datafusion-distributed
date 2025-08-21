@@ -17,7 +17,10 @@ pub mod test_utils;
 
 pub use channel_manager::{BoxCloneSyncChannel, ChannelManager, ChannelResolver};
 pub use config_extension_ext::ConfigExtensionExt;
-pub use flight_service::{ArrowFlightEndpoint, NoopSessionBuilder, SessionBuilder};
+pub use flight_service::{
+    ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
+    DistributedSessionBuilderContext,
+};
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;
 pub use stage::{display_stage_graphviz, ExecutionStage};

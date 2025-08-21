@@ -1,12 +1,13 @@
 use crate::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver, SessionBuilder,
+    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
+    DistributedSessionBuilder, DistributedSessionBuilderContext,
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionContext;
-use datafusion::{common::runtime::JoinSet, prelude::SessionConfig};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +20,7 @@ pub async fn start_localhost_context<B>(
     session_builder: B,
 ) -> (SessionContext, JoinSet<()>)
 where
-    B: SessionBuilder + Send + Sync + 'static,
+    B: DistributedSessionBuilder + Send + Sync + 'static,
     B: Clone,
 {
     let listeners = futures::future::try_join_all(
@@ -53,25 +54,19 @@ where
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let config = SessionConfig::new().with_target_partitions(3);
-
-    let builder = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config);
-    let builder = session_builder.session_state_builder(builder).unwrap();
-
-    let state = builder.build();
-    let state = session_builder.session_state(state).await.unwrap();
-
-    let ctx = SessionContext::new_with_state(state);
-    let ctx = session_builder.session_context(ctx).await.unwrap();
-
-    ctx.state_ref()
-        .write()
+    let mut state = session_builder
+        .build_session_state(DistributedSessionBuilderContext {
+            runtime_env: Arc::new(RuntimeEnv::default()),
+            headers: Default::default(),
+        })
+        .await
+        .unwrap();
+    state
         .config_mut()
         .set_extension(Arc::new(ChannelManager::new(channel_resolver)));
+    state.config_mut().options_mut().execution.target_partitions = 3;
 
-    (ctx, join_set)
+    (SessionContext::from(state), join_set)
 }
 
 #[derive(Clone)]
@@ -108,7 +103,7 @@ impl ChannelResolver for LocalHostChannelResolver {
 
 pub async fn spawn_flight_service(
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
-    session_builder: impl SessionBuilder + Send + Sync + 'static,
+    session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut endpoint = ArrowFlightEndpoint::new(channel_resolver);

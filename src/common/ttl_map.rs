@@ -27,7 +27,6 @@ use dashmap::{DashMap, Entry};
 use datafusion::error::DataFusionError;
 use std::collections::HashSet;
 use std::hash::Hash;
-use std::mem;
 use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -94,7 +93,7 @@ where
                     shard.insert(key);
                 }
                 BucketOp::Clear => {
-                    let keys_to_delete = mem::replace(&mut shard, HashSet::new());
+                    let keys_to_delete = std::mem::take(&mut shard);
                     for key in keys_to_delete {
                         data.remove(&key);
                     }
@@ -253,14 +252,14 @@ where
 
     /// run_gc_loop will continuously clear expired entries from the map, checking every `period`. The
     /// function terminates if `shutdown` is signalled.
-    async fn run_gc_loop(time: Arc<AtomicU64>, period: Duration, buckets: &Vec<Bucket<K>>) {
+    async fn run_gc_loop(time: Arc<AtomicU64>, period: Duration, buckets: &[Bucket<K>]) {
         loop {
             tokio::time::sleep(period).await;
             Self::gc(time.clone(), buckets);
         }
     }
 
-    fn gc(time: Arc<AtomicU64>, buckets: &Vec<Bucket<K>>) {
+    fn gc(time: Arc<AtomicU64>, buckets: &[Bucket<K>]) {
         let index = time.load(std::sync::atomic::Ordering::SeqCst) % buckets.len() as u64;
         buckets[index as usize].clear();
         time.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
