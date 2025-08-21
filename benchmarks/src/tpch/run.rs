@@ -36,14 +36,16 @@ use datafusion::datasource::listing::{
 };
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 
 use crate::util::{print_memory_stats, BenchmarkRun, CommonOpt, QueryResult};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
-use datafusion_distributed::{DistributedPhysicalOptimizerRule, SessionBuilder};
+use datafusion_distributed::{
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
+};
 use log::info;
 use structopt::StructOpt;
 
@@ -110,11 +112,13 @@ pub struct RunOpt {
 }
 
 #[async_trait]
-impl SessionBuilder for RunOpt {
-    fn session_state_builder(
+impl DistributedSessionBuilder for RunOpt {
+    async fn build_session_state(
         &self,
-        mut builder: SessionStateBuilder,
-    ) -> Result<SessionStateBuilder, DataFusionError> {
+        _ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError> {
+        let mut builder = SessionStateBuilder::new().with_default_features();
+
         let mut config = self
             .common
             .config()?
@@ -145,17 +149,14 @@ impl SessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
-        Ok(builder
+        let state = builder
             .with_config(config)
-            .with_runtime_env(rt_builder.build_arc()?))
-    }
+            .with_runtime_env(rt_builder.build_arc()?)
+            .build();
 
-    async fn session_context(
-        &self,
-        ctx: SessionContext,
-    ) -> std::result::Result<SessionContext, DataFusionError> {
+        let ctx = SessionContext::from(state);
         self.register_tables(&ctx).await?;
-        Ok(ctx)
+        Ok(ctx.state())
     }
 }
 

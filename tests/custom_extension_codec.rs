@@ -7,7 +7,7 @@ mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
-        FunctionRegistry, SendableRecordBatchStream, SessionStateBuilder, TaskContext,
+        FunctionRegistry, SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{col, lit, BinaryExpr};
@@ -22,11 +22,11 @@ mod tests {
     use datafusion::physical_plan::{
         displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
-    use datafusion_distributed::assert_snapshot;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        with_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule, SessionBuilder,
+        add_user_codec, assert_snapshot, DistributedSessionBuilderContext,
     };
+    use datafusion_distributed::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -38,18 +38,18 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn custom_extension_codec() -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Clone)]
-        struct CustomSessionBuilder;
-        impl SessionBuilder for CustomSessionBuilder {
-            fn session_state_builder(
-                &self,
-                builder: SessionStateBuilder,
-            ) -> Result<SessionStateBuilder, DataFusionError> {
-                Ok(with_user_codec(builder, Int64ListExecCodec))
-            }
+        async fn build_state(
+            ctx: DistributedSessionBuilderContext,
+        ) -> Result<SessionState, DataFusionError> {
+            let mut state = SessionStateBuilder::new()
+                .with_runtime_env(ctx.runtime_env)
+                .with_default_features()
+                .build();
+            add_user_codec(state.config_mut(), Int64ListExecCodec);
+            Ok(state)
         }
 
-        let (ctx, _guard) = start_localhost_context(3, CustomSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(3, build_state).await;
 
         let single_node_plan = build_plan(false)?;
         assert_snapshot!(displayable(single_node_plan.as_ref()).indent(true).to_string(), @r"

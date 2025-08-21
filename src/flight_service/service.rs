@@ -1,6 +1,6 @@
 use crate::channel_manager::ChannelManager;
-use crate::flight_service::session_builder::NoopSessionBuilder;
-use crate::flight_service::SessionBuilder;
+use crate::flight_service::session_builder::DefaultSessionBuilder;
+use crate::flight_service::DistributedSessionBuilder;
 use crate::stage::ExecutionStage;
 use crate::ChannelResolver;
 use arrow_flight::flight_service_server::FlightService;
@@ -36,7 +36,7 @@ pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
     #[allow(clippy::type_complexity)]
     pub(super) stages: DashMap<StageKey, Arc<OnceCell<(SessionState, Arc<ExecutionStage>)>>>,
-    pub(super) session_builder: Arc<dyn SessionBuilder + Send + Sync>,
+    pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
 }
 
 impl ArrowFlightEndpoint {
@@ -45,13 +45,13 @@ impl ArrowFlightEndpoint {
             channel_manager: Arc::new(ChannelManager::new(channel_resolver)),
             runtime: Arc::new(RuntimeEnv::default()),
             stages: DashMap::new(),
-            session_builder: Arc::new(NoopSessionBuilder),
+            session_builder: Arc::new(DefaultSessionBuilder),
         }
     }
 
     pub fn with_session_builder(
         &mut self,
-        session_builder: impl SessionBuilder + Send + Sync + 'static,
+        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     ) {
         self.session_builder = Arc::new(session_builder);
     }

@@ -4,7 +4,7 @@ mod tests {
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{assert_snapshot, ArrowFlightReadExec, NoopSessionBuilder};
+    use datafusion_distributed::{assert_snapshot, ArrowFlightReadExec, DefaultSessionBuilder};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
@@ -12,7 +12,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn highly_distributed_query() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(9, NoopSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(9, DefaultSessionBuilder).await;
         register_parquet_tables(&ctx).await?;
 
         let df = ctx.sql(r#"SELECT * FROM flights_1m"#).await?;

@@ -3,12 +3,13 @@ mod common;
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use crate::common::{ensure_tpch_data, get_test_data_dir, get_test_tpch_query};
-    use async_trait::async_trait;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::SessionStateBuilder;
+    use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{DistributedPhysicalOptimizerRule, SessionBuilder};
+    use datafusion_distributed::{
+        DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
@@ -126,48 +127,37 @@ mod tests {
     }
 
     async fn test_tpch_query(query_id: u8) -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(2, TestSessionBuilder).await;
+        let (ctx, _guard) = start_localhost_context(2, build_state).await;
         run_tpch_query(ctx, query_id).await
     }
 
-    #[derive(Clone)]
-    struct TestSessionBuilder;
+    async fn build_state(
+        ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError> {
+        let mut config = SessionConfig::new().with_target_partitions(3);
 
-    #[async_trait]
-    impl SessionBuilder for TestSessionBuilder {
-        fn session_state_builder(
-            &self,
-            builder: SessionStateBuilder,
-        ) -> Result<SessionStateBuilder, DataFusionError> {
-            let mut config = SessionConfig::new().with_target_partitions(3);
+        // FIXME: these three options are critical for the correct function of the library
+        // but we are not enforcing that the user sets them.  They are here at the moment
+        // but we should figure out a way to do this better.
+        config
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        config
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
 
-            // FIXME: these three options are critical for the correct function of the library
-            // but we are not enforcing that the user sets them.  They are here at the moment
-            // but we should figure out a way to do this better.
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold = 0;
-            config
-                .options_mut()
-                .optimizer
-                .hash_join_single_partition_threshold_rows = 0;
+        config.options_mut().optimizer.prefer_hash_join = true;
+        // end critical options section
 
-            config.options_mut().optimizer.prefer_hash_join = true;
-            // end critical options section
-
-            let rule = DistributedPhysicalOptimizerRule::new().with_maximum_partitions_per_task(2);
-            Ok(builder
-                .with_config(config)
-                .with_physical_optimizer_rule(Arc::new(rule)))
-        }
-
-        async fn session_context(
-            &self,
-            ctx: SessionContext,
-        ) -> std::result::Result<SessionContext, DataFusionError> {
-            Ok(ctx)
-        }
+        let rule = DistributedPhysicalOptimizerRule::new().with_maximum_partitions_per_task(2);
+        Ok(SessionStateBuilder::new()
+            .with_config(config)
+            .with_runtime_env(ctx.runtime_env)
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(rule))
+            .build())
     }
 
     // test_non_distributed_consistency runs each TPC-H query twice - once in a distributed manner
