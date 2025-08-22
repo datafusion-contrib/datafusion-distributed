@@ -6,7 +6,7 @@ use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::plan::{DistributedCodec, PartitionGroup};
 use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
-use crate::user_provided_codec::get_user_codec;
+use crate::user_codec_ext::get_user_codec;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;

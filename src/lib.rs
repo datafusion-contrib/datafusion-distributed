@@ -10,7 +10,7 @@ mod physical_optimizer;
 mod plan;
 mod stage;
 mod task;
-mod user_provided_codec;
+mod user_codec_ext;
 
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
@@ -24,4 +24,3 @@ pub use flight_service::{
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;
 pub use stage::{display_stage_graphviz, ExecutionStage};
-pub use user_provided_codec::{add_user_codec, with_user_codec};

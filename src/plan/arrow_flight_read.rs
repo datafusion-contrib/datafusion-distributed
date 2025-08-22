@@ -6,7 +6,7 @@ use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
-use crate::user_provided_codec::get_user_codec;
+use crate::user_codec_ext::get_user_codec;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;

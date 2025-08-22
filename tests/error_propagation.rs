@@ -13,7 +13,7 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        add_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule,
+        ArrowFlightReadExec, DistributedExt, DistributedPhysicalOptimizerRule,
         DistributedSessionBuilderContext,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -34,7 +34,7 @@ mod tests {
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
                 .build();
-            add_user_codec(state.config_mut(), ErrorExecCodec);
+            state.add_user_codec(ErrorExecCodec);
             Ok(state)
         }
 

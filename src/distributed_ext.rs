@@ -1,10 +1,12 @@
 use crate::config_extension_ext::{
     add_distributed_option_extension, retrieve_distributed_option_extension,
 };
+use crate::user_codec_ext::add_user_codec;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use delegate::delegate;
 use http::HeaderMap;
 
@@ -105,6 +107,36 @@ pub trait DistributedExt {
         &mut self,
         headers: &HeaderMap,
     ) -> Result<(), DataFusionError>;
+
+    /// Injects a user-defined codec that is capable of encoding/decoding custom execution nodes.
+    ///
+    /// Example:
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder};
+    /// # use datafusion::physical_plan::ExecutionPlan;
+    /// # use datafusion::prelude::SessionConfig;
+    /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    /// # use datafusion_distributed::DistributedExt;
+    ///
+    /// #[derive(Debug)]
+    /// struct CustomExecCodec;
+    ///
+    /// impl PhysicalExtensionCodec for CustomExecCodec {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///         todo!()
+    ///     }
+    ///
+    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+    ///         todo!()
+    ///     }
+    /// }
+    ///
+    /// let mut config = SessionConfig::new();
+    /// config.add_user_codec(CustomExecCodec)
+    /// ```
+    fn add_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
 }
 
 impl DistributedExt for SessionConfig {
@@ -121,6 +153,10 @@ impl DistributedExt for SessionConfig {
     ) -> Result<(), DataFusionError> {
         retrieve_distributed_option_extension::<T>(self, headers)
     }
+
+    fn add_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
+        add_user_codec(self, codec)
+    }
 }
 
 impl DistributedExt for SessionStateBuilder {
@@ -128,6 +164,7 @@ impl DistributedExt for SessionStateBuilder {
         to self.config().get_or_insert_default() {
             fn add_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
             fn retrieve_distributed_option_extension<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            fn add_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
         }
     }
 }
@@ -137,6 +174,7 @@ impl DistributedExt for SessionState {
         to self.config_mut() {
             fn add_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
             fn retrieve_distributed_option_extension<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            fn add_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
         }
     }
 }
@@ -146,6 +184,7 @@ impl DistributedExt for SessionContext {
         to self.state_ref().write().config_mut() {
             fn add_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
             fn retrieve_distributed_option_extension<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            fn add_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
         }
     }
 }

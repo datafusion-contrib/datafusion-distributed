@@ -28,7 +28,7 @@ pub trait DistributedSessionBuilder {
     /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{with_user_codec, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -49,12 +49,10 @@ pub trait DistributedSessionBuilder {
     /// #[async_trait]
     /// impl DistributedSessionBuilder for CustomSessionBuilder {
     ///     async fn build_session_state(&self, ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///         let builder = SessionStateBuilder::new()
+    ///         let mut builder = SessionStateBuilder::new()
     ///             .with_runtime_env(ctx.runtime_env.clone())
     ///             .with_default_features();
-    ///
-    ///         let builder = with_user_codec(builder, CustomExecCodec);
-    ///
+    ///         builder.add_user_codec(CustomExecCodec);
     ///         // Add your UDFs, optimization rules, etc...
     ///
     ///         Ok(builder.build())

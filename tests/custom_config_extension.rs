@@ -14,10 +14,8 @@ mod tests {
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{
-        add_user_codec, ConfigExtensionExt, DistributedSessionBuilderContext,
-    };
     use datafusion_distributed::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
+    use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -35,7 +33,7 @@ mod tests {
                 .with_default_features()
                 .build();
             state.retrieve_distributed_option_extension::<CustomExtension>(&ctx.headers)?;
-            add_user_codec(state.config_mut(), CustomConfigExtensionRequiredExecCodec);
+            state.add_user_codec(CustomConfigExtensionRequiredExecCodec);
             Ok(state)
         }
 
