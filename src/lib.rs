@@ -1,6 +1,6 @@
 #![deny(clippy::all)]
 
-mod channel_manager;
+mod channel_manager_ext;
 mod common;
 mod config_extension_ext;
 mod distributed_ext;
@@ -15,11 +15,12 @@ mod user_codec_ext;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
-pub use channel_manager::{BoxCloneSyncChannel, ChannelManager, ChannelResolver};
+pub use channel_manager_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
-    DistributedSessionBuilderContext,
+    DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
+    MappedDistributedSessionBuilderExt,
 };
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;

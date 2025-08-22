@@ -83,6 +83,7 @@ impl DistributedSessionBuilder for DefaultSessionBuilder {
     }
 }
 
+/// Implementation of [DistributedSessionBuilder] for any async function that returns a [Result]
 #[async_trait]
 impl<F, Fut> DistributedSessionBuilder for F
 where
@@ -94,5 +95,72 @@ where
         ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
         self(ctx).await
+    }
+}
+
+pub trait MappedDistributedSessionBuilderExt {
+    /// Maps an existing [DistributedSessionBuilder] allowing to add further extensions
+    /// to its already built [SessionStateBuilder].
+    ///
+    /// Useful if there's already a [DistributedSessionBuilder] that needs to be extended
+    /// with further capabilities.
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion_distributed::{DefaultSessionBuilder, MappedDistributedSessionBuilderExt};
+    ///
+    /// let session_builder = DefaultSessionBuilder
+    ///     .map(|b: SessionStateBuilder| {
+    ///         // Add further things.
+    ///         Ok(b.build())
+    ///     });
+    /// ```
+    fn map<F>(self, f: F) -> MappedDistributedSessionBuilder<Self, F>
+    where
+        Self: Sized,
+        F: Fn(SessionStateBuilder) -> Result<SessionState, DataFusionError>;
+}
+
+impl<T: DistributedSessionBuilder> MappedDistributedSessionBuilderExt for T {
+    fn map<F>(self, f: F) -> MappedDistributedSessionBuilder<Self, F>
+    where
+        Self: Sized,
+    {
+        MappedDistributedSessionBuilder {
+            inner: self,
+            f: Arc::new(f),
+        }
+    }
+}
+
+pub struct MappedDistributedSessionBuilder<T, F> {
+    inner: T,
+    f: Arc<F>,
+}
+
+impl<T: Clone, F> Clone for MappedDistributedSessionBuilder<T, F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl<T, F> DistributedSessionBuilder for MappedDistributedSessionBuilder<T, F>
+where
+    T: DistributedSessionBuilder + Send + Sync + 'static,
+    F: Fn(SessionStateBuilder) -> Result<SessionState, DataFusionError> + Send + Sync,
+{
+    async fn build_session_state(
+        &self,
+        ctx: DistributedSessionBuilderContext,
+    ) -> Result<SessionState, DataFusionError> {
+        let state = self.inner.build_session_state(ctx).await?;
+        let builder = SessionStateBuilder::new_from_existing(state);
+        (self.f)(builder)
     }
 }

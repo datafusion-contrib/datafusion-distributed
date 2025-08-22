@@ -130,7 +130,6 @@ impl ArrowFlightEndpoint {
 
                 // Add the extensions that might be required for ExecutionPlan nodes in the plan
                 let config = state.config_mut();
-                config.set_extension(Arc::clone(&self.channel_manager));
                 config.set_extension(stage.clone());
                 config.set_extension(Arc::new(ContextGrpcMetadata(headers)));
 

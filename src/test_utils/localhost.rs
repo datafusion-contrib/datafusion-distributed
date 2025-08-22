@@ -1,12 +1,14 @@
 use crate::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelManager, ChannelResolver,
+    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
     DistributedSessionBuilder, DistributedSessionBuilderContext,
+    MappedDistributedSessionBuilderExt,
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use std::error::Error;
 use std::sync::Arc;
@@ -42,12 +44,15 @@ where
         .collect();
 
     let channel_resolver = LocalHostChannelResolver::new(ports.clone());
+    let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
+        let channel_resolver = channel_resolver.clone();
+        Ok(builder.with_channel_resolver(channel_resolver).build())
+    });
     let mut join_set = JoinSet::new();
     for listener in listeners {
-        let channel_resolver = channel_resolver.clone();
         let session_builder = session_builder.clone();
         join_set.spawn(async move {
-            spawn_flight_service(channel_resolver, session_builder, listener)
+            spawn_flight_service(session_builder, listener)
                 .await
                 .unwrap();
         });
@@ -61,9 +66,6 @@ where
         })
         .await
         .unwrap();
-    state
-        .config_mut()
-        .set_extension(Arc::new(ChannelManager::new(channel_resolver)));
     state.config_mut().options_mut().execution.target_partitions = 3;
 
     (SessionContext::from(state), join_set)
@@ -102,12 +104,10 @@ impl ChannelResolver for LocalHostChannelResolver {
 }
 
 pub async fn spawn_flight_service(
-    channel_resolver: impl ChannelResolver + Send + Sync + 'static,
     session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut endpoint = ArrowFlightEndpoint::new(channel_resolver);
-    endpoint.with_session_builder(session_builder);
+    let endpoint = ArrowFlightEndpoint::new(session_builder);
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 

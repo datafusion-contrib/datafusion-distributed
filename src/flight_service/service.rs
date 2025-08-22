@@ -1,8 +1,5 @@
-use crate::channel_manager::ChannelManager;
-use crate::flight_service::session_builder::DefaultSessionBuilder;
 use crate::flight_service::DistributedSessionBuilder;
 use crate::stage::ExecutionStage;
-use crate::ChannelResolver;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -32,7 +29,6 @@ pub struct StageKey {
 }
 
 pub struct ArrowFlightEndpoint {
-    pub(super) channel_manager: Arc<ChannelManager>,
     pub(super) runtime: Arc<RuntimeEnv>,
     #[allow(clippy::type_complexity)]
     pub(super) stages: DashMap<StageKey, Arc<OnceCell<(SessionState, Arc<ExecutionStage>)>>>,
@@ -40,20 +36,12 @@ pub struct ArrowFlightEndpoint {
 }
 
 impl ArrowFlightEndpoint {
-    pub fn new(channel_resolver: impl ChannelResolver + Send + Sync + 'static) -> Self {
+    pub fn new(session_builder: impl DistributedSessionBuilder + Send + Sync + 'static) -> Self {
         Self {
-            channel_manager: Arc::new(ChannelManager::new(channel_resolver)),
             runtime: Arc::new(RuntimeEnv::default()),
             stages: DashMap::new(),
-            session_builder: Arc::new(DefaultSessionBuilder),
+            session_builder: Arc::new(session_builder),
         }
-    }
-
-    pub fn with_session_builder(
-        &mut self,
-        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
-    ) {
-        self.session_builder = Arc::new(session_builder);
     }
 }
 
