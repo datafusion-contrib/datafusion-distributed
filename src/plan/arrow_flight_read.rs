@@ -1,4 +1,5 @@
 use super::combined::CombinedRecordBatchStream;
+use crate::channel_manager_ext::get_channel_resolver;
 use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
@@ -6,6 +7,7 @@ use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use crate::user_codec_ext::get_user_codec;
+use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -27,8 +29,6 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 use url::Url;
-use crate::channel_manager_ext::get_channel_resolver;
-use crate::ChannelResolver;
 
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -160,7 +160,9 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         // get the channel manager and current stage from our context
         let Some(channel_resolver) = get_channel_resolver(context.session_config()) else {
-            return exec_err!("ArrowFlightReadExec requires a ChannelResolver in the session config");       
+            return exec_err!(
+                "ArrowFlightReadExec requires a ChannelResolver in the session config"
+            );
         };
 
         let stage = context

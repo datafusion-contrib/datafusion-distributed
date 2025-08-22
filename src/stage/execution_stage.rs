@@ -6,13 +6,13 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
+use crate::channel_manager_ext::get_channel_resolver;
+use crate::task::ExecutionTask;
+use crate::ChannelResolver;
 use itertools::Itertools;
 use rand::Rng;
 use url::Url;
 use uuid::Uuid;
-use crate::channel_manager_ext::get_channel_resolver;
-use crate::ChannelResolver;
-use crate::task::ExecutionTask;
 
 /// A unit of isolation for a portion of a physical execution plan
 /// that can be executed independently and across a network boundary.  
@@ -171,10 +171,7 @@ impl ExecutionStage {
         format!("Stage {:<3}{}", self.num, child_str)
     }
 
-    pub fn try_assign(
-        self,
-        channel_resolver: &impl ChannelResolver
-    ) -> Result<Self> {
+    pub fn try_assign(self, channel_resolver: &impl ChannelResolver) -> Result<Self> {
         let urls: Vec<Url> = channel_resolver.get_urls()?;
         if urls.is_empty() {
             return internal_err!("No URLs found in ChannelManager");
