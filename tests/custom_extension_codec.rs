@@ -41,12 +41,11 @@ mod tests {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
         ) -> Result<SessionState, DataFusionError> {
-            let mut state = SessionStateBuilder::new()
+            Ok(SessionStateBuilder::new()
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
-                .build();
-            state.add_user_codec(Int64ListExecCodec);
-            Ok(state)
+                .with_user_codec(Int64ListExecCodec)
+                .build())
         }
 
         let (ctx, _guard) = start_localhost_context(3, build_state).await;

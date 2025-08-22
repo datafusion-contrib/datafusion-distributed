@@ -52,7 +52,7 @@ pub trait DistributedSessionBuilder {
     ///         let mut builder = SessionStateBuilder::new()
     ///             .with_runtime_env(ctx.runtime_env.clone())
     ///             .with_default_features();
-    ///         builder.add_user_codec(CustomExecCodec);
+    ///         builder.set_user_codec(CustomExecCodec);
     ///         // Add your UDFs, optimization rules, etc...
     ///
     ///         Ok(builder.build())

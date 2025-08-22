@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 pub struct UserProvidedCodec(Arc<dyn PhysicalExtensionCodec>);
 
-pub(crate) fn add_user_codec<T: PhysicalExtensionCodec + 'static>(
+pub(crate) fn set_user_codec<T: PhysicalExtensionCodec + 'static>(
     cfg: &mut SessionConfig,
     codec: T,
 ) {

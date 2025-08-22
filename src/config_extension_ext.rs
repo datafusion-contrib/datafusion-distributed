@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const FLIGHT_METADATA_CONFIG_PREFIX: &str = "x-datafusion-distributed-config-";
 
-pub(crate) fn add_distributed_option_extension<T: ConfigExtension + Default>(
+pub(crate) fn set_distributed_option_extension<T: ConfigExtension + Default>(
     cfg: &mut SessionConfig,
     t: T,
 ) -> Result<(), DataFusionError> {
@@ -43,7 +43,7 @@ pub(crate) fn add_distributed_option_extension<T: ConfigExtension + Default>(
     Ok(())
 }
 
-pub(crate) fn retrieve_distributed_option_extension<T: ConfigExtension + Default>(
+pub(crate) fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(
     cfg: &mut SessionConfig,
     headers: &HeaderMap,
 ) -> Result<(), DataFusionError> {
@@ -84,7 +84,7 @@ impl ContextGrpcMetadata {
 #[cfg(test)]
 mod tests {
     use crate::config_extension_ext::{
-        add_distributed_option_extension, retrieve_distributed_option_extension,
+        set_distributed_option_extension, set_distributed_option_extension_from_headers,
         ContextGrpcMetadata,
     };
     use datafusion::common::extensions_options;
@@ -103,10 +103,13 @@ mod tests {
             baz: false,
         };
 
-        add_distributed_option_extension(&mut config, opt)?;
+        set_distributed_option_extension(&mut config, opt)?;
         let metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
         let mut new_config = SessionConfig::new();
-        retrieve_distributed_option_extension::<CustomExtension>(&mut new_config, &metadata.0)?;
+        set_distributed_option_extension_from_headers::<CustomExtension>(
+            &mut new_config,
+            &metadata.0,
+        )?;
 
         let opt = get_ext::<CustomExtension>(&config);
         let new_opt = get_ext::<CustomExtension>(&new_config);
@@ -123,7 +126,7 @@ mod tests {
         let mut config = SessionConfig::new();
         let opt = CustomExtension::default();
 
-        add_distributed_option_extension(&mut config, opt)?;
+        set_distributed_option_extension(&mut config, opt)?;
 
         let flight_metadata = config.get_extension::<ContextGrpcMetadata>();
         assert!(flight_metadata.is_some());
@@ -149,13 +152,13 @@ mod tests {
             foo: "first".to_string(),
             ..Default::default()
         };
-        add_distributed_option_extension(&mut config, opt1)?;
+        set_distributed_option_extension(&mut config, opt1)?;
 
         let opt2 = CustomExtension {
             bar: 42,
             ..Default::default()
         };
-        add_distributed_option_extension(&mut config, opt2)?;
+        set_distributed_option_extension(&mut config, opt2)?;
 
         let flight_metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
         let metadata = &flight_metadata.0;
@@ -172,7 +175,10 @@ mod tests {
     fn test_propagate_no_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = SessionConfig::new();
 
-        retrieve_distributed_option_extension::<CustomExtension>(&mut config, &Default::default())?;
+        set_distributed_option_extension_from_headers::<CustomExtension>(
+            &mut config,
+            &Default::default(),
+        )?;
 
         let extension = config.options().extensions.get::<CustomExtension>();
         assert!(extension.is_none());
@@ -189,7 +195,7 @@ mod tests {
             HeaderValue::from_str("value").unwrap(),
         );
 
-        retrieve_distributed_option_extension::<CustomExtension>(&mut config, &header_map)?;
+        set_distributed_option_extension_from_headers::<CustomExtension>(&mut config, &header_map)?;
 
         let extension = config.options().extensions.get::<CustomExtension>();
         assert!(extension.is_none());
@@ -213,8 +219,8 @@ mod tests {
             ..Default::default()
         };
 
-        add_distributed_option_extension(&mut config, custom_opt)?;
-        add_distributed_option_extension(&mut config, another_opt)?;
+        set_distributed_option_extension(&mut config, custom_opt)?;
+        set_distributed_option_extension(&mut config, another_opt)?;
 
         let flight_metadata = config.get_extension::<ContextGrpcMetadata>().unwrap();
         let metadata = &flight_metadata.0;
@@ -241,8 +247,14 @@ mod tests {
         );
 
         let mut new_config = SessionConfig::new();
-        retrieve_distributed_option_extension::<CustomExtension>(&mut new_config, metadata)?;
-        retrieve_distributed_option_extension::<AnotherExtension>(&mut new_config, metadata)?;
+        set_distributed_option_extension_from_headers::<CustomExtension>(
+            &mut new_config,
+            metadata,
+        )?;
+        set_distributed_option_extension_from_headers::<AnotherExtension>(
+            &mut new_config,
+            metadata,
+        )?;
 
         let propagated_custom = get_ext::<CustomExtension>(&new_config);
         let propagated_another = get_ext::<AnotherExtension>(&new_config);
@@ -260,7 +272,7 @@ mod tests {
         let mut config = SessionConfig::new();
         let extension = InvalidExtension::default();
 
-        let result = add_distributed_option_extension(&mut config, extension);
+        let result = set_distributed_option_extension(&mut config, extension);
         assert!(result.is_err());
     }
 
@@ -269,7 +281,7 @@ mod tests {
         let mut config = SessionConfig::new();
         let extension = InvalidValueExtension::default();
 
-        let result = add_distributed_option_extension(&mut config, extension);
+        let result = set_distributed_option_extension(&mut config, extension);
         assert!(result.is_err());
     }
 

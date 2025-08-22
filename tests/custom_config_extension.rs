@@ -28,17 +28,16 @@ mod tests {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
         ) -> Result<SessionState, DataFusionError> {
-            let mut state = SessionStateBuilder::new()
+            Ok(SessionStateBuilder::new()
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
-                .build();
-            state.retrieve_distributed_option_extension::<CustomExtension>(&ctx.headers)?;
-            state.add_user_codec(CustomConfigExtensionRequiredExecCodec);
-            Ok(state)
+                .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
+                .with_user_codec(CustomConfigExtensionRequiredExecCodec)
+                .build())
         }
 
         let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
-        ctx.add_distributed_option_extension(CustomExtension {
+        ctx.set_distributed_option_extension(CustomExtension {
             foo: "foo".to_string(),
             bar: 1,
             baz: true,
