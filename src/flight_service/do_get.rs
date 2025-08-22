@@ -6,7 +6,7 @@ use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::plan::{DistributedCodec, PartitionGroup};
 use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
-use crate::user_codec_ext::get_user_codec;
+use crate::user_codec_ext::get_distributed_user_codec;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -117,7 +117,7 @@ impl ArrowFlightEndpoint {
 
                 let mut combined_codec = ComposedPhysicalExtensionCodec::default();
                 combined_codec.push(DistributedCodec);
-                if let Some(ref user_codec) = get_user_codec(state.config()) {
+                if let Some(ref user_codec) = get_distributed_user_codec(state.config()) {
                     combined_codec.push_arc(Arc::clone(user_codec));
                 }
 

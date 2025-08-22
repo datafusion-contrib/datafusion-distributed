@@ -1,8 +1,8 @@
-use crate::channel_manager_ext::set_channel_resolver;
+use crate::channel_manager_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::user_codec_ext::set_user_codec;
+use crate::user_codec_ext::set_distributed_user_codec;
 use crate::ChannelResolver;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -151,20 +151,20 @@ pub trait DistributedExt: Sized {
     ///     }
     /// }
     ///
-    /// let config = SessionConfig::new().with_user_codec(CustomExecCodec);
+    /// let config = SessionConfig::new().with_distributed_user_codec(CustomExecCodec);
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
     ///     // know how to deserialize the CustomExtension from the gRPC metadata.
     ///     Ok(SessionStateBuilder::new()
-    ///         .with_user_codec(CustomExecCodec)
+    ///         .with_distributed_user_codec(CustomExecCodec)
     ///         .build())
     /// }
     /// ```
-    fn with_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
+    fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
 
-    /// Same as [DistributedExt::with_user_codec] but with an in-place mutation
-    fn set_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+    /// Same as [DistributedExt::with_distributed_user_codec] but with an in-place mutation
+    fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
 
     /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
     /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
@@ -192,21 +192,26 @@ pub trait DistributedExt: Sized {
     ///     }
     /// }
     ///
-    /// let config = SessionConfig::new().with_channel_resolver(CustomChannelResolver);
+    /// let config = SessionConfig::new().with_distributed_channel_resolver(CustomChannelResolver);
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
     ///     // know how to deserialize the CustomExtension from the gRPC metadata.
     ///     Ok(SessionStateBuilder::new()
-    ///         .with_channel_resolver(CustomChannelResolver)
+    ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
     /// }
     /// ```
-    fn with_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T)
-        -> Self;
+    fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+        self,
+        resolver: T,
+    ) -> Self;
 
-    /// Same as [DistributedExt::with_channel_resolver] but with an in-place mutation.
-    fn set_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+    /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
+    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    );
 }
 
 impl DistributedExt for SessionConfig {
@@ -224,12 +229,15 @@ impl DistributedExt for SessionConfig {
         set_distributed_option_extension_from_headers::<T>(self, headers)
     }
 
-    fn set_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
-        set_user_codec(self, codec)
+    fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
+        set_distributed_user_codec(self, codec)
     }
 
-    fn set_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T) {
-        set_channel_resolver(self, resolver)
+    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    ) {
+        set_distributed_channel_resolver(self, resolver)
     }
 
     delegate! {
@@ -242,13 +250,13 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
-            #[call(set_user_codec)]
+            #[call(set_distributed_user_codec)]
             #[expr($;self)]
-            fn with_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
 
-            #[call(set_channel_resolver)]
+            #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
-            fn with_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
         }
     }
 }
@@ -266,15 +274,15 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
-            fn set_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_user_codec)]
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
             #[expr($;self)]
-            fn with_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
 
-            fn set_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_channel_resolver)]
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
-            fn with_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
         }
     }
 }
@@ -292,15 +300,15 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
-            fn set_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_user_codec)]
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
             #[expr($;self)]
-            fn with_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
 
-            fn set_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_channel_resolver)]
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
-            fn with_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
         }
     }
 }
@@ -318,15 +326,15 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
-            fn set_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_user_codec)]
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
             #[expr($;self)]
-            fn with_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
 
-            fn set_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_channel_resolver)]
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
-            fn with_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
         }
     }
 }

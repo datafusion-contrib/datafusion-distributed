@@ -1,12 +1,12 @@
 use super::combined::CombinedRecordBatchStream;
-use crate::channel_manager_ext::get_channel_resolver;
+use crate::channel_manager_ext::get_distributed_channel_resolver;
 use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
-use crate::user_codec_ext::get_user_codec;
+use crate::user_codec_ext::get_distributed_user_codec;
 use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -159,7 +159,8 @@ impl ExecutionPlan for ArrowFlightReadExec {
         };
 
         // get the channel manager and current stage from our context
-        let Some(channel_resolver) = get_channel_resolver(context.session_config()) else {
+        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
+        else {
             return exec_err!(
                 "ArrowFlightReadExec requires a ChannelResolver in the session config"
             );
@@ -188,7 +189,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let mut combined_codec = ComposedPhysicalExtensionCodec::default();
         combined_codec.push(DistributedCodec {});
-        if let Some(ref user_codec) = get_user_codec(context.session_config()) {
+        if let Some(ref user_codec) = get_distributed_user_codec(context.session_config()) {
             combined_codec.push_arc(Arc::clone(user_codec));
         }
 

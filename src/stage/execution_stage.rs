@@ -6,7 +6,7 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
-use crate::channel_manager_ext::get_channel_resolver;
+use crate::channel_manager_ext::get_distributed_channel_resolver;
 use crate::task::ExecutionTask;
 use crate::ChannelResolver;
 use itertools::Itertools;
@@ -261,7 +261,8 @@ impl ExecutionPlan for ExecutionStage {
             .downcast_ref::<ExecutionStage>()
             .expect("Unwrapping myself should always work");
 
-        let Some(channel_resolver) = get_channel_resolver(context.session_config()) else {
+        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
+        else {
             return exec_err!("ChannelManager not found in session config");
         };
 

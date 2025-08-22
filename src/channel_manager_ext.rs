@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tonic::body::BoxBody;
 use url::Url;
 
-pub(crate) fn set_channel_resolver(
+pub(crate) fn set_distributed_channel_resolver(
     cfg: &mut SessionConfig,
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
 ) {
@@ -14,7 +14,7 @@ pub(crate) fn set_channel_resolver(
     ))));
 }
 
-pub(crate) fn get_channel_resolver(
+pub(crate) fn get_distributed_channel_resolver(
     cfg: &SessionConfig,
 ) -> Option<Arc<dyn ChannelResolver + Send + Sync>> {
     cfg.get_extension::<ChannelResolverExtension>()

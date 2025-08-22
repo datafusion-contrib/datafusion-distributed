@@ -46,7 +46,9 @@ where
     let channel_resolver = LocalHostChannelResolver::new(ports.clone());
     let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
         let channel_resolver = channel_resolver.clone();
-        Ok(builder.with_channel_resolver(channel_resolver).build())
+        Ok(builder
+            .with_distributed_channel_resolver(channel_resolver)
+            .build())
     });
     let mut join_set = JoinSet::new();
     for listener in listeners {

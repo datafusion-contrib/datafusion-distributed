@@ -32,7 +32,7 @@ mod tests {
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
                 .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
-                .with_user_codec(CustomConfigExtensionRequiredExecCodec)
+                .with_distributed_user_codec(CustomConfigExtensionRequiredExecCodec)
                 .build())
         }
 

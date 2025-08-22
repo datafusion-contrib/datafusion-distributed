@@ -44,7 +44,7 @@ mod tests {
             Ok(SessionStateBuilder::new()
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
-                .with_user_codec(Int64ListExecCodec)
+                .with_distributed_user_codec(Int64ListExecCodec)
                 .build())
         }
 
