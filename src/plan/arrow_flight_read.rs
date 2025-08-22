@@ -1,6 +1,6 @@
 use super::combined::CombinedRecordBatchStream;
 use crate::channel_manager::ChannelManager;
-use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, StageKey};

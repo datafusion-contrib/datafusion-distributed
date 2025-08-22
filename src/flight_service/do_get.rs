@@ -1,5 +1,5 @@
 use super::service::StageKey;
-use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
