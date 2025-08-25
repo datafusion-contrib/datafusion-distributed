@@ -1,12 +1,13 @@
 use super::combined::CombinedRecordBatchStream;
-use crate::channel_manager::ChannelManager;
-use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::channel_manager_ext::get_distributed_channel_resolver;
+use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::{DoGet, StageKey};
 use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
-use crate::user_provided_codec::get_user_codec;
+use crate::user_codec_ext::get_distributed_user_codec;
+use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -158,7 +159,12 @@ impl ExecutionPlan for ArrowFlightReadExec {
         };
 
         // get the channel manager and current stage from our context
-        let channel_manager: ChannelManager = context.as_ref().try_into()?;
+        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
+        else {
+            return exec_err!(
+                "ArrowFlightReadExec requires a ChannelResolver in the session config"
+            );
+        };
 
         let stage = context
             .session_config()
@@ -183,7 +189,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let mut combined_codec = ComposedPhysicalExtensionCodec::default();
         combined_codec.push(DistributedCodec {});
-        if let Some(ref user_codec) = get_user_codec(context.session_config()) {
+        if let Some(ref user_codec) = get_distributed_user_codec(context.session_config()) {
             combined_codec.push_arc(Arc::clone(user_codec));
         }
 
@@ -199,8 +205,8 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
         let stream = async move {
             let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
-                let child_stage_proto_capture = child_stage_proto.clone();
-                let channel_manager_capture = channel_manager.clone();
+                let child_stage_proto = child_stage_proto.clone();
+                let channel_resolver = channel_resolver.clone();
                 let schema = schema.clone();
                 let query_id = query_id.clone();
                 let flight_metadata = flight_metadata
@@ -218,7 +224,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
                     ))?;
 
                     let ticket_bytes = DoGet {
-                        stage_proto: Some(child_stage_proto_capture),
+                        stage_proto: Some(child_stage_proto),
                         partition: partition as u64,
                         stage_key: Some(key),
                         task_number: i as u64,
@@ -235,7 +241,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
                         flight_metadata,
                         &url,
                         schema.clone(),
-                        &channel_manager_capture,
+                        &channel_resolver,
                     )
                     .await
                 }
@@ -261,7 +267,7 @@ async fn stream_from_stage_task(
     metadata: ContextGrpcMetadata,
     url: &Url,
     schema: SchemaRef,
-    channel_manager: &ChannelManager,
+    channel_manager: &impl ChannelResolver,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
     let channel = channel_manager.get_channel_for_url(url).await?;
 

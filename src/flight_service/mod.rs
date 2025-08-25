@@ -7,4 +7,5 @@ pub(crate) use do_get::DoGet;
 pub use service::{ArrowFlightEndpoint, StageKey};
 pub use session_builder::{
     DefaultSessionBuilder, DistributedSessionBuilder, DistributedSessionBuilderContext,
+    MappedDistributedSessionBuilder, MappedDistributedSessionBuilderExt,
 };

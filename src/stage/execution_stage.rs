@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use datafusion::common::internal_err;
+use datafusion::common::{exec_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
+use crate::channel_manager_ext::get_distributed_channel_resolver;
+use crate::task::ExecutionTask;
+use crate::ChannelResolver;
 use itertools::Itertools;
 use rand::Rng;
 use url::Url;
 use uuid::Uuid;
-
-use crate::task::ExecutionTask;
-use crate::ChannelManager;
 
 /// A unit of isolation for a portion of a physical execution plan
 /// that can be executed independently and across a network boundary.  
@@ -171,11 +171,8 @@ impl ExecutionStage {
         format!("Stage {:<3}{}", self.num, child_str)
     }
 
-    pub fn try_assign(
-        self,
-        channel_manager: impl TryInto<ChannelManager, Error = DataFusionError>,
-    ) -> Result<Self> {
-        let urls: Vec<Url> = channel_manager.try_into()?.get_urls()?;
+    pub fn try_assign(self, channel_resolver: &impl ChannelResolver) -> Result<Self> {
+        let urls: Vec<Url> = channel_resolver.get_urls()?;
         if urls.is_empty() {
             return internal_err!("No URLs found in ChannelManager");
         }
@@ -264,14 +261,12 @@ impl ExecutionPlan for ExecutionStage {
             .downcast_ref::<ExecutionStage>()
             .expect("Unwrapping myself should always work");
 
-        let channel_manager = context
-            .session_config()
-            .get_extension::<ChannelManager>()
-            .ok_or(DataFusionError::Execution(
-                "ChannelManager not found in session config".to_string(),
-            ))?;
+        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
+        else {
+            return exec_err!("ChannelManager not found in session config");
+        };
 
-        let urls = channel_manager.get_urls()?;
+        let urls = channel_resolver.get_urls()?;
 
         let assigned_stage = stage
             .try_assign_urls(&urls)

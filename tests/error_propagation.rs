@@ -13,7 +13,7 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        add_user_codec, ArrowFlightReadExec, DistributedPhysicalOptimizerRule,
+        ArrowFlightReadExec, DistributedExt, DistributedPhysicalOptimizerRule,
         DistributedSessionBuilderContext,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -30,12 +30,11 @@ mod tests {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
         ) -> Result<SessionState, DataFusionError> {
-            let mut state = SessionStateBuilder::new()
+            Ok(SessionStateBuilder::new()
                 .with_runtime_env(ctx.runtime_env)
                 .with_default_features()
-                .build();
-            add_user_codec(state.config_mut(), ErrorExecCodec);
-            Ok(state)
+                .with_distributed_user_codec(ErrorExecCodec)
+                .build())
         }
 
         let (ctx, _guard) = start_localhost_context(3, build_state).await;
