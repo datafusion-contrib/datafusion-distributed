@@ -44,15 +44,15 @@ pub trait DistributedExt: Sized {
     ///     const PREFIX: &'static str = "custom";
     /// }
     ///
-    /// let mut opt = CustomExtension::default();
+    /// let mut my_custom_extension = CustomExtension::default();
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let mut config = SessionConfig::new()
-    ///     .with_distributed_option_extension(opt).unwrap();
+    ///     .with_distributed_option_extension(my_custom_extension).unwrap();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
-    ///     // know how to deserialize the CustomExtension from the gRPC metadata.
+    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
@@ -99,15 +99,15 @@ pub trait DistributedExt: Sized {
     ///     const PREFIX: &'static str = "custom";
     /// }
     ///
-    /// let mut opt = CustomExtension::default();
+    /// let mut my_custom_extension = CustomExtension::default();
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let mut config = SessionConfig::new()
-    ///     .with_distributed_option_extension(opt).unwrap();
+    ///     .with_distributed_option_extension(my_custom_extension).unwrap();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
-    ///     // know how to deserialize the CustomExtension from the gRPC metadata.
+    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
@@ -154,8 +154,8 @@ pub trait DistributedExt: Sized {
     /// let config = SessionConfig::new().with_distributed_user_codec(CustomExecCodec);
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
-    ///     // know how to deserialize the CustomExtension from the gRPC metadata.
+    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    ///     // encode/decode CustomExec nodes.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_user_codec(CustomExecCodec)
     ///         .build())
@@ -195,8 +195,8 @@ pub trait DistributedExt: Sized {
     /// let config = SessionConfig::new().with_distributed_channel_resolver(CustomChannelResolver);
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // while providing this MyCustomSessionBuilder to an Arrow Flight endpoint, it will
-    ///     // know how to deserialize the CustomExtension from the gRPC metadata.
+    ///     // This function can be provided to an ArrowFlightEndpoint so that it knows how to
+    ///     // resolve tonic channels from URLs upon making network calls to other nodes.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
