@@ -1,14 +1,14 @@
+use crate::common::ttl_map::{TTLMap, TTLMapConfig};
+use crate::flight_service::do_get::TaskData;
 use crate::flight_service::DistributedSessionBuilder;
-use crate::stage::ExecutionStage;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use async_trait::async_trait;
-use dashmap::DashMap;
+use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::execution::SessionState;
 use futures::stream::BoxStream;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -31,17 +31,20 @@ pub struct StageKey {
 pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
     #[allow(clippy::type_complexity)]
-    pub(super) stages: DashMap<StageKey, Arc<OnceCell<(SessionState, Arc<ExecutionStage>)>>>,
+    pub(super) stages: TTLMap<StageKey, Arc<OnceCell<TaskData>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
 }
 
 impl ArrowFlightEndpoint {
-    pub fn new(session_builder: impl DistributedSessionBuilder + Send + Sync + 'static) -> Self {
-        Self {
+    pub fn new(
+        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+    ) -> Result<Self, DataFusionError> {
+        let ttl_map = TTLMap::try_new(TTLMapConfig::default())?;
+        Ok(Self {
             runtime: Arc::new(RuntimeEnv::default()),
-            stages: DashMap::new(),
+            stages: ttl_map,
             session_builder: Arc::new(session_builder),
-        }
+        })
     }
 }
 
