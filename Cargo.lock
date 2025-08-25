@@ -1130,6 +1130,7 @@ dependencies = [
  "parquet",
  "prost",
  "rand 0.8.5",
+ "structopt",
  "tokio",
  "tokio-stream",
  "tonic",
