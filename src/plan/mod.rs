@@ -1,6 +1,5 @@
 mod arrow_flight_read;
 mod codec;
-mod combined;
 mod isolator;
 
 pub use arrow_flight_read::ArrowFlightReadExec;
