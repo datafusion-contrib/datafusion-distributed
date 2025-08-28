@@ -5,10 +5,11 @@ mod tests {
     use crate::common::{ensure_tpch_data, get_test_data_dir, get_test_tpch_query};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SessionState, SessionStateBuilder};
+    use datafusion::physical_plan::displayable;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
+        display_stage_graphviz, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
     };
     use futures::TryStreamExt;
     use std::error::Error;

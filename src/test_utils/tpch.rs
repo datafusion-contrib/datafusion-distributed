@@ -167,7 +167,7 @@ macro_rules! must_generate_tpch_table {
             generate_table(
                 // TODO: Consider adjusting the partitions and batch sizes.
                 $arrow::new($generator::new(SCALE_FACTOR, part, 3)).with_batch_size(1000),
-                &format!("{}.parquet", part),
+                &format!("{part}"),
                 &data_dir.clone().into_boxed_path(),
             )
             .expect(concat!("Failed to generate ", $name, " table"));

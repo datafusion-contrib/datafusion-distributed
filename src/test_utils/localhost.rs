@@ -64,7 +64,6 @@ where
     state
         .config_mut()
         .set_extension(Arc::new(ChannelManager::new(channel_resolver)));
-    state.config_mut().options_mut().execution.target_partitions = 3;
 
     (SessionContext::from(state), join_set)
 }

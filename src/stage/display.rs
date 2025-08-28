@@ -10,7 +10,7 @@
 ///
 /// In the meantime, we can make a dummy ExecutionPlan that will let us render
 /// the Stage tree.
-use std::{fmt::Write, sync::Arc};
+use std::{collections::VecDeque, fmt::Write, sync::Arc};
 
 use datafusion::{
     common::tree_node::{TreeNode, TreeNodeRecursion},
@@ -32,6 +32,11 @@ const LTCORNER: &str = "┌"; // Left top corner
 const LDCORNER: &str = "└"; // Left bottom corner
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
+
+// num_colors must agree with the colorscheme selected from
+// https://graphviz.org/doc/info/colors.html
+const NUM_COLORS: usize = 6;
+const COLOR_SCHEME: &str = "spectral6";
 
 impl DisplayAs for ExecutionStage {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -87,7 +92,10 @@ pub fn display_stage_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         f,
         "digraph G {{
   rankdir=BT
-"
+  edge[colorscheme={}, penwidth=2.0]
+  splines=false
+",
+        COLOR_SCHEME
     )?;
 
     // draw all tasks first
@@ -134,6 +142,9 @@ pub fn display_single_task(stage: &ExecutionStage, partition_group: &[u64]) -> R
     writeln!(
         f,
         "
+  subgraph \"cluster_stage_{}_task_{}_margin\" {{
+    style=invis
+    margin=20.0
   subgraph \"cluster_stage_{}_task_{}\" {{
     color=blue
     style=dotted
@@ -142,7 +153,10 @@ pub fn display_single_task(stage: &ExecutionStage, partition_group: &[u64]) -> R
     labelloc=b
 
     node[shape=none]
+
 ",
+        stage.num,
+        format_pg(partition_group),
         stage.num,
         format_pg(partition_group),
         stage.num,
@@ -151,51 +165,67 @@ pub fn display_single_task(stage: &ExecutionStage, partition_group: &[u64]) -> R
 
     // draw all plans
     // we need to label the nodes including depth to uniquely identify them within this task
-    let mut depth = 0;
-    stage.plan.apply(|plan| {
-        let p = display_single_plan(plan.as_ref(), stage.num, partition_group, depth)?;
+    // the tree node API provides depth first traversal, but we need breadth to align with
+    // how we will draw edges below, so we'll do that.
+    let mut queue = VecDeque::from([(&stage.plan, 0, 0)]);
+    while let Some((plan, depth, index)) = queue.pop_front() {
+        let p = display_single_plan(plan.as_ref(), stage.num, partition_group, depth, index)?;
         writeln!(f, "{}", p)?;
-        depth += 1;
-        Ok(TreeNodeRecursion::Continue)
-    })?;
+        for (i, child) in plan.children().iter().enumerate() {
+            queue.push_back((child, depth + 1, i));
+        }
+    }
 
-    // draw edges between the plans
-    depth = 0;
-    stage.plan.apply(|plan| {
-        if let Some(child) = plan.children().first() {
+    // draw edges between the plan nodes
+    queue = VecDeque::from([(&stage.plan, 0, 0)]);
+    let mut found_isolator = false;
+    while let Some((plan, depth, index)) = queue.pop_front() {
+        if plan
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .is_some()
+        {
+            found_isolator = true;
+        }
+        for (child_index, child) in plan.children().iter().enumerate() {
             let partitions = child.output_partitioning().partition_count();
             for i in 0..partitions {
                 let mut style = "";
-                if plan
+                if child
                     .as_any()
                     .downcast_ref::<PartitionIsolatorExec>()
                     .is_some()
-                    && !partition_group.contains(&(i as u64))
+                    && i >= partition_group.len()
                 {
+                    style = "[style=dotted, label=empty]";
+                } else if found_isolator && !partition_group.contains(&(i as u64)) {
                     style = "[style=invis]";
                 }
 
                 writeln!(
                     f,
-                    "  {}_{}_{}_{}:t{} -> {}_{}_{}_{}:b{} {}",
+                    "  {}_{}_{}_{}_{}:t{}:n -> {}_{}_{}_{}_{}:b{}:s {}[color={}]",
                     child.name(),
                     stage.num,
                     node_format_pg(partition_group),
                     depth + 1,
+                    child_index,
                     i,
                     plan.name(),
                     stage.num,
                     node_format_pg(partition_group),
                     depth,
+                    index,
                     i,
-                    style
+                    style,
+                    i % NUM_COLORS + 1
                 )?;
             }
+            queue.push_back((child, depth + 1, child_index));
         }
-        depth += 1;
-        Ok(TreeNodeRecursion::Continue)
-    })?;
+    }
 
+    writeln!(f, "  }}")?;
     writeln!(f, "  }}")?;
 
     Ok(f)
@@ -204,7 +234,8 @@ pub fn display_single_task(stage: &ExecutionStage, partition_group: &[u64]) -> R
 /// We want to display a single plan as a three row table with the top and bottom being
 /// graphvis ports.
 ///
-/// We accept an index `i` to make the node name unique in the graphviz output.
+/// We accept an index to make the node name unique in the graphviz output within
+/// a plan at the same depth
 ///
 /// An example of such a node would be:
 ///
@@ -248,6 +279,7 @@ pub fn display_single_plan(
     stage_num: usize,
     partition_group: &[u64],
     depth: usize,
+    index: usize,
 ) -> Result<String> {
     let mut f = String::new();
     let output_partitions = plan.output_partitioning().partition_count();
@@ -266,7 +298,7 @@ pub fn display_single_plan(
     writeln!(
         f,
         "
-    {}_{}_{}_{} [label=<
+    {}_{}_{}_{}_{} [label=<
     <TABLE BORDER='0' CELLBORDER='0' CELLSPACING='0' CELLPADDING='0'>
         <TR>
             <TD CELLBORDER='0'>
@@ -275,7 +307,8 @@ pub fn display_single_plan(
         plan.name(),
         stage_num,
         node_format_pg(partition_group),
-        depth
+        depth,
+        index
     )?;
 
     for i in 0..output_partitions {
@@ -330,8 +363,8 @@ fn display_inter_task_edges(
     let mut f = String::new();
 
     let mut found_isolator = false;
-    let mut depth = 0;
-    stage.plan.apply(|plan| {
+    let mut queue = VecDeque::from([(&stage.plan, 0, 0)]);
+    while let Some((plan, depth, index)) = queue.pop_front() {
         if plan
             .as_any()
             .downcast_ref::<PartitionIsolatorExec>()
@@ -344,7 +377,7 @@ fn display_inter_task_edges(
             .downcast_ref::<ArrowFlightReadExec>()
             .is_some()
         {
-            // draw the edges from this node pulling from its child
+            // draw the edges to this node pulling data up from its child
             for p in 0..plan.output_partitioning().partition_count() {
                 let mut style = "";
                 if found_isolator && !task.partition_group.contains(&(p as u64)) {
@@ -353,7 +386,7 @@ fn display_inter_task_edges(
 
                 writeln!(
                     f,
-                    "  {}_{}_{}_{}:t{} -> {}_{}_{}_{}:b{} {}",
+                    "  {}_{}_{}_{}_0:t{}:n -> {}_{}_{}_{}_{}:b{}:s {} [color={}]",
                     child_stage.plan.name(),
                     child_stage.num,
                     node_format_pg(&child_task.partition_group),
@@ -363,14 +396,17 @@ fn display_inter_task_edges(
                     stage.num,
                     node_format_pg(&task.partition_group),
                     depth,
+                    index,
                     p,
                     style,
+                    p % NUM_COLORS + 1
                 )?;
             }
         }
-        depth += 1;
-        Ok(TreeNodeRecursion::Continue)
-    })?;
+        for (child_index, child) in plan.children().iter().enumerate() {
+            queue.push_back((child, depth + 1, child_index));
+        }
+    }
 
     Ok(f)
 }
