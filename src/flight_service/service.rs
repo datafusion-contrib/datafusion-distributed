@@ -36,7 +36,7 @@ pub struct ArrowFlightEndpoint {
 }
 
 impl ArrowFlightEndpoint {
-    pub fn new(
+    pub fn try_new(
         session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     ) -> Result<Self, DataFusionError> {
         let ttl_map = TTLMap::try_new(TTLMapConfig::default())?;
