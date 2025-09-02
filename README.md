@@ -149,7 +149,80 @@ This means that:
 1. The head stage is executed normally as if the query was not distributed.
 2. Upon calling `.execute()` on the `ArrowFlightReadExec`, instead of recursively calling `.execute()` on its children,
    they will be serialized and sent over the wire to another node.
-3. The next node, which is hosting an Arrow Flight Endpoint listening for gRPC requests over an HTTP server, will pick up
-   the request containing the serialized chunk of the overall plan, and execute it.
+3. The next node, which is hosting an Arrow Flight Endpoint listening for gRPC requests over an HTTP server, will pick
+   up the request containing the serialized chunk of the overall plan, and execute it.
 4. This is repeated for each stage, and data will start flowing from bottom to top until it reaches the head stage.
 
+## Development
+
+### Prerequisites
+
+- Rust 1.85.1 or later (specified in `rust-toolchain.toml`)
+- Git LFS for test data
+
+### Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone git@github.com:datafusion-contrib/datafusion-distributed
+   cd datafusion-distributed
+   ```
+
+2. **Install Git LFS and fetch test data:**
+   ```bash
+   git lfs install
+   git lfs checkout
+   ```
+
+### Running Tests
+
+**Unit and integration tests:**
+
+```bash
+cargo test --features integration
+```
+
+### Running Examples
+
+**Start localhost workers:**
+
+```bash
+# Terminal 1
+cargo run --example localhost_worker -- 8080 --cluster-ports 8080,8081
+
+# Terminal 2  
+cargo run --example localhost_worker -- 8081 --cluster-ports 8080,8081
+```
+
+**Execute distributed queries:**
+
+```bash
+cargo run --example localhost_run -- 'SELECT count(*) FROM weather' --cluster-ports 8080,8081
+```
+
+### Benchmarks
+
+**Generate TPC-H benchmark data:**
+
+```bash
+cd benchmarks
+./gen-tpch.sh
+```
+
+**Run TPC-H benchmarks:**
+
+```bash
+cargo run -p datafusion-distributed-benchmarks --release -- tpch --path benchmarks/data/tpch_sf1
+```
+
+### Project Structure
+
+- `src/` - Core library code
+    - `flight_service/` - Arrow Flight service implementation
+    - `plan/` - Physical plan extensions and operators
+    - `stage/` - Execution stage management
+    - `common/` - Shared utilities
+- `examples/` - Usage examples
+- `tests/` - Integration tests
+- `benchmarks/` - Performance benchmarks
+- `testdata/` - Test datasets
