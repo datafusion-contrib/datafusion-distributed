@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cached: DashMap::new(),
     };
 
-    let endpoint = ArrowFlightEndpoint::new(move |ctx: DistributedSessionBuilderContext| {
+    let endpoint = ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
         let local_host_resolver = localhost_resolver.clone();
         async move {
             Ok(SessionStateBuilder::new()
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .with_default_features()
                 .build())
         }
-    });
+    })?;
 
     Server::builder()
         .add_service(FlightServiceServer::new(endpoint))

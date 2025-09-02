@@ -181,7 +181,7 @@ mod tests {
 
         // Create ArrowFlightEndpoint with DefaultSessionBuilder
         let endpoint =
-            ArrowFlightEndpoint::new(DefaultSessionBuilder).expect("Failed to create endpoint");
+            ArrowFlightEndpoint::try_new(DefaultSessionBuilder).expect("Failed to create endpoint");
 
         // Create 3 tasks with 3 partitions each.
         let num_tasks = 3;
@@ -210,7 +210,7 @@ mod tests {
             tasks,
         };
 
-        let task_keys = vec![
+        let task_keys = [
             StageKey {
                 query_id: query_id_uuid.to_string(),
                 stage_id,
