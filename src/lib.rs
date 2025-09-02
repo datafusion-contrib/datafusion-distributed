@@ -11,6 +11,7 @@ mod plan;
 mod stage;
 mod task;
 mod user_codec_ext;
+mod metrics;
 
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
