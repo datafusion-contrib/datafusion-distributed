@@ -1,12 +1,10 @@
 use super::service::StageKey;
-use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::plan::{DistributedCodec, PartitionGroup};
 use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
-use crate::user_codec_ext::get_distributed_user_codec;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -133,18 +131,13 @@ impl ArrowFlightEndpoint {
                     .await
                     .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
-                let mut combined_codec = ComposedPhysicalExtensionCodec::default();
-                combined_codec.push(DistributedCodec);
-                if let Some(ref user_codec) = get_distributed_user_codec(state.config()) {
-                    combined_codec.push_arc(Arc::clone(user_codec));
-                }
+                let codec = DistributedCodec::new_combined_with_user(state.config());
 
-                let stage =
-                    stage_from_proto(stage_proto, &state, self.runtime.as_ref(), &combined_codec)
-                        .map(Arc::new)
-                        .map_err(|err| {
-                            Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
-                        })?;
+                let stage = stage_from_proto(stage_proto, &state, self.runtime.as_ref(), &codec)
+                    .map(Arc::new)
+                    .map_err(|err| {
+                        Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
+                    })?;
 
                 // Add the extensions that might be required for ExecutionPlan nodes in the plan
                 let config = state.config_mut();
