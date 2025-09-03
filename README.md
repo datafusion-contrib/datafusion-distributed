@@ -24,10 +24,20 @@ capabilities with minimal changes.
 
 ## Architecture
 
+Before diving into the architecture, it's important to clarify some terms and what they mean:
+
+- `worker`: a physical machine listening to serialized plans over an Arrow Flight interface.
+- `network boundary`: a node in the plan that streams data from a network interface rather than directly from its
+  children. Implemented as an `ArrowFlightReadExec` physical DataFusion node.
+- `stage`: a portion of the plan separated by a network boundary from other parts of the plan. Implemented as any
+  other physical node in DataFusion.
+- `task`: a unit of work inside a stage that executes a subset of its partitions in a specific worker.
+- `subplan`: a slice of the overall plan
+
 A distributed DataFusion query is executed in a very similar fashion as a normal DataFusion query with one key
 difference:
 
-The physical plan is divided into stages that can be executed on different machines and exchange data using Arrow
+The physical plan is divided into stages that can be executed on different workers and exchange data using Arrow
 Flight. All of this is done at the physical plan level, and is implemented as a `PhysicalOptimizerRule` that:
 
 1. Inspects the non-distributed plan, placing network boundaries (`ArrowFlightReadExec` nodes) in the appropriate places
@@ -111,7 +121,7 @@ shows the partitioning scheme in each node):
    └──────[0][1][2]───────┘  
 ```
 
-Based on that boundary, the plan is divided into stages and tasks are assigned to each stage. Each task will be
+Based on that boundary, the plan is divided into stages, and tasks are assigned to each stage. Each task will be
 responsible for the different partitions in the original plan.
 
 ```                            
@@ -131,11 +141,11 @@ responsible for the different partitions in the original plan.
                │                          │                           │            
    ┌─── task 0 (stage 1) ───┐ ┌── task 1 (stage 1) ────┐ ┌── task 2 (stage 1) ────┐
    │           │            │ │           │            │ │            │           │
-   │┌─────────[0]──────────┐│ │┌─────────[0]──────────┐│ │┌──────────[0]─────────┐│
+   │┌─────────[0]──────────┐│ │┌─────────[1]──────────┐│ │┌──────────[2]─────────┐│
    ││    AggregateExec     ││ ││    AggregateExec     ││ ││    AggregateExec     ││
    ││      (partial)       ││ ││      (partial)       ││ ││      (partial)       ││
    │└──────────┬───────────┘│ │└──────────┬───────────┘│ │└───────────┬──────────┘│
-   │┌─────────[0]──────────┐│ │┌─────────[0]──────────┐│ │┌──────────[0]─────────┐│
+   │┌─────────[0]──────────┐│ │┌─────────[1]──────────┐│ │┌──────────[2]─────────┐│
    ││   DataSourceExec     ││ ││   DataSourceExec     ││ ││   DataSourceExec     ││
    │└──────────────────────┘│ │└──────────────────────┘│ │└──────────────────────┘│
    └────────────────────────┘ └────────────────────────┘ └────────────────────────┘
@@ -149,7 +159,7 @@ This means that:
 
 1. The head stage is executed normally as if the query was not distributed.
 2. Upon calling `.execute()` on the `ArrowFlightReadExec`, instead of recursively calling `.execute()` on its children,
-   they will be serialized and sent over the wire to another node.
+   the child subplan will be serialized and sent over the wire to another node.
 3. The next node, which is hosting an Arrow Flight Endpoint listening for gRPC requests over an HTTP server, will pick
    up the request containing the serialized chunk of the overall plan and execute it.
 4. This is repeated for each stage, and data will start flowing from bottom to top until it reaches the head stage.
@@ -167,7 +177,7 @@ There are some runnable examples showcasing how to provide a localhost implement
 The integration tests also provide an idea about how to use the library and what can be achieved with it:
 
 - [tpch_validation_test.rs](tests/tpch_validation_test.rs): executes all TPCH queries and performs assertions over the
-  distributed plans.
+  distributed plans and the results vs running the queries in single node mode with a small scale factor.
 - [custom_config_extension.rs](tests/custom_config_extension.rs): showcases how to propagate custom DataFusion config
   extensions.
 - [custom_extension_codec.rs](tests/custom_extension_codec.rs): showcases how to propagate custom physical extension
