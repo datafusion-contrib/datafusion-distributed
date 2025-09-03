@@ -102,12 +102,7 @@ impl ArrowFlightReadExec {
 
 impl DisplayAs for ArrowFlightReadExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        match self {
-            ArrowFlightReadExec::Pending(_) => write!(f, "ArrowFlightReadExec"),
-            ArrowFlightReadExec::Ready(v) => {
-                write!(f, "ArrowFlightReadExec: Stage {:<3}", v.stage_num)
-            }
-        }
+        write!(f, "ArrowFlightReadExec")
     }
 }
 

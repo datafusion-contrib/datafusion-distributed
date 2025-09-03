@@ -1,3 +1,15 @@
+use super::ExecutionStage;
+use crate::plan::PartitionIsolatorExec;
+use crate::{
+    task::{format_pg, ExecutionTask},
+    ArrowFlightReadExec,
+};
+use datafusion::physical_plan::{displayable, ExecutionPlan, ExecutionPlanProperties};
+use datafusion::{
+    error::Result,
+    physical_plan::{DisplayAs, DisplayFormatType},
+};
+use itertools::Itertools;
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVistor`
@@ -12,23 +24,46 @@
 /// the Stage tree.
 use std::fmt::Write;
 
-use datafusion::{
-    error::Result,
-    physical_plan::{DisplayAs, DisplayFormatType},
-};
-
-use crate::{
-    common::util::display_plan_with_partition_in_out,
-    task::{format_pg, ExecutionTask},
-};
-
-use super::ExecutionStage;
-
 // Unicode box-drawing characters for creating borders and connections.
 const LTCORNER: &str = "┌"; // Left top corner
 const LDCORNER: &str = "└"; // Left bottom corner
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
+
+impl ExecutionStage {
+    fn format(&self, plan: &dyn ExecutionPlan, indent: usize, f: &mut String) -> std::fmt::Result {
+        let mut node_str = displayable(plan).one_line().to_string();
+        node_str.pop();
+        write!(f, "{} {node_str}", " ".repeat(indent))?;
+
+        if let Some(ArrowFlightReadExec::Ready(ready)) =
+            plan.as_any().downcast_ref::<ArrowFlightReadExec>()
+        {
+            let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
+            else {
+                writeln!(f, "Wrong partition number {}", ready.stage_num)?;
+                return Ok(());
+            };
+            let tasks = input_stage.tasks.len();
+            let partitions = plan.output_partitioning().partition_count();
+            let stage = ready.stage_num;
+            write!(
+                f,
+                " input_stage={stage}, input_partitions={partitions}, input_tasks={tasks}",
+            )?;
+        }
+
+        if plan.as_any().is::<PartitionIsolatorExec>() {
+            write!(f, " {}", format_tasks_for_partition_isolator(&self.tasks))?;
+        }
+        writeln!(f)?;
+
+        for child in plan.children() {
+            self.format(child.as_ref(), indent + 2, f)?;
+        }
+        Ok(())
+    }
+}
 
 impl DisplayAs for ExecutionStage {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -44,10 +79,11 @@ impl DisplayAs for ExecutionStage {
                     LTCORNER,
                     HORIZONTAL.repeat(5),
                     format!(" {} ", self.name),
-                    format_tasks(&self.tasks),
+                    format_tasks_for_stage(&self.tasks),
                 )?;
-                let plan_str = display_plan_with_partition_in_out(self.plan.as_ref())
-                    .map_err(|_| std::fmt::Error {})?;
+
+                let mut plan_str = String::new();
+                self.format(self.plan.as_ref(), 0, &mut plan_str)?;
                 let plan_str = plan_str
                     .split('\n')
                     .filter(|v| !v.is_empty())
@@ -186,10 +222,28 @@ pub fn display_stage_graphviz(stage: &ExecutionStage) -> Result<String> {
     Ok(f)
 }
 
-fn format_tasks(tasks: &[ExecutionTask]) -> String {
-    tasks
-        .iter()
-        .map(|task| format!("{task}"))
-        .collect::<Vec<String>>()
-        .join(",")
+fn format_tasks_for_stage(tasks: &[ExecutionTask]) -> String {
+    let mut result = "Tasks: ".to_string();
+    for (i, t) in tasks.iter().enumerate() {
+        result += &format!("t{i}:[");
+        result += &t.partition_group.iter().map(|v| format!("p{v}")).join(",");
+        result += "] "
+    }
+    result
+}
+
+fn format_tasks_for_partition_isolator(tasks: &[ExecutionTask]) -> String {
+    let mut result = "Tasks: ".to_string();
+    let mut partitions = vec![];
+    for t in tasks.iter() {
+        partitions.extend(vec!["__".to_string(); t.partition_group.len()])
+    }
+    for (i, t) in tasks.iter().enumerate() {
+        let mut partitions = partitions.clone();
+        for (i, p) in t.partition_group.iter().enumerate() {
+            partitions[*p as usize] = format!("p{i}")
+        }
+        result += &format!("t{i}:[{}] ", partitions.join(","));
+    }
+    result
 }
