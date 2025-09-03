@@ -36,7 +36,6 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    #[ignore]
     async fn custom_extension_codec() -> Result<(), Box<dyn std::error::Error>> {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
@@ -66,17 +65,16 @@ mod tests {
         │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
         │partitions [out:1  <-- in:10 ]   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
         │partitions [out:10           ]     ArrowFlightReadExec: Stage 2  
-        │
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Task: partitions: 0,unassigned]
-          │partitions [out:1  <-- in:1  ] SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-          │partitions [out:1            ]   ArrowFlightReadExec: Stage 1  
-          │
+          ┌───── Stage 2   Task: partitions: 0..9,unassigned]
+          │partitions [out:10 <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=1
+          │partitions [out:1  <-- in:1  ]   SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
+          │partitions [out:1            ]     ArrowFlightReadExec: Stage 1  
           └──────────────────────────────────────────────────
             ┌───── Stage 1   Task: partitions: 0,unassigned]
-            │partitions [out:1  <-- in:1  ] FilterExec: numbers@0 > 1
-            │partitions [out:1            ]   Int64ListExec: length=6
-            │
+            │partitions [out:1  <-- in:1  ] RepartitionExec: partitioning=Hash([numbers@0], 1), input_partitions=1
+            │partitions [out:1  <-- in:1  ]   FilterExec: numbers@0 > 1
+            │partitions [out:1            ]     Int64ListExec: length=6
             └──────────────────────────────────────────────────
         ");
 
@@ -125,10 +123,12 @@ mod tests {
         )?);
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(
-                plan.clone(),
-                Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
-            ));
+            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
+                RepartitionExec::try_new(
+                    plan.clone(),
+                    Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
+                )?,
+            )));
         }
 
         plan = Arc::new(SortExec::new(
@@ -141,10 +141,9 @@ mod tests {
         ));
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(
-                plan.clone(),
-                Partitioning::RoundRobinBatch(10),
-            ));
+            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
+                RepartitionExec::try_new(plan.clone(), Partitioning::RoundRobinBatch(10))?,
+            )));
 
             plan = Arc::new(RepartitionExec::try_new(
                 plan,

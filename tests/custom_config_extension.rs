@@ -9,6 +9,7 @@ mod tests {
     };
     use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
@@ -46,10 +47,9 @@ mod tests {
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CustomConfigExtensionRequiredExec::new());
 
         for size in [1, 2, 3] {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(
-                plan,
-                Partitioning::RoundRobinBatch(size),
-            ));
+            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
+                RepartitionExec::try_new(plan, Partitioning::RoundRobinBatch(size))?,
+            )));
         }
 
         let plan = DistributedPhysicalOptimizerRule::default().distribute_plan(plan)?;

@@ -16,7 +16,9 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
@@ -57,11 +59,11 @@ pub struct ArrowFlightReadReadyExec {
 }
 
 impl ArrowFlightReadExec {
-    pub fn new_pending(child: Arc<dyn ExecutionPlan>, partitioning: Partitioning) -> Self {
+    pub fn new_pending(child: Arc<dyn ExecutionPlan>) -> Self {
         Self::Pending(ArrowFlightReadPendingExec {
             properties: PlanProperties::new(
                 EquivalenceProperties::new(child.schema()),
-                partitioning,
+                child.output_partitioning().clone(),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             ),

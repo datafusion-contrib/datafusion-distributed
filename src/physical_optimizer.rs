@@ -13,7 +13,7 @@ use datafusion::{
     config::ConfigOptions,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{repartition::RepartitionExec, ExecutionPlan, ExecutionPlanProperties},
+    physical_plan::{repartition::RepartitionExec, ExecutionPlan},
 };
 use uuid::Uuid;
 
@@ -94,10 +94,7 @@ impl DistributedPhysicalOptimizerRule {
                     };
 
                 return Ok(Transformed::yes(Arc::new(
-                    ArrowFlightReadExec::new_pending(
-                        Arc::clone(&maybe_isolated_plan),
-                        maybe_isolated_plan.output_partitioning().clone(),
-                    ),
+                    ArrowFlightReadExec::new_pending(Arc::clone(&maybe_isolated_plan)),
                 )));
             }
 
