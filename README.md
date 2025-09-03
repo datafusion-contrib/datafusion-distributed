@@ -26,7 +26,7 @@ capabilities with minimal changes.
 
 Before diving into the architecture, it's important to clarify some terms and what they mean:
 
-- `worker`: a physical machine listening to serialized plans over an Arrow Flight interface.
+- `worker`: a physical machine listening to serialized execution plans over an Arrow Flight interface.
 - `network boundary`: a node in the plan that streams data from a network interface rather than directly from its
   children. Implemented as an `ArrowFlightReadExec` physical DataFusion node.
 - `stage`: a portion of the plan separated by a network boundary from other parts of the plan. Implemented as any
@@ -37,8 +37,8 @@ Before diving into the architecture, it's important to clarify some terms and wh
 A distributed DataFusion query is executed in a very similar fashion as a normal DataFusion query with one key
 difference:
 
-The physical plan is divided into stages that can be executed on different workers and exchange data using Arrow
-Flight. All of this is done at the physical plan level, and is implemented as a `PhysicalOptimizerRule` that:
+The physical plan is divided into stages, each stage is assigned tasks that run in parallel in different workers. All of
+this is done at the physical plan level, and is implemented as a `PhysicalOptimizerRule` that:
 
 1. Inspects the non-distributed plan, placing network boundaries (`ArrowFlightReadExec` nodes) in the appropriate places
 2. Based on the placed network boundaries, divides the plan into stages and assigns tasks to them.
@@ -158,8 +158,8 @@ will issue 3 concurrent Arrow Flight requests to the appropriate physical nodes.
 This means that:
 
 1. The head stage is executed normally as if the query was not distributed.
-2. Upon calling `.execute()` on the `ArrowFlightReadExec`, instead of recursively calling `.execute()` on its children,
-   the child subplan will be serialized and sent over the wire to another node.
+2. Upon calling `.execute()` on `ArrowFlightReadExec`, instead of propagating the `.execute()` call on its child,
+   the subplan is serialized and sent over the wire to be executed on another worker.
 3. The next node, which is hosting an Arrow Flight Endpoint listening for gRPC requests over an HTTP server, will pick
    up the request containing the serialized chunk of the overall plan and execute it.
 4. This is repeated for each stage, and data will start flowing from bottom to top until it reaches the head stage.
