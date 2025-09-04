@@ -9,9 +9,8 @@ mod execution_plans;
 mod flight_service;
 mod physical_optimizer;
 mod stage;
-mod task;
-mod user_codec_ext;
 
+mod protobuf;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 

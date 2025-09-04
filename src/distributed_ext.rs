@@ -2,7 +2,7 @@ use crate::channel_manager_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::user_codec_ext::set_distributed_user_codec;
+use crate::protobuf::set_distributed_user_codec;
 use crate::ChannelResolver;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;

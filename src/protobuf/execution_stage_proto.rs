@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::stage::ExecutionTask;
+use crate::ExecutionStage;
 use datafusion::{
     common::internal_datafusion_err,
     error::{DataFusionError, Result},
@@ -10,10 +12,6 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
-
-use crate::task::ExecutionTask;
-
-use super::ExecutionStage;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStageProto {
@@ -98,6 +96,9 @@ pub fn stage_from_proto(
 mod tests {
     use std::sync::Arc;
 
+    use crate::protobuf::execution_stage_proto::ExecutionStageProto;
+    use crate::protobuf::{proto_from_stage, stage_from_proto};
+    use crate::ExecutionStage;
     use datafusion::{
         arrow::{
             array::{RecordBatch, StringArray, UInt8Array},
@@ -111,9 +112,6 @@ mod tests {
     use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::Message;
     use uuid::Uuid;
-
-    use crate::stage::proto::proto_from_stage;
-    use crate::stage::{proto::stage_from_proto, ExecutionStage, ExecutionStageProto};
 
     // create a simple mem table
     fn create_mem_table() -> Arc<MemTable> {

@@ -7,7 +7,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use crate::channel_manager_ext::get_distributed_channel_resolver;
-use crate::task::ExecutionTask;
+use crate::stage::ExecutionTask;
 use crate::ChannelResolver;
 use itertools::Itertools;
 use rand::Rng;

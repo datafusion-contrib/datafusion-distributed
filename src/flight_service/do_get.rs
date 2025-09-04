@@ -1,10 +1,11 @@
 use super::service::StageKey;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
-use crate::execution_plans::{DistributedCodec, PartitionGroup};
+use crate::execution_plans::PartitionGroup;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
+use crate::protobuf::{stage_from_proto, DistributedCodec, ExecutionStageProto};
+use crate::stage::ExecutionStage;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -169,16 +170,15 @@ impl ArrowFlightEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flight_service::session_builder::DefaultSessionBuilder;
+    use crate::stage::ExecutionTask;
+    use arrow_flight::Ticket;
+    use prost::{bytes::Bytes, Message};
+    use tonic::Request;
     use uuid::Uuid;
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
-        use crate::flight_service::session_builder::DefaultSessionBuilder;
-        use crate::task::ExecutionTask;
-        use arrow_flight::Ticket;
-        use prost::{bytes::Bytes, Message};
-        use tonic::Request;
-
         // Create ArrowFlightEndpoint with DefaultSessionBuilder
         let endpoint =
             ArrowFlightEndpoint::try_new(DefaultSessionBuilder).expect("Failed to create endpoint");

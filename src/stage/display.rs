@@ -1,9 +1,7 @@
-use super::ExecutionStage;
+use super::{ExecutionStage, ExecutionTask};
+use crate::stage::task::format_pg;
+use crate::ArrowFlightReadExec;
 use crate::PartitionIsolatorExec;
-use crate::{
-    task::{format_pg, ExecutionTask},
-    ArrowFlightReadExec,
-};
 use datafusion::physical_plan::{displayable, ExecutionPlan, ExecutionPlanProperties};
 use datafusion::{
     error::Result,
