@@ -27,8 +27,6 @@ pub fn tpch_query_from_dir(queries_dir: &std::path::Path, num: u8) -> String {
 }
 pub const NUM_QUERIES: u8 = 22; // number of queries in the TPCH benchmark numbered from 1 to 22
 
-const SCALE_FACTOR: f64 = 0.001;
-
 pub fn tpch_table(name: &str) -> Arc<dyn TableProvider> {
     let schema = Arc::new(get_tpch_table_schema(name));
     Arc::new(MemTable::try_new(schema, vec![]).unwrap())
@@ -158,33 +156,33 @@ where
     Ok(())
 }
 
-macro_rules! must_generate_tpch_table {
-    ($generator:ident, $arrow:ident, $name:literal, $data_dir:expr) => {
-        let data_dir = $data_dir.join($name);
-        fs::create_dir_all(data_dir.clone()).expect("Failed to create data directory");
-        // create three partitions for the table
-        (1..=3).for_each(|part| {
-            generate_table(
-                // TODO: Consider adjusting the partitions and batch sizes.
-                $arrow::new($generator::new(SCALE_FACTOR, part, 3)).with_batch_size(1000),
-                &format!("{part}"),
-                &data_dir.clone().into_boxed_path(),
-            )
-            .expect(concat!("Failed to generate ", $name, " table"));
-        });
-    };
-}
-
 // generate_tpch_data generates all TPC-H tables in the specified data directory.
-pub fn generate_tpch_data(data_dir: &std::path::Path) {
+pub fn generate_tpch_data(data_dir: &std::path::Path, sf: f64, parts: i32) {
     fs::create_dir_all(data_dir).expect("Failed to create data directory");
 
-    must_generate_tpch_table!(RegionGenerator, RegionArrow, "region", data_dir);
-    must_generate_tpch_table!(NationGenerator, NationArrow, "nation", data_dir);
-    must_generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer", data_dir);
-    must_generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier", data_dir);
-    must_generate_tpch_table!(PartGenerator, PartArrow, "part", data_dir);
-    must_generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp", data_dir);
-    must_generate_tpch_table!(OrderGenerator, OrderArrow, "orders", data_dir);
-    must_generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem", data_dir);
+    macro_rules! must_generate_tpch_table {
+        ($generator:ident, $arrow:ident, $name:literal) => {
+            let data_dir = data_dir.join($name);
+            fs::create_dir_all(data_dir.clone()).expect("Failed to create data directory");
+            // create three partitions for the table
+            (1..=parts).for_each(|part| {
+                generate_table(
+                    // TODO: Consider adjusting the partitions and batch sizes.
+                    $arrow::new($generator::new(sf, part, parts)).with_batch_size(1000),
+                    &format!("{part}"),
+                    &data_dir,
+                )
+                .expect(concat!("Failed to generate ", $name, " table"));
+            });
+        };
+    }
+
+    must_generate_tpch_table!(RegionGenerator, RegionArrow, "region");
+    must_generate_tpch_table!(NationGenerator, NationArrow, "nation");
+    must_generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer");
+    must_generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier");
+    must_generate_tpch_table!(PartGenerator, PartArrow, "part");
+    must_generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
+    must_generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
+    must_generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
 }

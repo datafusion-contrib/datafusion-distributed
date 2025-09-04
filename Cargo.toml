@@ -46,6 +46,7 @@ integration = [
     "arrow",
     "tokio-stream",
 ]
+tpch = ["integration"]
 
 [dev-dependencies]
 structopt = "0.3"
