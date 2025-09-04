@@ -1,4 +1,4 @@
-use crate::channel_manager_ext::set_distributed_channel_resolver;
+use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };

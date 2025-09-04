@@ -1,4 +1,4 @@
-use crate::channel_manager_ext::get_distributed_channel_resolver;
+use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::{ArrowFlightReadExec, ChannelResolver, PartitionIsolatorExec};
 use datafusion::common::{exec_err, internal_err};
 use datafusion::error::{DataFusionError, Result};

@@ -1,6 +1,6 @@
 #![deny(clippy::all)]
 
-mod channel_manager_ext;
+mod channel_resolver_ext;
 mod common;
 mod config_extension_ext;
 mod distributed_ext;
@@ -13,7 +13,7 @@ mod protobuf;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
-pub use channel_manager_ext::{BoxCloneSyncChannel, ChannelResolver};
+pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
 pub use execution_plans::{
     display_stage_graphviz, ArrowFlightReadExec, ExecutionTask, PartitionIsolatorExec, StageExec,

@@ -1,4 +1,4 @@
-use crate::channel_manager_ext::get_distributed_channel_resolver;
+use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::StageExec;
