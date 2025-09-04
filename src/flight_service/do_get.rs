@@ -1,9 +1,9 @@
 use super::service::StageKey;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
+use crate::execution_plans::{DistributedCodec, PartitionGroup};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::plan::{DistributedCodec, PartitionGroup};
 use crate::stage::{stage_from_proto, ExecutionStage, ExecutionStageProto};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;

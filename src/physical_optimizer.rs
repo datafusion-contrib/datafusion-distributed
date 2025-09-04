@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::stage::ExecutionStage;
-use crate::{plan::PartitionIsolatorExec, ArrowFlightReadExec};
+use super::{ArrowFlightReadExec, PartitionIsolatorExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::joins::PartitionMode;

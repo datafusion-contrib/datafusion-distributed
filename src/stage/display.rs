@@ -1,5 +1,5 @@
 use super::ExecutionStage;
-use crate::plan::PartitionIsolatorExec;
+use crate::PartitionIsolatorExec;
 use crate::{
     task::{format_pg, ExecutionTask},
     ArrowFlightReadExec,

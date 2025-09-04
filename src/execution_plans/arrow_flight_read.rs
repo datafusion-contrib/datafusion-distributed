@@ -1,8 +1,8 @@
 use crate::channel_manager_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use crate::execution_plans::DistributedCodec;
 use crate::flight_service::{DoGet, StageKey};
-use crate::plan::DistributedCodec;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
