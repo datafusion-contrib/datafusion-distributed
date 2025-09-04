@@ -187,7 +187,7 @@ pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
-    use crate::physical_optimizer::DistributedPhysicalOptimizerRule;
+    use crate::distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
     use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
