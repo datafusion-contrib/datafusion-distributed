@@ -1,11 +1,10 @@
 use super::service::StageKey;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
-use crate::execution_plans::PartitionGroup;
+use crate::execution_plans::{PartitionGroup, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::protobuf::{stage_from_proto, DistributedCodec, ExecutionStageProto};
-use crate::stage::ExecutionStage;
+use crate::protobuf::{stage_from_proto, DistributedCodec, StageExecProto};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -23,7 +22,7 @@ use tonic::{Request, Response, Status};
 pub struct DoGet {
     /// The ExecutionStage that we are going to execute
     #[prost(message, optional, tag = "1")]
-    pub stage_proto: Option<ExecutionStageProto>,
+    pub stage_proto: Option<StageExecProto>,
     /// The index to the task within the stage that we want to execute
     #[prost(uint64, tag = "2")]
     pub task_number: u64,
@@ -43,7 +42,7 @@ pub struct DoGet {
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
     pub(super) state: SessionState,
-    pub(super) stage: Arc<ExecutionStage>,
+    pub(super) stage: Arc<StageExec>,
     ///num_partitions_remaining is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
@@ -80,8 +79,7 @@ impl ArrowFlightEndpoint {
                 stage.name()
             )))?;
 
-        let partition_group =
-            PartitionGroup(task.partition_group.iter().map(|p| *p as usize).collect());
+        let partition_group = PartitionGroup(task.partition_group.clone());
         state.config_mut().set_extension(Arc::new(partition_group));
 
         let inner_plan = stage.plan.clone();
@@ -171,8 +169,15 @@ impl ArrowFlightEndpoint {
 mod tests {
     use super::*;
     use crate::flight_service::session_builder::DefaultSessionBuilder;
-    use crate::stage::ExecutionTask;
+    use crate::protobuf::proto_from_stage;
+    use crate::ExecutionTask;
+    use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
+    use datafusion::physical_expr::Partitioning;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::{bytes::Bytes, Message};
     use tonic::Request;
     use uuid::Uuid;
@@ -187,47 +192,45 @@ mod tests {
         let num_tasks = 3;
         let num_partitions_per_task = 3;
         let stage_id = 1;
-        let query_id_uuid = Uuid::new_v4();
-        let query_id = query_id_uuid.as_bytes().to_vec();
+        let query_id = Uuid::new_v4();
 
         // Set up protos.
         let mut tasks = Vec::new();
         for i in 0..num_tasks {
             tasks.push(ExecutionTask {
-                url_str: None,
+                url: None,
                 partition_group: vec![i], // Set a random partition in the partition group.
             });
         }
 
-        let stage_proto = ExecutionStageProto {
-            query_id: query_id.clone(),
+        let stage = StageExec {
+            query_id,
             num: 1,
             name: format!("test_stage_{}", 1),
-            plan: Some(Box::new(create_mock_physical_plan_proto(
-                num_partitions_per_task,
-            ))),
+            plan: create_mock_physical_plan(num_partitions_per_task),
             inputs: vec![],
             tasks,
+            depth: 0,
         };
 
         let task_keys = [
             StageKey {
-                query_id: query_id_uuid.to_string(),
+                query_id: query_id.to_string(),
                 stage_id,
                 task_number: 0,
             },
             StageKey {
-                query_id: query_id_uuid.to_string(),
+                query_id: query_id.to_string(),
                 stage_id,
                 task_number: 1,
             },
             StageKey {
-                query_id: query_id_uuid.to_string(),
+                query_id: query_id.to_string(),
                 stage_id,
                 task_number: 2,
             },
         ];
-
+        let stage_proto = proto_from_stage(&stage, &DefaultPhysicalExtensionCodec {}).unwrap();
         let stage_proto_for_closure = stage_proto.clone();
         let endpoint_ref = &endpoint;
         let do_get = async move |partition: u64, task_number: u64, stage_key: StageKey| {
@@ -251,20 +254,15 @@ mod tests {
         };
 
         // For each task, call do_get() for each partition except the last.
-        for task_number in 0..num_tasks {
+        for (task_number, task_key) in task_keys.iter().enumerate() {
             for partition in 0..num_partitions_per_task - 1 {
-                let result = do_get(
-                    partition as u64,
-                    task_number,
-                    task_keys[task_number as usize].clone(),
-                )
-                .await;
+                let result = do_get(partition as u64, task_number as u64, task_key.clone()).await;
                 assert!(result.is_ok());
             }
         }
 
         // Check that the endpoint has not evicted any task states.
-        assert_eq!(endpoint.stages.len(), num_tasks as usize);
+        assert_eq!(endpoint.stages.len(), num_tasks);
 
         // Run the last partition of task 0. Any partition number works. Verify that the task state
         // is evicted because all partitions have been processed.
@@ -289,38 +287,9 @@ mod tests {
         assert_eq!(stored_stage_keys.len(), 0);
     }
 
-    // Helper to create a mock physical plan proto
-    fn create_mock_physical_plan_proto(
-        partitions: usize,
-    ) -> datafusion_proto::protobuf::PhysicalPlanNode {
-        use datafusion_proto::protobuf::partitioning::PartitionMethod;
-        use datafusion_proto::protobuf::{
-            Partitioning, PhysicalPlanNode, RepartitionExecNode, Schema,
-        };
-
-        // Create a repartition node that will have the desired partition count
-        PhysicalPlanNode {
-            physical_plan_type: Some(
-                datafusion_proto::protobuf::physical_plan_node::PhysicalPlanType::Repartition(
-                    Box::new(RepartitionExecNode {
-                        input: Some(Box::new(PhysicalPlanNode {
-                            physical_plan_type: Some(
-                                datafusion_proto::protobuf::physical_plan_node::PhysicalPlanType::Empty(
-                                    datafusion_proto::protobuf::EmptyExecNode {
-                                        schema: Some(Schema {
-                                            columns: vec![],
-                                            metadata: std::collections::HashMap::new(),
-                                        })
-                                    }
-                                )
-                            ),
-                        })),
-                        partitioning: Some(Partitioning {
-                            partition_method: Some(PartitionMethod::RoundRobin(partitions as u64)),
-                        }),
-                    })
-                )
-            ),
-        }
+    // Helper to create a mock physical plan
+    fn create_mock_physical_plan(partitions: usize) -> Arc<dyn ExecutionPlan> {
+        let node = Arc::new(EmptyExec::new(SchemaRef::new(Schema::empty())));
+        Arc::new(RepartitionExec::try_new(node, Partitioning::RoundRobinBatch(partitions)).unwrap())
     }
 }

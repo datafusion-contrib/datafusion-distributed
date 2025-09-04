@@ -8,7 +8,6 @@ mod errors;
 mod execution_plans;
 mod flight_service;
 mod physical_optimizer;
-mod stage;
 
 mod protobuf;
 #[cfg(any(feature = "integration", test))]
@@ -16,11 +15,12 @@ pub mod test_utils;
 
 pub use channel_manager_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
-pub use execution_plans::{ArrowFlightReadExec, PartitionIsolatorExec};
+pub use execution_plans::{
+    display_stage_graphviz, ArrowFlightReadExec, ExecutionTask, PartitionIsolatorExec, StageExec,
+};
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
     MappedDistributedSessionBuilderExt,
 };
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
-pub use stage::{display_stage_graphviz, ExecutionStage};
