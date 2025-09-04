@@ -5,13 +5,20 @@ use datafusion::error::DataFusionError;
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProtoMetric {
     #[prost(oneof="ProtoMetricValue", tags="1")]
-    // metric is *always* set by convention. Protobuf "oneof" requires 
+    // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<ProtoMetricValue>,
     #[prost(message, repeated, tag="2")]
     pub labels: Vec<ProtoLabel>,
     #[prost(uint64, optional, tag="3")]
     pub partition: Option<u64>,
+}
 
+/// A ProtoMetric mirrors `datafusion::physical_plan::metrics::MetricSet`. It represents
+/// metrics for one `ExecutionPlan` node.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProtoMetricsSet {
+    #[prost(message, repeated, tag="1")]
+    pub metrics: Vec<ProtoMetric>,
 }
 
 /// The MetricType enum mirrors the `datafusion::physical_plan::metrics::MetricValue` enum.
