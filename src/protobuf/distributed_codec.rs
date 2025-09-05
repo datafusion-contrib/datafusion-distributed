@@ -1,7 +1,6 @@
-use super::PartitionIsolatorExec;
+use super::get_distributed_user_codec;
 use crate::common::ComposedPhysicalExtensionCodec;
-use crate::plan::arrow_flight_read::ArrowFlightReadExec;
-use crate::user_codec_ext::get_distributed_user_codec;
+use crate::{ArrowFlightReadExec, PartitionIsolatorExec};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::ExecutionPlan;

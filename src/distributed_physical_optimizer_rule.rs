@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use super::stage::ExecutionStage;
-use crate::{plan::PartitionIsolatorExec, ArrowFlightReadExec};
+use super::{ArrowFlightReadExec, PartitionIsolatorExec, StageExec};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::joins::PartitionMode;
@@ -55,7 +54,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // We can only optimize plans that are not already distributed
-        if plan.as_any().is::<ExecutionStage>() {
+        if plan.as_any().is::<StageExec>() {
             return Ok(plan);
         }
 
@@ -106,7 +105,7 @@ impl DistributedPhysicalOptimizerRule {
     pub fn distribute_plan(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<ExecutionStage, DataFusionError> {
+    ) -> Result<StageExec, DataFusionError> {
         let query_id = Uuid::new_v4();
         self._distribute_plan_inner(query_id, plan, &mut 1, 0)
     }
@@ -117,7 +116,7 @@ impl DistributedPhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         num: &mut usize,
         depth: usize,
-    ) -> Result<ExecutionStage, DataFusionError> {
+    ) -> Result<StageExec, DataFusionError> {
         let mut inputs = vec![];
 
         let distributed = plan.clone().transform_down(|plan| {
@@ -134,7 +133,7 @@ impl DistributedPhysicalOptimizerRule {
         })?;
 
         let inputs = inputs.into_iter().map(Arc::new).collect();
-        let mut stage = ExecutionStage::new(query_id, *num, distributed.data, inputs);
+        let mut stage = StageExec::new(query_id, *num, distributed.data, inputs);
         *num += 1;
 
         stage = match (self.partitions_per_task, can_be_divided(&plan)?) {
@@ -188,7 +187,7 @@ pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
-    use crate::physical_optimizer::DistributedPhysicalOptimizerRule;
+    use crate::distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
     use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
