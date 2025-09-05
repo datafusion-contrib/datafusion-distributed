@@ -40,10 +40,7 @@ pub fn tonic_status_to_datafusion_error(status: &tonic::Status) -> Option<DataFu
     }
 
     match DataFusionErrorProto::decode(status.details()) {
-        Ok(err_proto) => {
-            dbg!(&err_proto);
-            Some(err_proto.to_datafusion_err())
-        }
+        Ok(err_proto) => Some(err_proto.to_datafusion_err()),
         Err(err) => Some(internal_datafusion_err!(
             "Cannot decode DataFusionError: {err}"
         )),
