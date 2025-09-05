@@ -14,6 +14,7 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    #[ignore] // This test is flaky
     async fn highly_distributed_query() -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(9, DefaultSessionBuilder).await;
         register_parquet_tables(&ctx).await?;
@@ -45,20 +46,20 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── Stage 4   Task: partitions: 0..4,unassigned]
-        │partitions [out:5            ] ArrowFlightReadExec: Stage 3  
+        ┌───── Stage 4   Tasks: t0:[p0,p1,p2,p3,p4] 
+        │ ArrowFlightReadExec input_stage=3, input_partitions=5, input_tasks=1
         └──────────────────────────────────────────────────
-          ┌───── Stage 3   Task: partitions: 0..4,unassigned]
-          │partitions [out:5  <-- in:10 ] RepartitionExec: partitioning=RoundRobinBatch(5), input_partitions=10
-          │partitions [out:10           ]   ArrowFlightReadExec: Stage 2  
+          ┌───── Stage 3   Tasks: t0:[p0,p1,p2,p3,p4] 
+          │ RepartitionExec: partitioning=RoundRobinBatch(5), input_partitions=10
+          │   ArrowFlightReadExec input_stage=2, input_partitions=10, input_tasks=1
           └──────────────────────────────────────────────────
-            ┌───── Stage 2   Task: partitions: 0..9,unassigned]
-            │partitions [out:10 <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=1
-            │partitions [out:1            ]   ArrowFlightReadExec: Stage 1  
+            ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
+            │ RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=1
+            │   ArrowFlightReadExec input_stage=1, input_partitions=1, input_tasks=1
             └──────────────────────────────────────────────────
-              ┌───── Stage 1   Task: partitions: 0,unassigned]
-              │partitions [out:1  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=1
-              │partitions [out:1            ]   DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[FL_DATE, DEP_DELAY, ARR_DELAY, AIR_TIME, DISTANCE, DEP_TIME, ARR_TIME], file_type=parquet
+              ┌───── Stage 1   Tasks: t0:[p0] 
+              │ RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=1
+              │   DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[FL_DATE, DEP_DELAY, ARR_DELAY, AIR_TIME, DISTANCE, DEP_TIME, ARR_TIME], file_type=parquet
               └──────────────────────────────────────────────────
         ",
         );

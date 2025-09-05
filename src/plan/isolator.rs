@@ -46,11 +46,7 @@ impl PartitionIsolatorExec {
 
 impl DisplayAs for PartitionIsolatorExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "PartitionIsolatorExec [providing upto {} partitions]",
-            self.partition_count
-        )
+        write!(f, "PartitionIsolatorExec",)
     }
 }
 

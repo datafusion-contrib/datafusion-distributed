@@ -50,25 +50,25 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── Stage 3   Task: partitions: 0,unassigned]
-        │partitions [out:1  <-- in:1  ] ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-        │partitions [out:1  <-- in:3  ]   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │partitions [out:3  <-- in:3  ]     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-        │partitions [out:3  <-- in:3  ]       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
-        │partitions [out:3  <-- in:3  ]         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-        │partitions [out:3  <-- in:3  ]           CoalesceBatchesExec: target_batch_size=8192
-        │partitions [out:3            ]             ArrowFlightReadExec: Stage 2  
+        ┌───── Stage 3   Tasks: t0:[p0] 
+        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+        │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+        │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+        │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+        │           CoalesceBatchesExec: target_batch_size=8192
+        │             ArrowFlightReadExec input_stage=2, input_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Task: partitions: 0,unassigned],Task: partitions: 1,unassigned],Task: partitions: 2,unassigned]
-          │partitions [out:3  <-- in:1  ] RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=1
-          │partitions [out:1  <-- in:3  ]   PartitionIsolatorExec [providing upto 1 partitions]
-          │partitions [out:3            ]     ArrowFlightReadExec: Stage 1  
+          ┌───── Stage 2   Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=1
+          │   PartitionIsolatorExec Tasks: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │     ArrowFlightReadExec input_stage=1, input_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Task: partitions: 0,unassigned],Task: partitions: 1,unassigned],Task: partitions: 2,unassigned]
-            │partitions [out:3  <-- in:1  ] RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-            │partitions [out:1  <-- in:1  ]   PartitionIsolatorExec [providing upto 1 partitions]
-            │partitions [out:1  <-- in:1  ]     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │partitions [out:1            ]       DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
+            ┌───── Stage 1   Tasks: t0:[p0] t1:[p1] t2:[p2] 
+            │ RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
+            │   PartitionIsolatorExec Tasks: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+            │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+            │       DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
             └──────────────────────────────────────────────────
         ",
         );
