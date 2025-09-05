@@ -147,18 +147,14 @@ impl ExecutionPlan for ArrowFlightReadExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let ArrowFlightReadExec::Ready(this) = self else {
+        let ArrowFlightReadExec::Ready(self_ready) = self else {
             return exec_err!("ArrowFlightReadExec is not ready, was the distributed optimization step performed?");
         };
 
         // get the channel manager and current stage from our context
-        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
-        else {
-            return exec_err!(
-                "ArrowFlightReadExec requires a ChannelResolver in the session config"
-            );
-        };
+        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
+        // the `ArrowFlightReadExec` node can only be executed in the context of a `StageExec`
         let stage = context
             .session_config()
             .get_extension::<StageExec>()
@@ -170,10 +166,10 @@ impl ExecutionPlan for ArrowFlightReadExec {
         // reading from
         let child_stage = stage
             .child_stages_iter()
-            .find(|s| s.num == this.stage_num)
+            .find(|s| s.num == self_ready.stage_num)
             .ok_or(internal_datafusion_err!(
                 "ArrowFlightReadExec: no child stage with num {}",
-                this.stage_num
+                self_ready.stage_num
             ))?;
 
         let flight_metadata = context

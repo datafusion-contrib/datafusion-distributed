@@ -30,8 +30,7 @@ pub struct StageKey {
 
 pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
-    #[allow(clippy::type_complexity)]
-    pub(super) stages: TTLMap<StageKey, Arc<OnceCell<TaskData>>>,
+    pub(super) task_data_entries: TTLMap<StageKey, Arc<OnceCell<TaskData>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
 }
 
@@ -42,7 +41,7 @@ impl ArrowFlightEndpoint {
         let ttl_map = TTLMap::try_new(TTLMapConfig::default())?;
         Ok(Self {
             runtime: Arc::new(RuntimeEnv::default()),
-            stages: ttl_map,
+            task_data_entries: ttl_map,
             session_builder: Arc::new(session_builder),
         })
     }

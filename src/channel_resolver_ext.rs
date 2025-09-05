@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
@@ -16,9 +17,10 @@ pub(crate) fn set_distributed_channel_resolver(
 
 pub(crate) fn get_distributed_channel_resolver(
     cfg: &SessionConfig,
-) -> Option<Arc<dyn ChannelResolver + Send + Sync>> {
+) -> Result<Arc<dyn ChannelResolver + Send + Sync>, DataFusionError> {
     cfg.get_extension::<ChannelResolverExtension>()
         .map(|cm| cm.0.clone())
+        .ok_or_else(|| exec_datafusion_err!("ChannelResolver not present in the session config"))
 }
 
 #[derive(Clone)]
