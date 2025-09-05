@@ -1,6 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::{ArrowFlightReadExec, ChannelResolver, PartitionIsolatorExec};
-use datafusion::common::{exec_err, internal_err};
+use datafusion::common::internal_err;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
@@ -260,20 +260,10 @@ impl ExecutionPlan for StageExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<datafusion::execution::SendableRecordBatchStream> {
-        let stage = self
-            .as_any()
-            .downcast_ref::<StageExec>()
-            .expect("Unwrapping myself should always work");
+        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
-        let Some(channel_resolver) = get_distributed_channel_resolver(context.session_config())
-        else {
-            return exec_err!("ChannelManager not found in session config");
-        };
-
-        let urls = channel_resolver.get_urls()?;
-
-        let assigned_stage = stage
-            .try_assign_urls(&urls)
+        let assigned_stage = self
+            .try_assign_urls(&channel_resolver.get_urls()?)
             .map(Arc::new)
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
