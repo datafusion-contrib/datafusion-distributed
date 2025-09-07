@@ -20,6 +20,6 @@ mod memory;
 mod options;
 mod run;
 
-pub use memory::print_memory_stats;
+pub use memory::{InMemoryCacheExecCodec, InMemoryDataSourceRule, WarmingUpMarker};
 pub use options::CommonOpt;
 pub use run::{BenchmarkRun, QueryResult};
