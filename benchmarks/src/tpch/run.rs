@@ -42,9 +42,8 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
-    get_free_ports, spawn_flight_service, LocalHostChannelResolver,
+    spawn_flight_service, LocalHostChannelResolver,
 };
-use datafusion_distributed::MappedDistributedSessionBuilderExt;
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
     DistributedSessionBuilderContext,
@@ -101,19 +100,19 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Run in distributed mode.
-    #[structopt(short = "D", long = "distributed")]
-    distributed: bool,
-
     /// Number of partitions per task.
     #[structopt(long = "ppt")]
     partitions_per_task: Option<usize>,
 
-    /// Number of physical threads per worker (default 1)
-    #[structopt(long, default_value = "1")]
-    workers: usize,
+    /// Spawns a worker in the specified port.
+    #[structopt(long)]
+    spawn: Option<u16>,
 
-    /// Number of physical threads per worker
+    /// The ports of all the workers involved in the query.
+    #[structopt(long, use_delimiter = true)]
+    workers: Vec<u16>,
+
+    /// Number of physical threads per worker.
     #[structopt(long)]
     threads: Option<usize>,
 }
@@ -126,7 +125,7 @@ impl DistributedSessionBuilder for RunOpt {
     ) -> Result<SessionState, DataFusionError> {
         let mut builder = SessionStateBuilder::new().with_default_features();
 
-        let config = self
+        let mut config = self
             .common
             .config()?
             .with_collect_statistics(!self.disable_statistics)
@@ -139,11 +138,13 @@ impl DistributedSessionBuilder for RunOpt {
         if self.mem_table {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
-        if self.distributed {
+        if !self.workers.is_empty() {
             let mut rule = DistributedPhysicalOptimizerRule::new();
             if let Some(partitions_per_task) = self.partitions_per_task {
                 rule = rule.with_maximum_partitions_per_task(partitions_per_task)
             }
+            let ports = self.workers.clone();
+            config = config.with_distributed_channel_resolver(LocalHostChannelResolver::new(ports));
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
@@ -156,61 +157,25 @@ impl DistributedSessionBuilder for RunOpt {
 
 impl RunOpt {
     pub fn run(self) -> Result<()> {
-        let ports = get_free_ports(self.workers);
-
-        let _worker_handles = self.clone().spawn_workers(ports.clone());
-
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
             .enable_all()
             .build()?;
 
-        rt.block_on(async move { self.run_local(ports).await })
-    }
-
-    pub fn spawn_workers(self, ports: Vec<u16>) -> Vec<std::thread::JoinHandle<()>> {
-        let threads_per_worker = self.threads;
-        let ports_copy = ports.clone();
-        let session_builder = self.map(move |builder: SessionStateBuilder| {
-            let channel_resolver = LocalHostChannelResolver::new(ports.clone());
-            Ok(builder
-                .with_distributed_channel_resolver(channel_resolver)
-                .build())
-        });
-        let mut handles = vec![];
-        for port in ports_copy {
-            let session_builder = session_builder.clone();
-            let handle = std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(threads_per_worker.unwrap_or(get_available_parallelism()))
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(async move {
-                    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-                        .await
-                        .unwrap();
-                    spawn_flight_service(session_builder, listener)
-                        .await
-                        .unwrap();
-                })
-            });
-
-            handles.push(handle);
+        if let Some(port) = self.spawn {
+            rt.block_on(async move {
+                let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+                println!("Listening on {}...", listener.local_addr().unwrap());
+                spawn_flight_service(self, listener).await
+            })?;
+        } else {
+            rt.block_on(self.run_local())?;
         }
-        handles
+        Ok(())
     }
 
-    async fn run_local(mut self, ports: Vec<u16>) -> Result<()> {
-        let session_builder = self.clone().map(move |builder: SessionStateBuilder| {
-            let channel_resolver = LocalHostChannelResolver::new(ports.clone());
-            Ok(builder
-                .with_distributed_channel_resolver(channel_resolver)
-                .build())
-        });
-        let state = session_builder
-            .build_session_state(DistributedSessionBuilderContext::default())
-            .await?;
+    async fn run_local(mut self) -> Result<()> {
+        let state = self.build_session_state(Default::default()).await?;
         let ctx = SessionContext::new_with_state(state);
         self.register_tables(&ctx).await?;
 
@@ -229,12 +194,11 @@ impl RunOpt {
             for query_id in query_range.clone() {
                 // put the WarmingUpMarker in the context, otherwise, queries will fail as the
                 // InMemoryCacheExec node will think they should already be warmed up.
-                let sql = &get_query_sql(query_id)?;
                 let ctx = ctx
                     .clone()
                     .with_distributed_option_extension(WarmingUpMarker::warming_up())?;
-                for query in sql.iter() {
-                    self.execute_query(&ctx, query).await?;
+                for query in get_query_sql(query_id)? {
+                    self.execute_query(&ctx, &query).await?;
                 }
                 println!("Query {query_id} data loaded in memory");
             }
