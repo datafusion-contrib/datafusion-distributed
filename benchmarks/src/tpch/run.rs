@@ -125,11 +125,12 @@ impl DistributedSessionBuilder for RunOpt {
     ) -> Result<SessionState, DataFusionError> {
         let mut builder = SessionStateBuilder::new().with_default_features();
 
-        let mut config = self
+        let config = self
             .common
             .config()?
             .with_collect_statistics(!self.disable_statistics)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
+            .with_distributed_channel_resolver(LocalHostChannelResolver::new(self.workers.clone()))
             .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
             .with_target_partitions(self.partitions());
 
@@ -143,8 +144,6 @@ impl DistributedSessionBuilder for RunOpt {
             if let Some(partitions_per_task) = self.partitions_per_task {
                 rule = rule.with_maximum_partitions_per_task(partitions_per_task)
             }
-            let ports = self.workers.clone();
-            config = config.with_distributed_channel_resolver(LocalHostChannelResolver::new(ports));
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
