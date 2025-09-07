@@ -20,9 +20,6 @@ use super::{
     TPCH_QUERY_START_ID, TPCH_TABLES,
 };
 use async_trait::async_trait;
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::{self, pretty_format_batches};
 use datafusion::common::instant::Instant;
@@ -40,18 +37,25 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
+use datafusion_distributed::MappedDistributedSessionBuilderExt;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::util::{
     BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryResult,
     WarmingUpMarker,
 };
-use datafusion_distributed::test_utils::localhost::start_localhost_context;
+use datafusion_distributed::test_utils::localhost::{
+    get_free_ports, spawn_flight_service, start_localhost_context, LocalHostChannelResolver,
+};
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
     DistributedSessionBuilderContext,
 };
 use log::info;
 use structopt::StructOpt;
+use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 
 // hack to avoid `default_value is meaningless for bool` errors
 type BoolDefaultTrue = bool;
@@ -113,6 +117,14 @@ pub struct RunOpt {
     /// Number of partitions per task.
     #[structopt(long = "ppt")]
     partitions_per_task: Option<usize>,
+
+    /// Number of physical threads per worker (default 1)
+    #[structopt(long, default_value = "1")]
+    workers: usize,
+
+    /// Number of physical threads per worker
+    #[structopt(long)]
+    threads: Option<usize>,
 }
 
 #[async_trait]
@@ -156,7 +168,50 @@ impl DistributedSessionBuilder for RunOpt {
 }
 
 impl RunOpt {
-    pub async fn run(mut self) -> Result<()> {
+    pub fn spawn_workers(self) -> Vec<(tokio::runtime::Runtime, JoinHandle<()>)> {
+        let ports = get_free_ports(self.workers);
+        let channel_resolver = LocalHostChannelResolver::new(ports.clone());
+        let threads_per_worker = self.threads;
+        let session_builder = self.map(move |builder: SessionStateBuilder| {
+            let channel_resolver = channel_resolver.clone();
+            Ok(builder
+                .with_distributed_channel_resolver(channel_resolver)
+                .build())
+        });
+        let mut handles = vec![];
+        for port in ports {
+            let session_builder = session_builder.clone();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(threads_per_worker.unwrap_or(get_available_parallelism()))
+                .enable_all()
+                .build()
+                .unwrap();
+            let handle = rt.spawn(async move {
+                let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
+                    .await
+                    .unwrap();
+                spawn_flight_service(session_builder, listener)
+                    .await
+                    .unwrap();
+            });
+
+            handles.push((rt, handle));
+        }
+        handles
+    }
+
+    pub fn run(self) -> Result<()> {
+        let _handle = self.clone().spawn_workers();
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
+            .enable_all()
+            .build()?;
+
+        rt.block_on(async move { self._run().await })
+    }
+
+    pub async fn _run(mut self) -> Result<()> {
         let (ctx, _guard) = start_localhost_context(1, self.clone()).await;
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
