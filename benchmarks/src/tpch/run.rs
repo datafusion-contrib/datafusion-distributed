@@ -147,14 +147,10 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
-        let state = builder
+        Ok(builder
             .with_config(config)
             .with_runtime_env(rt_builder.build_arc()?)
-            .build();
-
-        let ctx = SessionContext::from(state);
-        self.register_tables(&ctx).await?;
-        Ok(ctx.state())
+            .build())
     }
 }
 
@@ -162,8 +158,7 @@ impl RunOpt {
     pub fn run(self) -> Result<()> {
         let ports = get_free_ports(self.workers);
 
-        let _handle = self.clone().spawn_workers(ports.clone());
-        drop(_handle);
+        let _worker_handles = self.clone().spawn_workers(ports.clone());
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
@@ -217,6 +212,8 @@ impl RunOpt {
             .build_session_state(DistributedSessionBuilderContext::default())
             .await?;
         let ctx = SessionContext::new_with_state(state);
+        self.register_tables(&ctx).await?;
+
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
             Some(query_id) => query_id..=query_id,
