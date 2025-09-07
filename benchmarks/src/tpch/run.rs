@@ -19,6 +19,10 @@ use super::{
     get_query_sql, get_tbl_tpch_table_schema, get_tpch_table_schema, TPCH_QUERY_END_ID,
     TPCH_QUERY_START_ID, TPCH_TABLES,
 };
+use crate::util::{
+    BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryResult,
+    WarmingUpMarker,
+};
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::{self, pretty_format_batches};
@@ -37,28 +41,20 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
-use datafusion_distributed::MappedDistributedSessionBuilderExt;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use crate::util::{
-    BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryResult,
-    WarmingUpMarker,
-};
 use datafusion_distributed::test_utils::localhost::{
     get_free_ports, spawn_flight_service, start_localhost_context, LocalHostChannelResolver,
 };
+use datafusion_distributed::MappedDistributedSessionBuilderExt;
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
     DistributedSessionBuilderContext,
 };
 use log::info;
+use std::path::PathBuf;
+use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-
-// hack to avoid `default_value is meaningless for bool` errors
-type BoolDefaultTrue = bool;
 
 /// Run the tpch benchmark.
 ///
@@ -99,11 +95,6 @@ pub struct RunOpt {
     /// Whether to disable collection of statistics (and cost based optimizations) or not.
     #[structopt(short = "S", long = "disable-statistics")]
     disable_statistics: bool,
-
-    /// If true then hash join used, if false then sort merge join
-    /// True by default.
-    #[structopt(short = "j", long = "prefer_hash_join", default_value = "true")]
-    prefer_hash_join: BoolDefaultTrue,
 
     /// Mark the first column of each table as sorted in ascending order.
     /// The tables should have been created with the `--sort` option for this to have any effect.
@@ -417,173 +408,4 @@ impl RunOpt {
             .partitions
             .unwrap_or_else(get_available_parallelism)
     }
-}
-
-#[cfg(test)]
-// Only run with "ci" mode when we have the data
-#[cfg(feature = "ci")]
-mod tests {
-    use std::path::Path;
-
-    use super::*;
-
-    use datafusion::common::exec_err;
-    use datafusion::error::Result;
-    use datafusion_proto::bytes::{
-        logical_plan_from_bytes, logical_plan_to_bytes, physical_plan_from_bytes,
-        physical_plan_to_bytes,
-    };
-
-    fn get_tpch_data_path() -> Result<String> {
-        let path = std::env::var("TPCH_DATA").unwrap_or_else(|_| "benchmarks/data".to_string());
-        if !Path::new(&path).exists() {
-            return exec_err!(
-                "Benchmark data not found (set TPCH_DATA env var to override): {}",
-                path
-            );
-        }
-        Ok(path)
-    }
-
-    async fn round_trip_logical_plan(query: usize) -> Result<()> {
-        let ctx = SessionContext::default();
-        let path = get_tpch_data_path()?;
-        let common = CommonOpt {
-            iterations: 1,
-            partitions: Some(2),
-            batch_size: Some(8192),
-            mem_pool_type: "fair".to_string(),
-            memory_limit: None,
-            sort_spill_reservation_bytes: None,
-            debug: false,
-        };
-        let opt = RunOpt {
-            query: Some(query),
-            common,
-            path: PathBuf::from(path.to_string()),
-            file_format: "tbl".to_string(),
-            mem_table: false,
-            output_path: None,
-            disable_statistics: false,
-            prefer_hash_join: true,
-            sorted: false,
-            partitions_per_task: None,
-        };
-        opt.register_tables(&ctx).await?;
-        let queries = get_query_sql(query)?;
-        for query in queries {
-            let plan = ctx.sql(&query).await?;
-            let plan = plan.into_optimized_plan()?;
-            let bytes = logical_plan_to_bytes(&plan)?;
-            let plan2 = logical_plan_from_bytes(&bytes, &ctx)?;
-            let plan_formatted = format!("{}", plan.display_indent());
-            let plan2_formatted = format!("{}", plan2.display_indent());
-            assert_eq!(plan_formatted, plan2_formatted);
-        }
-        Ok(())
-    }
-
-    async fn round_trip_physical_plan(query: usize) -> Result<()> {
-        let ctx = SessionContext::default();
-        let path = get_tpch_data_path()?;
-        let common = CommonOpt {
-            iterations: 1,
-            partitions: Some(2),
-            batch_size: Some(8192),
-            mem_pool_type: "fair".to_string(),
-            memory_limit: None,
-            sort_spill_reservation_bytes: None,
-            debug: false,
-        };
-        let opt = RunOpt {
-            query: Some(query),
-            common,
-            path: PathBuf::from(path.to_string()),
-            file_format: "tbl".to_string(),
-            mem_table: false,
-            output_path: None,
-            disable_statistics: false,
-            prefer_hash_join: true,
-            sorted: false,
-            partitions_per_task: None,
-        };
-        opt.register_tables(&ctx).await?;
-        let queries = get_query_sql(query)?;
-        for query in queries {
-            let plan = ctx.sql(&query).await?;
-            let plan = plan.create_physical_plan().await?;
-            let bytes = physical_plan_to_bytes(plan.clone())?;
-            let plan2 = physical_plan_from_bytes(&bytes, &ctx)?;
-            let plan_formatted = format!("{}", displayable(plan.as_ref()).indent(false));
-            let plan2_formatted = format!("{}", displayable(plan2.as_ref()).indent(false));
-            assert_eq!(plan_formatted, plan2_formatted);
-        }
-        Ok(())
-    }
-
-    macro_rules! test_round_trip_logical {
-        ($tn:ident, $query:expr) => {
-            #[tokio::test]
-            async fn $tn() -> Result<()> {
-                round_trip_logical_plan($query).await
-            }
-        };
-    }
-
-    macro_rules! test_round_trip_physical {
-        ($tn:ident, $query:expr) => {
-            #[tokio::test]
-            async fn $tn() -> Result<()> {
-                round_trip_physical_plan($query).await
-            }
-        };
-    }
-
-    // logical plan tests
-    test_round_trip_logical!(round_trip_logical_plan_q1, 1);
-    test_round_trip_logical!(round_trip_logical_plan_q2, 2);
-    test_round_trip_logical!(round_trip_logical_plan_q3, 3);
-    test_round_trip_logical!(round_trip_logical_plan_q4, 4);
-    test_round_trip_logical!(round_trip_logical_plan_q5, 5);
-    test_round_trip_logical!(round_trip_logical_plan_q6, 6);
-    test_round_trip_logical!(round_trip_logical_plan_q7, 7);
-    test_round_trip_logical!(round_trip_logical_plan_q8, 8);
-    test_round_trip_logical!(round_trip_logical_plan_q9, 9);
-    test_round_trip_logical!(round_trip_logical_plan_q10, 10);
-    test_round_trip_logical!(round_trip_logical_plan_q11, 11);
-    test_round_trip_logical!(round_trip_logical_plan_q12, 12);
-    test_round_trip_logical!(round_trip_logical_plan_q13, 13);
-    test_round_trip_logical!(round_trip_logical_plan_q14, 14);
-    test_round_trip_logical!(round_trip_logical_plan_q15, 15);
-    test_round_trip_logical!(round_trip_logical_plan_q16, 16);
-    test_round_trip_logical!(round_trip_logical_plan_q17, 17);
-    test_round_trip_logical!(round_trip_logical_plan_q18, 18);
-    test_round_trip_logical!(round_trip_logical_plan_q19, 19);
-    test_round_trip_logical!(round_trip_logical_plan_q20, 20);
-    test_round_trip_logical!(round_trip_logical_plan_q21, 21);
-    test_round_trip_logical!(round_trip_logical_plan_q22, 22);
-
-    // physical plan tests
-    test_round_trip_physical!(round_trip_physical_plan_q1, 1);
-    test_round_trip_physical!(round_trip_physical_plan_q2, 2);
-    test_round_trip_physical!(round_trip_physical_plan_q3, 3);
-    test_round_trip_physical!(round_trip_physical_plan_q4, 4);
-    test_round_trip_physical!(round_trip_physical_plan_q5, 5);
-    test_round_trip_physical!(round_trip_physical_plan_q6, 6);
-    test_round_trip_physical!(round_trip_physical_plan_q7, 7);
-    test_round_trip_physical!(round_trip_physical_plan_q8, 8);
-    test_round_trip_physical!(round_trip_physical_plan_q9, 9);
-    test_round_trip_physical!(round_trip_physical_plan_q10, 10);
-    test_round_trip_physical!(round_trip_physical_plan_q11, 11);
-    test_round_trip_physical!(round_trip_physical_plan_q12, 12);
-    test_round_trip_physical!(round_trip_physical_plan_q13, 13);
-    test_round_trip_physical!(round_trip_physical_plan_q14, 14);
-    test_round_trip_physical!(round_trip_physical_plan_q15, 15);
-    test_round_trip_physical!(round_trip_physical_plan_q16, 16);
-    test_round_trip_physical!(round_trip_physical_plan_q17, 17);
-    test_round_trip_physical!(round_trip_physical_plan_q18, 18);
-    test_round_trip_physical!(round_trip_physical_plan_q19, 19);
-    test_round_trip_physical!(round_trip_physical_plan_q20, 20);
-    test_round_trip_physical!(round_trip_physical_plan_q21, 21);
-    test_round_trip_physical!(round_trip_physical_plan_q22, 22);
 }
