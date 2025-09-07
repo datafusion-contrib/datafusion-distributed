@@ -17,17 +17,6 @@ use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use url::Url;
 
-pub fn get_free_ports(n: usize) -> Vec<u16> {
-    let listeners = (0..n)
-        .map(|_| std::net::TcpListener::bind("127.0.0.1:0"))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to bind to address");
-    listeners
-        .iter()
-        .map(|listener| listener.local_addr().unwrap().port())
-        .collect()
-}
-
 pub async fn start_localhost_context<B>(
     num_workers: usize,
     session_builder: B,
@@ -36,7 +25,23 @@ where
     B: DistributedSessionBuilder + Send + Sync + 'static,
     B: Clone,
 {
-    let ports = get_free_ports(num_workers);
+    let listeners = futures::future::try_join_all(
+        (0..num_workers)
+            .map(|_| TcpListener::bind("127.0.0.1:0"))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .expect("Failed to bind to address");
+
+    let ports: Vec<u16> = listeners
+        .iter()
+        .map(|listener| {
+            listener
+                .local_addr()
+                .expect("Failed to get local address")
+                .port()
+        })
+        .collect();
 
     let channel_resolver = LocalHostChannelResolver::new(ports.clone());
     let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
@@ -46,11 +51,8 @@ where
             .build())
     });
     let mut join_set = JoinSet::new();
-    for port in ports {
+    for listener in listeners {
         let session_builder = session_builder.clone();
-        let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-            .await
-            .unwrap();
         join_set.spawn(async move {
             spawn_flight_service(session_builder, listener)
                 .await
