@@ -28,7 +28,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::{self, pretty_format_batches};
 use datafusion::common::instant::Instant;
 use datafusion::common::utils::get_available_parallelism;
-use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
+use datafusion::common::{exec_err, DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::file_format::csv::CsvFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
@@ -50,6 +50,7 @@ use datafusion_distributed::{
     DistributedSessionBuilderContext,
 };
 use log::info;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
@@ -77,8 +78,8 @@ pub struct RunOpt {
     common: CommonOpt,
 
     /// Path to data files
-    #[structopt(parse(from_os_str), required = true, short = "p", long = "path")]
-    path: PathBuf,
+    #[structopt(parse(from_os_str), short = "p", long = "path")]
+    path: Option<PathBuf>,
 
     /// File format: `csv` or `parquet`
     #[structopt(short = "f", long = "format", default_value = "parquet")]
@@ -211,7 +212,7 @@ impl RunOpt {
         };
 
         self.output_path
-            .get_or_insert_with(|| self.path.join("results.json"));
+            .get_or_insert(self.get_path()?.join("results.json"));
         let mut benchmark_run = BenchmarkRun::new();
 
         for query_id in query_range {
@@ -335,8 +336,25 @@ impl RunOpt {
         Ok(result)
     }
 
+    fn get_path(&self) -> Result<PathBuf> {
+        if let Some(path) = &self.path {
+            return Ok(path.clone());
+        }
+        let crate_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let data_path = crate_path.join("data");
+        let entries = fs::read_dir(&data_path)?.collect::<Result<Vec<_>, _>>()?;
+        if entries.is_empty() {
+            exec_err!("No TPCH dataset present in '{data_path:?}'. Generate one with ./benchmarks/gen-tpch.sh")
+        } else if entries.len() == 1 {
+            Ok(entries[0].path())
+        } else {
+            exec_err!("Multiple TPCH datasets present in '{data_path:?}'. One must be selected with --path")
+        }
+    }
+
     async fn get_table(&self, ctx: &SessionContext, table: &str) -> Result<Arc<dyn TableProvider>> {
-        let path = self.path.to_str().unwrap();
+        let path = self.get_path()?;
+        let path = path.to_str().unwrap();
         let table_format = self.file_format.as_str();
         let target_partitions = self.partitions();
 
