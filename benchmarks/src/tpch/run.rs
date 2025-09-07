@@ -42,7 +42,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
-    get_free_ports, spawn_flight_service, start_localhost_context, LocalHostChannelResolver,
+    get_free_ports, spawn_flight_service, LocalHostChannelResolver,
 };
 use datafusion_distributed::MappedDistributedSessionBuilderExt;
 use datafusion_distributed::{
@@ -55,7 +55,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 
 /// Run the tpch benchmark.
 ///
@@ -160,51 +159,64 @@ impl DistributedSessionBuilder for RunOpt {
 }
 
 impl RunOpt {
-    pub fn spawn_workers(self) -> Vec<(tokio::runtime::Runtime, JoinHandle<()>)> {
-        let ports = get_free_ports(self.workers);
-        let channel_resolver = LocalHostChannelResolver::new(ports.clone());
-        let threads_per_worker = self.threads;
-        let session_builder = self.map(move |builder: SessionStateBuilder| {
-            let channel_resolver = channel_resolver.clone();
-            Ok(builder
-                .with_distributed_channel_resolver(channel_resolver)
-                .build())
-        });
-        let mut handles = vec![];
-        for port in ports {
-            let session_builder = session_builder.clone();
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(threads_per_worker.unwrap_or(get_available_parallelism()))
-                .enable_all()
-                .build()
-                .unwrap();
-            let handle = rt.spawn(async move {
-                let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-                    .await
-                    .unwrap();
-                spawn_flight_service(session_builder, listener)
-                    .await
-                    .unwrap();
-            });
-
-            handles.push((rt, handle));
-        }
-        handles
-    }
-
     pub fn run(self) -> Result<()> {
-        let _handle = self.clone().spawn_workers();
+        let ports = get_free_ports(self.workers);
+
+        let _handle = self.clone().spawn_workers(ports.clone());
+        drop(_handle);
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(self.threads.unwrap_or(get_available_parallelism()))
             .enable_all()
             .build()?;
 
-        rt.block_on(async move { self._run().await })
+        rt.block_on(async move { self.run_local(ports).await })
     }
 
-    pub async fn _run(mut self) -> Result<()> {
-        let (ctx, _guard) = start_localhost_context(1, self.clone()).await;
+    pub fn spawn_workers(self, ports: Vec<u16>) -> Vec<std::thread::JoinHandle<()>> {
+        let threads_per_worker = self.threads;
+        let ports_copy = ports.clone();
+        let session_builder = self.map(move |builder: SessionStateBuilder| {
+            let channel_resolver = LocalHostChannelResolver::new(ports.clone());
+            Ok(builder
+                .with_distributed_channel_resolver(channel_resolver)
+                .build())
+        });
+        let mut handles = vec![];
+        for port in ports_copy {
+            let session_builder = session_builder.clone();
+            let handle = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(threads_per_worker.unwrap_or(get_available_parallelism()))
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
+                        .await
+                        .unwrap();
+                    spawn_flight_service(session_builder, listener)
+                        .await
+                        .unwrap();
+                })
+            });
+
+            handles.push(handle);
+        }
+        handles
+    }
+
+    async fn run_local(mut self, ports: Vec<u16>) -> Result<()> {
+        let session_builder = self.clone().map(move |builder: SessionStateBuilder| {
+            let channel_resolver = LocalHostChannelResolver::new(ports.clone());
+            Ok(builder
+                .with_distributed_channel_resolver(channel_resolver)
+                .build())
+        });
+        let state = session_builder
+            .build_session_state(DistributedSessionBuilderContext::default())
+            .await?;
+        let ctx = SessionContext::new_with_state(state);
         println!("Running benchmarks with the following options: {self:?}");
         let query_range = match self.query {
             Some(query_id) => query_id..=query_id,
@@ -214,6 +226,22 @@ impl RunOpt {
         self.output_path
             .get_or_insert(self.get_path()?.join("results.json"));
         let mut benchmark_run = BenchmarkRun::new();
+
+        // Warmup the cache for the in-memory mode.
+        if self.mem_table {
+            for query_id in query_range.clone() {
+                // put the WarmingUpMarker in the context, otherwise, queries will fail as the
+                // InMemoryCacheExec node will think they should already be warmed up.
+                let sql = &get_query_sql(query_id)?;
+                let ctx = ctx
+                    .clone()
+                    .with_distributed_option_extension(WarmingUpMarker::warming_up())?;
+                for query in sql.iter() {
+                    self.execute_query(&ctx, query).await?;
+                }
+                println!("Query {query_id} data loaded in memory");
+            }
+        }
 
         for query_id in query_range {
             benchmark_run.start_new_case(&format!("Query {query_id}"));
@@ -226,7 +254,7 @@ impl RunOpt {
                 }
                 Err(e) => {
                     benchmark_run.mark_failed();
-                    eprintln!("Query {query_id} failed: {e}");
+                    eprintln!("Query {query_id} failed: {e:?}");
                 }
             }
         }
@@ -246,19 +274,6 @@ impl RunOpt {
         let mut query_results = vec![];
 
         let sql = &get_query_sql(query_id)?;
-
-        // Warmup the cache for the in-memory mode.
-        if self.mem_table {
-            // put the WarmingUpMarker in the context, otherwise, queries will fail as the
-            // InMemoryCacheExec node will think they should already be warmed up.
-            let ctx = ctx
-                .clone()
-                .with_distributed_option_extension(WarmingUpMarker::warming_up())?;
-            for query in sql.iter() {
-                self.execute_query(&ctx, query).await?;
-            }
-            println!("Query {query_id} data loaded in memory");
-        }
 
         for i in 0..self.iterations() {
             let start = Instant::now();
