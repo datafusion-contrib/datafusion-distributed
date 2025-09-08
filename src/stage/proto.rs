@@ -10,10 +10,33 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
+use std::fmt::Display;
 
+use datafusion::physical_plan::metrics::MetricsSet;
 use crate::task::ExecutionTask;
-
+use crate::metrics::proto::{ProtoLabel, ProtoMetric, ProtoMetricsSet};
+use std::collections::HashMap;
 use super::ExecutionStage;
+
+impl Display for StageKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StageKey_{}_{}_{}", self.query_id, self.stage_id, self.task_number)
+    }
+}
+
+/// A key that uniquely identifies a stage in a query
+#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
+pub struct StageKey {
+    /// Our query id
+    #[prost(string, tag = "1")]
+    pub query_id: String,
+    /// Our stage id
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+    /// The task number within the stage
+    #[prost(uint64, tag = "3")]
+    pub task_number: u64,
+}
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStageProto {
@@ -36,6 +59,34 @@ pub struct ExecutionStageProto {
     /// the plan
     #[prost(message, repeated, tag = "6")]
     pub tasks: Vec<ExecutionTask>,
+    /// task_metrics is meant to be a HashMap<StageKey, Vec<MetricsSet>>. Since non-primitive types
+    /// are not supported as keys, we use a Vec instead. The values in this map depend on the
+    /// current state of execution.
+    ///
+    /// 1. A non-executed `ExecutionStage` will have no metrics.
+    /// 2. After a `ExecutionStage` task is executed locally we expect it to have metrics
+    ///    for the task and all of its children (which may contain other stages and tasks).
+    /// 3. When a `ExecutionStage` (all tasks) are executed remotely, we expect it to have
+    ///    metrics all child tasks including those from other stages.
+    #[prost(message, repeated, tag="7")]
+    pub task_metrics: Vec<TaskMetrics>,
+}
+
+/// TaskMetrics represents the metrics for a single task. It contains a list of metrics for
+/// all plan nodes in the task.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskMetrics {
+    /// stage_key uniquely identifies this task in the entire `plan`.
+    ///
+    /// This field is always present. It's marked optional due to protobuf rules.
+    #[prost(message, optional, tag="1")]
+    pub stage_key: Option<StageKey>,
+    /// metrics[i] is the set of metrics for plan node `i` where plan nodes are ordered by the
+    /// traversal order in `datafusion::physical_plan::{ExecutionPlanVisitor}`. Note that the plan
+    /// corresponds to the `ExecutionStage` in the `stage_key`, which is not necessarily the
+    /// containing `ExecutionStage`.
+    #[prost(message, repeated, tag="2")]
+    pub metrics: Vec<ProtoMetricsSet>,
 }
 
 pub fn proto_from_stage(
@@ -55,6 +106,7 @@ pub fn proto_from_stage(
         plan: Some(Box::new(proto_plan)),
         inputs,
         tasks: stage.tasks.clone(),
+        task_metrics: Default::default(),
     })
 }
 
@@ -90,6 +142,7 @@ pub fn stage_from_proto(
         inputs,
         tasks: msg.tasks,
         depth: 0,
+        task_metrics: Default::default(),
     })
 }
 
@@ -157,6 +210,7 @@ mod tests {
             inputs: vec![],
             tasks: vec![],
             depth: 0,
+            task_metrics: Default::default(),
         };
 
         // Convert to proto message

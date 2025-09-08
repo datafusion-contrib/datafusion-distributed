@@ -1,4 +1,4 @@
-use super::service::StageKey;
+use crate::stage::StageKey;
 use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
@@ -37,6 +37,7 @@ pub struct DoGet {
     /// if we already have stored it
     #[prost(message, optional, tag = "4")]
     pub stage_key: Option<StageKey>,
+
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +216,7 @@ mod tests {
             ))),
             inputs: vec![],
             tasks,
+            task_metrics: Default::default(),
         };
 
         let task_keys = vec![

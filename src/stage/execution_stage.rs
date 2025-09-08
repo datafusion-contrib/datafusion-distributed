@@ -3,6 +3,7 @@ use std::sync::Arc;
 use datafusion::common::{exec_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
@@ -13,6 +14,8 @@ use itertools::Itertools;
 use rand::Rng;
 use url::Url;
 use uuid::Uuid;
+use crate::stage::StageKey;
+use std::collections::HashMap;
 
 /// A unit of isolation for a portion of a physical execution plan
 /// that can be executed independently and across a network boundary.  
@@ -88,6 +91,11 @@ pub struct ExecutionStage {
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
+    /// task_metrics stores the metrics for each ExecutionPlan for each task in the
+    /// plan (including tasks in child `ExecutionStage`s). These metrics are populated after the
+    /// `ExecutionStage` is `execute()`ed.  
+    /// TODO: Should we store these in serialized form?
+    pub task_metrics: HashMap<StageKey, Vec<MetricsSet>>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
 }
@@ -116,6 +124,7 @@ impl ExecutionStage {
                 .collect(),
             tasks: vec![ExecutionTask::new(partition_group)],
             depth: 0,
+            task_metrics: Default::default(),
         }
     }
 
@@ -139,6 +148,8 @@ impl ExecutionStage {
                 )
             })
             .collect();
+        // TODO: set the right thing here.
+        self.task_metrics = Default::default();
         self
     }
 
@@ -205,6 +216,8 @@ impl ExecutionStage {
             })
             .collect::<Vec<_>>();
 
+        let num_tasks = assigned_tasks.len();
+
         let assigned_stage = ExecutionStage {
             query_id: self.query_id,
             num: self.num,
@@ -213,6 +226,7 @@ impl ExecutionStage {
             inputs: assigned_children,
             tasks: assigned_tasks,
             depth: self.depth,
+            task_metrics: Default::default(),
         };
 
         Ok(assigned_stage)
@@ -244,11 +258,27 @@ impl ExecutionPlan for ExecutionStage {
             inputs: children,
             tasks: self.tasks.clone(),
             depth: self.depth,
+            task_metrics: Default::default(),
         }))
     }
 
     fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
         self.plan.properties()
+    }
+
+/// Return a snapshot of the set of [`Metric`]s for this
+    /// [`ExecutionPlan`]. If no `Metric`s are available, return None.
+    ///
+    /// While the values of the metrics in the returned
+    /// [`MetricsSet`]s may change as execution progresses, the
+    /// specific metrics will not.
+    ///
+    /// Once `self.execute()` has returned (technically the future is
+    /// resolved) for all available partitions, the set of metrics
+    /// should be complete. If this function is called prior to
+    /// `execute()` new metrics may appear in subsequent calls.
+    fn metrics(&self) -> Option<MetricsSet> {
+        None
     }
 
     fn execute(
