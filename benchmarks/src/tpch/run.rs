@@ -186,7 +186,10 @@ impl RunOpt {
 
         self.output_path
             .get_or_insert(self.get_path()?.join("results.json"));
-        let mut benchmark_run = BenchmarkRun::new();
+        let mut benchmark_run = BenchmarkRun::new(
+            self.workers.len(),
+            self.threads.unwrap_or(get_available_parallelism()),
+        );
 
         // Warmup the cache for the in-memory mode.
         if self.mem_table {

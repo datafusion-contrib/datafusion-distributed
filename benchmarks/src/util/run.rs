@@ -17,13 +17,9 @@
 
 use chrono::{DateTime, Utc};
 use datafusion::common::utils::get_available_parallelism;
-use datafusion::error::DataFusionError;
 use datafusion::{error::Result, DATAFUSION_VERSION};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
-use std::error::Error;
 use std::{
-    collections::HashMap,
     path::Path,
     time::{Duration, SystemTime},
 };
@@ -69,6 +65,10 @@ pub struct RunContext {
     pub datafusion_version: String,
     /// Number of CPU cores
     pub num_cpus: usize,
+    /// Number of workers involved in a distributed query
+    pub workers: usize,
+    /// Number of physical threads used per worker
+    pub threads: usize,
     /// Start time
     #[serde(
         serialize_with = "serialize_start_time",
@@ -79,18 +79,14 @@ pub struct RunContext {
     pub arguments: Vec<String>,
 }
 
-impl Default for RunContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RunContext {
-    pub fn new() -> Self {
+    pub fn new(workers: usize, threads: usize) -> Self {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
             num_cpus: get_available_parallelism(),
+            workers,
+            threads,
             start_time: SystemTime::now(),
             arguments: std::env::args().skip(1).collect::<Vec<String>>(),
         }
@@ -125,23 +121,18 @@ pub struct QueryResult {
     pub row_count: usize,
 }
 /// collects benchmark run data and then serializes it at the end
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BenchmarkRun {
     context: RunContext,
     queries: Vec<BenchQuery>,
     current_case: Option<usize>,
 }
 
-impl Default for BenchmarkRun {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BenchmarkRun {
     // create new
-    pub fn new() -> Self {
+    pub fn new(workers: usize, threads: usize) -> Self {
         Self {
-            context: RunContext::new(),
+            context: RunContext::new(workers, threads),
             queries: vec![],
             current_case: None,
         }
@@ -195,10 +186,7 @@ impl BenchmarkRun {
 
     /// Stringify data into formatted json
     pub fn to_json(&self) -> String {
-        let mut output = HashMap::<&str, Value>::new();
-        output.insert("context", serde_json::to_value(&self.context).unwrap());
-        output.insert("queries", serde_json::to_value(&self.queries).unwrap());
-        serde_json::to_string_pretty(&output).unwrap()
+        serde_json::to_string_pretty(&self).unwrap()
     }
 
     /// Write data as json into output path if it exists.
@@ -217,15 +205,14 @@ impl BenchmarkRun {
             return Ok(());
         };
 
-        let mut prev_output: HashMap<&str, Value> =
-            serde_json::from_slice(&prev).map_err(external)?;
-
-        let prev_queries: Vec<BenchQuery> =
-            serde_json::from_value(prev_output.remove("queries").unwrap()).map_err(external)?;
+        let Ok(prev_output) = serde_json::from_slice::<Self>(&prev) else {
+            return Ok(());
+        };
 
         let mut header_printed = false;
         for query in self.queries.iter() {
-            let Some(prev_query) = prev_queries.iter().find(|v| v.query == query.query) else {
+            let Some(prev_query) = prev_output.queries.iter().find(|v| v.query == query.query)
+            else {
                 continue;
             };
             if prev_query.iterations.is_empty() {
@@ -248,10 +235,24 @@ impl BenchmarkRun {
             if !header_printed {
                 header_printed = true;
                 let datetime: DateTime<Utc> = prev_query.start_time.into();
-                println!(
+                let header = format!(
                     "==== Comparison with the previous benchmark from {} ====",
                     datetime.format("%Y-%m-%d %H:%M:%S UTC")
                 );
+                println!("{header}");
+                // Print machine information
+                println!("os:        {}", std::env::consts::OS);
+                println!("arch:      {}", std::env::consts::ARCH);
+                println!("cpu cores: {}", get_available_parallelism());
+                println!(
+                    "threads:   {} -> {}",
+                    prev_output.context.threads, self.context.threads
+                );
+                println!(
+                    "workers:   {} -> {}",
+                    prev_output.context.workers, self.context.workers
+                );
+                println!("{}", "=".repeat(header.len()))
             }
             println!(
                 "{:>8}: prev={avg_prev:>4} ms, new={avg:>4} ms, diff={f:.2} {tag} {emoji}",
@@ -271,8 +272,4 @@ impl BenchQuery {
             .sum::<u128>()
             / self.iterations.len() as u128
     }
-}
-
-fn external(err: impl Error + Send + Sync + 'static) -> DataFusionError {
-    DataFusionError::External(Box::new(err))
 }
