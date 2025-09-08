@@ -6,6 +6,7 @@ use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::DoGet;
 use crate::stage::StageKey;
 use crate::plan::DistributedCodec;
+use crate::plan::new_metrics_collecting_stream;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use crate::user_codec_ext::get_distributed_user_codec;
 use crate::ChannelResolver;
@@ -31,7 +32,6 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 use url::Url;
-use std::collections::HashMap;
 use datafusion::physical_plan::metrics::MetricsSet;
 
 /// This node has two variants.
@@ -294,7 +294,11 @@ async fn stream_from_stage_task(
         .into_inner()
         .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-    let stream = FlightRecordBatchStream::new_from_flight_data(stream).map_err(|err| match err {
+    // Wrap the FlightData stream with metrics collection
+    let (metrics_collecting_stream, _metrics_handle) = new_metrics_collecting_stream(stream);
+    
+    // Then create the RecordBatch stream from the metrics-collecting FlightData stream
+    let record_batch_stream = FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream).map_err(|err| match err {
         FlightError::Tonic(status) => tonic_status_to_datafusion_error(&status)
             .unwrap_or_else(|| DataFusionError::External(Box::new(status))),
         err => DataFusionError::External(Box::new(err)),
@@ -302,6 +306,6 @@ async fn stream_from_stage_task(
 
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         schema.clone(),
-        stream,
+        record_batch_stream,
     )))
 }

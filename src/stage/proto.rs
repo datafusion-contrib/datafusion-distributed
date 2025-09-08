@@ -72,6 +72,14 @@ pub struct ExecutionStageProto {
     pub task_metrics: Vec<TaskMetrics>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskMetricsSet {
+    /// Our tasks which tell us how finely grained to execute the partitions in
+    /// the plan
+    #[prost(message, repeated, tag = "1")]
+    pub tasks: Vec<TaskMetrics>,
+}
+
 /// TaskMetrics represents the metrics for a single task. It contains a list of metrics for
 /// all plan nodes in the task.
 #[derive(Clone, PartialEq, ::prost::Message)]
