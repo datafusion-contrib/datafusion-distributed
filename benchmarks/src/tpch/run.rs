@@ -397,8 +397,12 @@ impl RunOpt {
     }
 
     fn partitions(&self) -> usize {
-        self.common
-            .partitions
-            .unwrap_or_else(get_available_parallelism)
+        if let Some(partitions) = self.common.partitions {
+            return partitions;
+        }
+        if let Some(threads) = self.threads {
+            return threads;
+        }
+        get_available_parallelism()
     }
 }
