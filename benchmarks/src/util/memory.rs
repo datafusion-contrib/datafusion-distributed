@@ -30,7 +30,7 @@ pub struct InMemoryCacheExec {
 }
 
 extensions_options! {
-    /// Marker used by the [InMemoryCacheExec] that determines wether its fine
+    /// Marker used by the [InMemoryCacheExec] that determines whether it's fine
     /// to load data from disk because we are warming up, or not.
     ///
     /// If this marker is not present during InMemoryCacheExec::execute(), and
