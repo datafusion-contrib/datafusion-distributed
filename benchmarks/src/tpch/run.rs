@@ -34,17 +34,21 @@ use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::datasource::{MemTable, TableProvider};
+use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 
-use crate::util::{print_memory_stats, BenchmarkRun, CommonOpt, QueryResult};
+use crate::util::{
+    BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryResult,
+    WarmingUpMarker,
+};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
 use datafusion_distributed::{
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
+    DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
+    DistributedSessionBuilderContext,
 };
 use log::info;
 use structopt::StructOpt;
@@ -115,7 +119,7 @@ pub struct RunOpt {
 impl DistributedSessionBuilder for RunOpt {
     async fn build_session_state(
         &self,
-        _ctx: DistributedSessionBuilderContext,
+        ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
         let mut builder = SessionStateBuilder::new().with_default_features();
 
@@ -123,10 +127,15 @@ impl DistributedSessionBuilder for RunOpt {
             .common
             .config()?
             .with_collect_statistics(!self.disable_statistics)
+            .with_distributed_user_codec(InMemoryCacheExecCodec)
+            .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
             .with_target_partitions(self.partitions());
 
         let rt_builder = self.common.runtime_env_builder()?;
 
+        if self.mem_table {
+            builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
+        }
         if self.distributed {
             let mut rule = DistributedPhysicalOptimizerRule::new();
             if let Some(partitions_per_task) = self.partitions_per_task {
@@ -191,8 +200,18 @@ impl RunOpt {
 
         let sql = &get_query_sql(query_id)?;
 
-        let single_node_ctx = SessionContext::new();
-        self.register_tables(&single_node_ctx).await?;
+        // Warmup the cache for the in-memory mode.
+        if self.mem_table {
+            // put the WarmingUpMarker in the context, otherwise, queries will fail as the
+            // InMemoryCacheExec node will think they should already be warmed up.
+            let ctx = ctx
+                .clone()
+                .with_distributed_option_extension(WarmingUpMarker::warming_up())?;
+            for query in sql.iter() {
+                self.execute_query(&ctx, query).await?;
+            }
+            println!("Query {query_id} data loaded in memory");
+        }
 
         for i in 0..self.iterations() {
             let start = Instant::now();
@@ -225,30 +244,12 @@ impl RunOpt {
         let avg = millis.iter().sum::<f64>() / millis.len() as f64;
         println!("Query {query_id} avg time: {avg:.2} ms");
 
-        // Print memory stats using mimalloc (only when compiled with --features mimalloc_extended)
-        print_memory_stats();
-
         Ok(query_results)
     }
 
     async fn register_tables(&self, ctx: &SessionContext) -> Result<()> {
         for table in TPCH_TABLES {
-            let table_provider = { self.get_table(ctx, table).await? };
-
-            if self.mem_table {
-                println!("Loading table '{table}' into memory");
-                let start = Instant::now();
-                let memtable =
-                    MemTable::load(table_provider, Some(self.partitions()), &ctx.state()).await?;
-                println!(
-                    "Loaded table '{}' into memory in {} ms",
-                    table,
-                    start.elapsed().as_millis()
-                );
-                ctx.register_table(*table, Arc::new(memtable))?;
-            } else {
-                ctx.register_table(*table, table_provider)?;
-            }
+            ctx.register_table(*table, self.get_table(ctx, table).await?)?;
         }
         Ok(())
     }
