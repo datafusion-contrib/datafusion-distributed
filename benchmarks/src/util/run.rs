@@ -95,13 +95,14 @@ impl RunContext {
 
 /// A single iteration of a benchmark query
 #[derive(Debug, Serialize, Deserialize)]
-struct QueryIter {
+pub struct QueryIter {
     #[serde(
         serialize_with = "serialize_elapsed",
         deserialize_with = "deserialize_elapsed"
     )]
-    elapsed: Duration,
-    row_count: usize,
+    pub elapsed: Duration,
+    pub row_count: usize,
+    pub n_tasks: usize,
 }
 /// A single benchmark case
 #[derive(Debug, Serialize, Deserialize)]
@@ -115,11 +116,7 @@ pub struct BenchQuery {
     start_time: SystemTime,
     success: bool,
 }
-/// Internal representation of a single benchmark query iteration result.
-pub struct QueryResult {
-    pub elapsed: Duration,
-    pub row_count: usize,
-}
+
 /// collects benchmark run data and then serializes it at the end
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BenchmarkRun {
@@ -152,11 +149,9 @@ impl BenchmarkRun {
         }
     }
     /// Write a new iteration to the current case
-    pub fn write_iter(&mut self, elapsed: Duration, row_count: usize) {
+    pub fn write_iter(&mut self, query_iter: QueryIter) {
         if let Some(idx) = self.current_case {
-            self.queries[idx]
-                .iterations
-                .push(QueryIter { elapsed, row_count })
+            self.queries[idx].iterations.push(query_iter)
         } else {
             panic!("no cases existed yet");
         }

@@ -20,13 +20,14 @@ use super::{
     TPCH_QUERY_START_ID, TPCH_TABLES,
 };
 use crate::util::{
-    BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryResult,
+    BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryIter,
     WarmingUpMarker,
 };
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::{self, pretty_format_batches};
 use datafusion::common::instant::Instant;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{exec_err, DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::file_format::csv::CsvFormat;
@@ -46,7 +47,7 @@ use datafusion_distributed::test_utils::localhost::{
 };
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
-    DistributedSessionBuilderContext,
+    DistributedSessionBuilderContext, StageExec,
 };
 use log::info;
 use std::fs;
@@ -212,7 +213,7 @@ impl RunOpt {
             match query_run {
                 Ok(query_results) => {
                     for iter in query_results {
-                        benchmark_run.write_iter(iter.elapsed, iter.row_count);
+                        benchmark_run.write_iter(iter);
                     }
                 }
                 Err(e) => {
@@ -231,13 +232,14 @@ impl RunOpt {
         &self,
         query_id: usize,
         ctx: &SessionContext,
-    ) -> Result<Vec<QueryResult>> {
+    ) -> Result<Vec<QueryIter>> {
         let mut millis = vec![];
         // run benchmark
         let mut query_results = vec![];
 
         let sql = &get_query_sql(query_id)?;
 
+        let mut n_tasks = 0;
         for i in 0..self.iterations() {
             let start = Instant::now();
             let mut result = vec![];
@@ -248,7 +250,7 @@ impl RunOpt {
 
             for (i, query) in sql.iter().enumerate() {
                 if i == result_stmt {
-                    result = self.execute_query(ctx, query).await?;
+                    (result, n_tasks) = self.execute_query(ctx, query).await?;
                 } else {
                     self.execute_query(ctx, query).await?;
                 }
@@ -263,11 +265,18 @@ impl RunOpt {
                 "Query {query_id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
             );
 
-            query_results.push(QueryResult { elapsed, row_count });
+            query_results.push(QueryIter {
+                elapsed,
+                row_count,
+                n_tasks,
+            });
         }
 
         let avg = millis.iter().sum::<f64>() / millis.len() as f64;
         println!("Query {query_id} avg time: {avg:.2} ms");
+        if n_tasks > 0 {
+            println!("Query {query_id} number of tasks: {n_tasks}");
+        }
 
         Ok(query_results)
     }
@@ -279,7 +288,11 @@ impl RunOpt {
         Ok(())
     }
 
-    async fn execute_query(&self, ctx: &SessionContext, sql: &str) -> Result<Vec<RecordBatch>> {
+    async fn execute_query(
+        &self,
+        ctx: &SessionContext,
+        sql: &str,
+    ) -> Result<(Vec<RecordBatch>, usize)> {
         let debug = self.common.debug;
         let plan = ctx.sql(sql).await?;
         let (state, plan) = plan.into_parts();
@@ -299,6 +312,13 @@ impl RunOpt {
                 displayable(physical_plan.as_ref()).indent(true)
             );
         }
+        let mut n_tasks = 0;
+        physical_plan.clone().transform_down(|node| {
+            if let Some(node) = node.as_any().downcast_ref::<StageExec>() {
+                n_tasks += node.tasks.len()
+            }
+            Ok(Transformed::no(node))
+        })?;
         let result = collect(physical_plan.clone(), state.task_ctx()).await?;
         if debug {
             println!(
@@ -311,7 +331,7 @@ impl RunOpt {
                 pretty::print_batches(&result)?;
             }
         }
-        Ok(result)
+        Ok((result, n_tasks))
     }
 
     fn get_path(&self) -> Result<PathBuf> {
