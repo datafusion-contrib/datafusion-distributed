@@ -2,14 +2,13 @@
 
 set -e
 
-THREADS=${THREADS:-2}
 WORKERS=${WORKERS:-8}
 
 # https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 if [ "$WORKERS" == "0" ]; then
-  cargo run -p datafusion-distributed-benchmarks --release -- tpch -m --threads "$THREADS"
+  cargo run -p datafusion-distributed-benchmarks --release -- tpch "$@"
   exit
 fi
 
@@ -39,7 +38,7 @@ cargo build -p datafusion-distributed-benchmarks --release
 
 trap cleanup EXIT INT TERM
 for i in $(seq 0 $((WORKERS-1))); do
-  "$SCRIPT_DIR"/../target/release/dfbench tpch -m --threads "$THREADS" --spawn $((8000+i)) &
+  "$SCRIPT_DIR"/../target/release/dfbench tpch --spawn $((8000+i)) "$@" &
 done
 
 echo "Waiting for worker ports to be ready..."
@@ -47,4 +46,4 @@ for i in $(seq 0 $((WORKERS-1))); do
   wait_for_port $((8000+i))
 done
 
-"$SCRIPT_DIR"/../target/release/dfbench tpch -m --threads "$THREADS" --workers $(seq -s, 8000 $((8000+WORKERS-1)))
+"$SCRIPT_DIR"/../target/release/dfbench tpch --workers $(seq -s, 8000 $((8000+WORKERS-1))) "$@"

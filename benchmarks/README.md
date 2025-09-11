@@ -77,5 +77,5 @@ cargo run -p datafusion-distributed-benchmarks --release -- tpch -m --threads 2 
 The `run.sh` script already does this for you in a more ergonomic way:
 
 ```shell
-WORKERS=8 THREADS=2 ./run.sh
+WORKERS=8 run.sh --threads 2 -m
 ```
