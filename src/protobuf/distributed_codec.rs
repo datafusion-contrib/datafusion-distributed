@@ -1,7 +1,10 @@
-use crate::plan::arrow_flight_read::ArrowFlightReadExec;
+use super::get_distributed_user_codec;
+use crate::common::ComposedPhysicalExtensionCodec;
+use crate::{ArrowFlightReadExec, PartitionIsolatorExec};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -10,12 +13,21 @@ use datafusion_proto::protobuf::proto_error;
 use prost::Message;
 use std::sync::Arc;
 
-use super::PartitionIsolatorExec;
-
 /// DataFusion [PhysicalExtensionCodec] implementation that allows serializing and
 /// deserializing the custom ExecutionPlans in this project
 #[derive(Debug)]
 pub struct DistributedCodec;
+
+impl DistributedCodec {
+    pub fn new_combined_with_user(cfg: &SessionConfig) -> impl PhysicalExtensionCodec {
+        let mut combined_codec = ComposedPhysicalExtensionCodec::default();
+        combined_codec.push(DistributedCodec {});
+        if let Some(ref user_codec) = get_distributed_user_codec(cfg) {
+            combined_codec.push_arc(Arc::clone(user_codec));
+        }
+        combined_codec
+    }
+}
 
 impl PhysicalExtensionCodec for DistributedCodec {
     fn try_decode(

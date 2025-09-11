@@ -1,12 +1,10 @@
-use super::combined::CombinedRecordBatchStream;
-use crate::channel_manager::ChannelManager;
-use crate::composed_extension_codec::ComposedPhysicalExtensionCodec;
+use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::errors::tonic_status_to_datafusion_error;
+use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use crate::execution_plans::StageExec;
 use crate::flight_service::{DoGet, StageKey};
-use crate::plan::DistributedCodec;
-use crate::stage::{proto_from_stage, ExecutionStage};
-use crate::user_provided_codec::get_user_codec;
+use crate::protobuf::{proto_from_stage, DistributedCodec};
+use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -18,8 +16,10 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{future, TryFutureExt, TryStreamExt};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
@@ -27,7 +27,6 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
-use url::Url;
 
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -60,11 +59,11 @@ pub struct ArrowFlightReadReadyExec {
 }
 
 impl ArrowFlightReadExec {
-    pub fn new_pending(child: Arc<dyn ExecutionPlan>, partitioning: Partitioning) -> Self {
+    pub fn new_pending(child: Arc<dyn ExecutionPlan>) -> Self {
         Self::Pending(ArrowFlightReadPendingExec {
             properties: PlanProperties::new(
                 EquivalenceProperties::new(child.schema()),
-                partitioning,
+                child.output_partitioning().clone(),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             ),
@@ -103,12 +102,7 @@ impl ArrowFlightReadExec {
 
 impl DisplayAs for ArrowFlightReadExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        match self {
-            ArrowFlightReadExec::Pending(_) => write!(f, "ArrowFlightReadExec"),
-            ArrowFlightReadExec::Ready(v) => {
-                write!(f, "ArrowFlightReadExec: Stage {:<3}", v.stage_num)
-            }
-        }
+        write!(f, "ArrowFlightReadExec")
     }
 }
 
@@ -153,16 +147,17 @@ impl ExecutionPlan for ArrowFlightReadExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let ArrowFlightReadExec::Ready(this) = self else {
+        let ArrowFlightReadExec::Ready(self_ready) = self else {
             return exec_err!("ArrowFlightReadExec is not ready, was the distributed optimization step performed?");
         };
 
         // get the channel manager and current stage from our context
-        let channel_manager: ChannelManager = context.as_ref().try_into()?;
+        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
+        // the `ArrowFlightReadExec` node can only be executed in the context of a `StageExec`
         let stage = context
             .session_config()
-            .get_extension::<ExecutionStage>()
+            .get_extension::<StageExec>()
             .ok_or(internal_datafusion_err!(
                 "ArrowFlightReadExec requires an ExecutionStage in the session config"
             ))?;
@@ -171,125 +166,76 @@ impl ExecutionPlan for ArrowFlightReadExec {
         // reading from
         let child_stage = stage
             .child_stages_iter()
-            .find(|s| s.num == this.stage_num)
+            .find(|s| s.num == self_ready.stage_num)
             .ok_or(internal_datafusion_err!(
                 "ArrowFlightReadExec: no child stage with num {}",
-                this.stage_num
+                self_ready.stage_num
             ))?;
 
         let flight_metadata = context
             .session_config()
             .get_extension::<ContextGrpcMetadata>();
 
-        let mut combined_codec = ComposedPhysicalExtensionCodec::default();
-        combined_codec.push(DistributedCodec {});
-        if let Some(ref user_codec) = get_user_codec(context.session_config()) {
-            combined_codec.push_arc(Arc::clone(user_codec));
-        }
+        let codec = DistributedCodec::new_combined_with_user(context.session_config());
 
-        let child_stage_proto = proto_from_stage(child_stage, &combined_codec).map_err(|e| {
+        let child_stage_proto = proto_from_stage(child_stage, &codec).map_err(|e| {
             internal_datafusion_err!("ArrowFlightReadExec: failed to convert stage to proto: {e}")
         })?;
-
-        let schema = child_stage.plan.schema();
 
         let child_stage_tasks = child_stage.tasks.clone();
         let child_stage_num = child_stage.num as u64;
         let query_id = stage.query_id.to_string();
 
-        let stream = async move {
-            let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
-                let child_stage_proto_capture = child_stage_proto.clone();
-                let channel_manager_capture = channel_manager.clone();
-                let schema = schema.clone();
-                let query_id = query_id.clone();
-                let flight_metadata = flight_metadata
-                    .as_ref()
-                    .map(|v| v.as_ref().clone())
-                    .unwrap_or_default();
-                let key = StageKey {
-                    query_id,
-                    stage_id: child_stage_num,
-                    task_number: i as u64,
-                };
-                async move {
-                    let url = task.url()?.ok_or(internal_datafusion_err!(
-                        "ArrowFlightReadExec: task is unassigned, cannot proceed"
-                    ))?;
+        let context_headers = flight_metadata
+            .as_ref()
+            .map(|v| v.as_ref().clone())
+            .unwrap_or_default();
 
-                    let ticket_bytes = DoGet {
-                        stage_proto: Some(child_stage_proto_capture),
+        let stream = child_stage_tasks.into_iter().enumerate().map(|(i, task)| {
+            let channel_resolver = Arc::clone(&channel_resolver);
+
+            let ticket = Request::from_parts(
+                MetadataMap::from_headers(context_headers.0.clone()),
+                Extensions::default(),
+                Ticket {
+                    ticket: DoGet {
+                        stage_proto: Some(child_stage_proto.clone()),
                         partition: partition as u64,
-                        stage_key: Some(key),
+                        stage_key: Some(StageKey {
+                            query_id: query_id.clone(),
+                            stage_id: child_stage_num,
+                            task_number: i as u64,
+                        }),
                         task_number: i as u64,
                     }
                     .encode_to_vec()
-                    .into();
+                    .into(),
+                },
+            );
 
-                    let ticket = Ticket {
-                        ticket: ticket_bytes,
-                    };
+            async move {
+                let url = task.url.ok_or(internal_datafusion_err!(
+                    "ArrowFlightReadExec: task is unassigned, cannot proceed"
+                ))?;
 
-                    stream_from_stage_task(
-                        ticket,
-                        flight_metadata,
-                        &url,
-                        schema.clone(),
-                        &channel_manager_capture,
-                    )
+                let channel = channel_resolver.get_channel_for_url(&url).await?;
+                let stream = FlightServiceClient::new(channel)
+                    .do_get(ticket)
                     .await
-                }
-            });
+                    .map_err(map_status_to_datafusion_error)?
+                    .into_inner()
+                    .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-            let streams = future::try_join_all(futs).await?;
-
-            let combined_stream = CombinedRecordBatchStream::try_new(schema, streams)?;
-
-            Ok(combined_stream)
-        }
-        .try_flatten_stream();
+                Ok(FlightRecordBatchStream::new_from_flight_data(stream)
+                    .map_err(map_flight_to_datafusion_error))
+            }
+            .try_flatten_stream()
+            .boxed()
+        });
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            stream,
+            futures::stream::select_all(stream),
         )))
     }
-}
-
-async fn stream_from_stage_task(
-    ticket: Ticket,
-    metadata: ContextGrpcMetadata,
-    url: &Url,
-    schema: SchemaRef,
-    channel_manager: &ChannelManager,
-) -> Result<SendableRecordBatchStream, DataFusionError> {
-    let channel = channel_manager.get_channel_for_url(url).await?;
-
-    let ticket = Request::from_parts(
-        MetadataMap::from_headers(metadata.0),
-        Extensions::default(),
-        ticket,
-    );
-
-    let mut client = FlightServiceClient::new(channel);
-    let stream = client
-        .do_get(ticket)
-        .await
-        .map_err(|err| {
-            tonic_status_to_datafusion_error(&err)
-                .unwrap_or_else(|| DataFusionError::External(Box::new(err)))
-        })?
-        .into_inner()
-        .map_err(|err| FlightError::Tonic(Box::new(err)));
-
-    let stream = FlightRecordBatchStream::new_from_flight_data(stream).map_err(|err| match err {
-        FlightError::Tonic(status) => tonic_status_to_datafusion_error(&status)
-            .unwrap_or_else(|| DataFusionError::External(Box::new(status))),
-        err => DataFusionError::External(Box::new(err)),
-    });
-
-    Ok(Box::pin(RecordBatchStreamAdapter::new(
-        schema.clone(),
-        stream,
-    )))
 }

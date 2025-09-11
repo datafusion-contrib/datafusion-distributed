@@ -16,12 +16,5 @@ pub async fn register_parquet_tables(ctx: &SessionContext) -> Result<(), DataFus
     )
     .await?;
 
-    ctx.register_parquet(
-        "baz",
-        "testdata/baz/*.parquet",
-        ParquetReadOptions::default(),
-    )
-    .await?;
-
     Ok(())
 }

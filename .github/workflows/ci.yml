@@ -33,6 +33,13 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
 
+  tpch-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test --features tpch --test tpch_validation_test
+
   format-check:
     runs-on: ubuntu-latest
     steps:
