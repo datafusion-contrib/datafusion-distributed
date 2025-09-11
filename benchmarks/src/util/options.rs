@@ -37,6 +37,7 @@ pub struct CommonOpt {
     pub iterations: usize,
 
     /// Number of partitions to process in parallel. Defaults to number of available cores.
+    /// Should typically be less or equal than --threads.
     #[structopt(short = "n", long = "partitions")]
     pub partitions: Option<usize>,
 
