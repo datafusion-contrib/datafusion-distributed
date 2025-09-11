@@ -1124,6 +1124,7 @@ dependencies = [
  "delegate",
  "futures",
  "http",
+ "hyper-util",
  "insta",
  "itertools",
  "object_store",
