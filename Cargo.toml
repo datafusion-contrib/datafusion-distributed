@@ -36,6 +36,7 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d82
 parquet = { version = "55.2.0", optional = true }
 arrow = { version = "55.2.0", optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
+hyper-util = { version = "0.1.16", optional = true }
 
 [features]
 integration = [
@@ -45,6 +46,7 @@ integration = [
     "parquet",
     "arrow",
     "tokio-stream",
+    "hyper-util"
 ]
 tpch = ["integration"]
 
@@ -56,3 +58,4 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "c8d82
 parquet = "55.2.0"
 arrow = "55.2.0"
 tokio-stream = "0.1.17"
+hyper-util = "0.1.16"
