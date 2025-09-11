@@ -24,23 +24,13 @@ static CACHE: LazyLock<DashMap<Key, Value>> = LazyLock::new(DashMap::default);
 
 /// Caches all the record batches in a global [CACHE] on the first run, and serves
 /// them from the cache in any subsequent run.
-/// The order of events looks like this:
-///   1. A first query is run.
-///   2. Data is not cached, so it is gathered from the underlying node.
-///   3. The cache is populated with the recently gathered data.
-///   4. A second query is run.
-///   5. The cache is hit, and data is returned from there.
-///
-/// The cache key includes the result of "explaining" the underlying node, so different
-/// nodes applying different filters under the same parquet files will be cached
-/// independently.
 #[derive(Debug, Clone)]
 pub struct InMemoryCacheExec {
     inner: Arc<dyn ExecutionPlan>,
 }
 
 extensions_options! {
-    /// Marker used by the [InMemoryCacheExec] that determines whether it's fine
+    /// Marker used by the [InMemoryCacheExec] that determines wether its fine
     /// to load data from disk because we are warming up, or not.
     ///
     /// If this marker is not present during InMemoryCacheExec::execute(), and

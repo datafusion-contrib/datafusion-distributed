@@ -30,12 +30,14 @@ enum Options {
 }
 
 // Main benchmark runner entrypoint
-#[tokio::main]
-pub async fn main() -> Result<()> {
+pub fn main() -> Result<()> {
     env_logger::init();
 
     match Options::from_args() {
-        Options::Tpch(opt) => Box::pin(opt.run()).await,
-        Options::TpchConvert(opt) => opt.run().await,
+        Options::Tpch(opt) => opt.run(),
+        Options::TpchConvert(opt) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async { opt.run().await })
+        }
     }
 }
