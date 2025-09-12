@@ -501,19 +501,23 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
     // we need to label the nodes including depth to uniquely identify them within this task
     // the tree node API provides depth first traversal, but we need breadth to align with
     // how we will draw edges below, so we'll do that.
-    let mut queue = VecDeque::from([(&stage.plan, 0, 0)]);
-    while let Some((plan, depth, index)) = queue.pop_front() {
-        let p = display_single_plan(plan.as_ref(), stage.num, partition_group, depth, index)?;
+    let mut queue = VecDeque::from([&stage.plan]);
+    let mut index = 0;
+    while let Some(plan) = queue.pop_front() {
+        index += 1;
+        let p = display_single_plan(plan.as_ref(), stage.num, partition_group, index)?;
         writeln!(f, "{}", p)?;
-        for (i, child) in plan.children().iter().enumerate() {
-            queue.push_back((child, depth + 1, i));
+        for child in plan.children().iter() {
+            queue.push_back(child);
         }
     }
 
     // draw edges between the plan nodes
-    queue = VecDeque::from([(&stage.plan, 0, 0)]);
+    queue = VecDeque::from([&stage.plan]);
     let mut found_isolator = false;
-    while let Some((plan, depth, index)) = queue.pop_front() {
+    index = 0;
+    while let Some(plan) = queue.pop_front() {
+        index += 1;
         if plan
             .as_any()
             .downcast_ref::<PartitionIsolatorExec>()
@@ -538,24 +542,22 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
 
                 writeln!(
                     f,
-                    "  {}_{}_{}_{}_{}:t{}:n -> {}_{}_{}_{}_{}:b{}:s {}[color={}]",
+                    "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {}[color={}]",
                     child.name(),
                     stage.num,
                     node_format_pg(partition_group),
-                    depth + 1,
                     child_index,
                     i,
                     plan.name(),
                     stage.num,
                     node_format_pg(partition_group),
-                    depth,
                     index,
                     i,
                     style,
                     i % NUM_COLORS + 1
                 )?;
             }
-            queue.push_back((child, depth + 1, child_index));
+            queue.push_back(child);
         }
     }
 
@@ -612,7 +614,6 @@ pub fn display_single_plan(
     plan: &dyn ExecutionPlan,
     stage_num: usize,
     partition_group: &[usize],
-    depth: usize,
     index: usize,
 ) -> Result<String> {
     let mut f = String::new();
@@ -632,7 +633,7 @@ pub fn display_single_plan(
     writeln!(
         f,
         "
-    {}_{}_{}_{}_{} [label=<
+    {}_{}_{}_{} [label=<
     <TABLE BORDER='0' CELLBORDER='0' CELLSPACING='0' CELLPADDING='0'>
         <TR>
             <TD CELLBORDER='0'>
@@ -641,7 +642,6 @@ pub fn display_single_plan(
         plan.name(),
         stage_num,
         node_format_pg(partition_group),
-        depth,
         index
     )?;
 
@@ -697,8 +697,10 @@ fn display_inter_task_edges(
     let mut f = String::new();
 
     let mut found_isolator = false;
-    let mut queue = VecDeque::from([(&stage.plan, 0, 0)]);
-    while let Some((plan, depth, index)) = queue.pop_front() {
+    let mut queue = VecDeque::from([&stage.plan]);
+    let mut index = 0;
+    while let Some(plan) = queue.pop_front() {
+        index += 1;
         if plan
             .as_any()
             .downcast_ref::<PartitionIsolatorExec>()
@@ -720,7 +722,7 @@ fn display_inter_task_edges(
 
                 writeln!(
                     f,
-                    "  {}_{}_{}_{}_0:t{}:n -> {}_{}_{}_{}_{}:b{}:s {} [color={}]",
+                    "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {} [color={}]",
                     child_stage.plan.name(),
                     child_stage.num,
                     node_format_pg(&child_task.partition_group),
@@ -729,7 +731,6 @@ fn display_inter_task_edges(
                     plan.name(),
                     stage.num,
                     node_format_pg(&task.partition_group),
-                    depth,
                     index,
                     p,
                     style,
@@ -737,8 +738,8 @@ fn display_inter_task_edges(
                 )?;
             }
         }
-        for (child_index, child) in plan.children().iter().enumerate() {
-            queue.push_back((child, depth + 1, child_index));
+        for child in plan.children().iter() {
+            queue.push_back(child);
         }
     }
 
