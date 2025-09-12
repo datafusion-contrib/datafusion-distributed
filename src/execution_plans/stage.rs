@@ -450,7 +450,15 @@ pub fn display_stage_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             for task in stage.tasks.iter() {
                 for child_task in child_stage.tasks.iter() {
                     let edges = display_inter_task_edges(stage, task, child_stage, child_task)?;
-                    writeln!(f, "{}", edges)?;
+                    writeln!(
+                        f,
+                        "// edges from child stage {} task {} to stage {} task {}\n {}",
+                        child_stage.num,
+                        format_pg(&child_task.partition_group),
+                        stage.num,
+                        format_pg(&task.partition_group),
+                        edges
+                    )?;
                 }
             }
         }
