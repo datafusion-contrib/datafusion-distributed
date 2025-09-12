@@ -22,4 +22,4 @@ mod run;
 
 pub use memory::{InMemoryCacheExecCodec, InMemoryDataSourceRule, WarmingUpMarker};
 pub use options::CommonOpt;
-pub use run::{BenchmarkRun, QueryResult};
+pub use run::{BenchmarkRun, QueryIter};

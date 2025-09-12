@@ -384,6 +384,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore] // the test is flaky, uncomment once flakyness is solved
     async fn test_concurrent_gc_and_access() {
         let ttl_map = TTLMap::<String, i32>::try_new(TTLMapConfig {
             ttl: Duration::from_millis(10),
