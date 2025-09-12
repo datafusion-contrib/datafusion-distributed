@@ -9,14 +9,12 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
-use datafusion::execution::{SendableRecordBatchStream, SessionState};
+use datafusion::execution::SendableRecordBatchStream;
 use futures::TryStreamExt;
-use http::HeaderMap;
 use prost::Message;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -42,7 +40,6 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
-    pub(super) session_state: SessionState,
     pub(super) stage: Arc<StageExec>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
@@ -62,15 +59,47 @@ impl ArrowFlightEndpoint {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
 
+        let mut session_state = self
+            .session_builder
+            .build_session_state(DistributedSessionBuilderContext {
+                runtime_env: Arc::clone(&self.runtime),
+                headers: metadata.clone().into_headers(),
+            })
+            .await
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+
+        let codec = DistributedCodec::new_combined_with_user(session_state.config());
+
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
         // so here we either retrieve the existing one or create a new one if it does not exist.
-        let (mut session_state, stage) = self
-            .get_state_and_stage(
-                doget.stage_key.ok_or_else(missing("stage_key"))?,
-                doget.stage_proto.ok_or_else(missing("stage_proto"))?,
-                metadata.clone().into_headers(),
-            )
+        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
+        let once = self
+            .task_data_entries
+            .get_or_init(key.clone(), Default::default);
+
+        let stage_data = once
+            .get_or_try_init(|| async {
+                let stage_proto = doget.stage_proto.ok_or_else(missing("stage_proto"))?;
+                let stage = stage_from_proto(stage_proto, &session_state, &self.runtime, &codec)
+                    .map_err(|err| {
+                        Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
+                    })?;
+
+                // Initialize partition count to the number of partitions in the stage
+                let total_partitions = stage.plan.properties().partitioning.partition_count();
+                Ok::<_, Status>(TaskData {
+                    stage: Arc::new(stage),
+                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+                })
+            })
             .await?;
+        let stage = Arc::clone(&stage_data.stage);
+        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+
+        // If all the partitions are done, remove the stage from the cache.
+        if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) <= 1 {
+            self.task_data_entries.remove(key);
+        }
 
         // Find out which partition group we are executing
         let partition = doget.partition as usize;
@@ -94,55 +123,6 @@ impl ArrowFlightEndpoint {
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
         Ok(record_batch_stream_to_response(stream))
-    }
-
-    async fn get_state_and_stage(
-        &self,
-        key: StageKey,
-        stage_proto: StageExecProto,
-        headers: HeaderMap,
-    ) -> Result<(SessionState, Arc<StageExec>), Status> {
-        let once = self
-            .task_data_entries
-            .get_or_init(key.clone(), || Arc::new(OnceCell::<TaskData>::new()));
-
-        let stage_data = once
-            .get_or_try_init(|| async {
-                let session_state = self
-                    .session_builder
-                    .build_session_state(DistributedSessionBuilderContext {
-                        runtime_env: Arc::clone(&self.runtime),
-                        headers,
-                    })
-                    .await
-                    .map_err(|err| datafusion_error_to_tonic_status(&err))?;
-
-                let codec = DistributedCodec::new_combined_with_user(session_state.config());
-
-                let stage = stage_from_proto(stage_proto, &session_state, &self.runtime, &codec)
-                    .map_err(|err| {
-                        Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
-                    })?;
-
-                // Initialize partition count to the number of partitions in the stage
-                let total_partitions = stage.plan.properties().partitioning.partition_count();
-                Ok::<_, Status>(TaskData {
-                    session_state,
-                    stage: Arc::new(stage),
-                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
-                })
-            })
-            .await?;
-
-        // If all the partitions are done, remove the stage from the cache.
-        let remaining_partitions = stage_data
-            .num_partitions_remaining
-            .fetch_sub(1, Ordering::SeqCst);
-        if remaining_partitions <= 1 {
-            self.task_data_entries.remove(key);
-        }
-
-        Ok((stage_data.session_state.clone(), stage_data.stage.clone()))
     }
 }
 
