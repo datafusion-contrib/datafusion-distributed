@@ -525,7 +525,9 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
         {
             found_isolator = true;
         }
-        for (child_index, child) in plan.children().iter().enumerate() {
+
+        for (i, child) in plan.children().iter().enumerate() {
+            let child_index = index + i;
             let partitions = child.output_partitioning().partition_count();
             for i in 0..partitions {
                 let mut style = "";
@@ -557,10 +559,10 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                     i % NUM_COLORS + 1
                 )?;
             }
+
             queue.push_back(child);
         }
     }
-
     writeln!(f, "  }}")?;
     writeln!(f, "  }}")?;
 
