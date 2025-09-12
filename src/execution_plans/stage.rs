@@ -527,7 +527,7 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
         }
 
         for (i, child) in plan.children().iter().enumerate() {
-            let child_index = index + i;
+            let child_index = index + i + 1;
             let partitions = child.output_partitioning().partition_count();
             for i in 0..partitions {
                 let mut style = "";
