@@ -728,7 +728,7 @@ fn display_inter_task_edges(
                     child_stage.plan.name(),
                     child_stage.num,
                     node_format_pg(&child_task.partition_group),
-                    0,
+                    1, // the repartition exec is always the first node in the plan
                     p,
                     plan.name(),
                     stage.num,
