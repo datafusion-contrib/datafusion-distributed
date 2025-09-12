@@ -155,29 +155,13 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
         // the `ArrowFlightReadExec` node can only be executed in the context of a `StageExec`
-        let stage = context
-            .session_config()
-            .get_extension::<StageExec>()
-            .ok_or(internal_datafusion_err!(
-                "ArrowFlightReadExec requires an ExecutionStage in the session config"
-            ))?;
+        let stage = StageExec::from_ctx(&context)?;
 
         // of our child stages find the one that matches the one we are supposed to be
         // reading from
-        let child_stage = stage
-            .child_stages_iter()
-            .find(|s| s.num == self_ready.stage_num)
-            .ok_or(internal_datafusion_err!(
-                "ArrowFlightReadExec: no child stage with num {}",
-                self_ready.stage_num
-            ))?;
-
-        let flight_metadata = context
-            .session_config()
-            .get_extension::<ContextGrpcMetadata>();
+        let child_stage = stage.child_stage(self_ready.stage_num)?;
 
         let codec = DistributedCodec::new_combined_with_user(context.session_config());
-
         let child_stage_proto = proto_from_stage(child_stage, &codec).map_err(|e| {
             internal_datafusion_err!("ArrowFlightReadExec: failed to convert stage to proto: {e}")
         })?;
@@ -186,16 +170,13 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let child_stage_num = child_stage.num as u64;
         let query_id = stage.query_id.to_string();
 
-        let context_headers = flight_metadata
-            .as_ref()
-            .map(|v| v.as_ref().clone())
-            .unwrap_or_default();
+        let context_headers = ContextGrpcMetadata::headers_from_ctx(&context);
 
         let stream = child_stage_tasks.into_iter().enumerate().map(|(i, task)| {
             let channel_resolver = Arc::clone(&channel_resolver);
 
             let ticket = Request::from_parts(
-                MetadataMap::from_headers(context_headers.0.clone()),
+                MetadataMap::from_headers(context_headers.clone()),
                 Extensions::default(),
                 Ticket {
                     ticket: DoGet {

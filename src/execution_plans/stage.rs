@@ -1,6 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::{ArrowFlightReadExec, ChannelResolver, PartitionIsolatorExec};
-use datafusion::common::internal_err;
+use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
@@ -220,6 +220,22 @@ impl StageExec {
         };
 
         Ok(assigned_stage)
+    }
+
+    pub fn from_ctx(ctx: &Arc<TaskContext>) -> Result<Arc<StageExec>, DataFusionError> {
+        ctx.session_config()
+            .get_extension::<StageExec>()
+            .ok_or(internal_datafusion_err!(
+                "ArrowFlightReadExec requires an ExecutionStage in the session config"
+            ))
+    }
+
+    pub fn child_stage(&self, i: usize) -> Result<&StageExec, DataFusionError> {
+        self.child_stages_iter()
+            .find(|s| s.num == i)
+            .ok_or(internal_datafusion_err!(
+                "ArrowFlightReadExec: no child stage with num {i}"
+            ))
     }
 }
 
