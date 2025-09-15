@@ -531,7 +531,20 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
             found_isolator = true;
         }
         if let Some(parent) = maybe_parent {
-            let partitions = plan.output_partitioning().partition_count();
+            let output_partitions = plan.output_partitioning().partition_count();
+
+            let partitions = if let Some(child) = plan.children().first() {
+                child.output_partitioning().partition_count()
+            } else if plan
+                .as_any()
+                .downcast_ref::<ArrowFlightReadExec>()
+                .is_some()
+            {
+                output_partitions
+            } else {
+                1
+            };
+
             for i in 0..partitions {
                 let mut style = "";
                 if plan
@@ -541,8 +554,8 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                     && i >= partition_group.len()
                 {
                     style = "[style=dotted, label=empty]";
-                    //} else if found_isolator && !partition_group.contains(&i) {
-                    //style = "[style=invis]";
+                } else if found_isolator && !partition_group.contains(&i) {
+                    style = "[style=invis]";
                 }
 
                 writeln!(
