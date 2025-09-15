@@ -541,8 +541,8 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                     && i >= partition_group.len()
                 {
                     style = "[style=dotted, label=empty]";
-                } else if found_isolator && !partition_group.contains(&i) {
-                    style = "[style=invis]";
+                    //} else if found_isolator && !partition_group.contains(&i) {
+                    //style = "[style=invis]";
                 }
 
                 writeln!(
