@@ -3,24 +3,12 @@ use std::task::{Context, Poll};
 
 use arrow_flight::{FlightData, error::FlightError};
 use futures::stream::Stream;
-use prost::Message;
 use std::sync::Arc;
-use crate::stage::TaskMetricsSet;
 use crate::metrics::proto::ProtoMetricsSet;
 use dashmap::DashMap;
 use crate::stage::StageKey;
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FlightAppMetadata {
-    #[prost(oneof = "AppMetadata", tags = "1")]
-    pub content: Option<AppMetadata>,
-}
-
-#[derive(Clone, PartialEq, ::prost::Oneof)]
-pub enum AppMetadata {
-    #[prost(message, tag="1")]
-    TaskMetricsSet(TaskMetricsSet),
-}
+use crate::stage::{FlightAppMetadata, AppMetadata};
+use prost::Message;
 
 /// MetricsCollectingStream - wraps a FlightData stream and extracts metrics from app_metadata
 /// while passing through all FlightData unchanged
@@ -29,37 +17,41 @@ where
     S: Stream<Item = Result<FlightData, FlightError>> + Send + Unpin,
 {
     inner: S,
-    collected_metrics: Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>,
+    metrics_collection: Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>,
 }
 
 impl<S> MetricsCollectingStream<S>
 where
     S: Stream<Item = Result<FlightData, FlightError>> + Send + Unpin,
 {
-    pub fn new(stream: S) -> Self {
+    pub fn new(stream: S, metrics_collection: Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>) -> Self {
         Self {
             inner: stream,
-            collected_metrics: Arc::new(DashMap::new()),
+            metrics_collection,
         }
     }
 
-    /// Get a handle to the collected metrics
-    pub fn metrics_handle(&self) -> Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>> {
-        Arc::clone(&self.collected_metrics)
-    }
-
-    fn extract_metrics_from_flight_data(&self, flight_data: &FlightData) {
+    /// return true if we extracted metrics from the app_metadata.
+    fn extract_metrics_from_flight_data(&self, flight_data: &mut FlightData) -> Result<(), FlightError> {
         if !flight_data.app_metadata.is_empty() {
-            if let Ok(metadata) = FlightAppMetadata::decode(flight_data.app_metadata.as_ref()) {
-                if let Some(AppMetadata::TaskMetricsSet(task_metrics_set)) = metadata.content {
-                    for task_metrics in task_metrics_set.tasks {
-                        if let Some(stage_key) = task_metrics.stage_key {
-                            self.collected_metrics.insert(stage_key, task_metrics.metrics);
+            return match FlightAppMetadata::decode(flight_data.app_metadata.as_ref()) {
+                Ok(metadata) => {
+                    if let Some(AppMetadata::TaskMetricsSet(task_metrics_set)) = metadata.content {
+                        for task_metrics in task_metrics_set.tasks {
+                            if let Some(stage_key) = task_metrics.stage_key {
+                                self.metrics_collection.insert(stage_key, task_metrics.metrics);
+                            }
                         }
                     }
+                    flight_data.app_metadata.clear();
+                    Ok(())
+                }
+                Err(e) => {
+                    Err(FlightError::ProtocolError(e.to_string()))
                 }
            }
         }
+        Ok(())
     }
 }
 
@@ -71,28 +63,20 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(flight_data))) => {
-                // Extract metrics from app_metadata if present
-                self.extract_metrics_from_flight_data(&flight_data);
-                
-                // Pass through the FlightData unchanged
-                Poll::Ready(Some(Ok(flight_data)))
+            Poll::Ready(Some(Ok(mut flight_data))) => {
+                // Extract metrics from app_metadata if present. 
+                match self.extract_metrics_from_flight_data(&mut flight_data) {
+                    Ok(_) => {
+                        Poll::Ready(Some(Ok(flight_data)))
+                    }
+                    Err(e) => {
+                         Poll::Ready(Some(Err(e)))
+                    }
+                }
             }
             Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
     }
-}
-
-/// Wrap a FlightData stream with metrics collection capability
-pub fn new_metrics_collecting_stream<S>(
-    stream: S
-) -> (MetricsCollectingStream<S>, Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>)
-where
-    S: Stream<Item = Result<FlightData, FlightError>> + Send + Unpin + 'static,
-{
-    let metrics_stream = MetricsCollectingStream::new(stream);
-    let metrics_handle = metrics_stream.metrics_handle();
-    (metrics_stream, metrics_handle)
 }

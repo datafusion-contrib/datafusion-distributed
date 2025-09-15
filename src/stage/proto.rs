@@ -20,7 +20,7 @@ use super::ExecutionStage;
 
 impl Display for StageKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "StageKey_{}_{}_{}", self.query_id, self.stage_id, self.task_number)
+        write!(f, "StageKey_QueryID_{}_StageID_{}_TaskNumber_{}", self.query_id, self.stage_id, self.task_number)
     }
 }
 
@@ -95,6 +95,19 @@ pub struct TaskMetrics {
     /// containing `ExecutionStage`.
     #[prost(message, repeated, tag="2")]
     pub metrics: Vec<ProtoMetricsSet>,
+}
+
+// TODO: move this somewhere else
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FlightAppMetadata {
+    #[prost(oneof = "AppMetadata", tags = "1")]
+    pub content: Option<AppMetadata>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+pub enum AppMetadata {
+    #[prost(message, tag="1")]
+    TaskMetricsSet(TaskMetricsSet),
 }
 
 pub fn proto_from_stage(

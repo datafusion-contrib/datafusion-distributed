@@ -15,6 +15,9 @@ mod metrics;
 
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
+pub use stage::MetricsCollector;
+pub use metrics::proto::{df_metrics_set_to_proto, ProtoMetricsSet};
+pub use stage::StageKey;
 
 pub use channel_manager_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;

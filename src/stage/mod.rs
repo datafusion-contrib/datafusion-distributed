@@ -7,4 +7,5 @@ mod metrics_collector;
 pub use display::display_stage_graphviz;
 pub use execution_stage::ExecutionStage;
 pub use proto::StageKey;
-pub use proto::{proto_from_stage, stage_from_proto, ExecutionStageProto, TaskMetricsSet};
+pub use proto::{proto_from_stage, stage_from_proto, ExecutionStageProto, TaskMetricsSet, FlightAppMetadata, AppMetadata, TaskMetrics};
+pub use metrics_collector::MetricsCollector;

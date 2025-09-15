@@ -13,12 +13,18 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
 use datafusion::execution::SessionState;
 use futures::TryStreamExt;
+use arrow_flight::FlightData;
+use super::mixed_message_stream::MetricsEmittingStream;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
+use arrow_flight::FlightDescriptor;
 use prost::Message;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
+use futures::StreamExt;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
@@ -37,7 +43,6 @@ pub struct DoGet {
     /// if we already have stored it
     #[prost(message, optional, tag = "4")]
     pub stage_key: Option<StageKey>,
-
 }
 
 #[derive(Clone, Debug)]
@@ -51,7 +56,7 @@ pub struct TaskData {
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
     /// complete because it's possible that the same partition was retried and this count was
     /// decremented more than once for the same partition.
-    num_partitions_remaining: Arc<AtomicUsize>,
+    pub(super)num_partitions_remaining: Arc<AtomicUsize>,
 }
 
 impl ArrowFlightEndpoint {
@@ -67,7 +72,12 @@ impl ArrowFlightEndpoint {
 
         let partition = doget.partition as usize;
         let task_number = doget.task_number as usize;
-        let task_data = self.get_state_and_stage(doget, metadata).await?;
+
+        // Fetch the shared state for the task (shared by all partitions / do_get requests for the task).
+        let key = doget
+            .stage_key.clone()
+            .ok_or(Status::invalid_argument("DoGet is missing the stage key"))?;
+        let task_data = self.get_state_and_stage(key.clone(), doget, metadata).await?;
 
         let stage = task_data.stage;
         let mut state = task_data.state;
@@ -98,7 +108,40 @@ impl ArrowFlightEndpoint {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
 
-        Ok(Response::new(Box::pin(flight_data_stream.map_err(
+        let partitions_remaining_clone = task_data.num_partitions_remaining.clone();
+        let stages_clone = self.stages.clone();
+        
+        let empty_batch_flight_data = {
+            use datafusion::arrow::ipc::writer::IpcWriteOptions;
+            use datafusion::arrow::record_batch::RecordBatch;
+            let empty_batch = RecordBatch::new_empty(inner_plan.schema());
+            let options = IpcWriteOptions::default();
+            let data_gen = datafusion::arrow::ipc::writer::IpcDataGenerator::default();
+            let mut dictionary_tracker = datafusion::arrow::ipc::writer::DictionaryTracker::new_with_preserve_dict_id(false, true);
+            let (_, encoded_data) = data_gen.encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
+                .map_err(|e| Status::internal(format!("Failed to create empty batch FlightData: {e}")))?;
+            FlightData::from(encoded_data)
+        };
+        
+        let metrics_emitting_stream = MetricsEmittingStream::new(
+            key.clone(),
+            stage.clone(),
+            empty_batch_flight_data,
+            move || {
+                // If all the partitions are done, remove the stage from the cache.
+                // Since the ordering is SeqCst, there's a global ordering of operations and we expect
+                // to see all partition counts p, p-1 .... 1 across all threads.
+                let rem = partitions_remaining_clone.fetch_sub(1, Ordering::SeqCst);
+                if rem == 1 {
+                    stages_clone.remove(key.clone());
+                    return true
+                } 
+                false
+            },
+            flight_data_stream,
+        );
+
+        Ok(Response::new(Box::pin(metrics_emitting_stream.map_err(
             |err| match err {
                 FlightError::Tonic(status) => *status,
                 _ => Status::internal(format!("Error during flight stream: {err}")),
@@ -106,14 +149,13 @@ impl ArrowFlightEndpoint {
         ))))
     }
 
+
     async fn get_state_and_stage(
         &self,
+        key: StageKey,
         doget: DoGet,
         metadata_map: MetadataMap,
     ) -> Result<TaskData, Status> {
-        let key = doget
-            .stage_key
-            .ok_or(Status::invalid_argument("DoGet is missing the stage key"))?;
         let once_stage = self
             .stages
             .get_or_init(key.clone(), || Arc::new(OnceCell::<TaskData>::new()));
@@ -162,13 +204,7 @@ impl ArrowFlightEndpoint {
             })
             .await?;
 
-        // If all the partitions are done, remove the stage from the cache.
-        let remaining_partitions = stage_data
-            .num_partitions_remaining
-            .fetch_sub(1, Ordering::SeqCst);
-        if remaining_partitions <= 1 {
-            self.stages.remove(key.clone());
-        }
+
 
         Ok(stage_data.clone())
     }
@@ -178,6 +214,7 @@ impl ArrowFlightEndpoint {
 mod tests {
     use super::*;
     use uuid::Uuid;
+    use futures::TryStreamExt;
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
@@ -239,7 +276,7 @@ mod tests {
 
         let stage_proto_for_closure = stage_proto.clone();
         let endpoint_ref = &endpoint;
-        let do_get = async move |partition: u64, task_number: u64, stage_key: StageKey| {
+        let do_get_and_consume = async move |partition: u64, task_number: u64, stage_key: StageKey| {
             let stage_proto = stage_proto_for_closure.clone();
             // Create DoGet message
             let doget = DoGet {
@@ -254,46 +291,51 @@ mod tests {
                 ticket: Bytes::from(doget.encode_to_vec()),
             };
 
-            // Call the actual get() method
+            // Call the actual get() method and consume the stream to completion
             let request = Request::new(ticket);
-            endpoint_ref.get(request).await
+            let response = endpoint_ref.get(request).await?;
+            let mut stream = response.into_inner();
+            
+            // Consume the entire stream - this triggers the completion logic
+            while let Some(_flight_data) = stream.try_next().await? {
+                // Just consume each FlightData message
+            }
+            
+            Ok::<(), Status>(())
         };
 
         // For each task, call do_get() for each partition except the last.
         for task_number in 0..num_tasks {
             for partition in 0..num_partitions_per_task - 1 {
-                let result = do_get(
+                let result = do_get_and_consume(
                     partition as u64,
                     task_number,
                     task_keys[task_number as usize].clone(),
                 )
                 .await;
-                assert!(result.is_ok());
+                assert!(result.is_ok(), "Failed to consume stream for task {} partition {}", task_number, partition);
             }
         }
 
         // Check that the endpoint has not evicted any task states.
         assert_eq!(endpoint.stages.len(), num_tasks as usize);
 
-        // Run the last partition of task 0. Any partition number works. Verify that the task state
+        // Run the last partition of task 0. Verify that the task state
         // is evicted because all partitions have been processed.
-        let result = do_get(1, 0, task_keys[0].clone()).await;
-        assert!(result.is_ok());
+        let result = do_get_and_consume((num_partitions_per_task - 1) as u64, 0, task_keys[0].clone()).await.unwrap();
         let stored_stage_keys = endpoint.stages.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 2);
         assert!(stored_stage_keys.contains(&task_keys[1]));
         assert!(stored_stage_keys.contains(&task_keys[2]));
 
         // Run the last partition of task 1.
-        let result = do_get(1, 1, task_keys[1].clone()).await;
-        assert!(result.is_ok());
+        let result = do_get_and_consume((num_partitions_per_task - 1) as u64, 1, task_keys[1].clone()).await.unwrap();
         let stored_stage_keys = endpoint.stages.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 1);
         assert!(stored_stage_keys.contains(&task_keys[2]));
 
         // Run the last partition of the last task.
-        let result = do_get(1, 2, task_keys[2].clone()).await;
-        assert!(result.is_ok());
+        let result = do_get_and_consume((num_partitions_per_task - 1) as u64, 2, task_keys[2].clone()).await.unwrap();
         let stored_stage_keys = endpoint.stages.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 0);
     }

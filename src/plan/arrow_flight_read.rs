@@ -4,9 +4,9 @@ use crate::common::ComposedPhysicalExtensionCodec;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::tonic_status_to_datafusion_error;
 use crate::flight_service::DoGet;
+use crate::plan::mixed_message_stream::MetricsCollectingStream;
 use crate::stage::StageKey;
 use crate::plan::DistributedCodec;
-use crate::plan::new_metrics_collecting_stream;
 use crate::stage::{proto_from_stage, ExecutionStage};
 use crate::user_codec_ext::get_distributed_user_codec;
 use crate::ChannelResolver;
@@ -21,18 +21,21 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{future, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
+use core::task;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 use url::Url;
-use datafusion::physical_plan::metrics::MetricsSet;
+use crate::metrics::proto::ProtoMetricsSet;
+use std::sync::Mutex;
 
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -62,7 +65,8 @@ pub struct ArrowFlightReadReadyExec {
     /// the properties we advertise for this execution plan
     properties: PlanProperties,
     pub(crate) stage_num: usize,
-    pub task_metrics: DashMap<StageKey, Vec<MetricsSet>>,
+    /// metrics will be updated to contain the  
+    metrics_collection: Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>,
 }
 
 impl ArrowFlightReadExec {
@@ -92,7 +96,7 @@ impl ArrowFlightReadExec {
         Self::Ready(ArrowFlightReadReadyExec {
             properties,
             stage_num,
-            task_metrics: DashMap::new(),
+            metrics_collection: Arc::new(DashMap::new()),
         })
     }
 
@@ -104,6 +108,16 @@ impl ArrowFlightReadExec {
                 stage_num,
             )),
             _ => internal_err!("ArrowFlightReadExec is already distributed"),
+        }
+    }
+
+    /// task_metrics moves the task metrics from the ArrowFlightReadExec to the caller.
+    /// It is expected that this is called at most once after ArrowFlightReadExec::execute().
+    /// Every call to ArrowFlightReadExec::execute() will create recreate the task metrics.
+    pub(crate) fn task_metrics(&self) -> Result<Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>, DataFusionError> {
+        match self {
+            ArrowFlightReadExec::Pending(_) => internal_err!("ArrowFlightReadExec is not ready, was the distributed optimization step performed?"),
+            ArrowFlightReadExec::Ready(exec) =>  Ok(exec.metrics_collection.clone())
         }
     }
 }
@@ -202,6 +216,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let child_stage_proto = proto_from_stage(child_stage, &combined_codec).map_err(|e| {
             internal_datafusion_err!("ArrowFlightReadExec: failed to convert stage to proto: {e}")
         })?;
+        let id_capture  = stage.num;
 
         let schema = child_stage.plan.schema();
 
@@ -209,6 +224,9 @@ impl ExecutionPlan for ArrowFlightReadExec {
         let child_stage_num = child_stage.num as u64;
         let query_id = stage.query_id.to_string();
 
+        let metrics_collection = this.metrics_collection.clone();
+        let metrics_collection_combined_stream_capture = metrics_collection.clone();
+        let metrics_collection_container = this.metrics_collection.clone();
         let stream = async move {
             let futs = child_stage_tasks.iter().enumerate().map(|(i, task)| {
                 let child_stage_proto = child_stage_proto.clone();
@@ -224,6 +242,8 @@ impl ExecutionPlan for ArrowFlightReadExec {
                     stage_id: child_stage_num,
                     task_number: i as u64,
                 };
+
+                let metrics_collection_child_stream_capture = metrics_collection_combined_stream_capture.clone();
                 async move {
                     let url = task.url()?.ok_or(internal_datafusion_err!(
                         "ArrowFlightReadExec: task is unassigned, cannot proceed"
@@ -248,6 +268,7 @@ impl ExecutionPlan for ArrowFlightReadExec {
                         &url,
                         schema.clone(),
                         &channel_resolver,
+                        metrics_collection_child_stream_capture,
                     )
                     .await
                 }
@@ -255,25 +276,28 @@ impl ExecutionPlan for ArrowFlightReadExec {
 
             let streams = future::try_join_all(futs).await?;
 
+            // Create the combined stream of streams.
             let combined_stream = CombinedRecordBatchStream::try_new(schema, streams)?;
-
             Ok(combined_stream)
         }
         .try_flatten_stream();
 
+        let captured_schema =  Arc::clone(&self.schema());
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
+            captured_schema,
             stream,
         )))
     }
 }
 
+/// Stream from a single stage task. This stream will write metrics to the provided `metrics_collection`.
 async fn stream_from_stage_task(
     ticket: Ticket,
     metadata: ContextGrpcMetadata,
     url: &Url,
     schema: SchemaRef,
     channel_manager: &impl ChannelResolver,
+    metrics_collection: Arc<DashMap<StageKey, Vec<ProtoMetricsSet>>>,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
     let channel = channel_manager.get_channel_for_url(url).await?;
 
@@ -295,7 +319,7 @@ async fn stream_from_stage_task(
         .map_err(|err| FlightError::Tonic(Box::new(err)));
 
     // Wrap the FlightData stream with metrics collection
-    let (metrics_collecting_stream, _metrics_handle) = new_metrics_collecting_stream(stream);
+    let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection);
     
     // Then create the RecordBatch stream from the metrics-collecting FlightData stream
     let record_batch_stream = FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream).map_err(|err| match err {

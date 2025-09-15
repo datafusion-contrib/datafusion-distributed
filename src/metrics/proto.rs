@@ -1,5 +1,6 @@
-use datafusion::physical_plan::metrics::{Metric, MetricValue};
+use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
 use datafusion::error::DataFusionError;
+use std::sync::Arc;
 
 /// A ProtoMetric mirrors `datafusion::physical_plan::metrics::Metric`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -52,8 +53,23 @@ pub struct ProtoLabel {
     pub value: String,
 }
 
-/// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `ProtoMetric`.
-pub fn df_metric_to_proto(metric: &Metric) -> Result<ProtoMetric, DataFusionError> {
+pub fn df_metrics_set_to_proto(metrics_set: &MetricsSet) -> Result<ProtoMetricsSet, DataFusionError> {
+    let metrics = metrics_set.iter().map(|metric|df_metric_to_proto(metric.clone())).collect::<Result<Vec<_>, _>>()?;
+    Ok(ProtoMetricsSet { metrics })
+}
+
+pub fn proto_metrics_set_to_df(proto_metrics_set: &ProtoMetricsSet) -> Result<MetricsSet, DataFusionError> {
+    let mut metrics_set = MetricsSet::new();
+    proto_metrics_set.metrics.iter().try_for_each(|metric| {
+        let proto = proto_metric_to_df(metric.clone())?; 
+        metrics_set.push(proto);
+        Ok::<(), DataFusionError>(())
+    })?;
+    Ok(metrics_set)
+}
+
+/// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `ProtoMetric`. It does not consume the Arc<Metric>.
+pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<ProtoMetric, DataFusionError> {
     let partition = metric.partition().map(|p| p as u64);
     let labels = metric.labels().iter().map(|label| ProtoLabel {
         name: label.name().to_string(),
@@ -75,8 +91,8 @@ pub fn df_metric_to_proto(metric: &Metric) -> Result<ProtoMetric, DataFusionErro
     }
 }
 
-/// proto_metric_to_df converts a `ProtoMetric` to a `datafusion::physical_plan::metrics::Metric`.
-pub fn proto_metric_to_df(metric: ProtoMetric) -> Result<Metric, DataFusionError> {
+/// proto_metric_to_df converts a `ProtoMetric` to a `datafusion::physical_plan::metrics::Metric`. It consumes the ProtoMetric.
+pub fn proto_metric_to_df(metric: ProtoMetric) -> Result<Arc<Metric>, DataFusionError> {
     use datafusion::physical_plan::metrics::{Count, Time, Label};
     
     let partition = metric.partition.map(|p| p as usize);
@@ -88,12 +104,12 @@ pub fn proto_metric_to_df(metric: ProtoMetric) -> Result<Metric, DataFusionError
         Some(ProtoMetricValue::OutputRows(rows)) => {
             let count = Count::new();
             count.add(rows.value as usize);
-            Ok(Metric::new_with_labels(MetricValue::OutputRows(count), partition, labels))
+            Ok(Arc::new(Metric::new_with_labels(MetricValue::OutputRows(count), partition, labels)))
         },
         Some(ProtoMetricValue::ElapsedCompute(elapsed)) => {
             let time = Time::new();
             time.add_duration(std::time::Duration::from_nanos(elapsed.value));
-            Ok(Metric::new_with_labels(MetricValue::ElapsedCompute(time), partition, labels))
+            Ok(Arc::new(Metric::new_with_labels(MetricValue::ElapsedCompute(time), partition, labels)))
         },
         None => Err(DataFusionError::Internal("proto metric is missing the metric field".to_string())),
     }
@@ -106,25 +122,36 @@ mod tests {
 
     #[test]
     fn test_metric_roundtrip() {
+        use datafusion::physical_plan::metrics::MetricsSet;
+        
         let count = Count::new();
         count.add(1234);
         let time = Time::new();
         time.add_duration(std::time::Duration::from_millis(100));
         
-        let metrics = vec![
-            Metric::new(MetricValue::OutputRows(count), Some(0)),
-            Metric::new(MetricValue::ElapsedCompute(time), Some(1)),
-            // TODO: implement all the other types
-        ];
+        // Create a MetricsSet with multiple metrics
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(Arc::new(Metric::new(MetricValue::OutputRows(count), Some(0))));
+        metrics_set.push(Arc::new(Metric::new(MetricValue::ElapsedCompute(time), Some(1))));
         
-        for metric in metrics {
-            let proto = df_metric_to_proto(&metric).unwrap();
-            let roundtrip = proto_metric_to_df(proto).unwrap();
+        // Test: DataFusion MetricsSet -> ProtoMetricsSet
+        let proto_metrics_set = df_metrics_set_to_proto(&metrics_set).unwrap();
+        
+        // Test: ProtoMetricsSet -> DataFusion MetricsSet  
+        let roundtrip_metrics_set = proto_metrics_set_to_df(&proto_metrics_set).unwrap();
+        
+        // Verify the roundtrip preserved the metrics
+        let original_count = metrics_set.iter().count();
+        let roundtrip_count = roundtrip_metrics_set.iter().count();
+        assert_eq!(original_count, roundtrip_count, 
+                  "Roundtrip should preserve metrics count");
+        
+        // Verify individual metrics
+        for (original, roundtrip) in metrics_set.iter().zip(roundtrip_metrics_set.iter()) {
+            assert_eq!(original.partition(), roundtrip.partition());
+            assert_eq!(original.labels().len(), roundtrip.labels().len());
             
-            assert_eq!(metric.partition(), roundtrip.partition());
-            assert_eq!(metric.labels().len(), roundtrip.labels().len());
-            
-            match (metric.value(), roundtrip.value()) {
+            match (original.value(), roundtrip.value()) {
                 (MetricValue::OutputRows(orig), MetricValue::OutputRows(rt)) => {
                     assert_eq!(orig.value(), rt.value());
                 },
@@ -132,8 +159,10 @@ mod tests {
                     assert_eq!(orig.value(), rt.value());
                 },
                 // TODO: implement all the other types
-                _ => unimplemented!(),
+                _ => panic!("Unsupported metric type in roundtrip test"),
             }
         }
+        
+        println!("✓ Successfully tested MetricsSet roundtrip conversion with {} metrics", original_count);
     }
 }

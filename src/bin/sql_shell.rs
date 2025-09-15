@@ -5,11 +5,11 @@ use datafusion::physical_plan::{collect, displayable};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_distributed::test_utils::localhost::start_localhost_context;
-use datafusion_distributed::{DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext};
+use datafusion_distributed::{DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext, ExecutionStage};
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
-use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion_distributed::{MetricsCollector, df_metrics_set_to_proto, ProtoMetricsSet, StageKey};
 
 #[derive(Clone)]
 struct DistributedSessionBuilder4Partitions;
@@ -260,6 +260,22 @@ async fn explain_analyze(ctx: &SessionContext, sql: &str) -> Result<(), DataFusi
     let total_batches = results.len();
     println!("📊 Results: {} rows in {} batches", total_rows, total_batches);
     println!();
+
+    if let Some(stage) = physical_plan.as_any().downcast_ref::<ExecutionStage>() {
+        let (task_metrics, mut child_task_metrics) = MetricsCollector::new().collect(&stage)?;
+        let proto_task_metrics = task_metrics.iter()
+            .filter_map(|metrics| df_metrics_set_to_proto(metrics).ok())
+            .collect::<Vec<_>>(); 
+        child_task_metrics.insert(StageKey {
+            query_id: stage.query_id.to_string(),
+            stage_id: stage.num as u64,
+            task_number: 0,
+        }, proto_task_metrics);
+        let keys = child_task_metrics.keys().collect::<Vec<_>>();
+        for key in keys {
+            println!("{}", key);
+        }
+    }
     
     // Display the plan WITH metrics (physical_plan is still available)
     println!("📈 Physical Plan WITH Metrics:");
@@ -302,6 +318,7 @@ async fn explain_analyze_single(sql: &str) -> Result<(), DataFusionError> {
     // Create the DataFrame and get the physical plan
     let df = single_ctx.sql(sql).await?;
     let physical_plan = df.create_physical_plan().await?;
+
     
     println!("📋 Physical Plan BEFORE Execution (Single-Node):");
     let display_before = displayable(physical_plan.as_ref()).indent(true).to_string();
