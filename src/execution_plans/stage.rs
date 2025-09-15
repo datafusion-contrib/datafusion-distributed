@@ -539,6 +539,10 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                 .as_any()
                 .downcast_ref::<ArrowFlightReadExec>()
                 .is_some()
+                || plan
+                    .as_any()
+                    .downcast_ref::<PartitionIsolatorExec>()
+                    .is_some()
             {
                 output_partitions
             } else {
@@ -557,6 +561,8 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                 } else if found_isolator && !partition_group.contains(&i) {
                     style = "[style=invis]";
                 }
+
+                writeln!(f, "// found_isolator = {} ", found_isolator)?;
 
                 writeln!(
                     f,
