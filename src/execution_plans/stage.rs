@@ -513,10 +513,15 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
     }
 
     // draw edges between the plan nodes
-    queue = VecDeque::from([&stage.plan]);
+    type PlanWithParent<'a> = (
+        &'a Arc<dyn ExecutionPlan>,
+        Option<&'a Arc<dyn ExecutionPlan>>,
+        usize,
+    );
+    let mut queue: VecDeque<PlanWithParent> = VecDeque::from([(&stage.plan, None, 0usize)]);
     let mut found_isolator = false;
     index = 0;
-    while let Some(plan) = queue.pop_front() {
+    while let Some((plan, maybe_parent, parent_idx)) = queue.pop_front() {
         index += 1;
         if plan
             .as_any()
@@ -525,13 +530,11 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
         {
             found_isolator = true;
         }
-
-        for (i, child) in plan.children().iter().enumerate() {
-            let child_index = index + i + 1;
-            let partitions = child.output_partitioning().partition_count();
+        if let Some(parent) = maybe_parent {
+            let partitions = plan.output_partitioning().partition_count();
             for i in 0..partitions {
                 let mut style = "";
-                if child
+                if plan
                     .as_any()
                     .downcast_ref::<PartitionIsolatorExec>()
                     .is_some()
@@ -545,22 +548,24 @@ pub fn display_single_task(stage: &StageExec, partition_group: &[usize]) -> Resu
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {}[color={}]",
-                    child.name(),
-                    stage.num,
-                    node_format_pg(partition_group),
-                    child_index,
-                    i,
                     plan.name(),
                     stage.num,
                     node_format_pg(partition_group),
                     index,
                     i,
+                    parent.name(),
+                    stage.num,
+                    node_format_pg(partition_group),
+                    parent_idx,
+                    i,
                     style,
                     i % NUM_COLORS + 1
                 )?;
             }
+        }
 
-            queue.push_back(child);
+        for child in plan.children().iter() {
+            queue.push_back((child, Some(plan), index));
         }
     }
     writeln!(f, "  }}")?;
