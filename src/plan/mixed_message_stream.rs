@@ -40,7 +40,6 @@ where
                         for task_metrics in task_metrics_set.tasks {
                             if let Some(stage_key) = task_metrics.stage_key {
                                 self.metrics_collection.insert(stage_key.clone(), task_metrics.metrics.clone());
-                                println!("CLIENT {} {:?}", stage_key, task_metrics.metrics);
                             }
                         }
                     }
