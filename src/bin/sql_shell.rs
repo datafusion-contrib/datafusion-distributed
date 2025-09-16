@@ -288,8 +288,7 @@ async fn explain_analyze(ctx: &SessionContext, sql: &str) -> Result<(), DataFusi
     // Display the plan WITH metrics (physical_plan is still available)
     println!("📈 Physical Plan WITH Metrics:");
     let display_with_metrics = DisplayableExecutionPlan::with_metrics(physical_plan.as_ref())
-        .indent(true)
-        .to_string();
+        .indent(true);
     println!("{}", display_with_metrics);
     println!();
     

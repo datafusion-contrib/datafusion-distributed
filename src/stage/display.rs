@@ -14,11 +14,11 @@ use std::fmt::Write;
 use crate::StageKey;
 
 use datafusion::{
-    common::tree_node::TreeNode, error::Result, physical_plan::{DisplayAs, DisplayFormatType}
+    common::tree_node::TreeNode, error::{Result, DataFusionError}, physical_plan::{DisplayAs, DisplayFormatType}
 };
 
 use crate::{
-    common::util::display_plan_with_partition_in_out,
+    common::util::{display_plan_with_partition_in_out,display_plan_with_partition_in_out_metrics},
     task::{format_pg, ExecutionTask},
 };
 use crate::TaskMetricsRewriter;
@@ -39,9 +39,9 @@ impl DisplayAs for ExecutionStage {
                 write!(f, "{}", self.name)
             }
             DisplayFormatType::Verbose => {
-                for (key, metrics) in self.task_metrics.iter() {
-                    write!(f, "{} len: {}\n", key, metrics.len())?;
-                }
+                // for (key, metrics) in self.task_metrics.iter() {
+                //     write!(f, "{} len: {:?}\n", key, metrics)?;
+                // }
                 // Render each task separately with the same plan
                 for (i, task) in self.tasks.iter().enumerate() {
                     // Add spacing between tasks
@@ -66,13 +66,17 @@ impl DisplayAs for ExecutionStage {
              
                     let plan_str =match self.task_metrics.get(&key) {
                         Some(metrics) => {
-                            // let plan = TaskMetricsRewriter::new(metrics.to_owned()).enrich_task_with_metrics(self.plan.clone()).map_err(|_| std::fmt::Error {})?;
-                            display_plan_with_partition_in_out(self.plan.as_ref())
-                                .map_err(|_| std::fmt::Error {})?
+                            let plan = TaskMetricsRewriter::new(metrics.to_owned()).enrich_task_with_metrics(
+                                self.plan.clone()).map_err(|e| {
+                                    println!("Error enriching task with metrics: {}", e);
+                                    std::fmt::Error})?;
+                            
+                            display_plan_with_partition_in_out_metrics(plan.as_ref())
+                                .map_err(|_| std::fmt::Error)?
                         }
                         None => {
                             display_plan_with_partition_in_out(self.plan.as_ref())
-                                .map_err(|_| std::fmt::Error {})?
+                                .map_err(|_| std::fmt::Error)?
                         }
                     };
                     let plan_str = plan_str

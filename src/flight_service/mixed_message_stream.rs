@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use super::do_get::TaskData;
 use crate::stage::MetricsCollector;
-use arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::SchemaRef;
 use crate::stage::ExecutionStage;
 use datafusion::physical_plan::metrics::MetricsSet;
 

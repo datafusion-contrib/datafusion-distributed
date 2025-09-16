@@ -225,7 +225,7 @@ impl ExecutionStage {
             inputs: assigned_children,
             tasks: assigned_tasks,
             depth: self.depth,
-            task_metrics: Default::default(),
+            task_metrics: self.task_metrics.clone(),
         };
 
         Ok(assigned_stage)
@@ -257,7 +257,7 @@ impl ExecutionPlan for ExecutionStage {
             inputs: children,
             tasks: self.tasks.clone(),
             depth: self.depth,
-            task_metrics: Default::default(),
+            task_metrics: self.task_metrics.clone(), // TODO: avoid clone
         }))
     }
 

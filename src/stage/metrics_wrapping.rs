@@ -27,7 +27,6 @@ impl TreeNodeRewriter for FullPlanRewriter {
 
     fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
         if let Some(exec_stage) = plan.as_any().downcast_ref::<ExecutionStage>() { 
-            println!("AAA");
             let mut new_stage = exec_stage.clone();
             for i in 0..exec_stage.tasks.len() {
                 let key = StageKey {
@@ -35,9 +34,9 @@ impl TreeNodeRewriter for FullPlanRewriter {
                     task_number: i as u64,
                     stage_id: exec_stage.num as u64,
                 };
+
                 let metrics = self.metrics.get(&key).unwrap();
                 new_stage.task_metrics.insert(key.clone(), metrics.clone());
-                println!("AAA {}", key.clone());
             }
             return Ok(Transformed::new(Arc::new(new_stage), true, TreeNodeRecursion::Continue))
         }
@@ -78,12 +77,38 @@ impl TreeNodeRewriter for TaskMetricsRewriter {
             // Do not recurse into ArrowFlightReadExec.
             return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
         }
+        
+        // DEBUG: Log what we're processing
+        // println!("🔧 TaskMetricsRewriter: processing node '{}' at index {}", plan.name(), self.idx);
+        // println!("   ProtoMetricsSet: {:?}", &self.metrics[self.idx]);
+        
         // Convert metrics from our proto representation to datafusion metrics.
-        let metrics = proto_metrics_set_to_df(&self.metrics[self.idx])?;
+        let proto_metrics = &self.metrics[self.idx];
+        let metrics = proto_metrics_set_to_df(proto_metrics).unwrap();
+        
+        // println!("   Converted to {} DataFusion metrics", metrics.iter().count());
+        // for metric in metrics.iter() {
+        //     println!("     - {}: {:?}", metric.value().name(), metric.value());
+        // }
+        
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
-            plan, 
-            Some(metrics),
+            plan.clone(), 
+            Some(metrics.clone()),
         ));
+        
+        // DEBUG: Verify the wrapper has the metrics
+        // match wrapped_plan_node.metrics() {
+        //     Some(wrapper_metrics) => {
+                // println!("   ✅ MetricsWrapperExec has {} metrics", wrapper_metrics.iter().count());
+                // for metric in wrapper_metrics.iter() {
+                //     println!("      - {}: {:?}", metric.value().name(), metric.value());
+                // }
+        //     }
+        //     None => {
+        //         println!("   ❌ MetricsWrapperExec has NO metrics!");
+        //     }
+        // }
+        
         // Transform the node.
         let result = Transformed::new(wrapped_plan_node, true, TreeNodeRecursion::Continue);
         self.idx += 1;
@@ -106,6 +131,8 @@ pub struct MetricsWrapperExec {
     /// metrics for this plan node. By convention, plan nodes typicall use None to represent no metrics instead of
     /// an empty MetricsSet.
     metrics: Option<MetricsSet>,
+
+    children: Option<Vec<Arc<dyn ExecutionPlan>>>,
 }
 
 impl MetricsWrapperExec {
@@ -113,6 +140,7 @@ impl MetricsWrapperExec {
         Self {
             wrapped,
             metrics,
+            children: None,
         }
     }
 }
@@ -134,7 +162,7 @@ impl DisplayAs for MetricsWrapperExec {
 impl ExecutionPlan for MetricsWrapperExec {
     fn name(&self) -> &str {
         // Delegate to child - wrapper is transparent
-        self.wrapped.name()
+        "MetricsWrapperExec"
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -142,18 +170,25 @@ impl ExecutionPlan for MetricsWrapperExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        self.wrapped.properties()
-    }
+        self.wrapped.properties()   
+     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.wrapped.children()
+        match &self.children {
+            Some(children) => children.iter().collect(),
+            None => self.wrapped.children(),
+        } 
     }
 
     fn with_new_children(
         self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Internal("MetricsWrapperExec does not have children. It wraps another ExecutionPlan transparently".to_string()))
+        return Ok(Arc::new(MetricsWrapperExec{
+            wrapped: self.wrapped.clone(),
+            metrics: self.metrics.clone(),
+            children: Some(children),
+        })) 
     }
 
     fn execute(
