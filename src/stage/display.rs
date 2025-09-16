@@ -11,16 +11,17 @@
 /// In the meantime, we can make a dummy ExecutionPlan that will let us render
 /// the Stage tree.
 use std::fmt::Write;
+use crate::StageKey;
 
 use datafusion::{
-    error::Result,
-    physical_plan::{DisplayAs, DisplayFormatType},
+    common::tree_node::TreeNode, error::Result, physical_plan::{DisplayAs, DisplayFormatType}
 };
 
 use crate::{
     common::util::display_plan_with_partition_in_out,
     task::{format_pg, ExecutionTask},
 };
+use crate::TaskMetricsRewriter;
 
 use super::ExecutionStage;
 
@@ -38,29 +39,58 @@ impl DisplayAs for ExecutionStage {
                 write!(f, "{}", self.name)
             }
             DisplayFormatType::Verbose => {
-                writeln!(
-                    f,
-                    "{}{}{}{}",
-                    LTCORNER,
-                    HORIZONTAL.repeat(5),
-                    format!(" {} ", self.name),
-                    format_tasks(&self.tasks),
-                )?;
-                let plan_str = display_plan_with_partition_in_out(self.plan.as_ref())
-                    .map_err(|_| std::fmt::Error {})?;
-                let plan_str = plan_str
-                    .split('\n')
-                    .filter(|v| !v.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
-                writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
-                write!(
-                    f,
-                    "{}{}{}",
-                    "  ".repeat(self.depth),
-                    LDCORNER,
-                    HORIZONTAL.repeat(50)
-                )?;
+                for (key, metrics) in self.task_metrics.iter() {
+                    write!(f, "{} len: {}\n", key, metrics.len())?;
+                }
+                // Render each task separately with the same plan
+                for (i, task) in self.tasks.iter().enumerate() {
+                    // Add spacing between tasks
+                    if i > 0 {
+                        writeln!(f)?;
+                    }
+                    
+                    writeln!(
+                        f,
+                        "{}{}{}{} [{}",
+                        "  ".repeat(self.depth),
+                        LTCORNER,
+                        HORIZONTAL.repeat(5),
+                        format!(" {} ", self.name),
+                        task,
+                    )?;
+                    let key = StageKey {
+                        query_id: self.query_id.to_string(),
+                        stage_id: self.num as u64,
+                        task_number: i as u64,
+                    };
+             
+                    let plan_str =match self.task_metrics.get(&key) {
+                        Some(metrics) => {
+                            // let plan = TaskMetricsRewriter::new(metrics.to_owned()).enrich_task_with_metrics(self.plan.clone()).map_err(|_| std::fmt::Error {})?;
+                            display_plan_with_partition_in_out(self.plan.as_ref())
+                                .map_err(|_| std::fmt::Error {})?
+                        }
+                        None => {
+                            display_plan_with_partition_in_out(self.plan.as_ref())
+                                .map_err(|_| std::fmt::Error {})?
+                        }
+                    };
+                    let plan_str = plan_str
+                        .split('\n')
+                        .filter(|v| !v.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
+                    writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
+                    
+                    // Add bottom border 
+                    write!(
+                        f,
+                        "{}{}{}",
+                        "  ".repeat(self.depth),
+                        LDCORNER,
+                        HORIZONTAL.repeat(50)
+                        )?;
+                }
 
                 Ok(())
             }

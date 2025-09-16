@@ -5,25 +5,60 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan,  PlanProperties, SendableRecordBatchStream};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Statistics};
 use crate::metrics::proto::proto_metrics_set_to_df;
-use crate::{ArrowFlightReadExec, ProtoMetricsSet};
+use crate::{ArrowFlightReadExec, ExecutionStage, ProtoMetricsSet};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRewriter, Transformed, TreeNodeRecursion};
 use datafusion::error::{Result,DataFusionError };
+use crate::StageKey;
+use std::collections::HashMap;
+
+// Populate metrics in ExecutionStages.
+pub struct FullPlanRewriter {
+    metrics: HashMap<StageKey, Vec<ProtoMetricsSet>>,
+}
+
+impl FullPlanRewriter {
+    pub fn new(metrics: HashMap<StageKey, Vec<ProtoMetricsSet>>) -> Self {
+        Self { metrics }
+    }
+}
+
+impl TreeNodeRewriter for FullPlanRewriter {
+    type Node = Arc<dyn ExecutionPlan>;
+
+    fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
+        if let Some(exec_stage) = plan.as_any().downcast_ref::<ExecutionStage>() { 
+            println!("AAA");
+            let mut new_stage = exec_stage.clone();
+            for i in 0..exec_stage.tasks.len() {
+                let key = StageKey {
+                    query_id: exec_stage.query_id.to_string(),
+                    task_number: i as u64,
+                    stage_id: exec_stage.num as u64,
+                };
+                let metrics = self.metrics.get(&key).unwrap();
+                new_stage.task_metrics.insert(key.clone(), metrics.clone());
+                println!("AAA {}", key.clone());
+            }
+            return Ok(Transformed::new(Arc::new(new_stage), true, TreeNodeRecursion::Continue))
+        }
+        Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
+    }
+}
+
 
 
 /// MetricsRewriter is used to enrich a task with metrics
-struct TaskMetricsRewriter {
+pub struct TaskMetricsRewriter {
     metrics: Vec<ProtoMetricsSet>,
-    task: Arc<dyn ExecutionPlan>,
     // idx is the index of the "current" metric set encountered during the tree traversal.
     idx: usize,
 }
 
 impl TaskMetricsRewriter {
     /// new creates a new [TaskMetricsRewriter].
-    pub fn new(task: Arc<dyn ExecutionPlan>, metrics: Vec<ProtoMetricsSet>) -> Self {
+    pub fn new(metrics: Vec<ProtoMetricsSet>) -> Self {
         Self {
             metrics,
-            task,
             idx: 0,
         }
     }

@@ -9,3 +9,5 @@ pub use execution_stage::ExecutionStage;
 pub use proto::StageKey;
 pub use proto::{proto_from_stage, stage_from_proto, ExecutionStageProto, TaskMetricsSet, FlightAppMetadata, AppMetadata, TaskMetrics};
 pub use metrics_collector::MetricsCollector;
+pub use metrics_wrapping::FullPlanRewriter;
+pub use metrics_wrapping::TaskMetricsRewriter;

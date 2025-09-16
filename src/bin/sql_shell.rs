@@ -9,7 +9,9 @@ use datafusion_distributed::{DistributedPhysicalOptimizerRule, DistributedSessio
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
-use datafusion_distributed::{MetricsCollector, df_metrics_set_to_proto, ProtoMetricsSet, StageKey};
+use datafusion_distributed::{MetricsCollector, df_metrics_set_to_proto, ProtoMetricsSet, StageKey, FullPlanRewriter};
+use std::collections::HashMap;
+use datafusion::common::tree_node::TreeNode;
 
 #[derive(Clone)]
 struct DistributedSessionBuilder4Partitions;
@@ -261,6 +263,8 @@ async fn explain_analyze(ctx: &SessionContext, sql: &str) -> Result<(), DataFusi
     println!("📊 Results: {} rows in {} batches", total_rows, total_batches);
     println!();
 
+    let mut all_task_metrics: HashMap<StageKey, Vec<ProtoMetricsSet>> = HashMap::new();
+    // Collect Metrics
     if let Some(stage) = physical_plan.as_any().downcast_ref::<ExecutionStage>() {
         let (task_metrics, mut child_task_metrics) = MetricsCollector::new().collect(&stage)?;
         let proto_task_metrics = task_metrics.iter()
@@ -271,11 +275,15 @@ async fn explain_analyze(ctx: &SessionContext, sql: &str) -> Result<(), DataFusi
             stage_id: stage.num as u64,
             task_number: 0,
         }, proto_task_metrics);
-        let keys = child_task_metrics.keys().collect::<Vec<_>>();
-        for key in keys {
-            println!("{}", key);
-        }
+   
+        all_task_metrics = child_task_metrics;
     }
+    let keys = all_task_metrics.keys().collect::<Vec<_>>();
+    for key in keys {
+        println!("{}", key);
+    }
+
+    let physical_plan = physical_plan.rewrite(&mut FullPlanRewriter::new(all_task_metrics))?.data;
     
     // Display the plan WITH metrics (physical_plan is still available)
     println!("📈 Physical Plan WITH Metrics:");
@@ -287,17 +295,17 @@ async fn explain_analyze(ctx: &SessionContext, sql: &str) -> Result<(), DataFusi
     
     // Also show root node metrics directly
     println!("🔧 Root Node Metrics (direct call to .metrics()):");
-    if let Some(metrics) = physical_plan.metrics() {
-        if metrics.iter().count() > 0 {
-            for metric in metrics.iter() {
-                println!("  {:?}", metric);
-            }
-        } else {
-            println!("  No metrics available (empty MetricsSet)");
-        }
-    } else {
-        println!("  No metrics available (metrics() returned None)");
-    }
+    // if let Some(metrics) = physical_plan.metrics() {
+    //     if metrics.iter().count() > 0 {
+    //         for metric in metrics.iter() {
+    //             println!("  {:?}", metric);
+    //         }
+    //     } else {
+    //         println!("  No metrics available (empty MetricsSet)");
+    //     }
+    // } else {
+    //     println!("  No metrics available (metrics() returned None)");
+    // }
     
     Ok(())
 }

@@ -9,6 +9,7 @@ use crate::metrics::proto::ProtoMetricsSet;
 use datafusion::common::tree_node::{TreeNodeRewriter, Transformed, TreeNodeRecursion};
 use std::sync::Arc;
 use datafusion::error::Result;
+use datafusion::common::tree_node::{TreeNode};
 
 // MetricsCollector is used to collect metrics from a plan tree.
 pub struct MetricsCollector {
@@ -67,6 +68,7 @@ impl ExecutionPlanVisitor for MetricsCollector {
             for mut entry in read_exec.task_metrics()?.iter_mut() {
                 let stage_key = entry.key().clone();
                 let task_metrics = std::mem::take(entry.value_mut());
+                
                 match self.child_task_metrics.get(&stage_key){
                     // There should never be two ArrowFlightReadExec with metrics for the same stage_key.
                     // By convention, the ArrowFlightReadExec which runs the last partition in a task should be
@@ -83,7 +85,6 @@ impl ExecutionPlanVisitor for MetricsCollector {
             }
             return Ok(false);
         }
-
         // For regular plan nodes, collect
         match plan.metrics() {
             Some(metrics) => {
@@ -114,6 +115,8 @@ impl MetricsCollector {
     pub fn collect(mut self, stage: &ExecutionStage) -> Result<(Vec<MetricsSet>, HashMap<StageKey, Vec<ProtoMetricsSet>>), DataFusionError> {
         accept(stage.plan.as_ref(), &mut self)?;
         Ok((self.task_metrics, self.child_task_metrics))
+        // stage.plan.clone().rewrite(&mut self)?;
+        // Ok((self.task_metrics, self.child_task_metrics))
     }
 }
 

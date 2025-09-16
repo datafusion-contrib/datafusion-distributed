@@ -28,4 +28,4 @@ pub use flight_service::{
 };
 pub use physical_optimizer::DistributedPhysicalOptimizerRule;
 pub use plan::ArrowFlightReadExec;
-pub use stage::{display_stage_graphviz, ExecutionStage};
+pub use stage::{display_stage_graphviz, ExecutionStage, FullPlanRewriter, TaskMetricsRewriter};

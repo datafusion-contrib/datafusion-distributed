@@ -11,6 +11,7 @@ use super::do_get::TaskData;
 use crate::stage::MetricsCollector;
 use arrow::datatypes::SchemaRef;
 use crate::stage::ExecutionStage;
+use datafusion::physical_plan::metrics::MetricsSet;
 
 /// MetricsEmittingStream - wraps a FlightData stream. It uses the provided partition and task data
 /// to determine if the task is done. If so, it emits an empty FlightData message with the metrics
@@ -63,9 +64,9 @@ where
         // Add the metrics for this task into the collection of task metrics. 
         // Skip any metrics that can't be converted to proto (unsupported types)
         let proto_task_metrics = task_metrics.iter()
-            .filter_map(|metrics| df_metrics_set_to_proto(metrics).ok())
+            .map(|metrics| df_metrics_set_to_proto(metrics).unwrap_or(ProtoMetricsSet::default()))
             .collect::<Vec<_>>(); 
-        child_task_metrics.insert(self.stage_key.clone(), proto_task_metrics);
+        child_task_metrics.insert(self.stage_key.clone(), proto_task_metrics.clone());
 
         // Serialize the metrics for all tasks.
         let mut task_metrics_set = vec![];
@@ -75,11 +76,6 @@ where
                 metrics,
             });
         } 
-        println!("AAA endpoint emitting metrics collection (len {}, stage key {})", task_metrics_set.len(), self.stage_key);
-        for metrics in &task_metrics_set {
-            println!("AAA key {})", metrics.stage_key.as_ref().unwrap());
-        }
-        println!("AAA end\n");
             
         let flight_app_metadata = FlightAppMetadata {
             content: Some(AppMetadata::TaskMetricsSet(TaskMetricsSet {

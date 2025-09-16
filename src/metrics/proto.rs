@@ -53,8 +53,9 @@ pub struct ProtoLabel {
     pub value: String,
 }
 
+/// NOTE: we filter out metrics that are not supported by the proto representation.
 pub fn df_metrics_set_to_proto(metrics_set: &MetricsSet) -> Result<ProtoMetricsSet, DataFusionError> {
-    let metrics = metrics_set.iter().map(|metric|df_metric_to_proto(metric.clone())).collect::<Result<Vec<_>, _>>()?;
+    let metrics = metrics_set.iter().filter_map(|metric|df_metric_to_proto(metric.clone()).ok()).collect::<Vec<_>>();
     Ok(ProtoMetricsSet { metrics })
 }
 

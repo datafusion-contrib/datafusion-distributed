@@ -9,7 +9,7 @@ use datafusion::prelude::SessionContext;
 
 use crate::channel_manager_ext::get_distributed_channel_resolver;
 use crate::task::ExecutionTask;
-use crate::ChannelResolver;
+use crate::{ChannelResolver, ProtoMetricsSet};
 use itertools::Itertools;
 use rand::Rng;
 use url::Url;
@@ -91,11 +91,10 @@ pub struct ExecutionStage {
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
-    /// task_metrics stores the metrics for each ExecutionPlan for each task in the
-    /// plan (including tasks in child `ExecutionStage`s). These metrics are populated after the
-    /// `ExecutionStage` is `execute()`ed.  
-    /// TODO: Should we store these in serialized form?
-    pub task_metrics: HashMap<StageKey, Vec<MetricsSet>>,
+    /// task_metrics is used at `ExplainAnalyze` time to display metrics for each task.
+    /// It is populated in the coordinator ExecutionStage only by the `EXPLAIN ANALYZE` command.
+    /// These metrics are used at display-time to show metrics for each task.
+    pub task_metrics: HashMap<StageKey, Vec<ProtoMetricsSet>>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
 }

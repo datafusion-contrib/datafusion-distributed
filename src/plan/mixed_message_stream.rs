@@ -47,7 +47,7 @@ where
                     Ok(())
                 }
                 Err(e) => {
-                    Err(FlightError::ProtocolError(e.to_string()))
+                    Err(FlightError::ProtocolError(format!("failed to decode app_metadata: {}", e)))
                 }
            }
         }
