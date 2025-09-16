@@ -4,19 +4,23 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan,  PlanProperties, SendableRecordBatchStream};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Statistics};
-use crate::ExecutionStage;
+use crate::metrics::proto::proto_metrics_set_to_df;
+use crate::{ArrowFlightReadExec, ProtoMetricsSet};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRewriter, Transformed, TreeNodeRecursion};
 use datafusion::error::{Result,DataFusionError };
 
+
 /// MetricsRewriter is used to enrich a task with metrics
 struct TaskMetricsRewriter {
-    metrics: TaskMetrics,
+    metrics: Vec<ProtoMetricsSet>,
     task: Arc<dyn ExecutionPlan>,
+    // idx is the index of the "current" metric set encountered during the tree traversal.
     idx: usize,
 }
 
 impl TaskMetricsRewriter {
-    pub fn new(task: Arc<dyn ExecutionPlan>, metrics: TaskMetrics) -> Self {
+    /// new creates a new [TaskMetricsRewriter].
+    pub fn new(task: Arc<dyn ExecutionPlan>, metrics: Vec<ProtoMetricsSet>) -> Self {
         Self {
             metrics,
             task,
@@ -24,7 +28,8 @@ impl TaskMetricsRewriter {
         }
     }
 
-    pub fn enrich_task_with_metrics(mut self, plan: Arc<dyn ExecutionPlan>, task_metrics: TaskMetrics) -> Result<Arc<dyn ExecutionPlan>> {
+    /// enrich_task_with_metrics rewrites the provided plan with the list of metrics.
+    pub fn enrich_task_with_metrics(mut self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(plan.rewrite(&mut self)?.data)
     }
 }
@@ -34,13 +39,17 @@ impl TreeNodeRewriter for TaskMetricsRewriter {
     type Node = Arc<dyn ExecutionPlan>; 
 
     fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
-        if let Some(_) = plan.as_any().downcast_ref::<ExecutionStage>() {
-            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Stop));
+        if let Some(_) = plan.as_any().downcast_ref::<ArrowFlightReadExec>() {
+            // Do not recurse into ArrowFlightReadExec.
+            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
         }
+        // Convert metrics from our proto representation to datafusion metrics.
+        let metrics = proto_metrics_set_to_df(&self.metrics[self.idx])?;
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan, 
-            Some(self.metrics[self.idx].clone()),
+            Some(metrics),
         ));
+        // Transform the node.
         let result = Transformed::new(wrapped_plan_node, true, TreeNodeRecursion::Continue);
         self.idx += 1;
         Ok(result)

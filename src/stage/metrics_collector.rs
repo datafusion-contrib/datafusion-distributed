@@ -6,6 +6,9 @@ use crate::plan::ArrowFlightReadExec;
 use crate::stage::StageKey;
 use crate::common::visitor::{ExecutionPlanVisitor, accept};
 use crate::metrics::proto::ProtoMetricsSet;
+use datafusion::common::tree_node::{TreeNodeRewriter, Transformed, TreeNodeRecursion};
+use std::sync::Arc;
+use datafusion::error::Result;
 
 // MetricsCollector is used to collect metrics from a plan tree.
 pub struct MetricsCollector {
@@ -13,6 +16,45 @@ pub struct MetricsCollector {
     task_metrics: Vec<MetricsSet>,
     /// task_metrics contains the metrics for child tasks from other `ExecutionStage`s.
     child_task_metrics: HashMap<StageKey, Vec<ProtoMetricsSet>>,
+}
+impl TreeNodeRewriter for MetricsCollector {
+    type Node = Arc<dyn ExecutionPlan>; 
+
+    fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
+        // If the plan is an ArrowFlightReadExec, assume it has collected metrics already
+        // from child stages. Instead of traversing further, we can collect its task metrics.
+        if let Some(read_exec) = plan.as_any().downcast_ref::<ArrowFlightReadExec>() {
+            for mut entry in read_exec.task_metrics()?.iter_mut() {
+                let stage_key = entry.key().clone();
+                let task_metrics = std::mem::take(entry.value_mut());
+                match self.child_task_metrics.get(&stage_key){
+                    // There should never be two ArrowFlightReadExec with metrics for the same stage_key.
+                    // By convention, the ArrowFlightReadExec which runs the last partition in a task should be
+                    // sent metrics (the ArrowFlightEndpoint tracks it for us).
+                    Some(_) => {
+                        return Err(DataFusionError::Internal(
+                            format!("duplicate task metrics for key {}", stage_key).to_string(),
+                        ));
+                    },
+                     None => {
+                         self.child_task_metrics.insert(stage_key.clone(), task_metrics);
+                    }
+                }
+            }
+            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
+        }
+
+        // For regular plan nodes, collect
+        match plan.metrics() {
+            Some(metrics) => {
+                self.task_metrics.push(metrics.clone())
+            },
+            None => {
+                self.task_metrics.push(MetricsSet::new())
+            }
+        }
+        Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
+    }
 }
 
 impl ExecutionPlanVisitor for MetricsCollector {
