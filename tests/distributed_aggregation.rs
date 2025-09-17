@@ -24,7 +24,7 @@ mod tests {
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
         let physical_distributed = DistributedPhysicalOptimizerRule::default()
-            .with_maximum_partitions_per_task(1)
+            .with_network_shuffle_exec_tasks(2)
             .optimize(physical.clone(), &Default::default())?;
 
         let physical_distributed_str = displayable(physical_distributed.as_ref())

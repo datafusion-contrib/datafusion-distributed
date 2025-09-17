@@ -1,5 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
-use crate::{ArrowFlightReadExec, ChannelResolver, PartitionIsolatorExec};
+use crate::execution_plans::NetworkCoalesceTasksExec;
+use crate::{ChannelResolver, NetworkHashShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -48,10 +49,10 @@ use uuid::Uuid;
 ///  
 /// Then executing Stage 1 will run its plan locally.  Stage 1 has two inputs, Stage 2 and Stage 3.  We
 /// know these will execute on remote resources.   As such the plan for Stage 1 must contain an
-/// [`ArrowFlightReadExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
+/// [`NetworkHashShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
 /// results.
 ///
-/// When Stage 1's [`ArrowFlightReadExec`] node is executed, it makes an ArrowFlightRequest to the
+/// When Stage 1's [`NetworkHashShuffleExec`] node is executed, it makes an ArrowFlightRequest to the
 /// host assigned in the Stage.  It provides the following Stage tree serialilzed in the body of the
 /// Arrow Flight Ticket:
 ///
@@ -96,8 +97,23 @@ pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
     pub url: Option<Url>,
-    /// The partitions that we can execute from this plan
-    pub partition_group: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DistributedTaskContext {
+    pub task_index: usize,
+}
+
+impl DistributedTaskContext {
+    pub fn new(task_index: usize) -> Self {
+        Self { task_index }
+    }
+
+    pub fn from_ctx(ctx: &Arc<TaskContext>) -> Arc<Self> {
+        ctx.session_config()
+            .get_extension::<Self>()
+            .unwrap_or_default()
+    }
 }
 
 impl StageExec {
@@ -108,42 +124,20 @@ impl StageExec {
         num: usize,
         plan: Arc<dyn ExecutionPlan>,
         inputs: Vec<Arc<StageExec>>,
+        n_tasks: usize,
     ) -> Self {
-        let name = format!("Stage {:<3}", num);
-        let partition_group = (0..plan.properties().partitioning.partition_count()).collect();
         StageExec {
+            name: format!("Stage {:<3}", num),
             query_id,
             num,
-            name,
             plan,
             inputs: inputs
                 .into_iter()
                 .map(|s| s as Arc<dyn ExecutionPlan>)
                 .collect(),
-            tasks: vec![ExecutionTask {
-                partition_group,
-                url: None,
-            }],
+            tasks: vec![ExecutionTask { url: None }; n_tasks],
             depth: 0,
         }
-    }
-
-    /// Recalculate the tasks for this stage based on the number of partitions in the plan
-    /// and the maximum number of partitions per task.
-    ///
-    /// This will unset any worker assignments
-    pub fn with_maximum_partitions_per_task(mut self, max_partitions_per_task: usize) -> Self {
-        let partitions = self.plan.properties().partitioning.partition_count();
-
-        self.tasks = (0..partitions)
-            .chunks(max_partitions_per_task)
-            .into_iter()
-            .map(|partition_group| ExecutionTask {
-                partition_group: partition_group.collect(),
-                url: None,
-            })
-            .collect();
-        self
     }
 
     /// Returns the name of this stage
@@ -203,8 +197,7 @@ impl StageExec {
             .tasks
             .iter()
             .enumerate()
-            .map(|(i, task)| ExecutionTask {
-                partition_group: task.partition_group.clone(),
+            .map(|(i, _)| ExecutionTask {
                 url: Some(urls[(start_idx + i) % urls.len()].clone()),
             })
             .collect::<Vec<_>>();
@@ -288,7 +281,8 @@ impl ExecutionPlan for StageExec {
         let config = context
             .session_config()
             .clone()
-            .with_extension(assigned_stage.clone());
+            .with_extension(assigned_stage.clone())
+            .with_extension(Arc::new(DistributedTaskContext { task_index: 0 }));
 
         let new_ctx =
             SessionContext::new_with_config_rt(config, context.runtime_env().clone()).task_ctx();
@@ -323,8 +317,26 @@ impl StageExec {
         node_str.pop();
         write!(f, "{} {node_str}", " ".repeat(indent))?;
 
-        if let Some(ArrowFlightReadExec::Ready(ready)) =
-            plan.as_any().downcast_ref::<ArrowFlightReadExec>()
+        if let Some(NetworkHashShuffleExec::Ready(ready)) =
+            plan.as_any().downcast_ref::<NetworkHashShuffleExec>()
+        {
+            let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
+            else {
+                writeln!(f, "Wrong partition number {}", ready.stage_num)?;
+                return Ok(());
+            };
+            let n_tasks = self.tasks.len();
+            let input_tasks = input_stage.tasks.len();
+            let partitions = plan.output_partitioning().partition_count();
+            let stage = ready.stage_num;
+            write!(
+                f,
+                " read_from=Stage {stage}, output_partitions={partitions}, n_tasks={n_tasks}, input_tasks={input_tasks}",
+            )?;
+        }
+
+        if let Some(NetworkCoalesceTasksExec::Ready(ready)) =
+            plan.as_any().downcast_ref::<NetworkCoalesceTasksExec>()
         {
             let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
             else {
@@ -336,12 +348,16 @@ impl StageExec {
             let stage = ready.stage_num;
             write!(
                 f,
-                " input_stage={stage}, input_partitions={partitions}, input_tasks={tasks}",
+                " read_from=Stage {stage}, output_partitions={partitions}, input_tasks={tasks}",
             )?;
         }
 
-        if plan.as_any().is::<PartitionIsolatorExec>() {
-            write!(f, " {}", format_tasks_for_partition_isolator(&self.tasks))?;
+        if let Some(isolator) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
+            write!(
+                f,
+                " {}",
+                format_tasks_for_partition_isolator(isolator, &self.tasks)
+            )?;
         }
         writeln!(f)?;
 
@@ -362,11 +378,17 @@ impl DisplayAs for StageExec {
             DisplayFormatType::Verbose => {
                 writeln!(
                     f,
-                    "{}{}{}{}",
+                    "{}{} {} {}",
                     LTCORNER,
                     HORIZONTAL.repeat(5),
-                    format!(" {} ", self.name),
-                    format_tasks_for_stage(&self.tasks),
+                    self.name,
+                    format_tasks_for_stage(
+                        self.tasks.len(),
+                        self.plan
+                            .properties()
+                            .output_partitioning()
+                            .partition_count()
+                    )
                 )?;
 
                 let mut plan_str = String::new();
@@ -387,158 +409,55 @@ impl DisplayAs for StageExec {
 
                 Ok(())
             }
-            DisplayFormatType::TreeRender => write!(f, "{}", format_tasks_for_stage(&self.tasks),),
+            DisplayFormatType::TreeRender => write!(
+                f,
+                "{}",
+                format_tasks_for_stage(
+                    self.tasks.len(),
+                    self.plan
+                        .properties()
+                        .output_partitioning()
+                        .partition_count()
+                )
+            ),
         }
     }
 }
 
-fn format_tasks_for_stage(tasks: &[ExecutionTask]) -> String {
+fn format_tasks_for_stage(n_tasks: usize, input_partitions: usize) -> String {
     let mut result = "Tasks: ".to_string();
-    for (i, t) in tasks.iter().enumerate() {
+    let mut off = 0;
+    for i in 0..n_tasks {
         result += &format!("t{i}:[");
-        result += &t.partition_group.iter().map(|v| format!("p{v}")).join(",");
-        result += "] "
+        result += &(off..(off + input_partitions))
+            .map(|v| format!("p{v}"))
+            .join(",");
+        result += "] ";
+        off += input_partitions
     }
     result
 }
 
-fn format_tasks_for_partition_isolator(tasks: &[ExecutionTask]) -> String {
-    let mut result = "Tasks: ".to_string();
+fn format_tasks_for_partition_isolator(
+    isolator: &PartitionIsolatorExec,
+    tasks: &[ExecutionTask],
+) -> String {
+    let mut partition_groups = vec![];
+    for i in 0..tasks.len() {
+        partition_groups.push(isolator.partition_group(i, tasks.len()));
+    }
+    let n: usize = partition_groups.iter().map(|v| v.len()).sum();
     let mut partitions = vec![];
-    for t in tasks.iter() {
-        partitions.extend(vec!["__".to_string(); t.partition_group.len()])
+    for _ in 0..tasks.len() {
+        partitions.push(vec!["__".to_string(); n]);
     }
-    for (i, t) in tasks.iter().enumerate() {
-        let mut partitions = partitions.clone();
-        for (i, p) in t.partition_group.iter().enumerate() {
-            partitions[*p] = format!("p{i}")
+
+    let mut result = "Tasks: ".to_string();
+    for (i, partition_group) in partition_groups.iter().enumerate() {
+        for (j, p) in partition_group.iter().enumerate() {
+            partitions[i][*p] = format!("p{j}")
         }
-        result += &format!("t{i}:[{}] ", partitions.join(","));
+        result += &format!("t{i}:[{}] ", partitions[i].join(","));
     }
     result
-}
-
-pub fn display_stage_graphviz(stage: &StageExec) -> Result<String> {
-    let mut f = String::new();
-
-    let num_colors = 5; // this should aggree with the colorscheme chosen from
-                        // https://graphviz.org/doc/info/colors.html
-    let colorscheme = "spectral5";
-
-    writeln!(f, "digraph G {{")?;
-    writeln!(f, "  node[shape=rect];")?;
-    writeln!(f, "  rankdir=BT;")?;
-    writeln!(f, "  ranksep=2;")?;
-    writeln!(f, "  edge[colorscheme={},penwidth=2.0];", colorscheme)?;
-
-    // we'll keep a stack of stage ref, parrent stage ref
-    let mut stack: Vec<(&StageExec, Option<&StageExec>)> = vec![(stage, None)];
-
-    while let Some((stage, parent)) = stack.pop() {
-        writeln!(f, "  subgraph cluster_{} {{", stage.num)?;
-        writeln!(f, "    node[shape=record];")?;
-        writeln!(f, "    label=\"{}\";", stage.name())?;
-        writeln!(f, "    labeljust=r;")?;
-        writeln!(f, "    labelloc=b;")?; // this will put the label at the top as our
-                                         // rankdir=BT
-
-        stage.tasks.iter().try_for_each(|task| {
-            let lab = task
-                .partition_group
-                .iter()
-                .map(|p| format!("<p{}>{}", p, p))
-                .collect::<Vec<_>>()
-                .join("|");
-            writeln!(
-                f,
-                "    \"{}_{}\"[label = \"{}\"]",
-                stage.num,
-                format_partition_group(&task.partition_group),
-                lab,
-            )?;
-
-            if let Some(our_parent) = parent {
-                our_parent.tasks.iter().try_for_each(|ptask| {
-                    task.partition_group.iter().try_for_each(|partition| {
-                        ptask.partition_group.iter().try_for_each(|ppartition| {
-                            writeln!(
-                                f,
-                                "    \"{}_{}\":p{}:n -> \"{}_{}\":p{}:s[color={}]",
-                                stage.num,
-                                format_partition_group(&task.partition_group),
-                                partition,
-                                our_parent.num,
-                                format_partition_group(&ptask.partition_group),
-                                ppartition,
-                                (partition) % num_colors + 1
-                            )
-                        })
-                    })
-                })?;
-            }
-
-            Ok::<(), std::fmt::Error>(())
-        })?;
-
-        // now we try to force the left right nature of tasks to be honored
-        writeln!(f, "    {{")?;
-        writeln!(f, "         rank = same;")?;
-        stage.tasks.iter().try_for_each(|task| {
-            writeln!(
-                f,
-                "         \"{}_{}\"",
-                stage.num,
-                format_partition_group(&task.partition_group)
-            )?;
-
-            Ok::<(), std::fmt::Error>(())
-        })?;
-        writeln!(f, "    }}")?;
-        // combined with rank = same, the invisible edges will force the tasks to be
-        // laid out in a single row within the stage
-        for i in 0..stage.tasks.len() - 1 {
-            writeln!(
-                f,
-                "    \"{}_{}\":w -> \"{}_{}\":e[style=invis]",
-                stage.num,
-                format_partition_group(&stage.tasks[i].partition_group),
-                stage.num,
-                format_partition_group(&stage.tasks[i + 1].partition_group),
-            )?;
-        }
-
-        // add a node for the plan, its way too big!   Alternatives to add it?
-        /*writeln!(
-            f,
-            "    \"{}_plan\"[label = \"{}\", shape=box];",
-            stage.num,
-            displayable(stage.plan.as_ref()).indent(false)
-        )?;
-        */
-
-        writeln!(f, "  }}")?;
-
-        for child in stage.child_stages_iter() {
-            stack.push((child, Some(stage)));
-        }
-    }
-
-    writeln!(f, "}}")?;
-    Ok(f)
-}
-
-pub fn format_partition_group(partition_group: &[usize]) -> String {
-    if partition_group.len() > 2 {
-        format!(
-            "{}..{}",
-            partition_group[0],
-            partition_group[partition_group.len() - 1]
-        )
-    } else {
-        partition_group
-            .iter()
-            .map(|pg| format!("{pg}"))
-            .collect::<Vec<_>>()
-            .join(",")
-    }
 }

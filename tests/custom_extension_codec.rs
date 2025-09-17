@@ -26,7 +26,7 @@ mod tests {
     use datafusion_distributed::{
         assert_snapshot, DistributedExt, DistributedSessionBuilderContext,
     };
-    use datafusion_distributed::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
+    use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkHashShuffleExec};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::{stream, TryStreamExt};
@@ -57,8 +57,7 @@ mod tests {
         ");
 
         let distributed_plan = build_plan(true)?;
-        let distributed_plan =
-            DistributedPhysicalOptimizerRule::default().distribute_plan(distributed_plan)?;
+        let distributed_plan = DistributedPhysicalOptimizerRule::distribute_plan(distributed_plan)?;
 
         assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
         ┌───── Stage 3   Tasks: t0:[p0] 
@@ -123,12 +122,13 @@ mod tests {
         )?);
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
-                RepartitionExec::try_new(
+            plan = Arc::new(NetworkHashShuffleExec::from_repartition_exec(
+                &RepartitionExec::try_new(
                     plan.clone(),
                     Partitioning::Hash(vec![col("numbers", &plan.schema())?], 1),
                 )?,
-            )));
+                10,
+            )?);
         }
 
         plan = Arc::new(SortExec::new(
@@ -141,9 +141,10 @@ mod tests {
         ));
 
         if distributed {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
-                RepartitionExec::try_new(plan.clone(), Partitioning::RoundRobinBatch(10))?,
-            )));
+            plan = Arc::new(NetworkHashShuffleExec::from_repartition_exec(
+                &RepartitionExec::try_new(plan.clone(), Partitioning::RoundRobinBatch(10))?,
+                10,
+            )?);
 
             plan = Arc::new(RepartitionExec::try_new(
                 plan,

@@ -102,8 +102,8 @@ pub struct RunOpt {
     sorted: bool,
 
     /// Number of partitions per task.
-    #[structopt(long = "ppt")]
-    partitions_per_task: Option<usize>,
+    #[structopt(long)]
+    max_tasks: Option<usize>,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -141,10 +141,10 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
         if !self.workers.is_empty() {
-            let mut rule = DistributedPhysicalOptimizerRule::new();
-            if let Some(partitions_per_task) = self.partitions_per_task {
-                rule = rule.with_maximum_partitions_per_task(partitions_per_task)
-            }
+            let tasks = self.max_tasks.unwrap_or(self.workers.len());
+            let rule = DistributedPhysicalOptimizerRule::new()
+                .with_coalesce_partitions_exec_tasks(tasks)
+                .with_network_shuffle_exec_tasks(tasks);
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 

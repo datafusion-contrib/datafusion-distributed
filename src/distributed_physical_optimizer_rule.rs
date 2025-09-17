@@ -1,48 +1,49 @@
-use std::sync::Arc;
-
-use super::{ArrowFlightReadExec, PartitionIsolatorExec, StageExec};
+use super::{NetworkHashShuffleExec, PartitionIsolatorExec, StageExec};
+use crate::execution_plans::NetworkCoalesceTasksExec;
+use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::joins::PartitionMode;
+use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::{
-    common::{
-        internal_datafusion_err,
-        tree_node::{Transformed, TreeNode},
-    },
+    common::tree_node::{Transformed, TreeNode},
     config::ConfigOptions,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{repartition::RepartitionExec, ExecutionPlan},
 };
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule {
     /// maximum number of partitions per task. This is used to determine how many
     /// tasks to create for each stage
-    partitions_per_task: Option<usize>,
+    network_shuffle_exec_tasks: Option<usize>,
+
+    coalesce_partitions_exec_tasks: Option<usize>,
 }
 
 impl DistributedPhysicalOptimizerRule {
     pub fn new() -> Self {
         DistributedPhysicalOptimizerRule {
-            partitions_per_task: None,
+            network_shuffle_exec_tasks: None,
+            coalesce_partitions_exec_tasks: None,
         }
     }
 
-    /// Set the maximum number of partitions per task. This is used to determine how many
-    /// tasks to create for each stage.
-    ///
-    /// If a stage holds a plan with 10 partitions, and this is set to 3,
-    /// then the stage will be split into 4 tasks:
-    /// - Task 1: partitions 0, 1, 2
-    /// - Task 2: partitions 3, 4, 5
-    /// - Task 3: partitions 6, 7, 8
-    /// - Task 4: partitions 9
-    ///
-    /// Each task will be executed on a separate host
-    pub fn with_maximum_partitions_per_task(mut self, partitions_per_task: usize) -> Self {
-        self.partitions_per_task = Some(partitions_per_task);
+    pub fn with_network_shuffle_exec_tasks(mut self, tasks: usize) -> Self {
+        self.network_shuffle_exec_tasks = Some(tasks);
+        self
+    }
+
+    pub fn with_coalesce_partitions_exec_tasks(mut self, tasks: usize) -> Self {
+        self.coalesce_partitions_exec_tasks = Some(tasks);
         self
     }
 }
@@ -59,7 +60,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         }
 
         let plan = self.apply_network_boundaries(plan)?;
-        let plan = self.distribute_plan(plan)?;
+        let plan = Self::distribute_plan(plan)?;
         Ok(Arc::new(plan))
     }
 
@@ -78,23 +79,51 @@ impl DistributedPhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let result = plan.transform_up(|plan| {
-            if plan.as_any().downcast_ref::<RepartitionExec>().is_some() {
-                let child = Arc::clone(plan.children().first().cloned().ok_or(
-                    internal_datafusion_err!("Expected RepartitionExec to have a child"),
-                )?);
+            if plan.as_any().is::<DataSourceExec>() {
+                let node = PartitionIsolatorExec::new_pending(plan);
 
-                let maybe_isolated_plan =
-                    if can_be_divided(&plan)? && self.partitions_per_task.is_some() {
-                        let ppt = self.partitions_per_task.unwrap();
-                        let isolated = Arc::new(PartitionIsolatorExec::new(child, ppt));
-                        plan.with_new_children(vec![isolated])?
-                    } else {
-                        plan
-                    };
+                return Ok(Transformed::yes(Arc::new(node)));
+            }
 
-                return Ok(Transformed::yes(Arc::new(
-                    ArrowFlightReadExec::new_pending(Arc::clone(&maybe_isolated_plan)),
-                )));
+            if let Some(node) = plan.as_any().downcast_ref::<RepartitionExec>() {
+                let Some(tasks) = self.network_shuffle_exec_tasks else {
+                    return Ok(Transformed::no(plan));
+                };
+                if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
+                    return Ok(Transformed::no(plan));
+                }
+                let node = NetworkHashShuffleExec::from_repartition_exec(node, tasks)?;
+
+                return Ok(Transformed::yes(Arc::new(node)));
+            }
+
+            if let Some(node) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+                let Some(tasks) = self.coalesce_partitions_exec_tasks else {
+                    return Ok(Transformed::no(plan));
+                };
+                if node
+                    .children()
+                    .first()
+                    .is_some_and(|v| v.as_any().is::<PartitionIsolatorExec>())
+                {
+                    return Ok(Transformed::no(plan));
+                }
+                let node = NetworkCoalesceTasksExec::from_coalesce_partitions_exec(node, tasks)?;
+
+                let plan = plan.with_new_children(vec![Arc::new(node)])?;
+
+                return Ok(Transformed::yes(plan));
+            }
+
+            if let Some(node) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+                let Some(tasks) = self.coalesce_partitions_exec_tasks else {
+                    return Ok(Transformed::no(plan));
+                };
+                let node = NetworkCoalesceTasksExec::from_sort_preserving_merge_exec(node, tasks)?;
+
+                let plan = plan.with_new_children(vec![Arc::new(node)])?;
+
+                return Ok(Transformed::yes(plan));
             }
 
             Ok(Transformed::no(plan))
@@ -102,46 +131,65 @@ impl DistributedPhysicalOptimizerRule {
         Ok(result.data)
     }
 
-    pub fn distribute_plan(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<StageExec, DataFusionError> {
-        let query_id = Uuid::new_v4();
-        self._distribute_plan_inner(query_id, plan, &mut 1, 0)
+    pub fn distribute_plan(plan: Arc<dyn ExecutionPlan>) -> Result<StageExec, DataFusionError> {
+        Self::_distribute_plan_inner(Uuid::new_v4(), plan, &mut 1, 0, 1)
     }
 
     fn _distribute_plan_inner(
-        &self,
         query_id: Uuid,
         plan: Arc<dyn ExecutionPlan>,
         num: &mut usize,
         depth: usize,
+        n_tasks: usize,
     ) -> Result<StageExec, DataFusionError> {
         let mut inputs = vec![];
 
         let distributed = plan.clone().transform_down(|plan| {
-            let Some(node) = plan.as_any().downcast_ref::<ArrowFlightReadExec>() else {
+            if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>() {
+                if n_tasks > 1 && node.mode == PartitionMode::CollectLeft {
+                    return Err(limit_tasks_err(1))
+                }
+            }
+
+            if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
+                if n_tasks == 1 {
+                    return Ok(Transformed::yes(Arc::clone(plan.children().first().unwrap())));
+                }
+                let node = node.ready(n_tasks)?;
+                return Ok(Transformed::new(Arc::new(node), true, TreeNodeRecursion::Jump));
+            }
+
+            let mut dnode = if let Some(node) = plan.as_any().downcast_ref::<NetworkHashShuffleExec>() {
+                Arc::new(node.clone()) as Arc<dyn DistributedExecutionPlan>
+            } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceTasksExec>() {
+                Arc::new(node.clone()) as Arc<dyn DistributedExecutionPlan>
+            } else {
                 return Ok(Transformed::no(plan));
             };
-            let child = Arc::clone(node.children().first().cloned().ok_or(
-                internal_datafusion_err!("Expected ArrowFlightExecRead to have a child"),
-            )?);
-            let stage = self._distribute_plan_inner(query_id, child, num, depth + 1)?;
-            let node = Arc::new(node.to_distributed(stage.num)?);
+
+            let stage = loop {
+                let (inner_plan, in_tasks) = dnode.to_stage_info(n_tasks)?;
+                match Self::_distribute_plan_inner(query_id, inner_plan, num, depth + 1, in_tasks) {
+                    Ok(v) => break v,
+                    Err(e) => match get_distribute_plan_err(&e) {
+                        None => return Err(e),
+                        Some(DistributedPlanError::LimitTasks(limit)) => {
+                            if in_tasks == *limit {
+                                return plan_err!("A node requested {limit} tasks for the stage its in, but that stage already has that many tasks");
+                            }
+                            dnode = dnode.with_input_tasks(*limit);
+                        }
+                    },
+                }
+            };
+            let node = dnode.to_distributed(stage.num, &stage.plan)?;
             inputs.push(stage);
             Ok(Transformed::new(node, true, TreeNodeRecursion::Jump))
         })?;
 
         let inputs = inputs.into_iter().map(Arc::new).collect();
-        let mut stage = StageExec::new(query_id, *num, distributed.data, inputs);
+        let mut stage = StageExec::new(query_id, *num, distributed.data, inputs, n_tasks);
         *num += 1;
-
-        stage = match (self.partitions_per_task, can_be_divided(&plan)?) {
-            (Some(partitions_per_task), true) => {
-                stage.with_maximum_partitions_per_task(partitions_per_task)
-            }
-            (_, _) => stage,
-        };
 
         stage.depth = depth;
 
@@ -149,39 +197,47 @@ impl DistributedPhysicalOptimizerRule {
     }
 }
 
-/// Returns a boolean indicating if this stage can be divided into more than one task.
-///
-/// Some Plan nodes need to materialize all partitions inorder to execute such as
-/// NestedLoopJoinExec.   Rewriting the plan to accommodate dividing it into tasks
-/// would result in redundant work.
-///
-/// The plans we cannot split are:
-/// - NestedLoopJoinExec
-/// - HashJoinExec with PartitionMode != Partitioned, like CollectLeft
-pub fn can_be_divided(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
-    // recursively check to see if this stages plan contains a NestedLoopJoinExec
-    let mut has_unsplittable_plan = false;
-    let search = |f: &Arc<dyn ExecutionPlan>| {
-        if f.as_any()
-            .downcast_ref::<datafusion::physical_plan::joins::NestedLoopJoinExec>()
-            .is_some()
-        {
-            has_unsplittable_plan = true;
-            return Ok(TreeNodeRecursion::Stop);
-        } else if let Some(hash_join) = f
-            .as_any()
-            .downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
-        {
-            if hash_join.partition_mode() != &PartitionMode::Partitioned {
-                has_unsplittable_plan = true;
-                return Ok(TreeNodeRecursion::Stop);
+pub trait DistributedExecutionPlan: ExecutionPlan {
+    fn to_stage_info(
+        &self,
+        n_tasks: usize,
+    ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError>;
+
+    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn DistributedExecutionPlan>;
+
+    fn to_distributed(
+        &self,
+        stage_num: usize,
+        stage_head: &Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>;
+}
+
+#[derive(Debug)]
+enum DistributedPlanError {
+    LimitTasks(usize),
+}
+
+impl Display for DistributedPlanError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DistributedPlanError::LimitTasks(n) => {
+                write!(f, "LimitTasksErr: {n}")
             }
         }
+    }
+}
 
-        Ok(TreeNodeRecursion::Continue)
+impl Error for DistributedPlanError {}
+
+pub fn limit_tasks_err(limit: usize) -> DataFusionError {
+    DataFusionError::External(Box::new(DistributedPlanError::LimitTasks(limit)))
+}
+
+fn get_distribute_plan_err(err: &DataFusionError) -> Option<&DistributedPlanError> {
+    let DataFusionError::External(err) = err else {
+        return None;
     };
-    plan.apply(search)?;
-    Ok(!has_unsplittable_plan)
+    err.downcast_ref()
 }
 
 #[cfg(test)]
@@ -224,10 +280,10 @@ mod tests {
     #[tokio::test]
     async fn test_select_all() {
         let query = r#"SELECT * FROM weather"#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 1).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 1   Tasks: t0:[p0] 
-        │ DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+        ┌───── Stage 1   Tasks: t0:[p0,p1,p2]
+        │ DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
         └──────────────────────────────────────────────────
         ");
     }
@@ -236,26 +292,24 @@ mod tests {
     async fn test_aggregation() {
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 3   Tasks: t0:[p0] 
+        ┌───── Stage 2   Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │           CoalesceBatchesExec: target_batch_size=8192
-        │             ArrowFlightReadExec input_stage=2, input_partitions=4, input_tasks=1
+        │             NetworkHashShuffleExec read_from=Stage 1, input_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] 
+          ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] t1:[p4,p5,p6,p7]
           │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
-          │   ArrowFlightReadExec input_stage=1, input_partitions=4, input_tasks=1
+          │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       PartitionIsolatorExec Tasks: t0:[p0,p1,p2,p3,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3]
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │     DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
-            └──────────────────────────────────────────────────
         ");
     }
 
@@ -263,42 +317,43 @@ mod tests {
     async fn test_aggregation_with_partitions_per_task() {
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
-        let plan = sql_to_explain_partitions_per_task(query, 2).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 3   Tasks: t0:[p0] 
+        ┌───── Stage 2   Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │           CoalesceBatchesExec: target_batch_size=8192
-        │             ArrowFlightReadExec input_stage=2, input_partitions=4, input_tasks=2
+        │             NetworkHashShuffleExec read_from=Stage 1, input_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0,p1] t1:[p2,p3] 
-          │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=2
-          │   PartitionIsolatorExec Tasks: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-          │     ArrowFlightReadExec input_stage=1, input_partitions=4, input_tasks=2
+          ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] t1:[p4,p5,p6,p7]
+          │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
+          │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       PartitionIsolatorExec Tasks: t0:[p0,p1,p2,p3,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3]
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0,p1] t1:[p2,p3] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
-            │   PartitionIsolatorExec Tasks: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-            │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │       DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
-            └──────────────────────────────────────────────────
         ");
     }
 
     #[tokio::test]
     async fn test_left_join() {
         let query = r#"SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday" "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 1   Tasks: t0:[p0] 
+        ┌───── Stage 2   Tasks: t0:[p0,p1,p2]
         │ CoalesceBatchesExec: target_batch_size=8192
-        │   HashJoinExec: mode=Partitioned, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-        │     DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-        │     DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
+        │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+        │     CoalescePartitionsExec
+        │       NetworkCoalesceTasksExec read_from=Stage 1, output_partitions=6, input_tasks=2
+        │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         └──────────────────────────────────────────────────
+          ┌───── Stage 1   Tasks: t0:[p0,p1] t1:[p2,p3]
+          │ PartitionIsolatorExec Tasks: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+          │   DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          └──────────────────────────────────────────────────
         ");
     }
 
@@ -328,54 +383,54 @@ mod tests {
         ON a."RainTomorrow" = b."RainTomorrow"
 
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 5   Tasks: t0:[p0,p1,p2,p3] 
+        ┌───── Stage 4   Tasks: t0:[p0,p1,p2,p3]
         │ CoalesceBatchesExec: target_batch_size=8192
         │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
         │     CoalescePartitionsExec
-        │       ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
-        │         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-        │           CoalesceBatchesExec: target_batch_size=8192
-        │             ArrowFlightReadExec input_stage=2, input_partitions=4, input_tasks=1
+        │       NetworkCoalesceTasksExec read_from=Stage 2, output_partitions=8, input_tasks=2
         │     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
         │       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
         │         CoalesceBatchesExec: target_batch_size=8192
-        │           ArrowFlightReadExec input_stage=4, input_partitions=4, input_tasks=1
+        │           NetworkHashShuffleExec read_from=Stage 3, input_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] 
-          │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
-          │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] t1:[p4,p5,p6,p7]
+          │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
+          │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
           │     CoalesceBatchesExec: target_batch_size=8192
-          │       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
-          │         ArrowFlightReadExec input_stage=1, input_partitions=4, input_tasks=1
+          │       NetworkHashShuffleExec read_from=Stage 1, input_partitions=4, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
+            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7] t1:[p8,p9,p10,p11,p12,p13,p14,p15]
+            │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 8), input_partitions=4
+            │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+            │     CoalesceBatchesExec: target_batch_size=8192
+            │       FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
+            │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+            │           PartitionIsolatorExec Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,__,__,__,__,__,__,__,__] t1:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4,p5,p6,p7]
+            │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
             └──────────────────────────────────────────────────
-          ┌───── Stage 4   Tasks: t0:[p0,p1,p2,p3] 
+          ┌───── Stage 3   Tasks: t0:[p0,p1,p2,p3] t1:[p4,p5,p6,p7]
           │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
           │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
           │     CoalesceBatchesExec: target_batch_size=8192
           │       FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
-          │         ArrowFlightReadExec input_stage=3, input_partitions=4, input_tasks=1
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │           PartitionIsolatorExec Tasks: t0:[p0,p1,p2,p3,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3]
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = no, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
           └──────────────────────────────────────────────────
-            ┌───── Stage 3   Tasks: t0:[p0,p1,p2,p3] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = no, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
-            └──────────────────────────────────────────────────
         ");
     }
 
     #[tokio::test]
     async fn test_sort() {
         let query = r#"SELECT * FROM weather ORDER BY "MinTemp" DESC "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 1   Tasks: t0:[p0] 
-        │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[false]
-        │   DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+        ┌───── Stage 1   Tasks: t0:[p0]
+        │ SortPreservingMergeExec: [MinTemp@0 DESC]
+        │   SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
+        │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
         └──────────────────────────────────────────────────
         ");
     }
@@ -383,37 +438,29 @@ mod tests {
     #[tokio::test]
     async fn test_distinct() {
         let query = r#"SELECT DISTINCT "RainToday", "WindGustDir" FROM weather"#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 3   Tasks: t0:[p0,p1,p2,p3] 
+        ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3]
         │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
         │   CoalesceBatchesExec: target_batch_size=8192
-        │     ArrowFlightReadExec input_stage=2, input_partitions=4, input_tasks=1
+        │     NetworkHashShuffleExec read_from=Stage 1, input_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] 
+          ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] t1:[p4,p5,p6,p7]
           │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 4), input_partitions=4
-          │   ArrowFlightReadExec input_stage=1, input_partitions=4, input_tasks=1
+          │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
+          │       PartitionIsolatorExec Tasks: t0:[p0,p1,p2,p3,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3]
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-            │     DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
-            └──────────────────────────────────────────────────
         ");
     }
 
-    async fn sql_to_explain(query: &str) -> Result<String, DataFusionError> {
-        sql_to_explain_with_rule(query, DistributedPhysicalOptimizerRule::new()).await
-    }
-
-    async fn sql_to_explain_partitions_per_task(
-        query: &str,
-        partitions_per_task: usize,
-    ) -> Result<String, DataFusionError> {
+    async fn sql_to_explain(query: &str, tasks: usize) -> Result<String, DataFusionError> {
         sql_to_explain_with_rule(
             query,
             DistributedPhysicalOptimizerRule::new()
-                .with_maximum_partitions_per_task(partitions_per_task),
+                .with_network_shuffle_exec_tasks(tasks)
+                .with_coalesce_partitions_exec_tasks(tasks),
         )
         .await
     }

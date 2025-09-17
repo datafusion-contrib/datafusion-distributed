@@ -6,8 +6,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        assert_snapshot, ArrowFlightReadExec, DefaultSessionBuilder,
-        DistributedPhysicalOptimizerRule,
+        assert_snapshot, DefaultSessionBuilder, DistributedPhysicalOptimizerRule,
+        NetworkHashShuffleExec,
     };
     use futures::TryStreamExt;
     use std::error::Error;
@@ -25,16 +25,17 @@ mod tests {
 
         let mut physical_distributed = physical.clone();
         for size in [1, 10, 5] {
-            physical_distributed = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
-                RepartitionExec::try_new(
+            physical_distributed = Arc::new(NetworkHashShuffleExec::from_repartition_exec(
+                &RepartitionExec::try_new(
                     physical_distributed,
                     Partitioning::RoundRobinBatch(size),
                 )?,
-            )));
+                size,
+            )?);
         }
 
         let physical_distributed =
-            DistributedPhysicalOptimizerRule::default().distribute_plan(physical_distributed)?;
+            DistributedPhysicalOptimizerRule::distribute_plan(physical_distributed)?;
         let physical_distributed = Arc::new(physical_distributed);
         let physical_distributed_str = displayable(physical_distributed.as_ref())
             .indent(true)
