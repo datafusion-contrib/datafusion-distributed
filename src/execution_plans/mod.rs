@@ -1,4 +1,5 @@
 mod arrow_flight_read;
+mod metrics;
 mod partition_isolator;
 mod stage;
 
