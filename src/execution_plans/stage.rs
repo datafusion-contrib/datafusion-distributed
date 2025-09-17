@@ -570,26 +570,7 @@ pub fn display_plan(
         if let Some(parent) = maybe_parent {
             let output_partitions = plan.output_partitioning().partition_count();
 
-            let partitions = if !distributed {
-                #[deny(clippy::if_same_then_else)]
-                output_partitions
-            } else if plan
-                .as_any()
-                .downcast_ref::<ArrowFlightReadExec>()
-                .is_some()
-                || plan
-                    .as_any()
-                    .downcast_ref::<PartitionIsolatorExec>()
-                    .is_some()
-            {
-                output_partitions
-            } else if let Some(child) = plan.children().first() {
-                child.output_partitioning().partition_count()
-            } else {
-                output_partitions
-            };
-
-            for i in 0..partitions {
+            for i in 0..output_partitions {
                 let mut style = "";
                 if plan
                     .as_any()
