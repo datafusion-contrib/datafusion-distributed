@@ -530,7 +530,7 @@ pub fn display_plan(
     plan: &Arc<dyn ExecutionPlan>,
     partition_group: &[usize],
     stage_num: usize,
-    distributed: bool,
+    _distributed: bool,
 ) -> Result<String> {
     // draw all plans
     // we need to label the nodes including depth to uniquely identify them within this task
