@@ -1,3 +1,4 @@
+pub mod in_memory_channel_resolver;
 pub mod insta;
 pub mod localhost;
 pub mod mock_exec;
