@@ -15,6 +15,41 @@ use datafusion::{
 };
 use std::{fmt::Formatter, sync::Arc};
 
+/// This is a simple [ExecutionPlan] that isolates a set of N partitions from an input
+/// [ExecutionPlan] with M partitions, where N < M.
+///
+/// It will advertise to upper nodes that only N partitions are available, even though the child
+/// plan might have more.
+///
+/// The partitions exposed to upper nodes depend on:
+/// 1. the amount of tasks in the stage in which [PartitionIsolatorExec] is in.
+/// 2. the task index executing the [PartitionIsolatorExec] node.
+///
+/// ```text
+///                                ┌───────────────────────────┐                                   ■
+///                                │    NetworkCoalesceExec    │                                   │
+///                                │         (task 1)          │                                   │
+///                                └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┘                                Stage N+1
+///                                 │1││2││3││4││5││6││7││8││9│                                    │
+///                                 └─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘                                    │
+///                                 ▲  ▲  ▲   ▲  ▲  ▲   ▲  ▲  ▲                                    ■
+///   ┌──┬──┬───────────────────────┴──┴──┘   │  │  │   └──┴──┴──────────────────────┬──┬──┐
+///   │  │  │                                 │  │  │                                │  │  │       ■
+///  ┌─┐┌─┐┌─┐                               ┌─┐┌─┐┌─┐                              ┌─┐┌─┐┌─┐      │
+///  │1││2││3│                               │4││5││6│                              │7││8││9│      │
+/// ┌┴─┴┴─┴┴─┴──────────────────┐  ┌─────────┴─┴┴─┴┴─┴─────────┐ ┌──────────────────┴─┴┴─┴┴─┴┐     │
+/// │   PartitionIsolatorExec   │  │   PartitionIsolatorExec   │ │   PartitionIsolatorExec   │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └─▲──▲──▲───────────────────┘  └──────────▲──▲──▲──────────┘ └───────────────────▲──▲──▲─┘     │
+///   │  │  │  ◌  ◌  ◌  ◌  ◌  ◌      ◌  ◌  ◌  │  │  │  ◌  ◌  ◌     ◌  ◌  ◌  ◌  ◌  ◌  │  │  │    Stage N
+///   │  │  │  │  │  │  │  │  │      │  │  │  │  │  │  │  │  │     │  │  │  │  │  │  │  │  │       │
+///  ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐    ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐   ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐      │
+///  │1││2││3││4││5││6││7││8││9│    │1││2││3││4││5││6││7││8││9│   │1││2││3││4││5││6││7││8││9│      │
+/// ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐  ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐ ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐     │
+/// │      DataSourceExec       │  │      DataSourceExec       │ │      DataSourceExec       │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
+/// ```
 #[derive(Debug)]
 pub enum PartitionIsolatorExec {
     Pending(PartitionIsolatorPendingExec),
@@ -23,16 +58,9 @@ pub enum PartitionIsolatorExec {
 
 #[derive(Debug)]
 pub struct PartitionIsolatorPendingExec {
-    pub input: Arc<dyn ExecutionPlan>,
+    input: Arc<dyn ExecutionPlan>,
 }
 
-/// This is a simple execution plan that isolates a partition from the input
-/// plan It will advertise that it has a single partition and when
-/// asked to execute, it will execute a particular partition from the child
-/// input plan.
-///
-/// This allows us to execute Repartition Exec's on different processes
-/// by showing each one only a single child partition
 #[derive(Debug)]
 pub struct PartitionIsolatorReadyExec {
     pub(crate) input: Arc<dyn ExecutionPlan>,
@@ -77,14 +105,14 @@ impl PartitionIsolatorExec {
         Self::new_pending(input).ready(n_tasks)
     }
 
-    pub(crate) fn partition_group(&self, i: usize, n: usize) -> Vec<usize> {
+    pub(crate) fn partition_group(&self, task_i: usize, n_tasks: usize) -> Vec<usize> {
         let Self::Ready(ready) = self else {
             return vec![];
         };
 
         let input_partitions = ready.input.output_partitioning().partition_count();
-        let ppt = (input_partitions as f64 / n as f64).ceil() as usize;
-        ((ppt * i)..(ppt * (i + 1))).collect()
+        let ppt = (input_partitions as f64 / n_tasks as f64).ceil() as usize;
+        ((ppt * task_i)..(ppt * (task_i + 1))).collect()
     }
 }
 

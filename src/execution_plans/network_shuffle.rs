@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::scale_partitioning;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::DistributedExecutionPlan;
+use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::{DoGet, StageKey};
@@ -29,6 +29,82 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 
+/// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
+///
+/// The easiest way of thinking about this node is as a plan [RepartitionExec] node that is
+/// capable of fanning out the different produced partitions to different tasks.
+/// This allows redistributing data across different tasks in different stages, that way different
+/// physical machines can make progress on different non-overlapping sets of data.
+///
+/// This node allows fanning out data from N tasks to M tasks, being N and M arbitrary non-zero
+/// positive numbers. Here are some examples of how data can be shuffled in different scenarios:
+///
+/// # 1 to many
+///
+/// ```text
+/// ┌───────────────────────────┐  ┌───────────────────────────┐ ┌───────────────────────────┐     ■
+/// │    NetworkShuffleExec     │  │    NetworkShuffleExec     │ │    NetworkShuffleExec     │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └┬─┬┬─┬┬─┬──────────────────┘  └─────────┬─┬┬─┬┬─┬─────────┘ └──────────────────┬─┬┬─┬┬─┬┘  Stage N+1
+///  │1││2││3│                               │4││5││6│                              │7││8││9│      │
+///  └─┘└─┘└─┘                               └─┘└─┘└─┘                              └─┘└─┘└─┘      │
+///   ▲  ▲  ▲                                 ▲  ▲  ▲                                ▲  ▲  ▲       ■
+///   └──┴──┴────────────────────────┬──┬──┐  │  │  │  ┌──┬──┬───────────────────────┴──┴──┘
+///                                  │  │  │  │  │  │  │  │  │                                     ■
+///                                 ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐                                    │
+///                                 │1││2││3││4││5││6││7││8││9│                                    │
+///                                ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐                                Stage N
+///                                │      RepartitionExec      │                                   │
+///                                │         (task 1)          │                                   │
+///                                └───────────────────────────┘                                   ■
+/// ```
+///
+/// # many to 1
+///
+/// ```text
+///                                ┌───────────────────────────┐                                   ■
+///                                │    NetworkShuffleExec     │                                   │
+///                                │         (task 1)          │                                   │
+///                                └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┘                                Stage N+1
+///                                 │1││2││3││4││5││6││7││8││9│                                    │
+///                                 └─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘                                    │
+///                                 ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲                                    ■
+///   ┌──┬──┬──┬──┬──┬──┬──┬──┬─────┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴────┬──┬──┬──┬──┬──┬──┬──┬──┐
+///   │  │  │  │  │  │  │  │  │      │  │  │  │  │  │  │  │  │     │  │  │  │  │  │  │  │  │       ■
+///  ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐    ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐   ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐      │
+///  │1││2││3││4││5││6││7││8││9│    │1││2││3││4││5││6││7││8││9│   │1││2││3││4││5││6││7││8││9│      │
+/// ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐  ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐ ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐  Stage N
+/// │      RepartitionExec      │  │      RepartitionExec      │ │      RepartitionExec      │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
+/// ```
+///
+/// # many to many
+///
+/// ```text
+///                    ┌───────────────────────────┐  ┌───────────────────────────┐                ■
+///                    │    NetworkShuffleExec     │  │    NetworkShuffleExec     │                │
+///                    │         (task 1)          │  │         (task 2)          │                │
+///                    └┬─┬┬─┬┬─┬┬─┬───────────────┘  └───────────────┬─┬┬─┬┬─┬┬─┬┘             Stage N+1
+///                     │1││2││3││4│                                  │5││6││7││8│                 │
+///                     └─┘└─┘└─┘└─┘                                  └─┘└─┘└─┘└─┘                 │
+///                     ▲▲▲▲▲▲▲▲▲▲▲▲                                  ▲▲▲▲▲▲▲▲▲▲▲▲                 ■
+///     ┌──┬──┬──┬──┬──┬┴┴┼┴┴┼┴┴┴┴┴┴───┬──┬──┬──┬──┬──┬──┬──┬────────┬┴┴┼┴┴┼┴┴┼┴┴┼──┬──┬──┐
+///     │  │  │  │  │  │  │  │         │  │  │  │  │  │  │  │        │  │  │  │  │  │  │  │        ■
+///    ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐       ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐      ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐       │
+///    │1││2││3││4││5││6││7││8│       │1││2││3││4││5││6││7││8│      │1││2││3││4││5││6││7││8│       │
+/// ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐  ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐ ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐  Stage N
+/// │      RepartitionExec      │  │      RepartitionExec      │ │      RepartitionExec      │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
+/// ```
+///
+/// The communication between two stages across a [NetworkShuffleExec] has two implications:
+///
+/// - Each task in Stage N+1 gather data from all tasks in Stage N
+/// - The sum of the number of partitions in all tasks in Stage N+1 is equal to the
+///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
+///
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
@@ -86,7 +162,7 @@ impl NetworkShuffleExec {
     }
 }
 
-impl DistributedExecutionPlan for NetworkShuffleExec {
+impl NetworkBoundary for NetworkShuffleExec {
     fn to_stage_info(
         &self,
         n_tasks: usize,
@@ -110,7 +186,7 @@ impl DistributedExecutionPlan for NetworkShuffleExec {
         Ok((next_stage_plan, pending.input_tasks))
     }
 
-    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn DistributedExecutionPlan> {
+    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn NetworkBoundary> {
         Arc::new(match self {
             NetworkShuffleExec::Pending(prev) => {
                 NetworkShuffleExec::Pending(NetworkShufflePendingExec {

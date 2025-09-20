@@ -20,30 +20,73 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Physical optimizer rule that inspects the plan, places the appropriate network
+/// boundaries and breaks it down into stages that can be executed in a distributed manner.
+///
+/// The rule has two steps:
+///
+/// 1. Inject the appropriate distributed execution nodes in the appropriate places.
+///
+///  This is done by looking at specific nodes in the original plan and enhancing them
+///  with new additional nodes:
+///  - a [DataSourceExec] is wrapped with a [PartitionIsolatorExec] for exposing just a subset
+///    of the [DataSourceExec] partitions to the rest of the plan.
+///  - a [CoalescePartitionsExec] is followed by a [NetworkCoalesceExec] so that all tasks in the
+///    previous stage collapse into just 1 in the next stage.
+///  - a [SortPreservingMergeExec] is followed by a [NetworkCoalesceExec] for the same reasons as
+///    above
+///  - a [RepartitionExec] with a hash partition is wrapped with a [NetworkShuffleExec] for
+///    shuffling data to different tasks.
+///
+///
+/// 2. Break down the plan into stages
+///  
+///  Based on the network boundaries ([NetworkShuffleExec], [NetworkCoalesceExec], ...) placed in
+///  the plan by the first step, the plan is divided into stages and tasks are assigned to each
+///  stage.
+///
+///  This step might decide to not respect the amount of tasks each network boundary is requesting,
+///  like when a plan is not parallelizable in different tasks (e.g. a collect left [HashJoinExec])
+///  or when a [DataSourceExec] has not enough partitions to be spread across tasks.
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule {
-    /// maximum number of partitions per task. This is used to determine how many
-    /// tasks to create for each stage
-    network_shuffle_exec_tasks: Option<usize>,
-
-    coalesce_partitions_exec_tasks: Option<usize>,
+    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
+    /// ```text
+    ///  ( task 1 )  ( task 2 ) ( task 3 )
+    ///      ▲           ▲          ▲
+    ///      └────┬──────┴─────┬────┘
+    ///       ( task 1 )  ( task 2 )       N tasks
+    /// ```
+    /// This parameter defines N
+    network_shuffle_tasks: Option<usize>,
+    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
+    /// ```text
+    ///              ( task 1 )
+    ///                  ▲
+    ///      ┌───────────┴──────────┐
+    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
+    /// ```
+    /// This parameter defines N
+    network_coalesce_tasks: Option<usize>,
 }
 
 impl DistributedPhysicalOptimizerRule {
     pub fn new() -> Self {
         DistributedPhysicalOptimizerRule {
-            network_shuffle_exec_tasks: None,
-            coalesce_partitions_exec_tasks: None,
+            network_shuffle_tasks: None,
+            network_coalesce_tasks: None,
         }
     }
 
+    /// Sets the amount of tasks employed in performing shuffles.
     pub fn with_network_shuffle_tasks(mut self, tasks: usize) -> Self {
-        self.network_shuffle_exec_tasks = Some(tasks);
+        self.network_shuffle_tasks = Some(tasks);
         self
     }
 
+    /// Sets the amount of input tasks for every task coalescing operation.
     pub fn with_network_coalesce_tasks(mut self, tasks: usize) -> Self {
-        self.coalesce_partitions_exec_tasks = Some(tasks);
+        self.network_coalesce_tasks = Some(tasks);
         self
     }
 }
@@ -74,19 +117,22 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 }
 
 impl DistributedPhysicalOptimizerRule {
-    pub fn apply_network_boundaries(
+    fn apply_network_boundaries(
         &self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let result = plan.transform_up(|plan| {
+            // If this node is a DataSourceExec, we need to wrap it with PartitionIsolatorExec so
+            // that not all tasks have access to all partitions of the underlying DataSource.
             if plan.as_any().is::<DataSourceExec>() {
                 let node = PartitionIsolatorExec::new_pending(plan);
 
                 return Ok(Transformed::yes(Arc::new(node)));
             }
 
+            // If this is a hash RepartitionExec, introduce a shuffle.
             if let Some(node) = plan.as_any().downcast_ref::<RepartitionExec>() {
-                let Some(tasks) = self.network_shuffle_exec_tasks else {
+                let Some(tasks) = self.network_shuffle_tasks else {
                     return Ok(Transformed::no(plan));
                 };
                 if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
@@ -97,10 +143,17 @@ impl DistributedPhysicalOptimizerRule {
                 return Ok(Transformed::yes(Arc::new(node)));
             }
 
+            // If this is a CoalescePartitionsExec, it means that the original plan is trying to
+            // merge all partitions into one. We need to go one step ahead and also merge all tasks
+            // into one.
             if let Some(node) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-                let Some(tasks) = self.coalesce_partitions_exec_tasks else {
+                let Some(tasks) = self.network_coalesce_tasks else {
                     return Ok(Transformed::no(plan));
                 };
+
+                // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
+                // plan is just a couple of non-computational nodes that are probably not worth
+                // distributing.
                 if node
                     .children()
                     .first()
@@ -115,8 +168,11 @@ impl DistributedPhysicalOptimizerRule {
                 return Ok(Transformed::yes(plan));
             }
 
+            // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
+            // We need to account for it and help it by also coalescing all tasks into one, therefore
+            // a NetworkCoalesceExec is introduced.
             if let Some(node) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
-                let Some(tasks) = self.coalesce_partitions_exec_tasks else {
+                let Some(tasks) = self.network_coalesce_tasks else {
                     return Ok(Transformed::no(plan));
                 };
                 let node = NetworkCoalesceExec::from_sort_preserving_merge_exec(node, tasks)?;
@@ -131,6 +187,12 @@ impl DistributedPhysicalOptimizerRule {
         Ok(result.data)
     }
 
+    /// Takes a plan with certain network boundaries in it ([NetworkShuffleExec], [NetworkCoalesceExec], ...)
+    /// and breaks it down into stages.
+    ///
+    /// This can be used a standalone function for distributing arbitrary plans in which users have
+    /// manually placed network boundaries, or as part of the [DistributedPhysicalOptimizerRule] that
+    /// places the network boundaries automatically as a standard [PhysicalOptimizerRule].
     pub fn distribute_plan(plan: Arc<dyn ExecutionPlan>) -> Result<StageExec, DataFusionError> {
         Self::_distribute_plan_inner(Uuid::new_v4(), plan, &mut 1, 0, 1)
     }
@@ -145,6 +207,10 @@ impl DistributedPhysicalOptimizerRule {
         let mut inputs = vec![];
 
         let distributed = plan.clone().transform_down(|plan| {
+            // We cannot break down CollectLeft hash joins into more than 1 task, as these need
+            // a full materialized build size with all the data in it.
+            //
+            // Maybe in the future these can be broadcast joins?
             if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>() {
                 if n_tasks > 1 && node.mode == PartitionMode::CollectLeft {
                     return Err(limit_tasks_err(1))
@@ -152,6 +218,7 @@ impl DistributedPhysicalOptimizerRule {
             }
 
             if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
+                // If there's only 1 task, no need to perform any isolation.
                 if n_tasks == 1 {
                     return Ok(Transformed::yes(Arc::clone(plan.children().first().unwrap())));
                 }
@@ -160,15 +227,18 @@ impl DistributedPhysicalOptimizerRule {
             }
 
             let mut dnode = if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-                Arc::new(node.clone()) as Arc<dyn DistributedExecutionPlan>
+                Arc::new(node.clone()) as Arc<dyn NetworkBoundary>
             } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-                Arc::new(node.clone()) as Arc<dyn DistributedExecutionPlan>
+                Arc::new(node.clone()) as Arc<dyn NetworkBoundary>
             } else {
                 return Ok(Transformed::no(plan));
             };
 
             let stage = loop {
                 let (inner_plan, in_tasks) = dnode.to_stage_info(n_tasks)?;
+                // If the current stage has just 1 task, and the next stage is only going to have
+                // 1 task, there's no point in having a network boundary in between, they can just
+                // communicate in memory.
                 if n_tasks == 1 && in_tasks == 1 {
                     return Ok(Transformed::no(dnode.rollback()?));
                 }
@@ -177,6 +247,10 @@ impl DistributedPhysicalOptimizerRule {
                     Err(e) => match get_distribute_plan_err(&e) {
                         None => return Err(e),
                         Some(DistributedPlanError::LimitTasks(limit)) => {
+                            // While attempting to build a new stage, a failure was raised stating
+                            // that no more than `limit` tasks can be used for it, so we are going
+                            // to limit the amount of tasks to the requested number and try building
+                            // the stage again.
                             if in_tasks == *limit {
                                 return plan_err!("A node requested {limit} tasks for the stage its in, but that stage already has that many tasks");
                             }
@@ -200,20 +274,35 @@ impl DistributedPhysicalOptimizerRule {
     }
 }
 
-pub trait DistributedExecutionPlan: ExecutionPlan {
+/// This trait represents a node that introduces the necessity of a network boundary in the plan.
+/// The distributed planner, upon stepping into one of these, will break the plan and build a stage
+/// out of it.
+pub trait NetworkBoundary: ExecutionPlan {
+    /// Returns the information necessary for building the next stage.
+    /// - The head node of the stage.
+    /// - the amount of tasks that stage will have.
     fn to_stage_info(
         &self,
         n_tasks: usize,
     ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError>;
 
-    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn DistributedExecutionPlan>;
+    /// re-assigns a different number of input tasks to the current [NetworkBoundary].
+    ///
+    /// This will be called if upon building a stage, a [DistributedPlanError::LimitTasks] error
+    /// is returned, prompting the [NetworkBoundary] to choose a different number of input tasks.
+    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn NetworkBoundary>;
 
+    /// Called when a [StageExec] is correctly formed. The [NetworkBoundary] can use this
+    /// information to perform any internal transformations necessary for distributed execution.
     fn to_distributed(
         &self,
         stage_num: usize,
         stage_head: &Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>;
 
+    /// The planner might decide to remove this [NetworkBoundary] from the plan if it decides that
+    /// it's not going to bring any benefit. The [NetworkBoundary] will be replaced with whatever
+    /// this function returns.
     fn rollback(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let children = self.children();
         if children.len() != 1 {
@@ -227,8 +316,12 @@ pub trait DistributedExecutionPlan: ExecutionPlan {
     }
 }
 
+/// Error thrown during distributed planning that prompts the planner to change something and
+/// try again.
 #[derive(Debug)]
 enum DistributedPlanError {
+    /// Prompts the planner to limit the amount of tasks used in the stage that is currently
+    /// being planned.
     LimitTasks(usize),
 }
 
@@ -244,6 +337,8 @@ impl Display for DistributedPlanError {
 
 impl Error for DistributedPlanError {}
 
+/// Builds a [DistributedPlanError::LimitTasks] error. This error prompts the distributed planner
+/// to try rebuilding the current stage with a limited amount of tasks.
 pub fn limit_tasks_err(limit: usize) -> DataFusionError {
     DataFusionError::External(Box::new(DistributedPlanError::LimitTasks(limit)))
 }

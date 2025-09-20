@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::scale_partitioning_props;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{limit_tasks_err, DistributedExecutionPlan};
+use crate::distributed_physical_optimizer_rule::{limit_tasks_err, NetworkBoundary};
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::{DoGet, StageKey};
@@ -27,6 +27,36 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::Request;
 
+/// [ExecutionPlan] that coalesces partitions from multiple tasks into a single task without
+/// performing any repartition, and maintaining the same partitioning scheme.
+///
+/// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
+/// into one.
+///
+/// ```text
+///                                ┌───────────────────────────┐                                   ■
+///                                │    NetworkCoalesceExec    │                                   │
+///                                │         (task 1)          │                                   │
+///                                └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┘                                Stage N+1
+///                                 │1││2││3││4││5││6││7││8││9│                                    │
+///                                 └─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘                                    │
+///                                 ▲  ▲  ▲   ▲  ▲  ▲   ▲  ▲  ▲                                    ■
+///   ┌──┬──┬───────────────────────┴──┴──┘   │  │  │   └──┴──┴──────────────────────┬──┬──┐
+///   │  │  │                                 │  │  │                                │  │  │       ■
+///  ┌─┐┌─┐┌─┐                               ┌─┐┌─┐┌─┐                              ┌─┐┌─┐┌─┐      │
+///  │1││2││3│                               │4││5││6│                              │7││8││9│      │
+/// ┌┴─┴┴─┴┴─┴──────────────────┐  ┌─────────┴─┴┴─┴┴─┴─────────┐ ┌──────────────────┴─┴┴─┴┴─┴┐  Stage N
+/// │  Arc<dyn ExecutionPlan>   │  │  Arc<dyn ExecutionPlan>   │ │  Arc<dyn ExecutionPlan>   │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
+/// ```
+///
+/// The communication between two stages across a [NetworkCoalesceExec] has two implications:
+///
+/// - Stage N+1 must have exactly 1 task. The distributed planner ensures this is true.
+/// - The amount of partitions in the single task of Stage N+1 is equal to the sum of all
+///   partitions in all tasks in Stage N+1 (e.g. (1,2,3,4,5,6,7,8,9) = (1,2,3)+(4,5,6)+(7,8,9) )
+///
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
@@ -91,7 +121,7 @@ impl NetworkCoalesceExec {
     }
 }
 
-impl DistributedExecutionPlan for NetworkCoalesceExec {
+impl NetworkBoundary for NetworkCoalesceExec {
     fn to_stage_info(
         &self,
         n_tasks: usize,
@@ -127,7 +157,7 @@ impl DistributedExecutionPlan for NetworkCoalesceExec {
         Ok(Arc::new(Self::Ready(ready)))
     }
 
-    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn DistributedExecutionPlan> {
+    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn NetworkBoundary> {
         Arc::new(match self {
             NetworkCoalesceExec::Pending(pending) => {
                 NetworkCoalesceExec::Pending(NetworkCoalescePending {
