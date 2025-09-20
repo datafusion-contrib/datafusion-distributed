@@ -1,9 +1,7 @@
 use super::get_distributed_user_codec;
 use crate::common::ComposedPhysicalExtensionCodec;
-use crate::execution_plans::{
-    NetworkCoalesceTasksExec, NetworkCoalesceTasksReadyExec, NetworkHashShuffleReadyExec,
-};
-use crate::{NetworkHashShuffleExec, PartitionIsolatorExec};
+use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
+use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use arrow::datatypes::SchemaRef;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::execution::FunctionRegistry;
@@ -52,7 +50,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         };
 
         match distributed_exec_node {
-            DistributedExecNode::NetworkHashShuffle(NetworkHashShuffleExecProto {
+            DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
                 stage_num,
@@ -60,7 +58,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
-                    .ok_or(proto_error("NetworkHashShuffleExec is missing schema"))??;
+                    .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
 
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
@@ -68,9 +66,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &schema,
                     &DistributedCodec {},
                 )?
-                .ok_or(proto_error(
-                    "NetworkHashShuffleExec is missing partitioning",
-                ))?;
+                .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
@@ -78,7 +74,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     stage_num as usize,
                 )))
             }
-            DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceTasksExecProto {
+            DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
                 partitioning,
                 stage_num,
@@ -87,7 +83,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
-                    .ok_or(proto_error("NetworkCoalesceTasksExec is missing schema"))??;
+                    .ok_or(proto_error("NetworkCoalesceExec is missing schema"))??;
 
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
@@ -95,9 +91,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &schema,
                     &DistributedCodec {},
                 )?
-                .ok_or(proto_error(
-                    "NetworkCoalesceTasksExec is missing partitioning",
-                ))?;
+                .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
 
                 Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
@@ -129,13 +123,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
-        if let Some(node) = node.as_any().downcast_ref::<NetworkHashShuffleExec>() {
-            let NetworkHashShuffleExec::Ready(ready_node) = node else {
+        if let Some(node) = node.as_any().downcast_ref::<NetworkShuffleExec>() {
+            let NetworkShuffleExec::Ready(ready_node) = node else {
                 return Err(proto_error(
-                    "deserialized an NetworkHashShuffleExec that is not ready",
+                    "deserialized an NetworkShuffleExec that is not ready",
                 ));
             };
-            let inner = NetworkHashShuffleExecProto {
+            let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
@@ -149,14 +143,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
-        } else if let Some(node) = node.as_any().downcast_ref::<NetworkCoalesceTasksExec>() {
-            let NetworkCoalesceTasksExec::Ready(ready_node) = node else {
+        } else if let Some(node) = node.as_any().downcast_ref::<NetworkCoalesceExec>() {
+            let NetworkCoalesceExec::Ready(ready_node) = node else {
                 return Err(proto_error(
-                    "deserialized an NetworkCoalesceTasksExec that is not ready",
+                    "deserialized an NetworkCoalesceExec that is not ready",
                 ));
             };
 
-            let inner = NetworkCoalesceTasksExecProto {
+            let inner = NetworkCoalesceExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
@@ -201,9 +195,9 @@ pub struct DistributedExecProto {
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub enum DistributedExecNode {
     #[prost(message, tag = "1")]
-    NetworkHashShuffle(NetworkHashShuffleExecProto),
+    NetworkHashShuffle(NetworkShuffleExecProto),
     #[prost(message, tag = "2")]
-    NetworkCoalesceTasks(NetworkCoalesceTasksExecProto),
+    NetworkCoalesceTasks(NetworkCoalesceExecProto),
     #[prost(message, tag = "3")]
     PartitionIsolator(PartitionIsolatorExecProto),
 }
@@ -214,11 +208,11 @@ pub struct PartitionIsolatorExecProto {
     pub n_tasks: u64,
 }
 
-/// Protobuf representation of the [NetworkHashShuffleExec] physical node. It serves as
-/// an intermediate format for serializing/deserializing [NetworkHashShuffleExec] nodes
+/// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
 /// to send them over the wire.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NetworkHashShuffleExecProto {
+pub struct NetworkShuffleExecProto {
     #[prost(message, optional, tag = "1")]
     schema: Option<protobuf::Schema>,
     #[prost(message, optional, tag = "2")]
@@ -231,8 +225,8 @@ fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
     stage_num: usize,
-) -> NetworkHashShuffleExec {
-    NetworkHashShuffleExec::Ready(NetworkHashShuffleReadyExec {
+) -> NetworkShuffleExec {
+    NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
@@ -243,11 +237,11 @@ fn new_network_hash_shuffle_exec(
     })
 }
 
-/// Protobuf representation of the [NetworkHashShuffleExec] physical node. It serves as
-/// an intermediate format for serializing/deserializing [NetworkHashShuffleExec] nodes
+/// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
 /// to send them over the wire.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NetworkCoalesceTasksExecProto {
+pub struct NetworkCoalesceExecProto {
     #[prost(message, optional, tag = "1")]
     schema: Option<protobuf::Schema>,
     #[prost(message, optional, tag = "2")]
@@ -263,8 +257,8 @@ fn new_network_coalesce_tasks_exec(
     schema: SchemaRef,
     stage_num: usize,
     input_tasks: usize,
-) -> NetworkCoalesceTasksExec {
-    NetworkCoalesceTasksExec::Ready(NetworkCoalesceTasksReadyExec {
+) -> NetworkCoalesceExec {
+    NetworkCoalesceExec::Ready(NetworkCoalesceReady {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
@@ -326,7 +320,7 @@ mod tests {
         ));
 
         let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(flight.clone(), 3)?);
+            Arc::new(PartitionIsolatorExec::new_ready(flight.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -356,7 +350,7 @@ mod tests {
 
         let union = Arc::new(UnionExec::new(vec![left.clone(), right.clone()]));
         let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(union.clone(), 5)?);
+            Arc::new(PartitionIsolatorExec::new_ready(union.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -389,7 +383,7 @@ mod tests {
         ));
 
         let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(sort.clone(), 2)?);
+            Arc::new(PartitionIsolatorExec::new_ready(sort.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;

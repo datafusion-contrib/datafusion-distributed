@@ -70,14 +70,14 @@ impl PartitionIsolatorExec {
         }))
     }
 
-    pub fn new_ready(
+    pub(crate) fn new_ready(
         input: Arc<dyn ExecutionPlan>,
         n_tasks: usize,
     ) -> Result<Self, DataFusionError> {
         Self::new_pending(input).ready(n_tasks)
     }
 
-    pub fn partition_group(&self, i: usize, n: usize) -> Vec<usize> {
+    pub(crate) fn partition_group(&self, i: usize, n: usize) -> Vec<usize> {
         let Self::Ready(ready) = self else {
             return vec![];
         };

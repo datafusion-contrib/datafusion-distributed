@@ -143,8 +143,8 @@ impl DistributedSessionBuilder for RunOpt {
         if !self.workers.is_empty() {
             let tasks = self.max_tasks.unwrap_or(self.workers.len());
             let rule = DistributedPhysicalOptimizerRule::new()
-                .with_coalesce_partitions_exec_tasks(tasks)
-                .with_network_shuffle_exec_tasks(tasks);
+                .with_network_coalesce_tasks(tasks)
+                .with_network_shuffle_tasks(tasks);
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 

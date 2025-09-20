@@ -1,6 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
-use crate::execution_plans::NetworkCoalesceTasksExec;
-use crate::{ChannelResolver, NetworkHashShuffleExec, PartitionIsolatorExec};
+use crate::execution_plans::NetworkCoalesceExec;
+use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -49,10 +49,10 @@ use uuid::Uuid;
 ///  
 /// Then executing Stage 1 will run its plan locally.  Stage 1 has two inputs, Stage 2 and Stage 3.  We
 /// know these will execute on remote resources.   As such the plan for Stage 1 must contain an
-/// [`NetworkHashShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
+/// [`NetworkShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
 /// results.
 ///
-/// When Stage 1's [`NetworkHashShuffleExec`] node is executed, it makes an ArrowFlightRequest to the
+/// When Stage 1's [`NetworkShuffleExec`] node is executed, it makes an ArrowFlightRequest to the
 /// host assigned in the Stage.  It provides the following Stage tree serialilzed in the body of the
 /// Arrow Flight Ticket:
 ///
@@ -317,8 +317,8 @@ impl StageExec {
         node_str.pop();
         write!(f, "{} {node_str}", " ".repeat(indent))?;
 
-        if let Some(NetworkHashShuffleExec::Ready(ready)) =
-            plan.as_any().downcast_ref::<NetworkHashShuffleExec>()
+        if let Some(NetworkShuffleExec::Ready(ready)) =
+            plan.as_any().downcast_ref::<NetworkShuffleExec>()
         {
             let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
             else {
@@ -335,8 +335,8 @@ impl StageExec {
             )?;
         }
 
-        if let Some(NetworkCoalesceTasksExec::Ready(ready)) =
-            plan.as_any().downcast_ref::<NetworkCoalesceTasksExec>()
+        if let Some(NetworkCoalesceExec::Ready(ready)) =
+            plan.as_any().downcast_ref::<NetworkCoalesceExec>()
         {
             let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
             else {
