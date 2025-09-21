@@ -240,7 +240,12 @@ impl DistributedPhysicalOptimizerRule {
                 // 1 task, there's no point in having a network boundary in between, they can just
                 // communicate in memory.
                 if n_tasks == 1 && in_tasks == 1 {
-                    return Ok(Transformed::no(dnode.rollback()?));
+                    let mut n = dnode.rollback()?;
+                    if let Some(node) = n.as_any().downcast_ref::<PartitionIsolatorExec>() {
+                        // Also trim PartitionIsolatorExec out of the plan.
+                        n = Arc::clone(node.children().first().unwrap());
+                    }
+                    return Ok(Transformed::yes(n));
                 }
                 match Self::_distribute_plan_inner(query_id, inner_plan, num, depth + 1, in_tasks) {
                     Ok(v) => break v,

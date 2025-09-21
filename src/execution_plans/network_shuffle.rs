@@ -243,7 +243,7 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match self {
-            NetworkShuffleExec::Pending(v) => v.repartition_exec.children(),
+            NetworkShuffleExec::Pending(v) => vec![&v.repartition_exec],
             NetworkShuffleExec::Ready(_) => vec![],
         }
     }

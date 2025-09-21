@@ -25,7 +25,7 @@ use crate::util::{
 };
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::util::pretty::{self, pretty_format_batches};
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
@@ -103,7 +103,11 @@ pub struct RunOpt {
 
     /// Number of partitions per task.
     #[structopt(long)]
-    max_tasks: Option<usize>,
+    shuffle_tasks: Option<usize>,
+
+    /// Number of partitions per task.
+    #[structopt(long)]
+    coalesce_tasks: Option<usize>,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -141,10 +145,9 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
         if !self.workers.is_empty() {
-            let tasks = self.max_tasks.unwrap_or(self.workers.len());
             let rule = DistributedPhysicalOptimizerRule::new()
-                .with_network_coalesce_tasks(tasks)
-                .with_network_shuffle_tasks(tasks);
+                .with_network_coalesce_tasks(self.coalesce_tasks.unwrap_or(self.workers.len()))
+                .with_network_shuffle_tasks(self.shuffle_tasks.unwrap_or(self.workers.len()));
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
@@ -325,11 +328,6 @@ impl RunOpt {
                 "=== Physical plan with metrics ===\n{}\n",
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent(true)
             );
-            if !result.is_empty() {
-                // do not call print_batches if there are no batches as the result is confusing
-                // and makes it look like there is a batch with no columns
-                pretty::print_batches(&result)?;
-            }
         }
         Ok((result, n_tasks))
     }
