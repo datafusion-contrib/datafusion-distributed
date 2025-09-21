@@ -1,3 +1,4 @@
+mod metrics;
 mod network_coalesce;
 mod network_shuffle;
 mod partition_isolator;

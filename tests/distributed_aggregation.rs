@@ -31,8 +31,6 @@ mod tests {
             .indent(true)
             .to_string();
 
-        println!("physical plan:\n{}", physical_str);
-
         assert_snapshot!(physical_str,
             @r"
         ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]

@@ -4,13 +4,15 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
-use crate::flight_service::{DoGet, StageKey};
-use crate::protobuf::{proto_from_stage, DistributedCodec};
+use crate::flight_service::DoGet;
+use crate::metrics::proto::MetricsSetProto;
+use crate::protobuf::{proto_from_stage, DistributedCodec, StageKey};
 use crate::ChannelResolver;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
+use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -133,6 +135,15 @@ pub struct NetworkShuffleReadyExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: PlanProperties,
     pub(crate) stage_num: usize,
+    /// metrics_collection is used to collect metrics from child tasks. It is empty when an
+    /// is instantiated (deserialized, created via [NetworkShuffleExec::new_ready] etc...).
+    /// Metrics are populated in this map via [NetworkShuffleExec::execute].
+    ///
+    /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
+    /// the stage it is reading from. This is because, by convention, the ArrowFlightEndpoint
+    /// sends metrics for a task to the last ArrowFlightReadExec to read from it, which may or may
+    /// not be this instance.
+    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }
 
 impl NetworkShuffleExec {
@@ -197,6 +208,7 @@ impl NetworkBoundary for NetworkShuffleExec {
             NetworkShuffleExec::Ready(prev) => NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
                 properties: prev.properties.clone(),
                 stage_num: prev.stage_num,
+                metrics_collection: Arc::clone(&prev.metrics_collection),
             }),
         })
     }
@@ -213,6 +225,7 @@ impl NetworkBoundary for NetworkShuffleExec {
         let ready = NetworkShuffleReadyExec {
             properties: pending.repartition_exec.properties().clone(),
             stage_num,
+            metrics_collection: Default::default(),
         };
 
         Ok(Arc::new(Self::Ready(ready)))

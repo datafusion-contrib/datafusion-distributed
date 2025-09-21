@@ -22,7 +22,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: clippy
-      - run: cargo clippy
+      - run: cargo clippy --all-targets --features integration
 
   unit-test:
     runs-on: ubuntu-latest

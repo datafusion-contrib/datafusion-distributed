@@ -9,8 +9,33 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
+use std::fmt::Display;
 use std::sync::Arc;
 use url::Url;
+
+/// A key that uniquely identifies a stage in a query
+#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
+pub struct StageKey {
+    /// Our query id
+    #[prost(string, tag = "1")]
+    pub query_id: String,
+    /// Our stage id
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+    /// The task number within the stage
+    #[prost(uint64, tag = "3")]
+    pub task_number: u64,
+}
+
+impl Display for StageKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "StageKey_QueryID_{}_StageID_{}_TaskNumber_{}",
+            self.query_id, self.stage_id, self.task_number
+        )
+    }
+}
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StageExecProto {

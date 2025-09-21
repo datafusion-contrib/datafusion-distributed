@@ -8,6 +8,7 @@ mod distributed_physical_optimizer_rule;
 mod errors;
 mod execution_plans;
 mod flight_service;
+mod metrics;
 
 mod protobuf;
 #[cfg(any(feature = "integration", test))]

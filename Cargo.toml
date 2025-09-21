@@ -11,6 +11,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+chrono = { version = "0.4.42" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 arrow-flight = "55.2.0"
@@ -47,8 +48,9 @@ integration = [
     "parquet",
     "arrow",
     "tokio-stream",
-    "hyper-util"
+    "hyper-util",
 ]
+
 tpch = ["integration"]
 
 [dev-dependencies]
