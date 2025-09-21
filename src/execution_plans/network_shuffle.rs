@@ -337,7 +337,6 @@ impl ExecutionPlan for NetworkShuffleExec {
 
                 let channel = channel_resolver.get_channel_for_url(&url).await?;
                 let stream = FlightServiceClient::new(channel)
-                    .max_decoding_message_size(2 * 1024 * 1024 * 1024)
                     .do_get(ticket)
                     .await
                     .map_err(map_status_to_datafusion_error)?
