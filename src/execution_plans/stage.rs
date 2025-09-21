@@ -10,6 +10,7 @@ use datafusion::physical_plan::{
 use datafusion::prelude::SessionContext;
 use itertools::Itertools;
 use rand::Rng;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
@@ -291,6 +292,7 @@ impl ExecutionPlan for StageExec {
     }
 }
 
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVistor`
@@ -442,10 +444,9 @@ fn format_tasks_for_partition_isolator(
     isolator: &PartitionIsolatorExec,
     tasks: &[ExecutionTask],
 ) -> String {
-    let mut partition_groups = vec![];
-    for i in 0..tasks.len() {
-        partition_groups.push(isolator.partition_group(i, tasks.len()));
-    }
+    let input_partitions = isolator.input().output_partitioning().partition_count();
+    let partition_groups = PartitionIsolatorExec::partition_groups(input_partitions, tasks.len());
+
     let n: usize = partition_groups.iter().map(|v| v.len()).sum();
     let mut partitions = vec![];
     for _ in 0..tasks.len() {
@@ -460,4 +461,423 @@ fn format_tasks_for_partition_isolator(
         result += &format!("t{i}:[{}] ", partitions[i].join(","));
     }
     result
+}
+
+// num_colors must agree with the colorscheme selected from
+// https://graphviz.org/doc/info/colors.html
+const NUM_COLORS: usize = 6;
+const COLOR_SCHEME: &str = "spectral6";
+
+/// This will render a regular or distributed datafusion plan as
+/// Graphviz dot format.
+/// You can view them on https://vis-js.com
+///
+/// Or it is often useful to expertiment with plan output using
+/// https://datafusion-fiddle.vercel.app/
+pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
+    let mut f = String::new();
+
+    writeln!(
+        f,
+        "digraph G {{
+  rankdir=BT
+  edge[colorscheme={}, penwidth=2.0]
+  splines=false
+",
+        COLOR_SCHEME
+    )?;
+
+    if plan.as_any().downcast_ref::<StageExec>().is_some() {
+        // draw all tasks first
+        plan.apply(|node| {
+            let stage = node
+                .as_any()
+                .downcast_ref::<StageExec>()
+                .expect("Expected StageExec");
+
+            for i in 0..stage.tasks.iter().len() {
+                let p = display_single_task(stage, i)?;
+                writeln!(f, "{}", p)?;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        // now draw edges between the tasks
+
+        plan.apply(|node| {
+            let stage = node
+                .as_any()
+                .downcast_ref::<StageExec>()
+                .expect("Expected StageExec");
+
+            for child_stage in stage.child_stages_iter() {
+                for task_i in 0..stage.tasks.len() {
+                    for child_task_i in 0..child_stage.tasks.len() {
+                        let edges =
+                            display_inter_task_edges(stage, task_i, child_stage, child_task_i)?;
+                        writeln!(
+                            f,
+                            "// edges from child stage {} task {} to stage {} task {}\n {}",
+                            child_stage.num, child_task_i, stage.num, task_i, edges
+                        )?;
+                    }
+                }
+            }
+
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+    } else {
+        // single plan, not a stage tree
+        writeln!(f, "node[shape=none]")?;
+        let p = display_plan(&plan, 0, 1, 0)?;
+        writeln!(f, "{}", p)?;
+    }
+
+    writeln!(f, "}}")?;
+
+    Ok(f)
+}
+
+pub fn display_single_task(stage: &StageExec, task_i: usize) -> Result<String> {
+    let partition_group =
+        build_partition_group(task_i, stage.plan.output_partitioning().partition_count());
+
+    let mut f = String::new();
+    writeln!(
+        f,
+        "
+  subgraph \"cluster_stage_{}_task_{}_margin\" {{
+    style=invis
+    margin=20.0
+  subgraph \"cluster_stage_{}_task_{}\" {{
+    color=blue
+    style=dotted
+    label = \"Stage {} Task {} Partitions {}\"
+    labeljust=r
+    labelloc=b
+
+    node[shape=none]
+
+",
+        stage.num,
+        task_i,
+        stage.num,
+        task_i,
+        stage.num,
+        task_i,
+        format_pg(&partition_group)
+    )?;
+
+    writeln!(
+        f,
+        "{}",
+        display_plan(&stage.plan, task_i, stage.tasks.len(), stage.num)?
+    )?;
+    writeln!(f, "  }}")?;
+    writeln!(f, "  }}")?;
+
+    Ok(f)
+}
+
+pub fn display_plan(
+    plan: &Arc<dyn ExecutionPlan>,
+    task_i: usize,
+    n_tasks: usize,
+    stage_num: usize,
+) -> Result<String> {
+    // draw all plans
+    // we need to label the nodes including depth to uniquely identify them within this task
+    // the tree node API provides depth first traversal, but we need breadth to align with
+    // how we will draw edges below, so we'll do that.
+    let mut queue = VecDeque::from([plan]);
+    let mut node_index = 0;
+
+    let mut f = String::new();
+    while let Some(plan) = queue.pop_front() {
+        node_index += 1;
+        let p = display_single_plan(plan.as_ref(), stage_num, task_i, node_index)?;
+        writeln!(f, "{}", p)?;
+        for child in plan.children().iter() {
+            queue.push_back(child);
+        }
+    }
+
+    // draw edges between the plan nodes
+    type PlanWithParent<'a> = (
+        &'a Arc<dyn ExecutionPlan>,
+        Option<&'a Arc<dyn ExecutionPlan>>,
+        usize,
+    );
+    let mut queue: VecDeque<PlanWithParent> = VecDeque::from([(plan, None, 0usize)]);
+    let mut isolator_partition_group = None;
+    node_index = 0;
+    while let Some((plan, maybe_parent, parent_idx)) = queue.pop_front() {
+        node_index += 1;
+        if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
+            isolator_partition_group = Some(PartitionIsolatorExec::partition_group(
+                node.input().output_partitioning().partition_count(),
+                task_i,
+                n_tasks,
+            ));
+        }
+        if let Some(parent) = maybe_parent {
+            let output_partitions = plan.output_partitioning().partition_count();
+
+            for i in 0..output_partitions {
+                let mut style = "";
+                if plan.as_any().is::<PartitionIsolatorExec>() {
+                    if i >= isolator_partition_group.as_ref().map_or(0, |v| v.len()) {
+                        style = "[style=dotted, label=empty]";
+                    }
+                } else if let Some(partition_group) = &isolator_partition_group {
+                    if !partition_group.contains(&i) {
+                        style = "[style=invis]";
+                    }
+                }
+
+                writeln!(
+                    f,
+                    "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {}[color={}]",
+                    plan.name(),
+                    stage_num,
+                    task_i,
+                    node_index,
+                    i,
+                    parent.name(),
+                    stage_num,
+                    task_i,
+                    parent_idx,
+                    i,
+                    style,
+                    i % NUM_COLORS + 1
+                )?;
+            }
+        }
+
+        for child in plan.children().iter() {
+            queue.push_back((child, Some(plan), node_index));
+        }
+    }
+    Ok(f)
+}
+
+/// We want to display a single plan as a three row table with the top and bottom being
+/// graphvis ports.
+///
+/// We accept an index to make the node name unique in the graphviz output within
+/// a plan at the same depth
+///
+/// An example of such a node would be:
+///
+/// ```text
+///       ArrowFlightReadExec [label=<
+///     <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0">
+///         <TR>
+///             <TD CELLBORDER="0">
+///                 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
+///                     <TR>
+///                         <TD PORT="t1"></TD>
+///                         <TD PORT="t2"></TD>
+///                     </TR>
+///                 </TABLE>
+///             </TD>
+///         </TR>
+///         <TR>
+///             <TD BORDER="0" CELLPADDING="0" CELLSPACING="0">
+///                 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
+///                     <TR>
+///                         <TD>ArrowFlightReadExec</TD>
+///                     </TR>
+///                 </TABLE>
+///             </TD>
+///         </TR>
+///         <TR>
+///             <TD CELLBORDER="0">
+///                 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
+///                     <TR>
+///                         <TD PORT="b1"></TD>
+///                         <TD PORT="b2"></TD>
+///                     </TR>
+///                 </TABLE>
+///             </TD>
+///         </TR>
+///     </TABLE>
+/// >];
+/// ```
+pub fn display_single_plan(
+    plan: &dyn ExecutionPlan,
+    stage_num: usize,
+    task_i: usize,
+    node_index: usize,
+) -> Result<String> {
+    let mut f = String::new();
+    let output_partitions = plan.output_partitioning().partition_count();
+    let input_partitions = if let Some(child) = plan.children().first() {
+        child.output_partitioning().partition_count()
+    } else if plan.as_any().is::<NetworkShuffleExec>() || plan.as_any().is::<NetworkCoalesceExec>()
+    {
+        output_partitions
+    } else {
+        1
+    };
+
+    writeln!(
+        f,
+        "
+    {}_{}_{}_{} [label=<
+    <TABLE BORDER='0' CELLBORDER='0' CELLSPACING='0' CELLPADDING='0'>
+        <TR>
+            <TD CELLBORDER='0'>
+                <TABLE BORDER='0' CELLBORDER='1' CELLSPACING='0'>
+                    <TR>",
+        plan.name(),
+        stage_num,
+        task_i,
+        node_index
+    )?;
+
+    for i in 0..output_partitions {
+        writeln!(f, "                        <TD PORT='t{}'></TD>", i)?;
+    }
+
+    writeln!(
+        f,
+        "                   </TR>
+                </TABLE>
+            </TD>
+        </TR>
+        <TR>
+            <TD BORDER='0' CELLPADDING='0' CELLSPACING='0'>
+                <TABLE BORDER='0' CELLBORDER='1' CELLSPACING='0'>
+                    <TR>
+                        <TD>{}</TD>
+                    </TR>
+                </TABLE>
+            </TD>
+        </TR>
+        <TR>
+            <TD CELLBORDER='0'>
+                <TABLE BORDER='0' CELLBORDER='1' CELLSPACING='0'>
+                    <TR>",
+        plan.name()
+    )?;
+
+    for i in 0..input_partitions {
+        writeln!(f, "                        <TD PORT='b{}'></TD>", i)?;
+    }
+
+    writeln!(
+        f,
+        "                   </TR>
+                </TABLE>
+            </TD>
+        </TR>
+    </TABLE>
+  >];
+"
+    )?;
+    Ok(f)
+}
+
+fn display_inter_task_edges(
+    stage: &StageExec,
+    task_i: usize,
+    child_stage: &StageExec,
+    child_task_i: usize,
+) -> Result<String> {
+    let mut f = String::new();
+    let partition_group =
+        build_partition_group(task_i, stage.plan.output_partitioning().partition_count());
+
+    let mut found_isolator = false;
+    let mut queue = VecDeque::from([&stage.plan]);
+    let mut index = 0;
+    while let Some(plan) = queue.pop_front() {
+        index += 1;
+        if plan.as_any().is::<PartitionIsolatorExec>() {
+            found_isolator = true;
+        } else if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
+            let NetworkShuffleExec::Ready(node) = node else {
+                continue;
+            };
+            if node.stage_num != child_stage.num {
+                continue;
+            }
+            // draw the edges to this node pulling data up from its child
+            let output_partitions = plan.output_partitioning().partition_count();
+            for p in 0..output_partitions {
+                let mut style = "";
+                if found_isolator && !partition_group.contains(&p) {
+                    style = "[style=invis]";
+                }
+
+                writeln!(
+                    f,
+                    "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {} [color={}]",
+                    child_stage.plan.name(),
+                    child_stage.num,
+                    child_task_i,
+                    1, // the repartition exec is always the first node in the plan
+                    p + (task_i * output_partitions),
+                    plan.name(),
+                    stage.num,
+                    task_i,
+                    index,
+                    p,
+                    style,
+                    p % NUM_COLORS + 1
+                )?;
+            }
+        } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
+            let NetworkCoalesceExec::Ready(node) = node else {
+                continue;
+            };
+            if node.stage_num != child_stage.num {
+                continue;
+            }
+            // draw the edges to this node pulling data up from its child
+            let output_partitions = plan.output_partitioning().partition_count();
+            let input_partitions_per_task = output_partitions / child_stage.tasks.len();
+            for p in 0..input_partitions_per_task {
+                let mut style = "";
+                if found_isolator && !partition_group.contains(&p) {
+                    style = "[style=invis]";
+                }
+
+                writeln!(
+                    f,
+                    "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {} [color={}]",
+                    child_stage.plan.name(),
+                    child_stage.num,
+                    child_task_i,
+                    1, // the repartition exec is always the first node in the plan
+                    p,
+                    plan.name(),
+                    stage.num,
+                    task_i,
+                    index,
+                    p + (child_task_i * input_partitions_per_task),
+                    style,
+                    p % NUM_COLORS + 1
+                )?;
+            }
+        }
+        for child in plan.children().iter() {
+            queue.push_back(child);
+        }
+    }
+
+    Ok(f)
+}
+
+fn format_pg(partition_group: &[usize]) -> String {
+    partition_group
+        .iter()
+        .map(|pg| format!("{pg}"))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn build_partition_group(task_i: usize, partitions: usize) -> Vec<usize> {
+    ((task_i * partitions)..((task_i + 1) * partitions)).collect::<Vec<_>>()
 }

@@ -83,7 +83,7 @@ impl PartitionIsolatorExec {
             return Err(limit_tasks_err(input_partitions));
         }
 
-        let partition_count = (input_partitions as f64 / n_tasks as f64).ceil() as usize;
+        let partition_count = Self::partition_groups(input_partitions, n_tasks)[0].len();
 
         let properties = pending
             .input
@@ -105,14 +105,34 @@ impl PartitionIsolatorExec {
         Self::new_pending(input).ready(n_tasks)
     }
 
-    pub(crate) fn partition_group(&self, task_i: usize, n_tasks: usize) -> Vec<usize> {
-        let Self::Ready(ready) = self else {
-            return vec![];
-        };
+    pub(crate) fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
+        let q = input_partitions / n_tasks;
+        let r = input_partitions % n_tasks;
 
-        let input_partitions = ready.input.output_partitioning().partition_count();
-        let ppt = (input_partitions as f64 / n_tasks as f64).ceil() as usize;
-        ((ppt * task_i)..(ppt * (task_i + 1))).collect()
+        let mut off = 0;
+        (0..n_tasks)
+            .map(|i| q + if i < r { 1 } else { 0 })
+            .map(|n| {
+                let result = (off..(off + n)).collect();
+                off += n;
+                result
+            })
+            .collect()
+    }
+
+    pub(crate) fn partition_group(
+        input_partitions: usize,
+        task_i: usize,
+        n_tasks: usize,
+    ) -> Vec<usize> {
+        Self::partition_groups(input_partitions, n_tasks)[task_i].clone()
+    }
+
+    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        match self {
+            PartitionIsolatorExec::Pending(v) => &v.input,
+            PartitionIsolatorExec::Ready(v) => &v.input,
+        }
     }
 }
 
@@ -139,10 +159,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match self {
-            PartitionIsolatorExec::Pending(pending) => vec![&pending.input],
-            PartitionIsolatorExec::Ready(ready) => vec![&ready.input],
-        }
+        vec![self.input()]
     }
 
     fn with_new_children(
@@ -176,13 +193,10 @@ impl ExecutionPlan for PartitionIsolatorExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let stage = StageExec::from_ctx(&context)?;
 
-        let partition_group = self.partition_group(task_context.task_index, stage.tasks.len());
+        let input_partitions = self_ready.input.output_partitioning().partition_count();
 
-        let partitions_in_input = self_ready
-            .input
-            .properties()
-            .output_partitioning()
-            .partition_count();
+        let partition_group =
+            Self::partition_group(input_partitions, task_context.task_index, stage.tasks.len());
 
         // if our partition group is [7,8,9] and we are asked for parittion 1,
         // then look up that index in our group and execute that partition, in this
@@ -190,7 +204,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
 
         let output_stream = match partition_group.get(partition) {
             Some(actual_partition_number) => {
-                if *actual_partition_number >= partitions_in_input {
+                if *actual_partition_number >= input_partitions {
                     //trace!("{} returning empty stream", ctx_name);
                     Ok(
                         Box::pin(EmptyRecordBatchStream::new(self_ready.input.schema()))
