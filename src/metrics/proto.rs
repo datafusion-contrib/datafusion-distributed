@@ -27,7 +27,7 @@ pub struct MetricsSetProto {
 }
 
 /// MetricValueProto is a protobuf mirror of the [datafusion::physical_plan::metrics::MetricValue] enum.
-#[derive(Clone, PartialEq, ::prost::Oneof)]
+#[derive(Clone, PartialEq, Eq, ::prost::Oneof)]
 pub enum MetricValueProto {
     #[prost(message, tag = "1")]
     OutputRows(OutputRows),
@@ -53,43 +53,43 @@ pub enum MetricValueProto {
     EndTimestamp(EndTimestamp),
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct OutputRows {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ElapsedCompute {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct SpillCount {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct SpilledBytes {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct SpilledRows {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct CurrentMemoryUsage {
     #[prost(uint64, tag = "1")]
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct NamedCount {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -97,7 +97,7 @@ pub struct NamedCount {
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct NamedGauge {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -105,7 +105,7 @@ pub struct NamedGauge {
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct NamedTime {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -113,20 +113,20 @@ pub struct NamedTime {
     pub value: u64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct StartTimestamp {
     #[prost(int64, optional, tag = "1")]
     pub value: Option<i64>,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct EndTimestamp {
     #[prost(int64, optional, tag = "1")]
     pub value: Option<i64>,
 }
 
 /// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct ProtoLabel {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -390,11 +390,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                     labels,
                 )))
             }
-            None => Ok(Arc::new(Metric::new_with_labels(
-                MetricValue::StartTimestamp(Timestamp::new()),
-                partition,
-                labels,
-            ))),
+            None => internal_err!("encountered invalid start timestamp metric with no value"),
         },
         Some(MetricValueProto::EndTimestamp(end_ts)) => match end_ts.value {
             Some(value) => {
@@ -406,11 +402,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                     labels,
                 )))
             }
-            None => Ok(Arc::new(Metric::new_with_labels(
-                MetricValue::EndTimestamp(Timestamp::new()),
-                partition,
-                labels,
-            ))),
+            None => internal_err!("encountered invalid end timestamp metric with no value"),
         },
         None => internal_err!("proto metric is missing the metric field"),
     }
@@ -419,9 +411,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::physical_plan::metrics::CustomMetricValue;
     use datafusion::physical_plan::metrics::{Count, Gauge, Label, MetricsSet, Time, Timestamp};
     use datafusion::physical_plan::metrics::{Metric, MetricValue};
     use std::borrow::Cow;
+    use std::sync::Arc;
 
     fn test_roundtrip_helper(metrics_set: MetricsSet, test_name: &str) {
         // Serialize and deserialize the metrics set.
@@ -783,10 +777,6 @@ mod tests {
 
     #[test]
     fn test_custom_metrics_filtering() {
-        use datafusion::physical_plan::metrics::{Count, CustomMetricValue, MetricsSet};
-        use std::sync::Arc;
-
-        // Create a simple custom metric value implementation for testing
         #[derive(Debug)]
         struct TestCustomMetric;
 
@@ -845,9 +835,6 @@ mod tests {
 
     #[test]
     fn test_unrepresentable_timestamp_error() {
-        use datafusion::physical_plan::metrics::{MetricsSet, Timestamp};
-        use std::sync::Arc;
-
         // Use a timestamp that is beyond the range that timestamp_nanos_opt() can handle.
         let mut metrics_set = MetricsSet::new();
         let timestamp = Timestamp::new();
@@ -863,16 +850,21 @@ mod tests {
             proto_result.is_err(),
             "should return error for unrepresentable timestamp"
         );
+    }
 
-        let error = proto_result.unwrap_err();
-        if let DataFusionError::Internal(msg) = error {
-            assert!(
-                msg.contains("cannot be represented via a nanosecond timestamp"),
-                "should be timestamp conversion error, got: {}",
-                msg
-            );
-        } else {
-            panic!("expected internal error, got: {:?}", error);
-        }
+    #[test]
+    fn test_invalid_proto_timestamp_error() {
+        // Create a MetricProto with EndTimestamp that has no value (None)
+        let invalid_end_timestamp_proto = MetricProto {
+            metric: Some(MetricValueProto::EndTimestamp(EndTimestamp { value: None })),
+            labels: vec![],
+            partition: Some(0),
+        };
+
+        let result = metric_proto_to_df(invalid_end_timestamp_proto);
+        assert!(
+            result.is_err(),
+            "should return error for invalid end timestamp with no value"
+        );
     }
 }

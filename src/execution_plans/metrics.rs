@@ -272,9 +272,6 @@ impl ExecutionPlan for MetricsWrapperExec {
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::proto::{
-        ElapsedCompute, EndTimestamp, MetricProto, MetricValueProto, OutputRows, StartTimestamp,
-    };
 
     use super::*;
     use datafusion::arrow::array::{Int32Array, StringArray};
@@ -283,6 +280,7 @@ mod tests {
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::physical_plan::metrics::MetricValue;
@@ -367,47 +365,12 @@ mod tests {
         (stage_exec, ctx)
     }
 
-    /// creates a "distinct" set of metrics from the provided seed
-    fn make_distinct_metrics_set(seed: u64) -> MetricsSetProto {
-        const TEST_TIMESTAMP: i64 = 1758200400000000000; // 2025-09-18 13:00:00 UTC
-        MetricsSetProto {
-            metrics: vec![
-                MetricProto {
-                    metric: Some(MetricValueProto::OutputRows(OutputRows { value: seed })),
-                    labels: vec![],
-                    partition: None,
-                },
-                MetricProto {
-                    metric: Some(MetricValueProto::ElapsedCompute(ElapsedCompute {
-                        value: seed,
-                    })),
-                    labels: vec![],
-                    partition: None,
-                },
-                MetricProto {
-                    metric: Some(MetricValueProto::StartTimestamp(StartTimestamp {
-                        value: Some(TEST_TIMESTAMP + (seed as i64 * 1_000_000_000)),
-                    })),
-                    labels: vec![],
-                    partition: None,
-                },
-                MetricProto {
-                    metric: Some(MetricValueProto::EndTimestamp(EndTimestamp {
-                        value: Some(TEST_TIMESTAMP + ((seed as i64 + 1) * 1_000_000_000)),
-                    })),
-                    labels: vec![],
-                    partition: None,
-                },
-            ],
-        }
-    }
-
     #[tokio::test]
     #[ignore]
     async fn test_metrics_rewriter() {
         let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
         let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
-            .map(|i| make_distinct_metrics_set(i + 10))
+            .map(|i| make_test_metrics_set_proto_from_seed(i + 10))
             .collect::<Vec<MetricsSetProto>>();
 
         let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
@@ -433,7 +396,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_metrics_rewriter_correct_number_of_metrics() {
-        let test_metrics_set = make_distinct_metrics_set(10);
+        let test_metrics_set = make_test_metrics_set_proto_from_seed(10);
         let (executable_plan, _ctx) = make_test_stage_exec_with_5_nodes().await;
         let task_plan = executable_plan
             .as_any()
