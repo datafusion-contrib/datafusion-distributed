@@ -1,5 +1,7 @@
 use super::{NetworkShuffleExec, PartitionIsolatorExec, StageExec};
-use crate::errors::distributed_plan_error::{get_distribute_plan_err, limit_tasks_err, DistributedPlanError};
+use crate::errors::distributed_plan_error::{
+    get_distribute_plan_err, limit_tasks_err, DistributedPlanError,
+};
 use crate::execution_plans::NetworkCoalesceExec;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;

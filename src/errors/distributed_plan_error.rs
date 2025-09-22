@@ -1,5 +1,5 @@
-use std::fmt::{Display, Formatter};
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 
 use datafusion::error::DataFusionError;
 
