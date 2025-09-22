@@ -8,6 +8,7 @@ use prost::Message;
 
 mod arrow_error;
 mod datafusion_error;
+pub mod distributed_plan_error;
 mod io_error;
 mod objectstore_error;
 mod parquet_error;

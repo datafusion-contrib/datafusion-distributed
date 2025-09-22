@@ -1,7 +1,8 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::scale_partitioning_props;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{limit_tasks_err, NetworkBoundary};
+use crate::distributed_physical_optimizer_rule::NetworkBoundary;
+use crate::errors::distributed_plan_error::limit_tasks_err;
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
