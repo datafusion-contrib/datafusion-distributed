@@ -95,7 +95,7 @@ pub struct NetworkCoalesceReady {
     ///
     /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
     /// the stage it is reading from. This is because, by convention, the ArrowFlightEndpoint
-    /// sends metrics for a task to the last ArrowFlightReadExec to read from it, which may or may
+    /// sends metrics for a task to the last NetworkCoalesceExec to read from it, which may or may
     /// not be this instance.
     pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }

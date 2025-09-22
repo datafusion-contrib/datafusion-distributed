@@ -220,16 +220,14 @@ impl StageExec {
         ctx.session_config()
             .get_extension::<StageExec>()
             .ok_or(internal_datafusion_err!(
-                "ArrowFlightReadExec requires an ExecutionStage in the session config"
+                "missing ExecutionStage in session config"
             ))
     }
 
     pub fn child_stage(&self, i: usize) -> Result<&StageExec, DataFusionError> {
         self.child_stages_iter()
             .find(|s| s.num == i)
-            .ok_or(internal_datafusion_err!(
-                "ArrowFlightReadExec: no child stage with num {i}"
-            ))
+            .ok_or(internal_datafusion_err!("no child stage with num {i}"))
     }
 }
 
@@ -670,7 +668,7 @@ pub fn display_plan(
 /// An example of such a node would be:
 ///
 /// ```text
-///       ArrowFlightReadExec [label=<
+///       NetworkShuffleExec [label=<
 ///     <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0">
 ///         <TR>
 ///             <TD CELLBORDER="0">
@@ -686,7 +684,7 @@ pub fn display_plan(
 ///             <TD BORDER="0" CELLPADDING="0" CELLSPACING="0">
 ///                 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
 ///                     <TR>
-///                         <TD>ArrowFlightReadExec</TD>
+///                         <TD>NetworkShuffleExec</TD>
 ///                     </TR>
 ///                 </TABLE>
 ///             </TD>

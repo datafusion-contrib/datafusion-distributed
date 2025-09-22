@@ -38,7 +38,7 @@ impl TreeNodeRewriter for TaskMetricsCollector {
     type Node = Arc<dyn ExecutionPlan>;
 
     fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
-        // If the plan is an ArrowFlightReadExec, assume it has collected metrics already
+        // If the plan is an NetworkShuffleExec, assume it has collected metrics already
         // from child tasks.
         let metrics_collection =
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
@@ -79,7 +79,7 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                     }
                 }
             }
-            // Skip the subtree of the ArrowFlightReadExec.
+            // Skip the subtree of the NetworkShuffleExec.
             return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
         }
 
@@ -107,7 +107,7 @@ impl TaskMetricsCollector {
     /// collect metrics from a StageExec plan and any child tasks.
     /// Returns
     /// - a vec representing the metrics for the current task (ordered using a pre-order traversal)
-    /// - a map representing the metrics for some subset of child tasks collected from ArrowFlightReadExec leaves
+    /// - a map representing the metrics for some subset of child tasks collected from NetworkShuffleExec leaves
     #[allow(dead_code)]
     pub fn collect(mut self, stage: &StageExec) -> Result<MetricsCollectorResult, DataFusionError> {
         stage.plan.clone().rewrite(&mut self)?;
@@ -123,14 +123,14 @@ impl TaskMetricsCollector {
 /// Ex. for a plan with the form
 /// AggregateExec
 ///  └── ProjectionExec
-///      └── ArrowFlightReadExec
+///      └── NetworkShuffleExec
 ///
 /// the task will be rewritten as
 ///
 /// MetricsWrapperExec (wrapped: AggregateExec)
 ///  └── MetricsWrapperExec (wrapped: ProjectionExec)
-///      └── ArrowFlightReadExec
-/// (Note that the ArrowFlightReadExec node is not wrapped)
+///      └── NetworkShuffleExec
+/// (Note that the NetworkShuffleExec node is not wrapped)
 pub struct TaskMetricsRewriter {
     metrics: Vec<MetricsSetProto>,
     idx: usize,
@@ -402,7 +402,7 @@ mod tests {
     #[ignore]
     async fn test_metrics_rewriter() {
         let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let test_metrics_sets = (0..5) // 5 nodes excluding ArrowFlightReadExec
+        let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
             .map(|i| make_distinct_metrics_set(i + 10))
             .collect::<Vec<MetricsSetProto>>();
 
@@ -420,7 +420,7 @@ mod tests {
             r"    ProjectionExec: expr=[id@0 as id, count(Int64(1))@1 as count], metrics=[output_rows=12, elapsed_compute=12ns, start_timestamp=2025-09-18 13:00:12 UTC, end_timestamp=2025-09-18 13:00:13 UTC]",
             r"      AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=13, elapsed_compute=13ns, start_timestamp=2025-09-18 13:00:13 UTC, end_timestamp=2025-09-18 13:00:14 UTC]",
             r"        CoalesceBatchesExec: target_batch_size=8192, metrics=[output_rows=14, elapsed_compute=14ns, start_timestamp=2025-09-18 13:00:14 UTC, end_timestamp=2025-09-18 13:00:15 UTC]",
-            r"          ArrowFlightReadExec, metrics=[]",
+            r"          NetworkShuffleExec, metrics=[]",
             "" // trailing newline
         ].join("\n");
         assert_eq!(expected, plan_str.to_string());
