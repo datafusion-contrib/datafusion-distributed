@@ -222,3 +222,36 @@ impl ExecutionPlan for PartitionIsolatorExec {
         output_stream
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_partition_groups() {
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(2, 1),
+            vec![vec![0, 1]]
+        );
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(6, 2),
+            vec![vec![0, 1, 2], vec![3, 4, 5]]
+        );
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(6, 3),
+            vec![vec![0, 1], vec![2, 3], vec![4, 5]]
+        );
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(6, 4),
+            vec![vec![0, 1], vec![2, 3], vec![4], vec![5]]
+        );
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(10, 3),
+            vec![vec![0, 1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]
+        );
+        assert_eq!(
+            PartitionIsolatorExec::partition_groups(10, 4),
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7], vec![8, 9]]
+        );
+    }
+}
