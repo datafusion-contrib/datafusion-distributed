@@ -131,10 +131,10 @@ impl DistributedPhysicalOptimizerRule {
             }
 
             // If this is a hash RepartitionExec, introduce a shuffle.
-            if let Some(node) = plan.as_any().downcast_ref::<RepartitionExec>() {
-                let Some(tasks) = self.network_shuffle_tasks else {
-                    return Ok(Transformed::no(plan));
-                };
+            if let (Some(node), Some(tasks)) = (
+                plan.as_any().downcast_ref::<RepartitionExec>(),
+                self.network_shuffle_tasks,
+            ) {
                 if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
                     return Ok(Transformed::no(plan));
                 }
@@ -146,11 +146,10 @@ impl DistributedPhysicalOptimizerRule {
             // If this is a CoalescePartitionsExec, it means that the original plan is trying to
             // merge all partitions into one. We need to go one step ahead and also merge all tasks
             // into one.
-            if let Some(node) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-                let Some(tasks) = self.network_coalesce_tasks else {
-                    return Ok(Transformed::no(plan));
-                };
-
+            if let (Some(node), Some(tasks)) = (
+                plan.as_any().downcast_ref::<CoalescePartitionsExec>(),
+                self.network_coalesce_tasks,
+            ) {
                 // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
                 // plan is just a couple of non-computational nodes that are probably not worth
                 // distributing.
@@ -171,10 +170,10 @@ impl DistributedPhysicalOptimizerRule {
             // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
             // We need to account for it and help it by also coalescing all tasks into one, therefore
             // a NetworkCoalesceExec is introduced.
-            if let Some(node) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
-                let Some(tasks) = self.network_coalesce_tasks else {
-                    return Ok(Transformed::no(plan));
-                };
+            if let (Some(node), Some(tasks)) = (
+                plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
+                self.network_coalesce_tasks,
+            ) {
                 let node = NetworkCoalesceExec::from_sort_preserving_merge_exec(node, tasks)?;
 
                 let plan = plan.with_new_children(vec![Arc::new(node)])?;
