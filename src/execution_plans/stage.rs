@@ -291,6 +291,7 @@ impl ExecutionPlan for StageExec {
 }
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::physical_expr::Partitioning;
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVistor`
@@ -382,13 +383,7 @@ impl DisplayAs for StageExec {
                     LTCORNER,
                     HORIZONTAL.repeat(5),
                     self.name,
-                    format_tasks_for_stage(
-                        self.tasks.len(),
-                        self.plan
-                            .properties()
-                            .output_partitioning()
-                            .partition_count()
-                    )
+                    format_tasks_for_stage(self.tasks.len(), &self.plan)
                 )?;
 
                 let mut plan_str = String::new();
@@ -412,19 +407,16 @@ impl DisplayAs for StageExec {
             DisplayFormatType::TreeRender => write!(
                 f,
                 "{}",
-                format_tasks_for_stage(
-                    self.tasks.len(),
-                    self.plan
-                        .properties()
-                        .output_partitioning()
-                        .partition_count()
-                )
+                format_tasks_for_stage(self.tasks.len(), &self.plan)
             ),
         }
     }
 }
 
-fn format_tasks_for_stage(n_tasks: usize, input_partitions: usize) -> String {
+fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> String {
+    let partitioning = head.properties().output_partitioning();
+    let input_partitions = partitioning.partition_count();
+    let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
     let mut result = "Tasks: ".to_string();
     let mut off = 0;
     for i in 0..n_tasks {
@@ -433,7 +425,7 @@ fn format_tasks_for_stage(n_tasks: usize, input_partitions: usize) -> String {
             .map(|v| format!("p{v}"))
             .join(",");
         result += "] ";
-        off += input_partitions
+        off += if hash_shuffle { 0 } else { input_partitions }
     }
     result
 }
