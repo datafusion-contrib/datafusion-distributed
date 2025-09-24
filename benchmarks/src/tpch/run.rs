@@ -101,11 +101,25 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Number of partitions per task.
+    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
+    /// ```text
+    ///  ( task 1 )  ( task 2 ) ( task 3 )
+    ///      ▲           ▲          ▲
+    ///      └────┬──────┴─────┬────┘
+    ///       ( task 1 )  ( task 2 )       N tasks
+    /// ```
+    /// This parameter defines N
     #[structopt(long)]
     shuffle_tasks: Option<usize>,
 
-    /// Number of partitions per task.
+    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
+    /// ```text
+    ///              ( task 1 )
+    ///                  ▲
+    ///      ┌───────────┴──────────┐
+    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
+    /// ```
+    /// This parameter defines N
     #[structopt(long)]
     coalesce_tasks: Option<usize>,
 
