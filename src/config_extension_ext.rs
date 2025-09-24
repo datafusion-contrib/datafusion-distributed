@@ -1,5 +1,6 @@
 use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::config::ConfigExtension;
+use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
 use http::{HeaderMap, HeaderName};
 use std::error::Error;
@@ -78,6 +79,15 @@ impl ContextGrpcMetadata {
             self.0.insert(k, v);
         }
         self
+    }
+
+    pub fn headers_from_ctx(ctx: &Arc<TaskContext>) -> HeaderMap {
+        ctx.session_config()
+            .get_extension::<ContextGrpcMetadata>()
+            .as_ref()
+            .map(|v| v.as_ref().clone())
+            .unwrap_or_default()
+            .0
     }
 }
 

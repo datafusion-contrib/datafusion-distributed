@@ -1,6 +1,6 @@
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::errors::datafusion_error_to_tonic_status;
-use crate::execution_plans::{PartitionGroup, StageExec};
+use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::protobuf::{stage_from_proto, DistributedCodec, StageExecProto, StageKey};
@@ -8,14 +8,12 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::Ticket;
-use datafusion::execution::{SendableRecordBatchStream, SessionState};
+use datafusion::common::exec_datafusion_err;
+use datafusion::execution::SendableRecordBatchStream;
 use futures::TryStreamExt;
-use http::HeaderMap;
 use prost::Message;
-use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -25,10 +23,10 @@ pub struct DoGet {
     pub stage_proto: Option<StageExecProto>,
     /// The index to the task within the stage that we want to execute
     #[prost(uint64, tag = "2")]
-    pub task_number: u64,
+    pub target_task_index: u64,
     /// the partition number we want to execute
     #[prost(uint64, tag = "3")]
-    pub partition: u64,
+    pub target_partition: u64,
     /// The stage key that identifies the stage.  This is useful to keep
     /// outside of the stage proto as it is used to store the stage
     /// and we may not need to deserialize the entire stage proto
@@ -41,7 +39,6 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
-    pub(super) session_state: SessionState,
     pub(super) stage: Arc<StageExec>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
@@ -61,63 +58,27 @@ impl ArrowFlightEndpoint {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
 
+        let mut session_state = self
+            .session_builder
+            .build_session_state(DistributedSessionBuilderContext {
+                runtime_env: Arc::clone(&self.runtime),
+                headers: metadata.clone().into_headers(),
+            })
+            .await
+            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+
+        let codec = DistributedCodec::new_combined_with_user(session_state.config());
+
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
         // so here we either retrieve the existing one or create a new one if it does not exist.
-        let (mut session_state, stage) = self
-            .get_state_and_stage(
-                doget.stage_key.ok_or_else(missing("stage_key"))?,
-                doget.stage_proto.ok_or_else(missing("stage_proto"))?,
-                metadata.clone().into_headers(),
-            )
-            .await?;
-
-        // Find out which partition group we are executing
-        let partition = doget.partition as usize;
-        let task_number = doget.task_number as usize;
-        let task = stage.tasks.get(task_number).ok_or_else(invalid(format!(
-            "Task number {task_number} not found in stage {}",
-            stage.num
-        )))?;
-
-        let cfg = session_state.config_mut();
-        cfg.set_extension(Arc::new(PartitionGroup(task.partition_group.clone())));
-        cfg.set_extension(Arc::clone(&stage));
-        cfg.set_extension(Arc::new(ContextGrpcMetadata(metadata.into_headers())));
-
-        // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
-        // as executing `StageExec` performs some worker assignation that should have already been
-        // done in the head stage.
-        let stream = stage
-            .plan
-            .execute(partition, session_state.task_ctx())
-            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
-
-        Ok(record_batch_stream_to_response(stream))
-    }
-
-    async fn get_state_and_stage(
-        &self,
-        key: StageKey,
-        stage_proto: StageExecProto,
-        headers: HeaderMap,
-    ) -> Result<(SessionState, Arc<StageExec>), Status> {
+        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let once = self
             .task_data_entries
-            .get_or_init(key.clone(), || Arc::new(OnceCell::<TaskData>::new()));
+            .get_or_init(key.clone(), Default::default);
 
         let stage_data = once
             .get_or_try_init(|| async {
-                let session_state = self
-                    .session_builder
-                    .build_session_state(DistributedSessionBuilderContext {
-                        runtime_env: Arc::clone(&self.runtime),
-                        headers,
-                    })
-                    .await
-                    .map_err(|err| datafusion_error_to_tonic_status(&err))?;
-
-                let codec = DistributedCodec::new_combined_with_user(session_state.config());
-
+                let stage_proto = doget.stage_proto.ok_or_else(missing("stage_proto"))?;
                 let stage = stage_from_proto(stage_proto, &session_state, &self.runtime, &codec)
                     .map_err(|err| {
                         Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
@@ -126,31 +87,50 @@ impl ArrowFlightEndpoint {
                 // Initialize partition count to the number of partitions in the stage
                 let total_partitions = stage.plan.properties().partitioning.partition_count();
                 Ok::<_, Status>(TaskData {
-                    session_state,
                     stage: Arc::new(stage),
                     num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 })
             })
             .await?;
+        let stage = Arc::clone(&stage_data.stage);
+        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
 
         // If all the partitions are done, remove the stage from the cache.
-        let remaining_partitions = stage_data
-            .num_partitions_remaining
-            .fetch_sub(1, Ordering::SeqCst);
-        if remaining_partitions <= 1 {
+        if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) <= 1 {
             self.task_data_entries.remove(key);
         }
 
-        Ok((stage_data.session_state.clone(), stage_data.stage.clone()))
+        // Find out which partition group we are executing
+        let cfg = session_state.config_mut();
+        cfg.set_extension(Arc::clone(&stage));
+        cfg.set_extension(Arc::new(ContextGrpcMetadata(metadata.into_headers())));
+        cfg.set_extension(Arc::new(DistributedTaskContext::new(
+            doget.target_task_index as usize,
+        )));
+
+        let partition_count = stage.plan.properties().partitioning.partition_count();
+        let target_partition = doget.target_partition as usize;
+        let plan_name = stage.plan.name();
+        if target_partition >= partition_count {
+            return Err(datafusion_error_to_tonic_status(&exec_datafusion_err!(
+                "partition {target_partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
+            )));
+        }
+
+        // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
+        // as executing `StageExec` performs some worker assignation that should have already been
+        // done in the head stage.
+        let stream = stage
+            .plan
+            .execute(doget.target_partition as usize, session_state.task_ctx())
+            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
+
+        Ok(record_batch_stream_to_response(stream))
     }
 }
 
 fn missing(field: &'static str) -> impl FnOnce() -> Status {
     move || Status::invalid_argument(format!("Missing field '{field}'"))
-}
-
-fn invalid(msg: impl Display) -> impl FnOnce() -> Status {
-    move || Status::invalid_argument(msg.to_string())
 }
 
 fn record_batch_stream_to_response(
@@ -200,11 +180,8 @@ mod tests {
 
         // Set up protos.
         let mut tasks = Vec::new();
-        for i in 0..num_tasks {
-            tasks.push(ExecutionTask {
-                url: None,
-                partition_group: vec![i], // Set a random partition in the partition group.
-            });
+        for _ in 0..num_tasks {
+            tasks.push(ExecutionTask { url: None });
         }
 
         let stage = StageExec {
@@ -242,8 +219,8 @@ mod tests {
             // Create DoGet message
             let doget = DoGet {
                 stage_proto: Some(stage_proto),
-                task_number,
-                partition,
+                target_task_index: task_number,
+                target_partition: partition,
                 stage_key: Some(stage_key),
             };
 

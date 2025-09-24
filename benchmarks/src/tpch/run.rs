@@ -25,7 +25,7 @@ use crate::util::{
 };
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::util::pretty::{self, pretty_format_batches};
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
@@ -101,9 +101,27 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Number of partitions per task.
-    #[structopt(long = "ppt")]
-    partitions_per_task: Option<usize>,
+    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
+    /// ```text
+    ///  ( task 1 )  ( task 2 ) ( task 3 )
+    ///      ▲           ▲          ▲
+    ///      └────┬──────┴─────┬────┘
+    ///       ( task 1 )  ( task 2 )       N tasks
+    /// ```
+    /// This parameter defines N
+    #[structopt(long)]
+    shuffle_tasks: Option<usize>,
+
+    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
+    /// ```text
+    ///              ( task 1 )
+    ///                  ▲
+    ///      ┌───────────┴──────────┐
+    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
+    /// ```
+    /// This parameter defines N
+    #[structopt(long)]
+    coalesce_tasks: Option<usize>,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -141,10 +159,9 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
         if !self.workers.is_empty() {
-            let mut rule = DistributedPhysicalOptimizerRule::new();
-            if let Some(partitions_per_task) = self.partitions_per_task {
-                rule = rule.with_maximum_partitions_per_task(partitions_per_task)
-            }
+            let rule = DistributedPhysicalOptimizerRule::new()
+                .with_network_coalesce_tasks(self.coalesce_tasks.unwrap_or(self.workers.len()))
+                .with_network_shuffle_tasks(self.shuffle_tasks.unwrap_or(self.workers.len()));
             builder = builder.with_physical_optimizer_rule(Arc::new(rule));
         }
 
@@ -325,11 +342,6 @@ impl RunOpt {
                 "=== Physical plan with metrics ===\n{}\n",
                 DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent(true)
             );
-            if !result.is_empty() {
-                // do not call print_batches if there are no batches as the result is confusing
-                // and makes it look like there is a batch with no columns
-                pretty::print_batches(&result)?;
-            }
         }
         Ok((result, n_tasks))
     }

@@ -1,9 +1,13 @@
 use super::get_distributed_user_codec;
 use crate::common::ComposedPhysicalExtensionCodec;
-use crate::{ArrowFlightReadExec, PartitionIsolatorExec};
+use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
+use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::FunctionRegistry;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
@@ -46,7 +50,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         };
 
         match distributed_exec_node {
-            DistributedExecNode::ArrowFlightReadExec(ArrowFlightReadExecProto {
+            DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
                 stage_num,
@@ -54,25 +58,49 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 let schema: Schema = schema
                     .as_ref()
                     .map(|s| s.try_into())
-                    .ok_or(proto_error("ArrowFlightReadExec is missing schema"))??;
+                    .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
 
-                let partioning = parse_protobuf_partitioning(
+                let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     registry,
                     &schema,
                     &DistributedCodec {},
                 )?
-                .ok_or(proto_error("ArrowFlightReadExec is missing partitioning"))?;
+                .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
-                Ok(Arc::new(ArrowFlightReadExec::new_ready(
-                    partioning,
+                Ok(Arc::new(new_network_hash_shuffle_exec(
+                    partitioning,
                     Arc::new(schema),
                     stage_num as usize,
                 )))
             }
-            DistributedExecNode::PartitionIsolatorExec(PartitionIsolatorExecProto {
-                partition_count,
+            DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
+                schema,
+                partitioning,
+                stage_num,
+                input_tasks,
             }) => {
+                let schema: Schema = schema
+                    .as_ref()
+                    .map(|s| s.try_into())
+                    .ok_or(proto_error("NetworkCoalesceExec is missing schema"))??;
+
+                let partitioning = parse_protobuf_partitioning(
+                    partitioning.as_ref(),
+                    registry,
+                    &schema,
+                    &DistributedCodec {},
+                )?
+                .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
+
+                Ok(Arc::new(new_network_coalesce_tasks_exec(
+                    partitioning,
+                    Arc::new(schema),
+                    stage_num as usize,
+                    input_tasks as usize,
+                )))
+            }
+            DistributedExecNode::PartitionIsolator(PartitionIsolatorExecProto { n_tasks }) => {
                 if inputs.len() != 1 {
                     return Err(proto_error(format!(
                         "PartitionIsolatorExec expects exactly one child, got {}",
@@ -82,10 +110,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
                 let child = inputs.first().unwrap();
 
-                Ok(Arc::new(PartitionIsolatorExec::new(
+                Ok(Arc::new(PartitionIsolatorExec::new_ready(
                     child.clone(),
-                    partition_count as usize,
-                )))
+                    n_tasks as usize,
+                )?))
             }
         }
     }
@@ -95,13 +123,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
-        if let Some(node) = node.as_any().downcast_ref::<ArrowFlightReadExec>() {
-            let ArrowFlightReadExec::Ready(ready_node) = node else {
+        if let Some(node) = node.as_any().downcast_ref::<NetworkShuffleExec>() {
+            let NetworkShuffleExec::Ready(ready_node) = node else {
                 return Err(proto_error(
-                    "deserialized an ArrowFlightReadExec that is not ready",
+                    "deserialized an NetworkShuffleExec that is not ready",
                 ));
             };
-            let inner = ArrowFlightReadExecProto {
+            let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
@@ -111,17 +139,44 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             let wrapper = DistributedExecProto {
-                node: Some(DistributedExecNode::ArrowFlightReadExec(inner)),
+                node: Some(DistributedExecNode::NetworkHashShuffle(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<NetworkCoalesceExec>() {
+            let NetworkCoalesceExec::Ready(ready_node) = node else {
+                return Err(proto_error(
+                    "deserialized an NetworkCoalesceExec that is not ready",
+                ));
+            };
+
+            let inner = NetworkCoalesceExecProto {
+                schema: Some(node.schema().try_into()?),
+                partitioning: Some(serialize_partitioning(
+                    node.properties().output_partitioning(),
+                    &DistributedCodec {},
+                )?),
+                stage_num: ready_node.stage_num as u64,
+                input_tasks: ready_node.input_tasks as u64,
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::NetworkCoalesceTasks(inner)),
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
+            let PartitionIsolatorExec::Ready(ready_node) = node else {
+                return Err(proto_error(
+                    "deserialized an PartitionIsolatorExec that is not ready",
+                ));
+            };
             let inner = PartitionIsolatorExecProto {
-                partition_count: node.partition_count as u64,
+                n_tasks: ready_node.n_tasks as u64,
             };
 
             let wrapper = DistributedExecProto {
-                node: Some(DistributedExecNode::PartitionIsolatorExec(inner)),
+                node: Some(DistributedExecNode::PartitionIsolator(inner)),
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
@@ -133,35 +188,88 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3")]
     pub node: Option<DistributedExecNode>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub enum DistributedExecNode {
     #[prost(message, tag = "1")]
-    ArrowFlightReadExec(ArrowFlightReadExecProto),
+    NetworkHashShuffle(NetworkShuffleExecProto),
     #[prost(message, tag = "2")]
-    PartitionIsolatorExec(PartitionIsolatorExecProto),
+    NetworkCoalesceTasks(NetworkCoalesceExecProto),
+    #[prost(message, tag = "3")]
+    PartitionIsolator(PartitionIsolatorExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionIsolatorExecProto {
     #[prost(uint64, tag = "1")]
-    pub partition_count: u64,
+    pub n_tasks: u64,
 }
 
-/// Protobuf representation of the [ArrowFlightReadExec] physical node. It serves as
-/// an intermediate format for serializing/deserializing [ArrowFlightReadExec] nodes
+/// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
 /// to send them over the wire.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ArrowFlightReadExecProto {
+pub struct NetworkShuffleExecProto {
     #[prost(message, optional, tag = "1")]
     schema: Option<protobuf::Schema>,
     #[prost(message, optional, tag = "2")]
     partitioning: Option<protobuf::Partitioning>,
     #[prost(uint64, tag = "3")]
     stage_num: u64,
+}
+
+fn new_network_hash_shuffle_exec(
+    partitioning: Partitioning,
+    schema: SchemaRef,
+    stage_num: usize,
+) -> NetworkShuffleExec {
+    NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
+        properties: PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            partitioning,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ),
+        stage_num,
+        metrics_collection: Default::default(),
+    })
+}
+
+/// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
+/// to send them over the wire.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NetworkCoalesceExecProto {
+    #[prost(message, optional, tag = "1")]
+    schema: Option<protobuf::Schema>,
+    #[prost(message, optional, tag = "2")]
+    partitioning: Option<protobuf::Partitioning>,
+    #[prost(uint64, tag = "3")]
+    stage_num: u64,
+    #[prost(uint64, tag = "4")]
+    input_tasks: u64,
+}
+
+fn new_network_coalesce_tasks_exec(
+    partitioning: Partitioning,
+    schema: SchemaRef,
+    stage_num: usize,
+    input_tasks: usize,
+) -> NetworkCoalesceExec {
+    NetworkCoalesceExec::Ready(NetworkCoalesceReady {
+        properties: PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            partitioning,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ),
+        stage_num,
+        input_tasks,
+        metrics_collection: Default::default(),
+    })
 }
 
 #[cfg(test)]
@@ -190,8 +298,7 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(ArrowFlightReadExec::new_ready(part, schema, 0));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(part, schema, 0));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -208,13 +315,14 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("b");
-        let flight = Arc::new(ArrowFlightReadExec::new_ready(
+        let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
             schema,
             0,
         ));
 
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 3));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(PartitionIsolatorExec::new_ready(flight.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -231,19 +339,20 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("c");
-        let left = Arc::new(ArrowFlightReadExec::new_ready(
+        let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             0,
         ));
-        let right = Arc::new(ArrowFlightReadExec::new_ready(
+        let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             1,
         ));
 
         let union = Arc::new(UnionExec::new(vec![left.clone(), right.clone()]));
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(union.clone(), 5));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(PartitionIsolatorExec::new_ready(union.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -260,7 +369,7 @@ mod tests {
         let registry = MemoryFunctionRegistry::new();
 
         let schema = schema_i32("d");
-        let flight = Arc::new(ArrowFlightReadExec::new_ready(
+        let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
             schema.clone(),
             0,
@@ -275,7 +384,8 @@ mod tests {
             flight.clone(),
         ));
 
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(sort.clone(), 2));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(PartitionIsolatorExec::new_ready(sort.clone(), 1)?);
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;

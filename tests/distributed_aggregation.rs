@@ -24,7 +24,7 @@ mod tests {
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
         let physical_distributed = DistributedPhysicalOptimizerRule::default()
-            .with_maximum_partitions_per_task(1)
+            .with_network_shuffle_tasks(2)
             .optimize(physical.clone(), &Default::default())?;
 
         let physical_distributed_str = displayable(physical_distributed.as_ref())
@@ -40,34 +40,28 @@ mod tests {
                 AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
                   CoalesceBatchesExec: target_batch_size=8192
                     RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=3
-                      RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-                        AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-                          DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
+                      AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                        DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
         ",
         );
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── Stage 3   Tasks: t0:[p0] 
+        ┌───── Stage 2   Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │           CoalesceBatchesExec: target_batch_size=8192
-        │             ArrowFlightReadExec input_stage=2, input_partitions=3, input_tasks=3
+        │             NetworkShuffleExec read_from=Stage 1, output_partitions=3, n_tasks=1, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0] t1:[p1] t2:[p2] 
-          │ RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=1
-          │   PartitionIsolatorExec Tasks: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-          │     ArrowFlightReadExec input_stage=1, input_partitions=3, input_tasks=3
+          ┌───── Stage 1   Tasks: t0:[p0,p1,p2] t1:[p0,p1,p2] 
+          │ RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=2
+          │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │     PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
+          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0] t1:[p1] t2:[p2] 
-            │ RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-            │   PartitionIsolatorExec Tasks: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-            │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │       DataSourceExec: file_groups={1 group: [[/testdata/weather.parquet]]}, projection=[RainToday], file_type=parquet
-            └──────────────────────────────────────────────────
         ",
         );
 

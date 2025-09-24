@@ -66,9 +66,6 @@ pub struct ExecutionTaskProto {
     /// unassigned.
     #[prost(string, optional, tag = "1")]
     url_str: Option<String>,
-    /// The partitions that we can execute from this plan
-    #[prost(uint64, repeated, tag = "2")]
-    partition_group: Vec<u64>,
 }
 
 pub fn proto_from_stage(
@@ -92,7 +89,6 @@ pub fn proto_from_stage(
             .iter()
             .map(|task| ExecutionTaskProto {
                 url_str: task.url.as_ref().map(|v| v.to_string()),
-                partition_group: task.partition_group.iter().map(|v| *v as u64).collect(),
             })
             .collect(),
     })
@@ -139,7 +135,6 @@ pub fn stage_from_proto(
                             Url::parse(&u).map_err(|_| internal_datafusion_err!("Invalid URL: {u}"))
                         })
                         .transpose()?,
-                    partition_group: task.partition_group.iter().map(|v| *v as usize).collect(),
                 })
             })
             .collect::<Result<Vec<_>>>()?,

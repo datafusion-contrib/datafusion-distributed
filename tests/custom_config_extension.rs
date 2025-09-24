@@ -9,14 +9,13 @@ mod tests {
     };
     use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
         execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{ArrowFlightReadExec, DistributedPhysicalOptimizerRule};
     use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
+    use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkShuffleExec};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -47,12 +46,14 @@ mod tests {
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CustomConfigExtensionRequiredExec::new());
 
         for size in [1, 2, 3] {
-            plan = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
-                RepartitionExec::try_new(plan, Partitioning::RoundRobinBatch(size))?,
-            )));
+            plan = Arc::new(NetworkShuffleExec::try_new(
+                plan,
+                Partitioning::RoundRobinBatch(10),
+                size,
+            )?);
         }
 
-        let plan = DistributedPhysicalOptimizerRule::default().distribute_plan(plan)?;
+        let plan = DistributedPhysicalOptimizerRule::distribute_plan(plan)?;
         let stream = execute_stream(Arc::new(plan), ctx.task_ctx())?;
         // It should not fail.
         stream.try_collect::<Vec<_>>().await?;

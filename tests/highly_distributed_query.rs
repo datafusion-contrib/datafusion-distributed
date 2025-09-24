@@ -1,13 +1,12 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::physical_expr::Partitioning;
-    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        assert_snapshot, ArrowFlightReadExec, DefaultSessionBuilder,
-        DistributedPhysicalOptimizerRule,
+        assert_snapshot, DefaultSessionBuilder, DistributedPhysicalOptimizerRule,
+        NetworkShuffleExec,
     };
     use futures::TryStreamExt;
     use std::error::Error;
@@ -25,16 +24,15 @@ mod tests {
 
         let mut physical_distributed = physical.clone();
         for size in [1, 10, 5] {
-            physical_distributed = Arc::new(ArrowFlightReadExec::new_pending(Arc::new(
-                RepartitionExec::try_new(
-                    physical_distributed,
-                    Partitioning::RoundRobinBatch(size),
-                )?,
-            )));
+            physical_distributed = Arc::new(NetworkShuffleExec::try_new(
+                physical_distributed,
+                Partitioning::RoundRobinBatch(size),
+                size,
+            )?);
         }
 
         let physical_distributed =
-            DistributedPhysicalOptimizerRule::default().distribute_plan(physical_distributed)?;
+            DistributedPhysicalOptimizerRule::distribute_plan(physical_distributed)?;
         let physical_distributed = Arc::new(physical_distributed);
         let physical_distributed_str = displayable(physical_distributed.as_ref())
             .indent(true)
@@ -47,15 +45,15 @@ mod tests {
         assert_snapshot!(physical_distributed_str,
             @r"
         ┌───── Stage 4   Tasks: t0:[p0,p1,p2,p3,p4] 
-        │ ArrowFlightReadExec input_stage=3, input_partitions=5, input_tasks=1
+        │ NetworkShuffleExec input_stage=3, input_partitions=5, input_tasks=1
         └──────────────────────────────────────────────────
           ┌───── Stage 3   Tasks: t0:[p0,p1,p2,p3,p4] 
           │ RepartitionExec: partitioning=RoundRobinBatch(5), input_partitions=10
-          │   ArrowFlightReadExec input_stage=2, input_partitions=10, input_tasks=1
+          │   NetworkShuffleExec input_stage=2, input_partitions=10, input_tasks=1
           └──────────────────────────────────────────────────
             ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
             │ RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=1
-            │   ArrowFlightReadExec input_stage=1, input_partitions=1, input_tasks=1
+            │   NetworkShuffleExec input_stage=1, input_partitions=1, input_tasks=1
             └──────────────────────────────────────────────────
               ┌───── Stage 1   Tasks: t0:[p0] 
               │ RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=1

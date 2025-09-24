@@ -9,12 +9,8 @@ pub async fn register_parquet_tables(ctx: &SessionContext) -> Result<(), DataFus
     )
     .await?;
 
-    ctx.register_parquet(
-        "weather",
-        "testdata/weather.parquet",
-        ParquetReadOptions::default(),
-    )
-    .await?;
+    ctx.register_parquet("weather", "testdata/weather", ParquetReadOptions::default())
+        .await?;
 
     Ok(())
 }
