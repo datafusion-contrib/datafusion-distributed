@@ -4,7 +4,8 @@ use datafusion::common::exec_err;
 use datafusion::{
     common::internal_datafusion_err,
     error::{DataFusionError, Result},
-    execution::{FunctionRegistry, runtime_env::RuntimeEnv},
+    execution::runtime_env::RuntimeEnv,
+    prelude::SessionContext,
 };
 use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
@@ -157,7 +158,7 @@ pub(crate) fn proto_from_stage(
 /// things that are strictly needed.
 pub(crate) fn stage_from_proto(
     msg: Bytes,
-    registry: &dyn FunctionRegistry,
+    ctx: &SessionContext,
     runtime: &RuntimeEnv,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<StageExec> {
@@ -182,7 +183,7 @@ pub(crate) fn stage_from_proto(
         "ExecutionStageMsg is missing the plan"
     ))?;
 
-    let plan = plan_node.try_into_physical_plan(registry, runtime, codec)?;
+    let plan = plan_node.try_into_physical_plan(ctx, runtime, codec)?;
 
     let inputs = msg
         .inputs

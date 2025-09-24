@@ -22,6 +22,7 @@ use bytes::Bytes;
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use futures::{Stream, stream};
 use prost::Message;
@@ -80,6 +81,8 @@ impl ArrowFlightEndpoint {
             .await
             .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
+        let ctx = SessionContext::new();
+
         let codec = DistributedCodec::new_combined_with_user(session_state.config());
 
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
@@ -92,8 +95,8 @@ impl ArrowFlightEndpoint {
         let stage_data = once
             .get_or_try_init(|| async {
                 let stage_proto = doget.stage_proto;
-                let stage = stage_from_proto(stage_proto, &session_state, &self.runtime, &codec)
-                    .map_err(|err| {
+                let stage =
+                    stage_from_proto(stage_proto, &ctx, &self.runtime, &codec).map_err(|err| {
                         Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
                     })?;
 
