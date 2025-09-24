@@ -2,7 +2,7 @@
 members = ["benchmarks"]
 
 [workspace.dependencies]
-datafusion = { version = "49.0.0" }
+datafusion = { version = "49.0.0", default-features = false }
 datafusion-proto = { version = "49.0.0" }
 
 [package]
