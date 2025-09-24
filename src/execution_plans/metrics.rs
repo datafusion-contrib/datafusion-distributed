@@ -1,13 +1,13 @@
 use crate::execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, StageExec};
-use crate::metrics::proto::{metrics_set_proto_to_df, MetricsSetProto};
+use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
 use crate::protobuf::StageKey;
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeRewriter};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
 use std::any::Any;
 use std::collections::HashMap;
@@ -152,7 +152,11 @@ impl TaskMetricsRewriter {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let transformed = plan.rewrite(&mut self)?;
         if self.idx != self.metrics.len() {
-            return internal_err!("too many metrics sets provided to rewrite task: {} metrics sets provided, {} nodes in plan", self.metrics.len(), self.idx);
+            return internal_err!(
+                "too many metrics sets provided to rewrite task: {} metrics sets provided, {} nodes in plan",
+                self.metrics.len(),
+                self.idx
+            );
         }
         Ok(transformed.data)
     }
@@ -276,11 +280,11 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
 
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
-    use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
-    use datafusion::execution::{context::SessionContext, SessionStateBuilder};
+    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::session_context::register_temp_parquet_table;
+    use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::physical_plan::metrics::MetricValue;
     use datafusion::prelude::SessionConfig;
     use datafusion::{

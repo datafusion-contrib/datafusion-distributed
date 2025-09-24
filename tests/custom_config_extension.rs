@@ -11,7 +11,7 @@ mod tests {
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
-        execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};

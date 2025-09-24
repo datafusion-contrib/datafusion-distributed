@@ -5,8 +5,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        assert_snapshot, DefaultSessionBuilder, DistributedPhysicalOptimizerRule,
-        NetworkShuffleExec,
+        DefaultSessionBuilder, DistributedPhysicalOptimizerRule, NetworkShuffleExec,
+        assert_snapshot,
     };
     use futures::TryStreamExt;
     use std::error::Error;

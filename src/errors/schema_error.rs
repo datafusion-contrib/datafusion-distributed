@@ -168,7 +168,7 @@ impl TableReferenceProto {
 impl SchemaErrorProto {
     pub fn from_schema_error(err: &SchemaError, backtrace: Option<&String>) -> Self {
         match err {
-            SchemaError::AmbiguousReference { ref field } => SchemaErrorProto {
+            SchemaError::AmbiguousReference { field } => SchemaErrorProto {
                 inner: Some(SchemaErrorInnerProto::AmbiguousReference(
                     AmbiguousReferenceProto {
                         field: Some(ColumnProto::from_column(field)),

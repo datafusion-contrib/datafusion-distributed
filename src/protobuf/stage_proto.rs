@@ -2,7 +2,7 @@ use crate::execution_plans::{ExecutionTask, StageExec};
 use datafusion::{
     common::internal_datafusion_err,
     error::{DataFusionError, Result},
-    execution::{runtime_env::RuntimeEnv, FunctionRegistry},
+    execution::{FunctionRegistry, runtime_env::RuntimeEnv},
     physical_plan::ExecutionPlan,
 };
 use datafusion_proto::{
@@ -147,9 +147,9 @@ pub fn stage_from_proto(
 mod tests {
     use std::sync::Arc;
 
+    use crate::StageExec;
     use crate::protobuf::stage_proto::StageExecProto;
     use crate::protobuf::{proto_from_stage, stage_from_proto};
-    use crate::StageExec;
     use datafusion::{
         arrow::{
             array::{RecordBatch, StringArray, UInt8Array},
