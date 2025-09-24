@@ -5,7 +5,7 @@ use datafusion::common::{internal_datafusion_err, internal_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
-    displayable, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, displayable,
 };
 use datafusion::prelude::SessionContext;
 use itertools::Itertools;

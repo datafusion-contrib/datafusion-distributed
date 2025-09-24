@@ -5,10 +5,10 @@ use crate::{
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
-use datafusion::common::runtime::JoinSet;
 use datafusion::common::DataFusionError;
-use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionContext;
 use std::error::Error;
 use std::sync::Arc;

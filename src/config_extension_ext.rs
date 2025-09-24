@@ -1,4 +1,4 @@
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::{DataFusionError, internal_datafusion_err};
 use datafusion::config::ConfigExtension;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
@@ -94,8 +94,8 @@ impl ContextGrpcMetadata {
 #[cfg(test)]
 mod tests {
     use crate::config_extension_ext::{
-        set_distributed_option_extension, set_distributed_option_extension_from_headers,
-        ContextGrpcMetadata,
+        ContextGrpcMetadata, set_distributed_option_extension,
+        set_distributed_option_extension_from_headers,
     };
     use datafusion::common::extensions_options;
     use datafusion::config::ConfigExtension;

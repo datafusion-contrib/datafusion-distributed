@@ -16,8 +16,8 @@
 // under the License.
 
 use super::{
-    get_query_sql, get_tbl_tpch_table_schema, get_tpch_table_schema, TPCH_QUERY_END_ID,
-    TPCH_QUERY_START_ID, TPCH_TABLES,
+    TPCH_QUERY_END_ID, TPCH_QUERY_START_ID, TPCH_TABLES, get_query_sql, get_tbl_tpch_table_schema,
+    get_tpch_table_schema,
 };
 use crate::util::{
     BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryIter,
@@ -29,21 +29,21 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
-use datafusion::common::{exec_err, DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
+use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION, exec_err};
+use datafusion::datasource::TableProvider;
+use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::csv::CsvFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
-    spawn_flight_service, LocalHostChannelResolver,
+    LocalHostChannelResolver, spawn_flight_service,
 };
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
@@ -354,11 +354,15 @@ impl RunOpt {
         let data_path = crate_path.join("data");
         let entries = fs::read_dir(&data_path)?.collect::<Result<Vec<_>, _>>()?;
         if entries.is_empty() {
-            exec_err!("No TPCH dataset present in '{data_path:?}'. Generate one with ./benchmarks/gen-tpch.sh")
+            exec_err!(
+                "No TPCH dataset present in '{data_path:?}'. Generate one with ./benchmarks/gen-tpch.sh"
+            )
         } else if entries.len() == 1 {
             Ok(entries[0].path())
         } else {
-            exec_err!("Multiple TPCH datasets present in '{data_path:?}'. One must be selected with --path")
+            exec_err!(
+                "Multiple TPCH datasets present in '{data_path:?}'. One must be selected with --path"
+            )
         }
     }
 

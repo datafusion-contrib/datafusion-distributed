@@ -8,7 +8,7 @@ use datafusion::execution::{FunctionRegistry, SendableRecordBatchStream, TaskCon
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    displayable, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, displayable,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::{FutureExt, StreamExt};

@@ -1,6 +1,6 @@
+use crate::StageExec;
 use crate::distributed_physical_optimizer_rule::limit_tasks_err;
 use crate::execution_plans::DistributedTaskContext;
-use crate::StageExec;
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;

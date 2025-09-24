@@ -27,10 +27,10 @@ use dashmap::{DashMap, Entry};
 use datafusion::error::DataFusionError;
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -289,7 +289,7 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_basic_insert_and_get() {

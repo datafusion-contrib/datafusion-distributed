@@ -3,17 +3,17 @@ use crate::errors::datafusion_error_to_tonic_status;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::protobuf::{stage_from_proto, DistributedCodec, StageExecProto, StageKey};
+use crate::protobuf::{DistributedCodec, StageExecProto, StageKey, stage_from_proto};
+use arrow_flight::Ticket;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::Ticket;
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::TryStreamExt;
 use prost::Message;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -152,17 +152,17 @@ fn record_batch_stream_to_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExecutionTask;
     use crate::flight_service::session_builder::DefaultSessionBuilder;
     use crate::protobuf::proto_from_stage;
-    use crate::ExecutionTask;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
     use datafusion::physical_expr::Partitioning;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::ExecutionPlan;
     use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
-    use prost::{bytes::Bytes, Message};
+    use prost::{Message, bytes::Bytes};
     use tonic::Request;
     use uuid::Uuid;
 

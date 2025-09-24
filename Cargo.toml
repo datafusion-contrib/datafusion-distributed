@@ -8,7 +8,7 @@ datafusion-proto = { version = "49.0.0" }
 [package]
 name = "datafusion-distributed"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4.42" }

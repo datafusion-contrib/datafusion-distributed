@@ -1,6 +1,6 @@
 use crate::common::ttl_map::{TTLMap, TTLMapConfig};
-use crate::flight_service::do_get::TaskData;
 use crate::flight_service::DistributedSessionBuilder;
+use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{

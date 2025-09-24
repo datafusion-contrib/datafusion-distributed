@@ -13,7 +13,7 @@ use datafusion::{
     config::ConfigOptions,
     error::Result,
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{repartition::RepartitionExec, ExecutionPlan},
+    physical_plan::{ExecutionPlan, repartition::RepartitionExec},
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};

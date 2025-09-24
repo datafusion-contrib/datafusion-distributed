@@ -10,7 +10,7 @@ mod tests {
         FunctionRegistry, SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
     use datafusion::logical_expr::Operator;
-    use datafusion::physical_expr::expressions::{col, lit, BinaryExpr};
+    use datafusion::physical_expr::expressions::{BinaryExpr, col, lit};
     use datafusion::physical_expr::{
         EquivalenceProperties, LexOrdering, Partitioning, PhysicalSortExpr,
     };
@@ -20,16 +20,16 @@ mod tests {
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
-        displayable, execute_stream, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, displayable, execute_stream,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        assert_snapshot, DistributedExt, DistributedSessionBuilderContext, PartitionIsolatorExec,
+        DistributedExt, DistributedSessionBuilderContext, PartitionIsolatorExec, assert_snapshot,
     };
     use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkShuffleExec};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
-    use futures::{stream, TryStreamExt};
+    use futures::{TryStreamExt, stream};
     use prost::Message;
     use std::any::Any;
     use std::fmt::Formatter;

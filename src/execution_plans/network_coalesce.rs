@@ -1,17 +1,17 @@
+use crate::ChannelResolver;
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::scale_partitioning_props;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{limit_tasks_err, NetworkBoundary};
+use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_err};
 use crate::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::{proto_from_stage, DistributedCodec, StageKey};
-use crate::ChannelResolver;
+use crate::protobuf::{DistributedCodec, StageKey, proto_from_stage};
+use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::Ticket;
 use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
@@ -26,8 +26,8 @@ use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
-use tonic::metadata::MetadataMap;
 use tonic::Request;
+use tonic::metadata::MetadataMap;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a single task without
 /// performing any repartition, and maintaining the same partitioning scheme.
@@ -137,7 +137,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
         &self,
         n_tasks: usize,
     ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError> {
-        let Self::Pending(ref pending) = self else {
+        let Self::Pending(pending) = self else {
             return plan_err!("can only return wrapped child if on Pending state");
         };
 

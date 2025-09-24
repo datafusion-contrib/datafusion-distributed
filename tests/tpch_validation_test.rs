@@ -7,7 +7,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::tpch;
     use datafusion_distributed::{
-        assert_snapshot, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
+        DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, assert_snapshot,
     };
     use futures::TryStreamExt;
     use std::error::Error;

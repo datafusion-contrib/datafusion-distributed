@@ -17,7 +17,7 @@
 
 use chrono::{DateTime, Utc};
 use datafusion::common::utils::get_available_parallelism;
-use datafusion::{error::Result, DATAFUSION_VERSION};
+use datafusion::{DATAFUSION_VERSION, error::Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     path::Path,
