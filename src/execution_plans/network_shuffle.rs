@@ -111,7 +111,7 @@ use tonic::metadata::MetadataMap;
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
-///     using Arrow Flight.
+///    using Arrow Flight.
 #[derive(Debug, Clone)]
 pub enum NetworkShuffleExec {
     Pending(NetworkShufflePendingExec),
