@@ -383,10 +383,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
         Some(MetricValueProto::StartTimestamp(start_ts)) => match start_ts.value {
             Some(value) => {
                 let timestamp = Timestamp::new();
-                #[cfg(feature = "integration")]
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                #[cfg(not(feature = "integration"))]
-                { /* DateTime not available without integration feature */ }
                 Ok(Arc::new(Metric::new_with_labels(
                     MetricValue::StartTimestamp(timestamp),
                     partition,
@@ -402,10 +399,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
         Some(MetricValueProto::EndTimestamp(end_ts)) => match end_ts.value {
             Some(value) => {
                 let timestamp = Timestamp::new();
-                #[cfg(feature = "integration")]
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                #[cfg(not(feature = "integration"))]
-                { /* DateTime not available without integration feature */ }
                 Ok(Arc::new(Metric::new_with_labels(
                     MetricValue::EndTimestamp(timestamp),
                     partition,
