@@ -1,9 +1,9 @@
-use crate::errors::arrow_error::ArrowErrorProto;
-use crate::errors::io_error::IoErrorProto;
-use crate::errors::objectstore_error::ObjectStoreErrorProto;
-use crate::errors::parquet_error::ParquetErrorProto;
-use crate::errors::parser_error::ParserErrorProto;
-use crate::errors::schema_error::SchemaErrorProto;
+use crate::protobuf::errors::arrow_error::ArrowErrorProto;
+use crate::protobuf::errors::io_error::IoErrorProto;
+use crate::protobuf::errors::objectstore_error::ObjectStoreErrorProto;
+use crate::protobuf::errors::parquet_error::ParquetErrorProto;
+use crate::protobuf::errors::parser_error::ParserErrorProto;
+use crate::protobuf::errors::schema_error::SchemaErrorProto;
 use datafusion::common::{DataFusionError, Diagnostic};
 use datafusion::logical_expr::sqlparser::parser::ParserError;
 use std::error::Error;

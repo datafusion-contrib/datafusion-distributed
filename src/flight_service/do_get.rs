@@ -1,8 +1,8 @@
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::errors::datafusion_error_to_tonic_status;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
+use crate::protobuf::errors::datafusion_error_to_tonic_status;
 use crate::protobuf::{DistributedCodec, StageExecProto, StageKey, stage_from_proto};
 use arrow_flight::Ticket;
 use arrow_flight::encode::FlightDataEncoderBuilder;

@@ -1,4 +1,5 @@
 mod distributed_codec;
+pub mod errors;
 mod stage_proto;
 mod user_codec;
 

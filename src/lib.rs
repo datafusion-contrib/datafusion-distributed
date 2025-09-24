@@ -5,7 +5,6 @@ mod common;
 mod config_extension_ext;
 mod distributed_ext;
 mod distributed_physical_optimizer_rule;
-mod errors;
 mod execution_plans;
 mod flight_service;
 mod metrics;
