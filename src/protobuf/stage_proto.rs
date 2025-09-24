@@ -2,8 +2,9 @@ use crate::execution_plans::{ExecutionTask, StageExec};
 use datafusion::{
     common::internal_datafusion_err,
     error::{DataFusionError, Result},
-    execution::{FunctionRegistry, runtime_env::RuntimeEnv},
+    execution::runtime_env::RuntimeEnv,
     physical_plan::ExecutionPlan,
+    prelude::SessionContext,
 };
 use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
@@ -96,7 +97,7 @@ pub fn proto_from_stage(
 
 pub fn stage_from_proto(
     msg: StageExecProto,
-    registry: &dyn FunctionRegistry,
+    ctx: &SessionContext,
     runtime: &RuntimeEnv,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<StageExec> {
@@ -104,14 +105,13 @@ pub fn stage_from_proto(
         "ExecutionStageMsg is missing the plan"
     ))?;
 
-    let plan = plan_node.try_into_physical_plan(registry, runtime, codec)?;
+    let plan = plan_node.try_into_physical_plan(ctx, runtime, codec)?;
 
     let inputs = msg
         .inputs
         .into_iter()
         .map(|s| {
-            stage_from_proto(s, registry, runtime, codec)
-                .map(|s| Arc::new(s) as Arc<dyn ExecutionPlan>)
+            stage_from_proto(s, ctx, runtime, codec).map(|s| Arc::new(s) as Arc<dyn ExecutionPlan>)
         })
         .collect::<Result<Vec<_>>>()?;
 

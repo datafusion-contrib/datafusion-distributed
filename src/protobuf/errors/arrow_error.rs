@@ -130,6 +130,12 @@ impl ArrowErrorProto {
                 inner: Some(ArrowErrorInnerProto::RunEndIndexOverflowError(true)),
                 ctx: ctx.cloned(),
             },
+            ArrowError::OffsetOverflowError(offset) => ArrowErrorProto {
+                inner: Some(ArrowErrorInnerProto::ParseError(format!(
+                    "Offset overflow error: {offset}"
+                ))),
+                ctx: ctx.cloned(),
+            },
         }
     }
 
