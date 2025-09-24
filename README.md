@@ -40,7 +40,7 @@ difference:
 The physical plan is divided into stages and each stage is assigned tasks that run the inner plan in parallel in
 different workers. All of this is done at the physical plan level, implemented as a `PhysicalOptimizerRule` that:
 
-1. Inspects the non-distributed plan, placing network boundaries (`NetworkShuflle` and `NetworkCoalesce` nodes) in
+1. Inspects the non-distributed plan, placing network boundaries (`NetworkShuffle` and `NetworkCoalesce` nodes) in
    the appropriate places.
 2. Based on the placed network boundaries, divides the plan into stages and assigns tasks to them.
 
