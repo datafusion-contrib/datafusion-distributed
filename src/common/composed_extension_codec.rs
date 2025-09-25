@@ -1,3 +1,4 @@
+use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::execution::FunctionRegistry;
@@ -7,7 +8,6 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use prost::Message;
 use std::fmt::Debug;
 use std::sync::Arc;
-
 // Code taken from https://github.com/apache/datafusion/blob/10f41887fa40d7d425c19b07857f80115460a98e/datafusion/proto/src/physical_plan/mod.rs
 // TODO: It's not yet on DF 49, once upgrading to DF 50 we can remove this
 
@@ -46,12 +46,13 @@ impl ComposedPhysicalExtensionCodec {
         let proto =
             DataEncoderTuple::decode(buf).map_err(|e| DataFusionError::Internal(e.to_string()))?;
 
-        let codec =
-            self.codecs
-                .get(proto.encoder_position as usize)
-                .ok_or(DataFusionError::Internal(
-                    "Can't find required codec in codec list".to_owned(),
-                ))?;
+        let pos = proto.encoder_position as usize;
+        let codec = self.codecs.get(pos).ok_or_else(|| {
+            internal_datafusion_err!(
+                "Can't find required codec in position {pos} in codec list with {} elements",
+                self.codecs.len()
+            )
+        })?;
 
         decode(codec.as_ref(), &proto.blob)
     }
