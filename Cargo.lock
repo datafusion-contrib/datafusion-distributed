@@ -1123,6 +1123,7 @@ dependencies = [
  "itertools",
  "object_store",
  "parquet",
+ "pin-project",
  "prost",
  "rand 0.8.5",
  "structopt",
