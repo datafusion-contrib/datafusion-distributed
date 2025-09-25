@@ -1,5 +1,6 @@
-use crate::errors::io_error::IoErrorProto;
 use datafusion::arrow::error::ArrowError;
+
+use crate::protobuf::errors::io_error::IoErrorProto;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrowErrorProto {
