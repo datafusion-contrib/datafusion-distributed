@@ -125,7 +125,8 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 
     /// Injects a user-defined [PhysicalExtensionCodec] that is capable of encoding/decoding
-    /// custom execution nodes.
+    /// custom execution nodes. Multiple user-defined [PhysicalExtensionCodec] can be added
+    /// by calling this method several times.
     ///
     /// Example:
     ///

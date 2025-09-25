@@ -1,4 +1,4 @@
-use super::get_distributed_user_codec;
+use super::get_distributed_user_codecs;
 use crate::common::ComposedPhysicalExtensionCodec;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
@@ -25,9 +25,7 @@ pub struct DistributedCodec;
 impl DistributedCodec {
     pub fn new_combined_with_user(cfg: &SessionConfig) -> impl PhysicalExtensionCodec + use<> {
         let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec {})];
-        if let Some(ref user_codec) = get_distributed_user_codec(cfg) {
-            codecs.push(Arc::clone(user_codec));
-        }
+        codecs.extend(get_distributed_user_codecs(cfg));
         ComposedPhysicalExtensionCodec::new(codecs)
     }
 }
