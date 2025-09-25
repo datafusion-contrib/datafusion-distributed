@@ -19,7 +19,8 @@ pub use distributed_ext::DistributedExt;
 pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
 pub use execution_plans::display_plan_graphviz;
 pub use execution_plans::{
-    ExecutionTask, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec, StageExec,
+    DistributedTaskContext, ExecutionTask, NetworkCoalesceExec, NetworkShuffleExec,
+    PartitionIsolatorExec, StageExec,
 };
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
