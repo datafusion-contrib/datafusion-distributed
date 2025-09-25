@@ -24,12 +24,11 @@ pub struct DistributedCodec;
 
 impl DistributedCodec {
     pub fn new_combined_with_user(cfg: &SessionConfig) -> impl PhysicalExtensionCodec + use<> {
-        let mut combined_codec = ComposedPhysicalExtensionCodec::default();
-        combined_codec.push(DistributedCodec {});
+        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec {})];
         if let Some(ref user_codec) = get_distributed_user_codec(cfg) {
-            combined_codec.push_arc(Arc::clone(user_codec));
+            codecs.push(Arc::clone(user_codec));
         }
-        combined_codec
+        ComposedPhysicalExtensionCodec::new(codecs)
     }
 }
 
