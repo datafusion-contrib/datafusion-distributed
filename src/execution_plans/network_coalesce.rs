@@ -6,8 +6,8 @@ use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_er
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::protobuf::{DistributedCodec, StageKey, proto_from_stage};
+use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
