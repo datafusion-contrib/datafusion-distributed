@@ -12,4 +12,6 @@ pub(crate) use errors::{
     map_status_to_datafusion_error,
 };
 pub(crate) use stage_proto::{StageExecProto, StageKey, proto_from_stage, stage_from_proto};
-pub(crate) use user_codec::{get_distributed_user_codec, set_distributed_user_codec};
+pub(crate) use user_codec::{
+    get_distributed_user_codecs, set_distributed_user_codec, set_distributed_user_codec_arc,
+};

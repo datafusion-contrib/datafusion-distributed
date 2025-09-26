@@ -3,7 +3,7 @@ use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::protobuf::set_distributed_user_codec;
+use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -11,6 +11,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use delegate::delegate;
 use http::HeaderMap;
+use std::sync::Arc;
 
 /// Extends DataFusion with distributed capabilities.
 pub trait DistributedExt: Sized {
@@ -125,7 +126,8 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 
     /// Injects a user-defined [PhysicalExtensionCodec] that is capable of encoding/decoding
-    /// custom execution nodes.
+    /// custom execution nodes. Multiple user-defined [PhysicalExtensionCodec] can be added
+    /// by calling this method several times.
     ///
     /// Example:
     ///
@@ -165,6 +167,12 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_user_codec] but with an in-place mutation
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+
+    /// Same as [DistributedExt::with_distributed_user_codec] but with a dynamic argument.
+    fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+    /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
+    fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
     /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
     /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
@@ -233,6 +241,10 @@ impl DistributedExt for SessionConfig {
         set_distributed_user_codec(self, codec)
     }
 
+    fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>) {
+        set_distributed_user_codec_arc(self, codec)
+    }
+
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
@@ -253,6 +265,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_user_codec)]
             #[expr($;self)]
             fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -278,6 +294,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_user_codec)]
             #[expr($;self)]
             fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -305,6 +326,11 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
 
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -330,6 +356,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_user_codec)]
             #[expr($;self)]
             fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
+
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
