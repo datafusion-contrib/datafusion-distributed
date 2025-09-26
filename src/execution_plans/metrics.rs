@@ -1,18 +1,30 @@
 use crate::execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, StageExec};
 use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
+use arrow_flight::encode::{FlightDataEncoder, FlightDataEncoderBuilder};
+use arrow_flight::FlightData;
+use datafusion::execution::TaskContext;
+use datafusion::physical_plan::metrics::MetricsSet;
+use futures::{stream, Stream, StreamExt};
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::sync::Arc;
+use arrow::record_batch::RecordBatch;
+use futures::stream::Skip;
+use arrow::ipc::{writer::StreamWriter, MetadataVersion};
+
+use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::StageKey;
+use crate::protobuf::{AppMetadata, FlightAppMetadata, MetricsCollection, TaskMetrics};
+use arrow_flight::{error::FlightError};
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeRewriter};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
+use prost::Message;
 use std::any::Any;
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 
 /// TaskMetricsCollector is used to collect metrics from a task. It implements [TreeNodeRewriter].
 /// Note: TaskMetricsCollector is not a [datafusion::physical_plan::ExecutionPlanVisitor] to keep
@@ -29,9 +41,9 @@ pub struct TaskMetricsCollector {
 #[allow(dead_code)]
 pub struct MetricsCollectorResult {
     // metrics is a collection of metrics for a task ordered using a pre-order traversal of the task's plan.
-    task_metrics: Vec<MetricsSet>,
+    pub(super) task_metrics: Vec<MetricsSet>,
     // child_task_metrics contains metrics for child tasks if they were collected.
-    child_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    pub(super) child_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
 }
 
 impl TreeNodeRewriter for TaskMetricsCollector {
@@ -270,12 +282,93 @@ impl ExecutionPlan for MetricsWrapperExec {
     }
 }
 
+// Collects metrics from the provided stage and encodes it into a stream of flight data using
+// the schema of the stage. 
+pub fn collect_and_create_metrics_flight_data(
+    stage_key: StageKey,
+    stage: Arc<StageExec>,
+) -> Result<impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static, FlightError> {
+    // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
+    let mut result = TaskMetricsCollector::new()
+        .collect(stage.as_ref())
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    // Add the metrics for this task into the collection of task metrics.
+    // Skip any metrics that can't be converted to proto (unsupported types)
+    let proto_task_metrics = result
+        .task_metrics
+        .iter()
+        .map(|metrics| {
+            df_metrics_set_to_proto(metrics)
+                .map_err(|err| FlightError::ProtocolError(err.to_string()))
+        })
+        .collect::<Result<Vec<MetricsSetProto>, FlightError>>()?;
+    result
+        .child_task_metrics
+        .insert(stage_key.clone(), proto_task_metrics.clone());
+
+    // Serialize the metrics for all tasks.
+    let mut task_metrics_set = vec![];
+    for (stage_key, metrics) in result.child_task_metrics.into_iter() {
+        task_metrics_set.push(TaskMetrics {
+            stage_key: Some(stage_key),
+            metrics,
+        });
+    }
+
+    let flight_app_metadata = FlightAppMetadata {
+        content: Some(AppMetadata::MetricsCollection(MetricsCollection {
+            tasks: task_metrics_set,
+        })),
+    };
+    let mut buf = vec![];
+    flight_app_metadata
+        .encode(&mut buf)
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    // let empty_batch = RecordBatch::new_empty(stage.plan.schema());
+    // let stream = futures::stream::once(async move { Ok(empty_batch) });
+
+    let sch = stage.plan.schema();
+    let mut tmp = FlightDataEncoderBuilder::new()
+    .with_schema(sch.clone())
+    .with_metadata(buf.clone().into())
+    .build(futures::stream::once(async move { Ok(RecordBatch::new_empty(sch.clone())) })).skip(1);
+    tokio::spawn(async move {
+        while let Some(item) = tmp.next().await {
+            println!("metrics stream consumed: {item:?}");
+        }
+    });
+
+    let mut buffer = Vec::new();
+  let mut writer = StreamWriter::try_new(Cursor::new(&mut buffer), &stage.plan.schema())?;
+  writer.write(&RecordBatch::new_empty(stage.plan.schema()))?;
+  writer.finish()?;
+
+  // Create FlightData with valid IPC data + metadata
+  let flight_data = FlightData {
+      data_header: Vec::new().into(),
+      data_body: buffer.into(),
+      flight_descriptor: None,
+      app_metadata: buf.into(),
+  };
+
+    // Skip the first message since it contains the schema. 
+    // Ok(FlightDataEncoderBuilder::new()
+    //     .with_schema(stage.plan.schema())
+    //     .with_metadata(buf.into())
+    //     .build(stream).skip(1))
+    Ok(Box::pin(stream::once(async move { Ok(flight_data) })))
+}
+
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
+    use futures::StreamExt;
 
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
@@ -430,7 +523,6 @@ mod tests {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
-        use futures::StreamExt;
         let mut stream = stream;
         while let Some(_batch) = stream.next().await {}
 
@@ -484,5 +576,46 @@ mod tests {
 
         // TODO: once we propagate metrics from child stages, we can assert this.
         assert_eq!(0, result.child_task_metrics.len());
+    }
+
+    #[tokio::test]
+    async fn metrics_collection() {
+        let (stage_exec, ctx) = make_test_stage_exec_with_5_nodes().await;
+
+        // Execute the plan to completion.
+        let task_ctx = ctx.task_ctx();
+        let stream = stage_exec.execute(0, task_ctx).unwrap();
+
+
+        println!("{}", DisplayableExecutionPlan::new(&stage_exec).indent(true));
+
+        let mut stream = stream;
+        while let Some(batch) = stream.next().await {
+            batch.unwrap(); 
+        }
+
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(&stage_exec).unwrap();
+        let mut found_keys = result.child_task_metrics.keys().map(|k| k.to_string()).collect::<Vec<_>>();
+        found_keys.sort();
+
+        let expected_keys = vec!["task_0", "task_1", "task_2", "task_3", "task_4"].into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(found_keys, expected_keys);
+
+
+    }
+
+    #[tokio::test]
+    async fn metrics_collection_with_metrics() {
+        let (stage_exec, _ctx) = make_test_stage_exec_with_5_nodes().await;
+        let metrics_stream = collect_and_create_metrics_flight_data(StageKey { query_id: "test_query_id".to_string(), stage_id: 0, task_number: 0 }, Arc::new(stage_exec)).unwrap();
+
+        let mut metrics_stream = metrics_stream;
+        let mut count = 0;
+        while let Some(batch) = metrics_stream.next().await {
+            batch.unwrap(); 
+            count += 1;
+        }
+        assert_eq!(count, 5);
     }
 }

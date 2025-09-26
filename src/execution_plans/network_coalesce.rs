@@ -1,3 +1,4 @@
+use crate::execution_plans::metrics_collecting_stream::MetricsCollectingStream;
 use crate::ChannelResolver;
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::scale_partitioning_props;
@@ -297,6 +298,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return internal_err!("NetworkCoalesceExec: task is unassigned, cannot proceed");
         };
 
+        let metrics_collection_capture = self_ready.metrics_collection.clone();
         let stream = async move {
             let channel = channel_resolver.get_channel_for_url(&url).await?;
             let stream = FlightServiceClient::new(channel)
@@ -306,7 +308,9 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 .into_inner()
                 .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-            Ok(FlightRecordBatchStream::new_from_flight_data(stream)
+            let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection_capture);
+
+            Ok(FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
                 .map_err(map_flight_to_datafusion_error))
         }
         .try_flatten_stream();

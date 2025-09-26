@@ -10,3 +10,4 @@ pub use network_shuffle::{NetworkShuffleExec, NetworkShuffleReadyExec};
 pub use partition_isolator::PartitionIsolatorExec;
 pub use stage::display_plan_graphviz;
 pub use stage::{DistributedTaskContext, ExecutionTask, StageExec};
+pub use metrics::collect_and_create_metrics_flight_data;

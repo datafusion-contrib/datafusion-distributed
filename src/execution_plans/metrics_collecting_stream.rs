@@ -41,9 +41,9 @@ where
     fn extract_metrics_from_flight_data(
         metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
         flight_data: &mut FlightData,
-    ) -> Result<(), FlightError> {
+    ) -> Result<bool, FlightError> {
         if flight_data.app_metadata.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
         let metadata =
@@ -65,11 +65,13 @@ where
                     "expected Some StageKey in MetricsCollectingStream, got None".to_string(),
                 ));
             };
+            println!("collected metrics for stage {}", stage_key);
             metrics_collection.insert(stage_key, task_metrics.metrics);
+            flight_data.app_metadata.clear();
+            return Ok(true);
         }
 
-        flight_data.app_metadata.clear();
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -88,7 +90,13 @@ where
                     this.metrics_collection.clone(),
                     &mut flight_data,
                 ) {
-                    Ok(_) => Poll::Ready(Some(Ok(flight_data))),
+                    Ok(extracted) => {
+                        return if extracted {
+                            Poll::Ready(None)
+                        } else {
+                            Poll::Ready(Some(Ok(flight_data)))
+                        }
+                     }
                     Err(e) => Poll::Ready(Some(Err(e))),
                 }
             }
