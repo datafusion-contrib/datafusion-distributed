@@ -12,6 +12,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::IpcDataGenerator;
+use datafusion::common::HashSet;
 
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::StageKey;
@@ -370,6 +371,158 @@ mod tests {
     };
     use std::sync::Arc;
 
+    /// get_stage_keys returns a list of all stage keys in the stage and its child stages.
+    /// Keys are returned in sorted order.
+    fn get_stage_keys(stage: &StageExec) -> Vec<String> {
+        let query_id = stage.query_id;
+        let mut i = 0;
+        let mut stages = vec![stage];
+        let mut stage_keys = HashSet::new();
+        
+        while i < stages.len() {
+            let stage = stages[i];
+            i += 1;
+
+            // Add each task.
+            for j in 0..stage.tasks.len() {
+                let stage_key = StageKey {
+                    query_id: query_id.to_string(),
+                    stage_id: stage.num as u64,
+                    task_number: j as u64,
+                };
+                stage_keys.insert(stage_key.to_string());
+            }
+
+           // Add any child stages 
+            stages.extend(stage.child_stages_iter().map(|s| s));
+        }
+        let mut stage_keys: Vec<String> = stage_keys.into_iter().collect();
+        stage_keys.sort();
+        stage_keys
+    }
+
+    /// Creates a distributed session context with in-memory distributed engine
+    /// and registers two tables:
+    /// - table1 (id: int, name: string)
+    /// - table2 (id: int, name: string, phone: string, balance: float64)
+    async fn make_test_ctx() -> SessionContext {
+        // Create distributed session state with in-memory channel resolver
+        let config = SessionConfig::new().with_target_partitions(2);
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_distributed_channel_resolver(InMemoryChannelResolver::new())
+            .with_physical_optimizer_rule(Arc::new(
+                DistributedPhysicalOptimizerRule::default()
+                    .with_network_coalesce_tasks(2)
+                    .with_network_shuffle_tasks(2),
+            ))
+            .build();
+
+        let ctx = SessionContext::from(state);
+
+        // Create test data for table1
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batches1 = vec![
+            RecordBatch::try_new(
+                schema1.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                ],
+            )
+            .unwrap(),
+        ];
+
+        // Create test data for table2 with extended schema
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("phone", DataType::Utf8, false),
+            Field::new("balance", DataType::Float64, false),
+        ]));
+
+        let batches2 = vec![
+            RecordBatch::try_new(
+                schema2.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec!["customer1", "customer2", "customer3"])),
+                    Arc::new(StringArray::from(vec!["13-123-4567", "31-456-7890", "23-789-0123"])),
+                    Arc::new(datafusion::arrow::array::Float64Array::from(vec![100.5, 250.0, 50.25])),
+                ],
+            )
+            .unwrap(),
+        ];
+
+        // Register the test data as parquet tables
+        let _ = register_temp_parquet_table("table1", schema1, batches1, &ctx)
+            .await
+            .unwrap();
+
+        let _ = register_temp_parquet_table("table2", schema2, batches2, &ctx)
+            .await
+            .unwrap();
+
+        ctx
+    }
+
+    /// runs a sql query and returns the coordinator StageExec
+    async fn plan_sql(ctx: &SessionContext, sql: &str) -> StageExec {
+        let df = ctx
+            .sql(sql)
+            .await
+            .unwrap();
+        let physical_distributed = df.create_physical_plan().await.unwrap();
+
+        let stage_exec = match physical_distributed.as_any().downcast_ref::<StageExec>() {
+            Some(stage_exec) => stage_exec.clone(),
+            None => panic!(
+                "expected StageExec from distributed optimization, got: {}",
+                physical_distributed.name()
+            ),
+        };
+        stage_exec
+    }
+
+    async fn execute_plan(stage_exec: &StageExec, ctx: &SessionContext) {
+        let task_ctx = ctx.task_ctx();
+        let stream = stage_exec.execute(0, task_ctx).unwrap();
+
+        let mut stream = stream;
+        while let Some(batch) = stream.next().await {
+            batch.unwrap(); 
+        }
+    }
+
+    // Runs a sql query and asserts that metrics are collected for all tasks
+    async fn run_metrics_collection_e2e_test(sql: &str) {
+        let ctx = make_test_ctx().await;
+        let stage_exec = plan_sql(&ctx, sql).await;
+        execute_plan(&stage_exec, &ctx).await;
+
+        let expected = get_stage_keys(&stage_exec);
+        assert!(expected.len() > 1, "expected more than 1 stage key:\n{}", DisplayableExecutionPlan::new(&stage_exec).indent(true));
+
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(&stage_exec).unwrap();
+        let mut found_keys = result.child_task_metrics.keys().map(|k| k.to_string()).collect::<Vec<_>>();
+        found_keys.push(StageKey{
+            query_id: stage_exec.query_id.to_string(),
+            stage_id: stage_exec.num as u64,
+            task_number: 0,
+        }.to_string());
+        found_keys.sort();
+
+        assert_eq!(found_keys, expected);
+    }
+
+    
     /// Creates a stage with the following structure:
     ///
     ///  SortPreservingMergeExec
@@ -444,150 +597,164 @@ mod tests {
         (stage_exec, ctx)
     }
 
+    // #[tokio::test]
+    // #[ignore]
+    // async fn test_metrics_rewriter() {
+    //     let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
+    //     let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
+    //         .map(|i| make_test_metrics_set_proto_from_seed(i + 10))
+    //         .collect::<Vec<MetricsSetProto>>();
+
+    //     let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
+    //     let plan_with_metrics = rewriter
+    //         .enrich_task_with_metrics(test_stage.plan.clone())
+    //         .unwrap();
+
+    //     let plan_str =
+    //         DisplayableExecutionPlan::with_full_metrics(plan_with_metrics.as_ref()).indent(true);
+    //     // Expected distributed plan output with metrics
+    //     let expected = [
+    //         r"SortPreservingMergeExec: [id@0 ASC NULLS LAST], fetch=10, metrics=[output_rows=10, elapsed_compute=10ns, start_timestamp=2025-09-18 13:00:10 UTC, end_timestamp=2025-09-18 13:00:11 UTC]",
+    //         r"  SortExec: TopK(fetch=10), expr=[id@0 ASC NULLS LAST], preserve_partitioning=[true], metrics=[output_rows=11, elapsed_compute=11ns, start_timestamp=2025-09-18 13:00:11 UTC, end_timestamp=2025-09-18 13:00:12 UTC]",
+    //         r"    ProjectionExec: expr=[id@0 as id, count(Int64(1))@1 as count], metrics=[output_rows=12, elapsed_compute=12ns, start_timestamp=2025-09-18 13:00:12 UTC, end_timestamp=2025-09-18 13:00:13 UTC]",
+    //         r"      AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=13, elapsed_compute=13ns, start_timestamp=2025-09-18 13:00:13 UTC, end_timestamp=2025-09-18 13:00:14 UTC]",
+    //         r"        CoalesceBatchesExec: target_batch_size=8192, metrics=[output_rows=14, elapsed_compute=14ns, start_timestamp=2025-09-18 13:00:14 UTC, end_timestamp=2025-09-18 13:00:15 UTC]",
+    //         r"          NetworkShuffleExec, metrics=[]",
+    //         "" // trailing newline
+    //     ].join("\n");
+    //     assert_eq!(expected, plan_str.to_string());
+    // }
+
+    // #[tokio::test]
+    // #[ignore]
+    // async fn test_metrics_rewriter_correct_number_of_metrics() {
+    //     let test_metrics_set = make_test_metrics_set_proto_from_seed(10);
+    //     let (executable_plan, _ctx) = make_test_stage_exec_with_5_nodes().await;
+    //     let task_plan = executable_plan
+    //         .as_any()
+    //         .downcast_ref::<StageExec>()
+    //         .unwrap()
+    //         .plan
+    //         .clone();
+
+    //     // Too few metrics sets.
+    //     let rewriter = TaskMetricsRewriter::new(vec![test_metrics_set.clone()]);
+    //     let result = rewriter.enrich_task_with_metrics(task_plan.clone());
+    //     assert!(result.is_err());
+
+    //     // Too many metrics sets.
+    //     let rewriter = TaskMetricsRewriter::new(vec![
+    //         test_metrics_set.clone(),
+    //         test_metrics_set.clone(),
+    //         test_metrics_set.clone(),
+    //         test_metrics_set.clone(),
+    //     ]);
+    //     let result = rewriter.enrich_task_with_metrics(task_plan.clone());
+    //     assert!(result.is_err());
+    // }
+
+    // #[tokio::test]
+    // #[ignore]
+    // async fn test_metrics_collection() {
+    //     let (stage_exec, ctx) = make_test_stage_exec_with_5_nodes().await;
+
+    //     // Execute the plan to completion.
+    //     let task_ctx = ctx.task_ctx();
+    //     let stream = stage_exec.execute(0, task_ctx).unwrap();
+
+    //     let mut stream = stream;
+    //     while let Some(_batch) = stream.next().await {}
+
+    //     let collector = TaskMetricsCollector::new();
+    //     let result = collector.collect(&stage_exec).unwrap();
+
+    //     // With the distributed optimizer, we get a much more complex plan structure
+    //     // The exact number of metrics sets depends on the plan optimization, so be flexible
+    //     assert_eq!(result.task_metrics.len(), 5);
+
+    //     let expected_metrics_count = [4, 10, 8, 16, 8];
+    //     for (node_idx, metrics_set) in result.task_metrics.iter().enumerate() {
+    //         let metrics_count = metrics_set.iter().count();
+    //         assert_eq!(metrics_count, expected_metrics_count[node_idx]);
+
+    //         // Each node should have basic metrics: ElapsedCompute, OutputRows, StartTimestamp, EndTimestamp.
+    //         let mut has_start_timestamp = false;
+    //         let mut has_end_timestamp = false;
+    //         let mut has_elapsed_compute = false;
+    //         let mut has_output_rows = false;
+
+    //         for metric in metrics_set.iter() {
+    //             let metric_name = metric.value().name();
+    //             let metric_value = metric.value();
+
+    //             match metric_value {
+    //                 MetricValue::StartTimestamp(_) if metric_name == "start_timestamp" => {
+    //                     has_start_timestamp = true;
+    //                 }
+    //                 MetricValue::EndTimestamp(_) if metric_name == "end_timestamp" => {
+    //                     has_end_timestamp = true;
+    //                 }
+    //                 MetricValue::ElapsedCompute(_) if metric_name == "elapsed_compute" => {
+    //                     has_elapsed_compute = true;
+    //                 }
+    //                 MetricValue::OutputRows(_) if metric_name == "output_rows" => {
+    //                     has_output_rows = true;
+    //                 }
+    //                 _ => {
+    //                     // Other metrics are fine, we just validate the core ones
+    //                 }
+    //             }
+    //         }
+
+    //         // Each node should have the four basic metrics
+    //         assert!(has_start_timestamp);
+    //         assert!(has_end_timestamp);
+    //         assert!(has_elapsed_compute);
+    //         assert!(has_output_rows);
+    //     }
+
+    //     // TODO: once we propagate metrics from child stages, we can assert this.
+    //     assert_eq!(0, result.child_task_metrics.len());
+    // }
+
+
+
     #[tokio::test]
-    #[ignore]
-    async fn test_metrics_rewriter() {
-        let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
-            .map(|i| make_test_metrics_set_proto_from_seed(i + 10))
-            .collect::<Vec<MetricsSetProto>>();
-
-        let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
-        let plan_with_metrics = rewriter
-            .enrich_task_with_metrics(test_stage.plan.clone())
-            .unwrap();
-
-        let plan_str =
-            DisplayableExecutionPlan::with_full_metrics(plan_with_metrics.as_ref()).indent(true);
-        // Expected distributed plan output with metrics
-        let expected = [
-            r"SortPreservingMergeExec: [id@0 ASC NULLS LAST], fetch=10, metrics=[output_rows=10, elapsed_compute=10ns, start_timestamp=2025-09-18 13:00:10 UTC, end_timestamp=2025-09-18 13:00:11 UTC]",
-            r"  SortExec: TopK(fetch=10), expr=[id@0 ASC NULLS LAST], preserve_partitioning=[true], metrics=[output_rows=11, elapsed_compute=11ns, start_timestamp=2025-09-18 13:00:11 UTC, end_timestamp=2025-09-18 13:00:12 UTC]",
-            r"    ProjectionExec: expr=[id@0 as id, count(Int64(1))@1 as count], metrics=[output_rows=12, elapsed_compute=12ns, start_timestamp=2025-09-18 13:00:12 UTC, end_timestamp=2025-09-18 13:00:13 UTC]",
-            r"      AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=13, elapsed_compute=13ns, start_timestamp=2025-09-18 13:00:13 UTC, end_timestamp=2025-09-18 13:00:14 UTC]",
-            r"        CoalesceBatchesExec: target_batch_size=8192, metrics=[output_rows=14, elapsed_compute=14ns, start_timestamp=2025-09-18 13:00:14 UTC, end_timestamp=2025-09-18 13:00:15 UTC]",
-            r"          NetworkShuffleExec, metrics=[]",
-            "" // trailing newline
-        ].join("\n");
-        assert_eq!(expected, plan_str.to_string());
+    async fn metrics_collection_1() {
+        run_metrics_collection_e2e_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn test_metrics_rewriter_correct_number_of_metrics() {
-        let test_metrics_set = make_test_metrics_set_proto_from_seed(10);
-        let (executable_plan, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let task_plan = executable_plan
-            .as_any()
-            .downcast_ref::<StageExec>()
-            .unwrap()
-            .plan
-            .clone();
-
-        // Too few metrics sets.
-        let rewriter = TaskMetricsRewriter::new(vec![test_metrics_set.clone()]);
-        let result = rewriter.enrich_task_with_metrics(task_plan.clone());
-        assert!(result.is_err());
-
-        // Too many metrics sets.
-        let rewriter = TaskMetricsRewriter::new(vec![
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-        ]);
-        let result = rewriter.enrich_task_with_metrics(task_plan.clone());
-        assert!(result.is_err());
+    async fn metrics_collection_2() {
+        run_metrics_collection_e2e_test(
+            "SELECT sum(balance) / 7.0 as avg_yearly
+            FROM table2
+            WHERE name LIKE 'customer%'
+              AND balance < (
+                SELECT 0.2 * avg(balance)
+                FROM table2 t2_inner
+                WHERE t2_inner.id = table2.id
+              )"
+        ).await;
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_metrics_collection() {
-        let (stage_exec, ctx) = make_test_stage_exec_with_5_nodes().await;
-
-        // Execute the plan to completion.
-        let task_ctx = ctx.task_ctx();
-        let stream = stage_exec.execute(0, task_ctx).unwrap();
-
-        let mut stream = stream;
-        while let Some(_batch) = stream.next().await {}
-
-        let collector = TaskMetricsCollector::new();
-        let result = collector.collect(&stage_exec).unwrap();
-
-        // With the distributed optimizer, we get a much more complex plan structure
-        // The exact number of metrics sets depends on the plan optimization, so be flexible
-        assert_eq!(result.task_metrics.len(), 5);
-
-        let expected_metrics_count = [4, 10, 8, 16, 8];
-        for (node_idx, metrics_set) in result.task_metrics.iter().enumerate() {
-            let metrics_count = metrics_set.iter().count();
-            assert_eq!(metrics_count, expected_metrics_count[node_idx]);
-
-            // Each node should have basic metrics: ElapsedCompute, OutputRows, StartTimestamp, EndTimestamp.
-            let mut has_start_timestamp = false;
-            let mut has_end_timestamp = false;
-            let mut has_elapsed_compute = false;
-            let mut has_output_rows = false;
-
-            for metric in metrics_set.iter() {
-                let metric_name = metric.value().name();
-                let metric_value = metric.value();
-
-                match metric_value {
-                    MetricValue::StartTimestamp(_) if metric_name == "start_timestamp" => {
-                        has_start_timestamp = true;
-                    }
-                    MetricValue::EndTimestamp(_) if metric_name == "end_timestamp" => {
-                        has_end_timestamp = true;
-                    }
-                    MetricValue::ElapsedCompute(_) if metric_name == "elapsed_compute" => {
-                        has_elapsed_compute = true;
-                    }
-                    MetricValue::OutputRows(_) if metric_name == "output_rows" => {
-                        has_output_rows = true;
-                    }
-                    _ => {
-                        // Other metrics are fine, we just validate the core ones
-                    }
-                }
-            }
-
-            // Each node should have the four basic metrics
-            assert!(has_start_timestamp);
-            assert!(has_end_timestamp);
-            assert!(has_elapsed_compute);
-            assert!(has_output_rows);
-        }
-
-        // TODO: once we propagate metrics from child stages, we can assert this.
-        assert_eq!(0, result.child_task_metrics.len());
-    }
 
     #[tokio::test]
-    async fn metrics_collection() {
-        let (stage_exec, ctx) = make_test_stage_exec_with_5_nodes().await;
-
-        // Execute the plan to completion.
-        let task_ctx = ctx.task_ctx();
-        let stream = stage_exec.execute(0, task_ctx).unwrap();
-
-
-        println!("{}", DisplayableExecutionPlan::new(&stage_exec).indent(true));
-
-        let mut stream = stream;
-        while let Some(batch) = stream.next().await {
-            batch.unwrap(); 
-        }
-
-        let collector = TaskMetricsCollector::new();
-        let result = collector.collect(&stage_exec).unwrap();
-        let mut found_keys = result.child_task_metrics.keys().map(|k| k.to_string()).collect::<Vec<_>>();
-        found_keys.sort();
-
-        let expected_keys = vec!["task_0", "task_1", "task_2", "task_3", "task_4"].into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(found_keys, expected_keys);
-
-
+    async fn metrics_collection_3() {
+        run_metrics_collection_e2e_test(
+            "SELECT 
+                substring(phone, 1, 2) as country_code,
+                count(*) as num_customers,
+                sum(balance) as total_balance
+            FROM table2
+            WHERE substring(phone, 1, 2) IN ('13', '31', '23', '29', '30', '18')
+              AND balance > (
+                SELECT avg(balance)
+                FROM table2
+                WHERE balance > 0.00
+              )
+            GROUP BY substring(phone, 1, 2)
+            ORDER BY country_code"
+        ).await;
     }
 }
