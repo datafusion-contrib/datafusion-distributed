@@ -380,30 +380,28 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::StartTimestamp(start_ts)) => match start_ts.value {
-            Some(value) => {
-                let timestamp = Timestamp::new();
+        Some(MetricValueProto::StartTimestamp(start_ts)) => {
+            let timestamp = Timestamp::new();
+            if let Some(value) = start_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                Ok(Arc::new(Metric::new_with_labels(
-                    MetricValue::StartTimestamp(timestamp),
-                    partition,
-                    labels,
-                )))
             }
-            None => internal_err!("encountered invalid start timestamp metric with no value"),
-        },
-        Some(MetricValueProto::EndTimestamp(end_ts)) => match end_ts.value {
-            Some(value) => {
-                let timestamp = Timestamp::new();
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::StartTimestamp(timestamp),
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::EndTimestamp(end_ts)) => {
+            let timestamp = Timestamp::new();
+            if let Some(value) = end_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                Ok(Arc::new(Metric::new_with_labels(
-                    MetricValue::EndTimestamp(timestamp),
-                    partition,
-                    labels,
-                )))
             }
-            None => internal_err!("encountered invalid end timestamp metric with no value"),
-        },
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::EndTimestamp(timestamp),
+                partition,
+                labels,
+            )))
+        }
         None => internal_err!("proto metric is missing the metric field"),
     }
 }
@@ -853,18 +851,22 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_proto_timestamp_error() {
-        // Create a MetricProto with EndTimestamp that has no value (None)
-        let invalid_end_timestamp_proto = MetricProto {
-            metric: Some(MetricValueProto::EndTimestamp(EndTimestamp { value: None })),
-            labels: vec![],
-            partition: Some(0),
-        };
+    fn test_default_timestamp_roundtrip() {
+        let default_timestamp = Timestamp::default();
+        let metric_with_default_timestamp =
+            Metric::new(MetricValue::EndTimestamp(default_timestamp), Some(0));
 
-        let result = metric_proto_to_df(invalid_end_timestamp_proto);
+        let proto_result = df_metric_to_proto(Arc::new(metric_with_default_timestamp));
         assert!(
-            result.is_err(),
-            "should return error for invalid end timestamp with no value"
+            proto_result.is_ok(),
+            "should successfully convert default timestamp to proto"
+        );
+
+        let proto_metric = proto_result.unwrap();
+        let roundtrip_result = metric_proto_to_df(proto_metric);
+        assert!(
+            roundtrip_result.is_ok(),
+            "should successfully roundtrip default timestamp"
         );
     }
 }

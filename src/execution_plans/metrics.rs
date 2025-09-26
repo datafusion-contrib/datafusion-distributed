@@ -1,18 +1,30 @@
 use crate::execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, StageExec};
 use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
+use arrow::ipc::writer::DictionaryTracker;
+use arrow::record_batch::RecordBatch;
+use arrow_flight::FlightData;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::ipc::writer::IpcDataGenerator;
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
+use datafusion::execution::TaskContext;
+use datafusion::physical_plan::metrics::MetricsSet;
+use futures::{Stream, stream};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::StageKey;
+use crate::protobuf::{AppMetadata, FlightAppMetadata, MetricsCollection, TaskMetrics};
+use arrow_flight::error::FlightError;
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeRewriter};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
+use prost::Message;
 use std::any::Any;
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 
 /// TaskMetricsCollector is used to collect metrics from a task. It implements [TreeNodeRewriter].
 /// Note: TaskMetricsCollector is not a [datafusion::physical_plan::ExecutionPlanVisitor] to keep
@@ -29,9 +41,9 @@ pub struct TaskMetricsCollector {
 #[allow(dead_code)]
 pub struct MetricsCollectorResult {
     // metrics is a collection of metrics for a task ordered using a pre-order traversal of the task's plan.
-    task_metrics: Vec<MetricsSet>,
+    pub(super) task_metrics: Vec<MetricsSet>,
     // child_task_metrics contains metrics for child tasks if they were collected.
-    child_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    pub(super) child_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
 }
 
 impl TreeNodeRewriter for TaskMetricsCollector {
@@ -104,13 +116,16 @@ impl TaskMetricsCollector {
         }
     }
 
-    /// collect metrics from a StageExec plan and any child tasks.
+    /// collect metrics from an [ExecutionPlan] (usually a [StageExec].plan) and any child tasks.
     /// Returns
     /// - a vec representing the metrics for the current task (ordered using a pre-order traversal)
     /// - a map representing the metrics for some subset of child tasks collected from NetworkShuffleExec leaves
     #[allow(dead_code)]
-    pub fn collect(mut self, stage: &StageExec) -> Result<MetricsCollectorResult, DataFusionError> {
-        stage.plan.clone().rewrite(&mut self)?;
+    pub fn collect(
+        mut self,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<MetricsCollectorResult, DataFusionError> {
+        plan.rewrite(&mut self)?;
         Ok(MetricsCollectorResult {
             task_metrics: self.task_metrics,
             child_task_metrics: self.child_task_metrics,
@@ -270,20 +285,92 @@ impl ExecutionPlan for MetricsWrapperExec {
     }
 }
 
+// Collects metrics from the provided stage and encodes it into a stream of flight data using
+// the schema of the stage.
+pub fn collect_and_create_metrics_flight_data(
+    stage_key: StageKey,
+    stage: Arc<StageExec>,
+) -> Result<impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static, FlightError> {
+    // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
+    let mut result = TaskMetricsCollector::new()
+        .collect(stage.plan.clone())
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    // Add the metrics for this task into the collection of task metrics.
+    // Skip any metrics that can't be converted to proto (unsupported types)
+    let proto_task_metrics = result
+        .task_metrics
+        .iter()
+        .map(|metrics| {
+            df_metrics_set_to_proto(metrics)
+                .map_err(|err| FlightError::ProtocolError(err.to_string()))
+        })
+        .collect::<Result<Vec<MetricsSetProto>, FlightError>>()?;
+    result
+        .child_task_metrics
+        .insert(stage_key.clone(), proto_task_metrics.clone());
+
+    // Serialize the metrics for all tasks.
+    let mut task_metrics_set = vec![];
+    for (stage_key, metrics) in result.child_task_metrics.into_iter() {
+        task_metrics_set.push(TaskMetrics {
+            stage_key: Some(stage_key),
+            metrics,
+        });
+    }
+
+    let flight_app_metadata = FlightAppMetadata {
+        content: Some(AppMetadata::MetricsCollection(MetricsCollection {
+            tasks: task_metrics_set,
+        })),
+    };
+
+    let metrics_flight_data =
+        empty_flight_data_with_app_metadata(flight_app_metadata, stage.plan.schema())?;
+    Ok(Box::pin(stream::once(
+        async move { Ok(metrics_flight_data) },
+    )))
+}
+
+/// Creates a FlightData with the given app_metadata and empty RecordBatch using the provided schema.
+/// We don't use [arrow_flight::encode::FlightDataEncoder] (and by extension, the [arrow_flight::encode::FlightDataEncoderBuilder])
+/// since they skip messages with empty RecordBatch data.
+pub fn empty_flight_data_with_app_metadata(
+    metadata: FlightAppMetadata,
+    schema: SchemaRef,
+) -> Result<FlightData, FlightError> {
+    let mut buf = vec![];
+    metadata
+        .encode(&mut buf)
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    let empty_batch = RecordBatch::new_empty(schema);
+    let options = IpcWriteOptions::default();
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(true);
+    let (_, encoded_data) = data_gen
+        .encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
+        .map_err(|e| {
+            FlightError::ProtocolError(format!("Failed to create empty batch FlightData: {e}"))
+        })?;
+    Ok(FlightData::from(encoded_data).with_app_metadata(buf))
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
+    use futures::StreamExt;
 
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
+    use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
-    use datafusion::physical_plan::metrics::MetricValue;
     use datafusion::prelude::SessionConfig;
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
@@ -291,198 +378,283 @@ mod tests {
     };
     use std::sync::Arc;
 
-    /// Creates a stage with the following structure:
-    ///
-    ///  SortPreservingMergeExec
-    ///    SortExec
-    ///      ProjectionExec
-    ///        AggregateExec
-    ///          CoalesceBatchesExec
-    ///            NetworkShuffleExec
-    ///
-    ///  ... (for the purposes of these tests, we don't care about child stages).
-    async fn make_test_stage_exec_with_5_nodes() -> (StageExec, SessionContext) {
+    /// Creates a single node session context
+    async fn make_test_ctx_single_node() -> SessionContext {
+        make_test_ctx_helper(false).await
+    }
+
+    /// Creates a distributed session context with in-memory distributed engine
+    async fn make_test_ctx() -> SessionContext {
+        make_test_ctx_helper(true).await
+    }
+
+    /// Creates a session context and registers two tables:
+    /// - table1 (id: int, name: string)
+    /// - table2 (id: int, name: string, phone: string, balance: float64)
+    async fn make_test_ctx_helper(distributed: bool) -> SessionContext {
         // Create distributed session state with in-memory channel resolver
         let config = SessionConfig::new().with_target_partitions(2);
 
-        let state = SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
-            .with_config(config)
-            .with_distributed_channel_resolver(InMemoryChannelResolver::new())
-            .with_physical_optimizer_rule(Arc::new(
-                DistributedPhysicalOptimizerRule::default()
-                    .with_network_coalesce_tasks(2)
-                    .with_network_shuffle_tasks(2),
-            ))
-            .build();
+            .with_config(config);
+
+        if distributed {
+            builder = builder
+                .with_distributed_channel_resolver(InMemoryChannelResolver::new())
+                .with_physical_optimizer_rule(Arc::new(
+                    DistributedPhysicalOptimizerRule::default()
+                        .with_network_coalesce_tasks(2)
+                        .with_network_shuffle_tasks(2),
+                ))
+        }
+        let state = builder.build();
 
         let ctx = SessionContext::from(state);
 
-        // Create test data
-        let schema = Arc::new(Schema::new(vec![
+        // Create test data for table1
+        let schema1 = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let batches = vec![
+        let batches1 = vec![
             RecordBatch::try_new(
-                schema.clone(),
+                schema1.clone(),
                 vec![
                     Arc::new(Int32Array::from(vec![1, 2, 3])),
                     Arc::new(StringArray::from(vec!["a", "b", "c"])),
                 ],
             )
             .unwrap(),
+        ];
+
+        // Create test data for table2 with extended schema
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("phone", DataType::Utf8, false),
+            Field::new("balance", DataType::Float64, false),
+        ]));
+
+        let batches2 = vec![
             RecordBatch::try_new(
-                schema.clone(),
+                schema2.clone(),
                 vec![
-                    Arc::new(Int32Array::from(vec![4, 5, 6])),
-                    Arc::new(StringArray::from(vec!["d", "e", "f"])),
+                    Arc::new(Int32Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec![
+                        "customer1",
+                        "customer2",
+                        "customer3",
+                    ])),
+                    Arc::new(StringArray::from(vec![
+                        "13-123-4567",
+                        "31-456-7890",
+                        "23-789-0123",
+                    ])),
+                    Arc::new(datafusion::arrow::array::Float64Array::from(vec![
+                        100.5, 250.0, 50.25,
+                    ])),
                 ],
             )
             .unwrap(),
         ];
 
-        // Register the test data as a parquet table
-        let _ = register_temp_parquet_table("test_table", schema.clone(), batches, &ctx)
+        // Register the test data as parquet tables
+        let _ = register_temp_parquet_table("table1", schema1, batches1, &ctx)
             .await
             .unwrap();
 
-        let df = ctx
-            .sql("SELECT id, COUNT(*) as count FROM test_table WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10")
+        let _ = register_temp_parquet_table("table2", schema2, batches2, &ctx)
             .await
             .unwrap();
+
+        ctx
+    }
+
+    /// runs a sql query and returns the coordinator StageExec
+    async fn plan_sql(ctx: &SessionContext, sql: &str) -> StageExec {
+        let df = ctx.sql(sql).await.unwrap();
         let physical_distributed = df.create_physical_plan().await.unwrap();
 
         let stage_exec = match physical_distributed.as_any().downcast_ref::<StageExec>() {
             Some(stage_exec) => stage_exec.clone(),
             None => panic!(
-                "Expected StageExec from distributed optimization, got: {}",
+                "expected StageExec from distributed optimization, got: {}",
                 physical_distributed.name()
             ),
         };
-
-        (stage_exec, ctx)
+        stage_exec
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_metrics_rewriter() {
-        let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
-            .map(|i| make_test_metrics_set_proto_from_seed(i + 10))
-            .collect::<Vec<MetricsSetProto>>();
-
-        let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
-        let plan_with_metrics = rewriter
-            .enrich_task_with_metrics(test_stage.plan.clone())
-            .unwrap();
-
-        let plan_str =
-            DisplayableExecutionPlan::with_full_metrics(plan_with_metrics.as_ref()).indent(true);
-        // Expected distributed plan output with metrics
-        let expected = [
-            r"SortPreservingMergeExec: [id@0 ASC NULLS LAST], fetch=10, metrics=[output_rows=10, elapsed_compute=10ns, start_timestamp=2025-09-18 13:00:10 UTC, end_timestamp=2025-09-18 13:00:11 UTC]",
-            r"  SortExec: TopK(fetch=10), expr=[id@0 ASC NULLS LAST], preserve_partitioning=[true], metrics=[output_rows=11, elapsed_compute=11ns, start_timestamp=2025-09-18 13:00:11 UTC, end_timestamp=2025-09-18 13:00:12 UTC]",
-            r"    ProjectionExec: expr=[id@0 as id, count(Int64(1))@1 as count], metrics=[output_rows=12, elapsed_compute=12ns, start_timestamp=2025-09-18 13:00:12 UTC, end_timestamp=2025-09-18 13:00:13 UTC]",
-            r"      AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=13, elapsed_compute=13ns, start_timestamp=2025-09-18 13:00:13 UTC, end_timestamp=2025-09-18 13:00:14 UTC]",
-            r"        CoalesceBatchesExec: target_batch_size=8192, metrics=[output_rows=14, elapsed_compute=14ns, start_timestamp=2025-09-18 13:00:14 UTC, end_timestamp=2025-09-18 13:00:15 UTC]",
-            r"          NetworkShuffleExec, metrics=[]",
-            "" // trailing newline
-        ].join("\n");
-        assert_eq!(expected, plan_str.to_string());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_metrics_rewriter_correct_number_of_metrics() {
-        let test_metrics_set = make_test_metrics_set_proto_from_seed(10);
-        let (executable_plan, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let task_plan = executable_plan
-            .as_any()
-            .downcast_ref::<StageExec>()
-            .unwrap()
-            .plan
-            .clone();
-
-        // Too few metrics sets.
-        let rewriter = TaskMetricsRewriter::new(vec![test_metrics_set.clone()]);
-        let result = rewriter.enrich_task_with_metrics(task_plan.clone());
-        assert!(result.is_err());
-
-        // Too many metrics sets.
-        let rewriter = TaskMetricsRewriter::new(vec![
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-            test_metrics_set.clone(),
-        ]);
-        let result = rewriter.enrich_task_with_metrics(task_plan.clone());
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_metrics_collection() {
-        let (stage_exec, ctx) = make_test_stage_exec_with_5_nodes().await;
-
-        // Execute the plan to completion.
+    async fn execute_plan(stage_exec: &StageExec, ctx: &SessionContext) {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
-        use futures::StreamExt;
         let mut stream = stream;
-        while let Some(_batch) = stream.next().await {}
-
-        let collector = TaskMetricsCollector::new();
-        let result = collector.collect(&stage_exec).unwrap();
-
-        // With the distributed optimizer, we get a much more complex plan structure
-        // The exact number of metrics sets depends on the plan optimization, so be flexible
-        assert_eq!(result.task_metrics.len(), 5);
-
-        let expected_metrics_count = [4, 10, 8, 16, 8];
-        for (node_idx, metrics_set) in result.task_metrics.iter().enumerate() {
-            let metrics_count = metrics_set.iter().count();
-            assert_eq!(metrics_count, expected_metrics_count[node_idx]);
-
-            // Each node should have basic metrics: ElapsedCompute, OutputRows, StartTimestamp, EndTimestamp.
-            let mut has_start_timestamp = false;
-            let mut has_end_timestamp = false;
-            let mut has_elapsed_compute = false;
-            let mut has_output_rows = false;
-
-            for metric in metrics_set.iter() {
-                let metric_name = metric.value().name();
-                let metric_value = metric.value();
-
-                match metric_value {
-                    MetricValue::StartTimestamp(_) if metric_name == "start_timestamp" => {
-                        has_start_timestamp = true;
-                    }
-                    MetricValue::EndTimestamp(_) if metric_name == "end_timestamp" => {
-                        has_end_timestamp = true;
-                    }
-                    MetricValue::ElapsedCompute(_) if metric_name == "elapsed_compute" => {
-                        has_elapsed_compute = true;
-                    }
-                    MetricValue::OutputRows(_) if metric_name == "output_rows" => {
-                        has_output_rows = true;
-                    }
-                    _ => {
-                        // Other metrics are fine, we just validate the core ones
-                    }
-                }
-            }
-
-            // Each node should have the four basic metrics
-            assert!(has_start_timestamp);
-            assert!(has_end_timestamp);
-            assert!(has_elapsed_compute);
-            assert!(has_output_rows);
+        while let Some(batch) = stream.next().await {
+            batch.unwrap();
         }
+    }
 
-        // TODO: once we propagate metrics from child stages, we can assert this.
-        assert_eq!(0, result.child_task_metrics.len());
+    /// Asserts that we can collect metrics from a distributed plan generated from the
+    /// SQL query. It ensures that metrics are collected for all stages and are propagated
+    /// through network boundaries.
+    async fn run_metrics_collection_e2e_test(sql: &str) {
+        // Plan and execute the query
+        let ctx = make_test_ctx().await;
+        let stage_exec = plan_sql(&ctx, sql).await;
+        execute_plan(&stage_exec, &ctx).await;
+
+        // Assert to ensure the distributed test case is sufficiently complex.
+        let (stages, expected_stage_keys) = get_stages_and_stage_keys(&stage_exec);
+        assert!(
+            expected_stage_keys.len() > 1,
+            "expected more than 1 stage key in test. the plan was not distributed):\n{}",
+            DisplayableExecutionPlan::new(&stage_exec).indent(true)
+        );
+
+        // Collect metrics for all tasks from the root StageExec.
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(stage_exec.plan.clone()).unwrap();
+        let mut actual_collected_metrics = result.child_task_metrics;
+        actual_collected_metrics.insert(
+            StageKey {
+                query_id: stage_exec.query_id.to_string(),
+                stage_id: stage_exec.num as u64,
+                task_number: 0,
+            },
+            result
+                .task_metrics
+                .iter()
+                .map(|m| df_metrics_set_to_proto(m).unwrap())
+                .collect::<Vec<_>>(),
+        );
+
+        // Ensure that there's metrics for each node for each task for each stage.
+        for expected_stage_key in expected_stage_keys {
+            // Get the collected metrics for this task.
+            let actual_metrics = actual_collected_metrics.get(&expected_stage_key).unwrap();
+
+            // Assert that there's metrics for each node in this task.
+            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            assert_eq!(actual_metrics.len(), count_plan_nodes(&stage.plan));
+
+            // Ensure each node has at least one metric which was collected.
+            for metrics_set in actual_metrics.iter() {
+                let metrics_set = metrics_set_proto_to_df(metrics_set).unwrap();
+                assert!(metrics_set.iter().count() > 0);
+            }
+        }
+    }
+
+    /// Asserts that we successfully re-write the metrics of a plan generated from the provided SQL query.
+    /// Also asserts that the order which metrics are collected from a plan matches the order which
+    /// they are re-written (ie. ensures we don't assign metrics to the wrong nodes)
+    ///
+    /// Only tests single node plans since the [TaskMetricsRewriter] stops on [NetworkBoundary].
+    async fn run_metrics_rewriter_test(sql: &str) {
+        // Generate the plan
+        let ctx = make_test_ctx_single_node().await;
+        let plan = ctx
+            .sql(sql)
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+
+        // Generate metrics for each plan node.
+        let expected_metrics = (0..count_plan_nodes(&plan))
+            .map(|i| make_test_metrics_set_proto_from_seed(i as u64 + 10))
+            .collect::<Vec<MetricsSetProto>>();
+
+        // Rewrite the metrics.
+        let rewriter = TaskMetricsRewriter::new(expected_metrics.clone());
+        let rewritten_plan = rewriter.enrich_task_with_metrics(plan.clone()).unwrap();
+
+        // Collect metrics
+        let actual_metrics = TaskMetricsCollector::new()
+            .collect(rewritten_plan)
+            .unwrap()
+            .task_metrics;
+
+        // Assert that all the metrics are present and in the same order.
+        assert_eq!(actual_metrics.len(), expected_metrics.len());
+        for (actual_metrics_set, expected_metrics_set) in actual_metrics
+            .iter()
+            .map(|m| df_metrics_set_to_proto(m).unwrap())
+            .zip(expected_metrics)
+        {
+            assert_eq!(actual_metrics_set, expected_metrics_set);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_metrics_rewriter_1() {
+        run_metrics_rewriter_test(
+            "SELECT sum(balance) / 7.0 as avg_yearly from table2 group by name",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_rewriter_2() {
+        run_metrics_rewriter_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_rewriter_3() {
+        run_metrics_rewriter_test(
+            "SELECT sum(balance) / 7.0 as avg_yearly
+            FROM table2
+            WHERE name LIKE 'customer%'
+              AND balance < (
+                SELECT 0.2 * avg(balance)
+                FROM table2 t2_inner
+                WHERE t2_inner.id = table2.id
+              )",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_e2e_1() {
+        run_metrics_collection_e2e_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_e2e_2() {
+        run_metrics_collection_e2e_test(
+            "SELECT sum(balance) / 7.0 as avg_yearly
+            FROM table2
+            WHERE name LIKE 'customer%'
+              AND balance < (
+                SELECT 0.2 * avg(balance)
+                FROM table2 t2_inner
+                WHERE t2_inner.id = table2.id
+              )",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_e2e_3() {
+        run_metrics_collection_e2e_test(
+            "SELECT 
+                substring(phone, 1, 2) as country_code,
+                count(*) as num_customers,
+                sum(balance) as total_balance
+            FROM table2
+            WHERE substring(phone, 1, 2) IN ('13', '31', '23', '29', '30', '18')
+              AND balance > (
+                SELECT avg(balance)
+                FROM table2
+                WHERE balance > 0.00
+              )
+            GROUP BY substring(phone, 1, 2)
+            ORDER BY country_code",
+        )
+        .await;
     }
 }

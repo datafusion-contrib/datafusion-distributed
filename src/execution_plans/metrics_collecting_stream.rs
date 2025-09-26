@@ -67,8 +67,8 @@ where
             };
             metrics_collection.insert(stage_key, task_metrics.metrics);
         }
-
         flight_data.app_metadata.clear();
+
         Ok(())
     }
 }
@@ -256,7 +256,8 @@ mod tests {
         // Create a stream that emits an error - should be propagated through
         let stream_error = FlightError::ProtocolError("stream error from inner stream".to_string());
         let error_stream = stream::iter(vec![Err(stream_error)]);
-        let mut collecting_stream = MetricsCollectingStream::new(error_stream, metrics_collection);
+        let mut collecting_stream =
+            MetricsCollectingStream::new(error_stream, metrics_collection.clone());
 
         let result = collecting_stream.next().await.unwrap();
         assert_protocol_error(result, "stream error from inner stream");
