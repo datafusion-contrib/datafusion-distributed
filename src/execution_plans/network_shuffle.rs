@@ -17,6 +17,7 @@ use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_e
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -193,6 +194,8 @@ impl NetworkBoundary for NetworkShuffleExec {
                 p * n_tasks
             }),
         )?);
+
+        let next_stage_plan = Arc::new(CoalesceBatchesExec::new(next_stage_plan, 8194));
 
         Ok((next_stage_plan, pending.input_tasks))
     }

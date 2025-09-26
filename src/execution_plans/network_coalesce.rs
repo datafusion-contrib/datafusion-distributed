@@ -16,6 +16,7 @@ use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -145,7 +146,9 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return Err(limit_tasks_err(1));
         }
 
-        Ok((Arc::clone(&pending.child), pending.input_tasks))
+        let node = CoalesceBatchesExec::new(Arc::clone(&pending.child), 8194);
+
+        Ok((Arc::new(node), pending.input_tasks))
     }
 
     fn to_distributed(

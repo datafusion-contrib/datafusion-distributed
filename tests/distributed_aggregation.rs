@@ -57,10 +57,11 @@ mod tests {
         │             NetworkShuffleExec read_from=Stage 1, output_partitions=3, n_tasks=1, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1   Tasks: t0:[p0,p1,p2] t1:[p0,p1,p2] 
-          │ RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=2
-          │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
-          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+          │ CoalesceBatchesExec: target_batch_size=8194
+          │   RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=2
+          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
           └──────────────────────────────────────────────────
         ",
         );
