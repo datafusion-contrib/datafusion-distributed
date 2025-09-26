@@ -360,7 +360,7 @@ impl DistributedExt for SessionContext {
             fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
-            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+            fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]

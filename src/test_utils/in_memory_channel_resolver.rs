@@ -1,6 +1,7 @@
 use crate::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedSessionBuilderContext,
+    DistributedSessionBuilder, DistributedSessionBuilderContext,
+    MappedDistributedSessionBuilderExt,
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
@@ -20,12 +21,17 @@ pub struct InMemoryChannelResolver {
 
 impl Default for InMemoryChannelResolver {
     fn default() -> Self {
-        Self::new()
+        Self::new(|ctx: DistributedSessionBuilderContext| async move {
+            let builder = SessionStateBuilder::new()
+                .with_default_features()
+                .with_runtime_env(ctx.runtime_env.clone());
+            Ok(builder.build())
+        })
     }
 }
 
 impl InMemoryChannelResolver {
-    pub fn new() -> Self {
+    pub fn new(builder: impl DistributedSessionBuilder + Send + Sync + 'static) -> Self {
         let (client, server) = tokio::io::duplex(1024 * 1024);
 
         let mut client = Some(client);
@@ -43,18 +49,10 @@ impl InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint =
-            ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
-                let this = this.clone();
-                async move {
-                    let builder = SessionStateBuilder::new()
-                        .with_default_features()
-                        .with_distributed_channel_resolver(this)
-                        .with_runtime_env(ctx.runtime_env.clone());
-                    Ok(builder.build())
-                }
-            })
-            .unwrap();
+        let builder =
+            builder.map(move |b| Ok(b.with_distributed_channel_resolver(this.clone()).build()));
+
+        let endpoint = ArrowFlightEndpoint::try_new(builder).unwrap();
 
         tokio::spawn(async move {
             Server::builder()
