@@ -364,7 +364,7 @@ mod tests {
         for _ in 10..20 {
             TTLMap::<String, i32>::gc(ttl_map.time.clone(), &ttl_map.buckets);
         }
-        assert_eventually(|| ttl_map.data.len() == 0, Duration::from_millis(100)).await;
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
         // All entries expired
     }
 
@@ -421,7 +421,7 @@ mod tests {
             handle.await.unwrap();
         }
 
-        assert_eventually(|| ttl_map.data.len() == 0, Duration::from_millis(20)).await;
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(20)).await;
     }
 
     #[tokio::test]
@@ -442,7 +442,7 @@ mod tests {
         }
 
         // Entry should be expired and time should have wrapped
-        assert_eventually(|| ttl_map.data.len() == 0, Duration::from_millis(100)).await;
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
         let final_time = ttl_map.time.load(Ordering::SeqCst);
         assert!(final_time < 100);
     }
@@ -539,6 +539,6 @@ mod tests {
         for _ in 0..5 {
             TTLMap::<String, i32>::gc(ttl_map.time.clone(), &ttl_map.buckets);
         }
-        assert_eventually(|| ttl_map.data.len() == 0, Duration::from_millis(100)).await;
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
     }
 }
