@@ -137,7 +137,6 @@ pub struct ProtoLabel {
 /// df_metrics_set_to_proto converts a [datafusion::physical_plan::metrics::MetricsSet] to a [MetricsSetProto].
 /// Custom metrics are filtered out, but any other errors are returned.
 /// TODO(#140): Support custom metrics.
-#[allow(dead_code)]
 pub fn df_metrics_set_to_proto(
     metrics_set: &MetricsSet,
 ) -> Result<MetricsSetProto, DataFusionError> {
@@ -164,7 +163,6 @@ pub fn df_metrics_set_to_proto(
 }
 
 /// metrics_set_proto_to_df converts a [MetricsSetProto] to a [datafusion::physical_plan::metrics::MetricsSet].
-#[allow(dead_code)]
 pub fn metrics_set_proto_to_df(
     metrics_set_proto: &MetricsSetProto,
 ) -> Result<MetricsSet, DataFusionError> {
@@ -178,12 +176,10 @@ pub fn metrics_set_proto_to_df(
 }
 
 /// Custom metrics are not supported in proto conversion.
-#[allow(dead_code)]
 const CUSTOM_METRICS_NOT_SUPPORTED: &str =
     "custom metrics are not supported in metrics proto conversion";
 
 /// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `MetricProto`. It does not consume the Arc<Metric>.
-#[allow(dead_code)]
 pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusionError> {
     let partition = metric.partition().map(|p| p as u64);
     let labels = metric
@@ -380,30 +376,28 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::StartTimestamp(start_ts)) => match start_ts.value {
-            Some(value) => {
-                let timestamp = Timestamp::new();
+        Some(MetricValueProto::StartTimestamp(start_ts)) => {
+            let timestamp = Timestamp::new();
+            if let Some(value) = start_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                Ok(Arc::new(Metric::new_with_labels(
-                    MetricValue::StartTimestamp(timestamp),
-                    partition,
-                    labels,
-                )))
             }
-            None => internal_err!("encountered invalid start timestamp metric with no value"),
-        },
-        Some(MetricValueProto::EndTimestamp(end_ts)) => match end_ts.value {
-            Some(value) => {
-                let timestamp = Timestamp::new();
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::StartTimestamp(timestamp),
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::EndTimestamp(end_ts)) => {
+            let timestamp = Timestamp::new();
+            if let Some(value) = end_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
-                Ok(Arc::new(Metric::new_with_labels(
-                    MetricValue::EndTimestamp(timestamp),
-                    partition,
-                    labels,
-                )))
             }
-            None => internal_err!("encountered invalid end timestamp metric with no value"),
-        },
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::EndTimestamp(timestamp),
+                partition,
+                labels,
+            )))
+        }
         None => internal_err!("proto metric is missing the metric field"),
     }
 }
@@ -853,18 +847,22 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_proto_timestamp_error() {
-        // Create a MetricProto with EndTimestamp that has no value (None)
-        let invalid_end_timestamp_proto = MetricProto {
-            metric: Some(MetricValueProto::EndTimestamp(EndTimestamp { value: None })),
-            labels: vec![],
-            partition: Some(0),
-        };
+    fn test_default_timestamp_roundtrip() {
+        let default_timestamp = Timestamp::default();
+        let metric_with_default_timestamp =
+            Metric::new(MetricValue::EndTimestamp(default_timestamp), Some(0));
 
-        let result = metric_proto_to_df(invalid_end_timestamp_proto);
+        let proto_result = df_metric_to_proto(Arc::new(metric_with_default_timestamp));
         assert!(
-            result.is_err(),
-            "should return error for invalid end timestamp with no value"
+            proto_result.is_ok(),
+            "should successfully convert default timestamp to proto"
+        );
+
+        let proto_metric = proto_result.unwrap();
+        let roundtrip_result = metric_proto_to_df(proto_metric);
+        assert!(
+            roundtrip_result.is_ok(),
+            "should successfully roundtrip default timestamp"
         );
     }
 }

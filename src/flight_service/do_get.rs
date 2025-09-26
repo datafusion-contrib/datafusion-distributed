@@ -3,9 +3,17 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
+use crate::flight_service::trailing_flight_data_stream::TrailingFlightDataStream;
+use crate::metrics::TaskMetricsCollector;
+use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
-    DistributedCodec, StageKey, datafusion_error_to_tonic_status, stage_from_proto,
+    AppMetadata, DistributedCodec, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
+    datafusion_error_to_tonic_status, stage_from_proto,
 };
+use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+use arrow_flight::FlightData;
 use arrow_flight::Ticket;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
@@ -15,6 +23,7 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::TryStreamExt;
+use futures::{Stream, stream};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -97,12 +106,6 @@ impl ArrowFlightEndpoint {
             })
             .await?;
         let stage = Arc::clone(&stage_data.stage);
-        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
-
-        // If all the partitions are done, remove the stage from the cache.
-        if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) <= 1 {
-            self.task_data_entries.remove(key);
-        }
 
         // Find out which partition group we are executing
         let cfg = session_state.config_mut();
@@ -130,16 +133,29 @@ impl ArrowFlightEndpoint {
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
         let schema = stream.schema();
+
+        // TODO: We don't need to do this since the stage / plan is captured again by the
+        // TrailingFlightDataStream. However, we will eventuall only use the TrailingFlightDataStream
+        // if we are running an `explain (analyze)` command. We should update this section
+        // to only use one or the other - not both.
+        let plan_capture = stage.plan.clone();
         let stream = with_callback(stream, move |_| {
             // We need to hold a reference to the plan for at least as long as the stream is
             // execution. Some plans might store state necessary for the stream to work, and
             // dropping the plan early could drop this state too soon.
-            let _ = stage.plan;
+            let _ = plan_capture;
         });
 
-        Ok(record_batch_stream_to_response(Box::pin(
-            RecordBatchStreamAdapter::new(schema, stream),
-        )))
+        let record_batch_stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream));
+        let task_data_capture = self.task_data_entries.clone();
+        Ok(flight_stream_from_record_batch_stream(
+            key.clone(),
+            stage_data.clone(),
+            move || {
+                task_data_capture.remove(key.clone());
+            },
+            record_batch_stream,
+        ))
     }
 }
 
@@ -147,7 +163,12 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
     move || Status::invalid_argument(format!("Missing field '{field}'"))
 }
 
-fn record_batch_stream_to_response(
+/// Creates a tonic response from a stream of record batches. Handles
+/// - RecordBatch to flight conversion partition tracking, stage eviction, and trailing metrics.
+fn flight_stream_from_record_batch_stream(
+    stage_key: StageKey,
+    stage_data: TaskData,
+    evict_stage: impl FnOnce() + Send + 'static,
     stream: SendableRecordBatchStream,
 ) -> Response<<ArrowFlightEndpoint as FlightService>::DoGetStream> {
     let flight_data_stream =
@@ -157,10 +178,107 @@ fn record_batch_stream_to_response(
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
 
-    Response::new(Box::pin(flight_data_stream.map_err(|err| match err {
+    let trailing_metrics_stream = TrailingFlightDataStream::new(
+        move || {
+            if stage_data
+                .num_partitions_remaining
+                .fetch_sub(1, Ordering::SeqCst)
+                == 1
+            {
+                evict_stage();
+
+                let metrics_stream =
+                    collect_and_create_metrics_flight_data(stage_key, stage_data.stage).map_err(
+                        |err| {
+                            Status::internal(format!(
+                                "error collecting metrics in arrow flight endpoint: {err}"
+                            ))
+                        },
+                    )?;
+
+                return Ok(Some(metrics_stream));
+            }
+
+            Ok(None)
+        },
+        flight_data_stream,
+    );
+
+    Response::new(Box::pin(trailing_metrics_stream.map_err(|err| match err {
         FlightError::Tonic(status) => *status,
         _ => Status::internal(format!("Error during flight stream: {err}")),
     })))
+}
+
+// Collects metrics from the provided stage and encodes it into a stream of flight data using
+// the schema of the stage.
+fn collect_and_create_metrics_flight_data(
+    stage_key: StageKey,
+    stage: Arc<StageExec>,
+) -> Result<impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static, FlightError> {
+    // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
+    let mut result = TaskMetricsCollector::new()
+        .collect(stage.plan.clone())
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    // Add the metrics for this task into the collection of task metrics.
+    // Skip any metrics that can't be converted to proto (unsupported types)
+    let proto_task_metrics = result
+        .task_metrics
+        .iter()
+        .map(|metrics| {
+            df_metrics_set_to_proto(metrics)
+                .map_err(|err| FlightError::ProtocolError(err.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    result
+        .input_task_metrics
+        .insert(stage_key, proto_task_metrics);
+
+    // Serialize the metrics for all tasks.
+    let mut task_metrics_set = vec![];
+    for (stage_key, metrics) in result.input_task_metrics.into_iter() {
+        task_metrics_set.push(TaskMetrics {
+            stage_key: Some(stage_key),
+            metrics,
+        });
+    }
+
+    let flight_app_metadata = FlightAppMetadata {
+        content: Some(AppMetadata::MetricsCollection(MetricsCollection {
+            tasks: task_metrics_set,
+        })),
+    };
+
+    let metrics_flight_data =
+        empty_flight_data_with_app_metadata(flight_app_metadata, stage.plan.schema())?;
+    Ok(Box::pin(stream::once(
+        async move { Ok(metrics_flight_data) },
+    )))
+}
+
+/// Creates a FlightData with the given app_metadata and empty RecordBatch using the provided schema.
+/// We don't use [arrow_flight::encode::FlightDataEncoder] (and by extension, the [arrow_flight::encode::FlightDataEncoderBuilder])
+/// since they skip messages with empty RecordBatch data.
+pub fn empty_flight_data_with_app_metadata(
+    metadata: FlightAppMetadata,
+    schema: SchemaRef,
+) -> Result<FlightData, FlightError> {
+    let mut buf = vec![];
+    metadata
+        .encode(&mut buf)
+        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
+
+    let empty_batch = RecordBatch::new_empty(schema);
+    let options = IpcWriteOptions::default();
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(true);
+    let (_, encoded_data) = data_gen
+        .encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
+        .map_err(|e| {
+            FlightError::ProtocolError(format!("Failed to create empty batch FlightData: {e}"))
+        })?;
+    Ok(FlightData::from(encoded_data).with_app_metadata(buf))
 }
 
 #[cfg(test)]
@@ -228,9 +346,9 @@ mod tests {
         let stage_proto = proto_from_stage(&stage, &DefaultPhysicalExtensionCodec {}).unwrap();
         let stage_proto_for_closure = stage_proto.clone();
         let endpoint_ref = &endpoint;
+
         let do_get = async move |partition: u64, task_number: u64, stage_key: StageKey| {
             let stage_proto = stage_proto_for_closure.clone();
-            // Create DoGet message
             let doget = DoGet {
                 stage_proto: stage_proto.encode_to_vec().into(),
                 target_task_index: task_number,
@@ -238,14 +356,17 @@ mod tests {
                 stage_key: Some(stage_key),
             };
 
-            // Create Flight ticket
             let ticket = Ticket {
                 ticket: Bytes::from(doget.encode_to_vec()),
             };
 
-            // Call the actual get() method
             let request = Request::new(ticket);
-            endpoint_ref.get(request).await
+            let response = endpoint_ref.get(request).await?;
+            let mut stream = response.into_inner();
+
+            // Consume the stream.
+            while let Some(_flight_data) = stream.try_next().await? {}
+            Ok::<(), Status>(())
         };
 
         // For each task, call do_get() for each partition except the last.
@@ -261,7 +382,7 @@ mod tests {
 
         // Run the last partition of task 0. Any partition number works. Verify that the task state
         // is evicted because all partitions have been processed.
-        let result = do_get(1, 0, task_keys[0].clone()).await;
+        let result = do_get(2, 0, task_keys[0].clone()).await;
         assert!(result.is_ok());
         let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 2);
@@ -269,14 +390,14 @@ mod tests {
         assert!(stored_stage_keys.contains(&task_keys[2]));
 
         // Run the last partition of task 1.
-        let result = do_get(1, 1, task_keys[1].clone()).await;
+        let result = do_get(2, 1, task_keys[1].clone()).await;
         assert!(result.is_ok());
         let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 1);
         assert!(stored_stage_keys.contains(&task_keys[2]));
 
         // Run the last partition of the last task.
-        let result = do_get(1, 2, task_keys[2].clone()).await;
+        let result = do_get(2, 2, task_keys[2].clone()).await;
         assert!(result.is_ok());
         let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 0);

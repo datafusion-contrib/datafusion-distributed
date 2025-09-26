@@ -5,6 +5,7 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_err};
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
+use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{DistributedCodec, StageKey, proto_from_input_stage};
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
@@ -282,6 +283,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return internal_err!("NetworkCoalesceExec: task is unassigned, cannot proceed");
         };
 
+        let metrics_collection_capture = self_ready.metrics_collection.clone();
         let stream = async move {
             let channel = channel_resolver.get_channel_for_url(&url).await?;
             let stream = FlightServiceClient::new(channel)
@@ -291,8 +293,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 .into_inner()
                 .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-            Ok(FlightRecordBatchStream::new_from_flight_data(stream)
-                .map_err(map_flight_to_datafusion_error))
+            let metrics_collecting_stream =
+                MetricsCollectingStream::new(stream, metrics_collection_capture);
+
+            Ok(
+                FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
+                    .map_err(map_flight_to_datafusion_error),
+            )
         }
         .try_flatten_stream();
 

@@ -5,6 +5,7 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
+use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{DistributedCodec, StageKey, proto_from_input_stage};
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
@@ -330,6 +331,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 },
             );
 
+            let metrics_collection_capture = self_ready.metrics_collection.clone();
             async move {
                 let url = task.url.ok_or(internal_datafusion_err!(
                     "NetworkShuffleExec: task is unassigned, cannot proceed"
@@ -343,8 +345,13 @@ impl ExecutionPlan for NetworkShuffleExec {
                     .into_inner()
                     .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-                Ok(FlightRecordBatchStream::new_from_flight_data(stream)
-                    .map_err(map_flight_to_datafusion_error))
+                let metrics_collecting_stream =
+                    MetricsCollectingStream::new(stream, metrics_collection_capture);
+
+                Ok(
+                    FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
+                        .map_err(map_flight_to_datafusion_error),
+                )
             }
             .try_flatten_stream()
             .boxed()

@@ -8,25 +8,25 @@ use tokio::pin;
 /// TrailingFlightDataStream - wraps a FlightData stream. It calls the `on_complete` closure when the stream is finished.
 /// If the closure returns a new stream, it will be appended to the original stream and consumed.
 #[pin_project]
-pub struct TrailingFlightDataStream<S, F>
+pub struct TrailingFlightDataStream<S, T, F>
 where
     S: Stream<Item = Result<FlightData, FlightError>> + Send,
-    F: FnOnce() -> Result<Option<S>, FlightError>,
+    T: Stream<Item = Result<FlightData, FlightError>> + Send,
+    F: FnOnce() -> Result<Option<T>, FlightError>,
 {
     #[pin]
     inner: S,
     on_complete: Option<F>,
     #[pin]
-    trailing_stream: Option<S>,
+    trailing_stream: Option<T>,
 }
 
-impl<S, F> TrailingFlightDataStream<S, F>
+impl<S, T, F> TrailingFlightDataStream<S, T, F>
 where
     S: Stream<Item = Result<FlightData, FlightError>> + Send,
-    F: FnOnce() -> Result<Option<S>, FlightError>,
+    T: Stream<Item = Result<FlightData, FlightError>> + Send,
+    F: FnOnce() -> Result<Option<T>, FlightError>,
 {
-    // TODO: remove
-    #[allow(dead_code)]
     pub fn new(on_complete: F, inner: S) -> Self {
         Self {
             inner,
@@ -36,10 +36,11 @@ where
     }
 }
 
-impl<S, F> Stream for TrailingFlightDataStream<S, F>
+impl<S, T, F> Stream for TrailingFlightDataStream<S, T, F>
 where
     S: Stream<Item = Result<FlightData, FlightError>> + Send,
-    F: FnOnce() -> Result<Option<S>, FlightError>,
+    T: Stream<Item = Result<FlightData, FlightError>> + Send,
+    F: FnOnce() -> Result<Option<T>, FlightError>,
 {
     type Item = Result<FlightData, FlightError>;
 
@@ -74,7 +75,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow_flight::FlightData;
     use arrow_flight::decode::FlightRecordBatchStream;
-    use arrow_flight::encode::FlightDataEncoderBuilder;
+    use arrow_flight::encode::{FlightDataEncoder, FlightDataEncoderBuilder};
     use futures::stream::{self, StreamExt};
     use std::sync::Arc;
 
@@ -186,7 +187,7 @@ mod tests {
             )))),
         ];
         let inner_stream = stream::iter(data);
-        let on_complete = || Ok(None);
+        let on_complete = || Ok(None::<FlightDataEncoder>);
         let trailing_stream = TrailingFlightDataStream::new(on_complete, inner_stream);
         let record_batches = FlightRecordBatchStream::new_from_flight_data(trailing_stream)
             .collect::<Vec<Result<RecordBatch, FlightError>>>()
@@ -202,8 +203,7 @@ mod tests {
         let name_array = StringArray::from(vec!["item1"]);
         let value_array = Int32Array::from(vec![1]);
         let inner_stream = create_flight_data_stream(name_array, value_array);
-
-        let on_complete = || -> Result<Option<_>, FlightError> {
+        let on_complete = || -> Result<Option<FlightDataEncoder>, FlightError> {
             Err(FlightError::ExternalError(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "callback error",
@@ -225,7 +225,7 @@ mod tests {
             StringArray::from(vec!["item1"] as Vec<&str>),
             Int32Array::from(vec![1] as Vec<i32>),
         );
-        let on_complete = || Ok(None);
+        let on_complete = || Ok(None::<FlightDataEncoder>);
         let trailing_stream = TrailingFlightDataStream::new(on_complete, inner_stream);
         let record_batches = FlightRecordBatchStream::new_from_flight_data(trailing_stream)
             .collect::<Vec<Result<RecordBatch, FlightError>>>()
