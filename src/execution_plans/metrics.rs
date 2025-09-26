@@ -356,7 +356,9 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
+    use uuid::Uuid;
 
+    use crate::metrics::proto::metric_proto_to_df;
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
@@ -370,6 +372,28 @@ mod tests {
         physical_plan::display::DisplayableExecutionPlan,
     };
     use std::sync::Arc;
+
+    /// count_plan_nodes counts the number of execution plan nodes in a stage's plan using BFS traversal.
+    /// This does NOT traverse child stages, only the execution plan tree within this stage.
+    /// Excludes NetworkCoalesceExec and NetworkShuffleExec nodes from the count.
+    fn count_plan_nodes(stage: &StageExec) -> usize {
+        let mut count = 0;
+        let mut queue = vec![stage.plan.clone()];
+        
+        while let Some(plan) = queue.pop() {
+            // Skip NetworkCoalesceExec and NetworkShuffleExec
+            if !plan.as_any().is::<NetworkCoalesceExec>() && !plan.as_any().is::<NetworkShuffleExec>() {
+                count += 1;
+            }
+            
+            // Add children to the queue for BFS traversal
+            for child in plan.children() {
+                queue.push(child.clone());
+            }
+        }
+        
+        count
+    }
 
     /// get_stage_keys returns a list of all stage keys in the stage and its child stages.
     /// Keys are returned in sorted order.
@@ -597,33 +621,41 @@ mod tests {
         (stage_exec, ctx)
     }
 
-    // #[tokio::test]
-    // #[ignore]
-    // async fn test_metrics_rewriter() {
-    //     let (test_stage, _ctx) = make_test_stage_exec_with_5_nodes().await;
-    //     let test_metrics_sets = (0..5) // 5 nodes excluding NetworkShuffleExec
-    //         .map(|i| make_test_metrics_set_proto_from_seed(i + 10))
-    //         .collect::<Vec<MetricsSetProto>>();
+    #[tokio::test]
+    async fn test_metrics_rewrite_and_collect() {
+        let ctx = make_test_ctx().await;
+        let test_stage = plan_sql(&ctx,"SELECT sum(balance) / 7.0 as avg_yearly
+            FROM table2
+            WHERE name LIKE 'customer%'
+              AND balance < (
+                SELECT 0.2 * avg(balance)
+                FROM table2 t2_inner
+                WHERE t2_inner.id = table2.id
+              )").await;
+        let num_nodes_in_stage = count_plan_nodes(&test_stage);
+        let test_metrics_sets = (0..num_nodes_in_stage)
+            .map(|i| make_test_metrics_set_proto_from_seed(i as u64 + 10))
+            .collect::<Vec<MetricsSetProto>>();
 
-    //     let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
-    //     let plan_with_metrics = rewriter
-    //         .enrich_task_with_metrics(test_stage.plan.clone())
-    //         .unwrap();
+        let rewriter = TaskMetricsRewriter::new(test_metrics_sets.clone());
+        let transformed = rewriter.enrich_task_with_metrics(test_stage.plan.clone()).unwrap();
 
-    //     let plan_str =
-    //         DisplayableExecutionPlan::with_full_metrics(plan_with_metrics.as_ref()).indent(true);
-    //     // Expected distributed plan output with metrics
-    //     let expected = [
-    //         r"SortPreservingMergeExec: [id@0 ASC NULLS LAST], fetch=10, metrics=[output_rows=10, elapsed_compute=10ns, start_timestamp=2025-09-18 13:00:10 UTC, end_timestamp=2025-09-18 13:00:11 UTC]",
-    //         r"  SortExec: TopK(fetch=10), expr=[id@0 ASC NULLS LAST], preserve_partitioning=[true], metrics=[output_rows=11, elapsed_compute=11ns, start_timestamp=2025-09-18 13:00:11 UTC, end_timestamp=2025-09-18 13:00:12 UTC]",
-    //         r"    ProjectionExec: expr=[id@0 as id, count(Int64(1))@1 as count], metrics=[output_rows=12, elapsed_compute=12ns, start_timestamp=2025-09-18 13:00:12 UTC, end_timestamp=2025-09-18 13:00:13 UTC]",
-    //         r"      AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))], metrics=[output_rows=13, elapsed_compute=13ns, start_timestamp=2025-09-18 13:00:13 UTC, end_timestamp=2025-09-18 13:00:14 UTC]",
-    //         r"        CoalesceBatchesExec: target_batch_size=8192, metrics=[output_rows=14, elapsed_compute=14ns, start_timestamp=2025-09-18 13:00:14 UTC, end_timestamp=2025-09-18 13:00:15 UTC]",
-    //         r"          NetworkShuffleExec, metrics=[]",
-    //         "" // trailing newline
-    //     ].join("\n");
-    //     assert_eq!(expected, plan_str.to_string());
-    // }
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(&StageExec::new(
+            Uuid::new_v4(),
+            0,
+            transformed,
+            vec![],
+            1,
+        )).unwrap();
+        assert_eq!(result.task_metrics.len(), num_nodes_in_stage);
+        for metrics in result.task_metrics.iter() {
+            let proto_metric = df_metrics_set_to_proto(metrics).unwrap();
+            println!("proto_metric: {:#?}", proto_metric);
+            println!("test_metrics_sets: {:#?}", test_metrics_sets);
+            assert!(test_metrics_sets.contains(&proto_metric));
+        }
+    }
 
     // #[tokio::test]
     // #[ignore]
