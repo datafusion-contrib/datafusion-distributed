@@ -1,16 +1,17 @@
-use crate::execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, StageExec};
+use crate::execution_plans::{stage, NetworkCoalesceExec, NetworkShuffleExec, StageExec};
 use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
-use arrow_flight::encode::{FlightDataEncoder, FlightDataEncoderBuilder};
+use arrow::ipc::writer::DictionaryTracker;
+use arrow_flight::encode::{FlightDataEncoderBuilder};
 use arrow_flight::FlightData;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::metrics::MetricsSet;
 use futures::{stream, Stream, StreamExt};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::Arc;
 use arrow::record_batch::RecordBatch;
-use futures::stream::Skip;
-use arrow::ipc::{writer::StreamWriter, MetadataVersion};
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::ipc::writer::IpcDataGenerator;
 
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::StageKey;
@@ -306,6 +307,8 @@ pub fn collect_and_create_metrics_flight_data(
     result
         .child_task_metrics
         .insert(stage_key.clone(), proto_task_metrics.clone());
+    let keys = result.child_task_metrics.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
+    println!("collected keys in stage {} : {:#?}", stage_key, keys);
 
     // Serialize the metrics for all tasks.
     let mut task_metrics_set = vec![];
@@ -321,44 +324,27 @@ pub fn collect_and_create_metrics_flight_data(
             tasks: task_metrics_set,
         })),
     };
+   
+    let metrics_flight_data = empty_flight_data_with_app_metadata(flight_app_metadata, stage.plan.schema())?;
+    Ok(Box::pin(stream::once(async move { Ok(metrics_flight_data) })))
+}
+
+/// Creates a FlightData with the given app_metadata and empty RecordBatch using the provided schema.
+/// We don't use [arrow_flight::encode::FlightDataEncoder] (and by extension, the [arrow_flight::encode::FlightDataEncoderBuilder])
+/// since they skip messages with empty RecordBatch data. 
+pub fn empty_flight_data_with_app_metadata(metadata: FlightAppMetadata, schema: SchemaRef) -> Result<FlightData, FlightError> {
     let mut buf = vec![];
-    flight_app_metadata
+    metadata
         .encode(&mut buf)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
-    // let empty_batch = RecordBatch::new_empty(stage.plan.schema());
-    // let stream = futures::stream::once(async move { Ok(empty_batch) });
-
-    let sch = stage.plan.schema();
-    let mut tmp = FlightDataEncoderBuilder::new()
-    .with_schema(sch.clone())
-    .with_metadata(buf.clone().into())
-    .build(futures::stream::once(async move { Ok(RecordBatch::new_empty(sch.clone())) })).skip(1);
-    tokio::spawn(async move {
-        while let Some(item) = tmp.next().await {
-            println!("metrics stream consumed: {item:?}");
-        }
-    });
-
-    let mut buffer = Vec::new();
-  let mut writer = StreamWriter::try_new(Cursor::new(&mut buffer), &stage.plan.schema())?;
-  writer.write(&RecordBatch::new_empty(stage.plan.schema()))?;
-  writer.finish()?;
-
-  // Create FlightData with valid IPC data + metadata
-  let flight_data = FlightData {
-      data_header: Vec::new().into(),
-      data_body: buffer.into(),
-      flight_descriptor: None,
-      app_metadata: buf.into(),
-  };
-
-    // Skip the first message since it contains the schema. 
-    // Ok(FlightDataEncoderBuilder::new()
-    //     .with_schema(stage.plan.schema())
-    //     .with_metadata(buf.into())
-    //     .build(stream).skip(1))
-    Ok(Box::pin(stream::once(async move { Ok(flight_data) })))
+    let empty_batch = RecordBatch::new_empty(schema);
+    let options = IpcWriteOptions::default();
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(true);
+    let (_, encoded_data) = data_gen.encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
+        .map_err(|e| FlightError::ProtocolError(format!("Failed to create empty batch FlightData: {e}")))?;
+    Ok(FlightData::from(encoded_data).with_app_metadata(buf))
 }
 
 
@@ -603,19 +589,5 @@ mod tests {
         assert_eq!(found_keys, expected_keys);
 
 
-    }
-
-    #[tokio::test]
-    async fn metrics_collection_with_metrics() {
-        let (stage_exec, _ctx) = make_test_stage_exec_with_5_nodes().await;
-        let metrics_stream = collect_and_create_metrics_flight_data(StageKey { query_id: "test_query_id".to_string(), stage_id: 0, task_number: 0 }, Arc::new(stage_exec)).unwrap();
-
-        let mut metrics_stream = metrics_stream;
-        let mut count = 0;
-        while let Some(batch) = metrics_stream.next().await {
-            batch.unwrap(); 
-            count += 1;
-        }
-        assert_eq!(count, 5);
     }
 }

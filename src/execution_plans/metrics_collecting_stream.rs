@@ -21,6 +21,7 @@ where
     #[pin]
     inner: S,
     metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    stage: StageKey,
 }
 
 impl<S> MetricsCollectingStream<S>
@@ -31,16 +32,19 @@ where
     pub fn new(
         stream: S,
         metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+        stage: StageKey,
     ) -> Self {
         Self {
             inner: stream,
             metrics_collection,
+            stage,
         }
     }
 
     fn extract_metrics_from_flight_data(
         metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
         flight_data: &mut FlightData,
+        stage: StageKey,
     ) -> Result<bool, FlightError> {
         if flight_data.app_metadata.is_empty() {
             return Ok(false);
@@ -65,10 +69,9 @@ where
                     "expected Some StageKey in MetricsCollectingStream, got None".to_string(),
                 ));
             };
-            println!("collected metrics for stage {}", stage_key);
+            println!("collected metrics for stage {} in {}", stage_key, stage);
+            println!("other_entries: {:#?}", metrics_collection.iter().map(|e| e.key().clone()).collect::<Vec<_>>());
             metrics_collection.insert(stage_key, task_metrics.metrics);
-            flight_data.app_metadata.clear();
-            return Ok(true);
         }
 
         Ok(false)
@@ -89,13 +92,10 @@ where
                 match Self::extract_metrics_from_flight_data(
                     this.metrics_collection.clone(),
                     &mut flight_data,
+                    this.stage.clone(),
                 ) {
                     Ok(extracted) => {
-                        return if extracted {
-                            Poll::Ready(None)
-                        } else {
-                            Poll::Ready(Some(Ok(flight_data)))
-                        }
+                        Poll::Ready(Some(Ok(flight_data)))
                      }
                     Err(e) => Poll::Ready(Some(Err(e))),
                 }
@@ -183,7 +183,7 @@ mod tests {
         let metrics_collection = Arc::new(DashMap::new());
         let input_stream = stream::iter(flight_messages);
         let collecting_stream =
-            MetricsCollectingStream::new(input_stream, metrics_collection.clone());
+            MetricsCollectingStream::new(input_stream, metrics_collection.clone(), stage_keys[0].clone());
         let collected_messages: Vec<FlightData> = collecting_stream
             .map(|result| result.unwrap())
             .collect()
@@ -231,7 +231,11 @@ mod tests {
 
         let error_stream = stream::iter(vec![Ok(invalid_flight_data)]);
         let mut collecting_stream =
-            MetricsCollectingStream::new(error_stream, Arc::new(DashMap::new()));
+            MetricsCollectingStream::new(error_stream, Arc::new(DashMap::new()), StageKey {
+                query_id: "test_query".to_string(),
+                stage_id: 1,
+                task_number: 1,
+            });
 
         let result = collecting_stream.next().await.unwrap();
         assert_protocol_error(
@@ -251,7 +255,11 @@ mod tests {
 
         let error_stream = stream::iter(vec![Ok(flight_data_with_invalid_metadata)]);
         let mut collecting_stream =
-            MetricsCollectingStream::new(error_stream, Arc::new(DashMap::new()));
+            MetricsCollectingStream::new(error_stream, Arc::new(DashMap::new()), StageKey {
+                query_id: "test_query".to_string(),
+                stage_id: 1,
+                task_number: 1,
+            });
 
         let result = collecting_stream.next().await.unwrap();
         assert_protocol_error(result, "failed to decode app_metadata");
@@ -264,7 +272,11 @@ mod tests {
         // Create a stream that emits an error - should be propagated through
         let stream_error = FlightError::ProtocolError("stream error from inner stream".to_string());
         let error_stream = stream::iter(vec![Err(stream_error)]);
-        let mut collecting_stream = MetricsCollectingStream::new(error_stream, metrics_collection);
+        let mut collecting_stream = MetricsCollectingStream::new(error_stream, metrics_collection.clone(), StageKey {
+            query_id: "test_query".to_string(),
+            stage_id: 1,
+            task_number: 1,
+        });
 
         let result = collecting_stream.next().await.unwrap();
         assert_protocol_error(result, "stream error from inner stream");

@@ -308,7 +308,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 .into_inner()
                 .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-            let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection_capture);
+            let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection_capture, StageKey { 
+                query_id: stage.query_id.to_string(), stage_id: stage.num as u64, task_number: 0 as u64 });
 
             Ok(FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
                 .map_err(map_flight_to_datafusion_error))

@@ -332,6 +332,8 @@ impl ExecutionPlan for NetworkShuffleExec {
             );
 
             let metrics_collection_capture = self_ready.metrics_collection.clone();
+            let stage_key = StageKey { 
+                query_id: stage.query_id.to_string(), stage_id: stage.num as u64, task_number: 0 as u64};
             async move {
                 let url = task.url.ok_or(internal_datafusion_err!(
                     "NetworkShuffleExec: task is unassigned, cannot proceed"
@@ -345,7 +347,9 @@ impl ExecutionPlan for NetworkShuffleExec {
                     .into_inner()
                     .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-                let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection_capture);
+                let metrics_collecting_stream = MetricsCollectingStream::new(stream, metrics_collection_capture,
+                    stage_key
+                );
 
                 Ok(FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
                     .map_err(map_flight_to_datafusion_error))
