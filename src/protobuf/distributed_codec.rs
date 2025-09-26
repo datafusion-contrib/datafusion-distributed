@@ -46,6 +46,9 @@ impl PhysicalExtensionCodec for DistributedCodec {
             ));
         };
 
+        // TODO: The PhysicalExtensionCodec trait doesn't provide access to session state,
+        // so we create a new SessionContext which loses any custom UDFs, UDAFs, and other
+        // user configurations. This is a limitation of the current trait design.
         let ctx = SessionContext::new();
 
         match distributed_exec_node {
