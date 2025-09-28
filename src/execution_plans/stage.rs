@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
-use datafusion::common::{internal_datafusion_err, internal_err};
+use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
@@ -85,12 +85,58 @@ pub struct StageExec {
     /// The physical execution plan that this stage will execute.
     pub plan: Arc<dyn ExecutionPlan>,
     /// The input stages to this stage
-    pub inputs: Vec<Arc<dyn ExecutionPlan>>,
+    pub inputs: Vec<InputStage>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
+}
+
+/// A [StageExec] that is the input of another [StageExec].
+///
+/// It can be either:
+/// - Decoded: the inner [StageExec] is stored as-is.
+/// - Encoded: the inner [StageExec] is stored as protobuf [Bytes]. Storing it this way allow us
+///   to thread it through the project and eventually send it through gRPC in a zero copy manner.
+#[derive(Debug, Clone)]
+pub enum InputStage {
+    /// The decoded [StageExec]. Unfortunately, this cannot be an `Arc<StageExec>`, because at
+    /// some point we need to upcast `&Arc<StageExec>` to `&Arc<dyn ExecutionPlan>`, and Rust
+    /// compiler does not allow it.
+    ///
+    /// This is very annoying because it forces us to store it like an `Arc<dyn ExecutionPlan>`
+    /// here even though we know this can only be `Arc<StageExec>`. For this reason
+    /// [StageExec::from_dyn] was introduced for casting it back to [StageExec].
+    Decoded(Arc<dyn ExecutionPlan>),
+    /// A protobuf encoded version of the [InputStage]. The inner [Bytes] represent the full
+    /// input [StageExec] encoded in protobuf format.
+    ///
+    /// By keeping it encoded, we avoid encoding/decoding it unnecessarily in parts of the project
+    /// that do not need it. Only the Stage num and the [ExecutionTask]s are left decoded,
+    /// as typically those are the only things needed by the network boundaries. The [Bytes] can be
+    /// just passed through in a zero copy manner.
+    Encoded {
+        num: usize,
+        tasks: Vec<ExecutionTask>,
+        proto: Bytes,
+    },
+}
+
+impl InputStage {
+    pub fn num(&self) -> usize {
+        match self {
+            InputStage::Decoded(v) => StageExec::from_dyn(v).num,
+            InputStage::Encoded { num, .. } => *num,
+        }
+    }
+
+    pub fn tasks(&self) -> &[ExecutionTask] {
+        match self {
+            InputStage::Decoded(v) => &StageExec::from_dyn(v).tasks,
+            InputStage::Encoded { tasks, .. } => tasks,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,13 +164,21 @@ impl DistributedTaskContext {
 }
 
 impl StageExec {
+    /// Dangerous way of accessing a [StageExec] out of an `&Arc<dyn ExecutionPlan>`.
+    /// See [InputStage::Decoded] docs for more details about why panicking here is preferred.
+    pub(crate) fn from_dyn(plan: &Arc<dyn ExecutionPlan>) -> &Self {
+        plan.as_any()
+            .downcast_ref()
+            .expect("Programming Error: expected Arc<dyn ExecutionPlan> to be of type StageExec")
+    }
+
     /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
     /// responsible for partitions in the plan.
-    pub fn new(
+    pub(crate) fn new(
         query_id: Uuid,
         num: usize,
         plan: Arc<dyn ExecutionPlan>,
-        inputs: Vec<Arc<StageExec>>,
+        inputs: Vec<StageExec>,
         n_tasks: usize,
     ) -> Self {
         StageExec {
@@ -134,7 +188,7 @@ impl StageExec {
             plan,
             inputs: inputs
                 .into_iter()
-                .map(|s| s as Arc<dyn ExecutionPlan>)
+                .map(|s| InputStage::Decoded(Arc::new(s)))
                 .collect(),
             tasks: vec![ExecutionTask { url: None }; n_tasks],
             depth: 0,
@@ -146,28 +200,10 @@ impl StageExec {
         format!("Stage {:<3}", self.num)
     }
 
-    /// Returns an iterator over the child stages of this stage cast as &ExecutionStage
+    /// Returns an iterator over the input stages of this stage cast as &ExecutionStage
     /// which can be useful
-    pub fn child_stages_iter(&self) -> impl Iterator<Item = &StageExec> {
-        self.inputs
-            .iter()
-            .filter_map(|s| s.as_any().downcast_ref::<StageExec>())
-    }
-
-    /// Returns the name of this stage including child stage numbers if any.
-    pub fn name_with_children(&self) -> String {
-        let child_str = if self.inputs.is_empty() {
-            "".to_string()
-        } else {
-            format!(
-                " Child Stages:[{}] ",
-                self.child_stages_iter()
-                    .map(|s| format!("{}", s.num))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        format!("Stage {:<3}{}", self.num, child_str)
+    pub fn input_stages_iter(&self) -> impl Iterator<Item = &InputStage> {
+        self.inputs.iter()
     }
 
     pub fn try_assign(self, channel_resolver: &impl ChannelResolver) -> Result<Self> {
@@ -180,14 +216,15 @@ impl StageExec {
     }
 
     fn try_assign_urls(&self, urls: &[Url]) -> Result<Self> {
-        let assigned_children = self
-            .child_stages_iter()
-            .map(|child| {
-                child
-                    .clone() // TODO: avoid cloning if possible
-                    .try_assign_urls(urls)
-                    .map(|c| Arc::new(c) as Arc<dyn ExecutionPlan>)
+        let assigned_input_stages = self
+            .input_stages_iter()
+            .map(|input_stage| {
+                let InputStage::Decoded(input_stage) = input_stage else {
+                    return exec_err!("Cannot assign URLs to the tasks in an encoded stage");
+                };
+                StageExec::from_dyn(input_stage).try_assign_urls(urls)
             })
+            .map_ok(|v| InputStage::Decoded(Arc::new(v)))
             .collect::<Result<Vec<_>>>()?;
 
         // pick a random starting position
@@ -208,7 +245,7 @@ impl StageExec {
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),
-            inputs: assigned_children,
+            inputs: assigned_input_stages,
             tasks: assigned_tasks,
             depth: self.depth,
         };
@@ -224,10 +261,22 @@ impl StageExec {
             ))
     }
 
-    pub fn child_stage(&self, i: usize) -> Result<&StageExec, DataFusionError> {
-        self.child_stages_iter()
-            .find(|s| s.num == i)
-            .ok_or(internal_datafusion_err!("no child stage with num {i}"))
+    pub fn input_stage(&self, stage_num: usize) -> Result<&InputStage, DataFusionError> {
+        for input_stage in self.input_stages_iter() {
+            match input_stage {
+                InputStage::Decoded(v) => {
+                    if StageExec::from_dyn(v).num == stage_num {
+                        return Ok(input_stage);
+                    };
+                }
+                InputStage::Encoded { num, .. } => {
+                    if *num == stage_num {
+                        return Ok(input_stage);
+                    }
+                }
+            }
+        }
+        internal_err!("no child stage with num {stage_num}")
     }
 }
 
@@ -241,22 +290,20 @@ impl ExecutionPlan for StageExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.inputs.iter().collect()
+        self.inputs
+            .iter()
+            .filter_map(|v| match v {
+                InputStage::Decoded(v) => Some(v),
+                InputStage::Encoded { .. } => None,
+            })
+            .collect()
     }
 
     fn with_new_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(StageExec {
-            query_id: self.query_id,
-            num: self.num,
-            name: self.name.clone(),
-            plan: self.plan.clone(),
-            inputs: children,
-            tasks: self.tasks.clone(),
-            depth: self.depth,
-        }))
+        plan_err!("with_new_children() not supported for StageExec")
     }
 
     fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
@@ -290,6 +337,7 @@ impl ExecutionPlan for StageExec {
     }
 }
 
+use bytes::Bytes;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_expr::Partitioning;
 /// Be able to display a nice tree for stages.
@@ -321,13 +369,12 @@ impl StageExec {
         if let Some(NetworkShuffleExec::Ready(ready)) =
             plan.as_any().downcast_ref::<NetworkShuffleExec>()
         {
-            let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
-            else {
+            let Ok(input_stage) = &self.input_stage(ready.stage_num) else {
                 writeln!(f, "Wrong partition number {}", ready.stage_num)?;
                 return Ok(());
             };
             let n_tasks = self.tasks.len();
-            let input_tasks = input_stage.tasks.len();
+            let input_tasks = input_stage.tasks().len();
             let partitions = plan.output_partitioning().partition_count();
             let stage = ready.stage_num;
             write!(
@@ -339,12 +386,11 @@ impl StageExec {
         if let Some(NetworkCoalesceExec::Ready(ready)) =
             plan.as_any().downcast_ref::<NetworkCoalesceExec>()
         {
-            let Some(input_stage) = &self.child_stages_iter().find(|v| v.num == ready.stage_num)
-            else {
+            let Ok(input_stage) = &self.input_stage(ready.stage_num) else {
                 writeln!(f, "Wrong partition number {}", ready.stage_num)?;
                 return Ok(());
             };
-            let tasks = input_stage.tasks.len();
+            let tasks = input_stage.tasks().len();
             let partitions = plan.output_partitioning().partition_count();
             let stage = ready.stage_num;
             write!(
@@ -500,15 +546,19 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
                 .downcast_ref::<StageExec>()
                 .expect("Expected StageExec");
 
-            for child_stage in stage.child_stages_iter() {
+            for input_stage in stage.input_stages_iter() {
+                let InputStage::Decoded(input_stage) = input_stage else {
+                    continue;
+                };
+                let input_stage = StageExec::from_dyn(input_stage);
                 for task_i in 0..stage.tasks.len() {
-                    for child_task_i in 0..child_stage.tasks.len() {
+                    for input_task_i in 0..input_stage.tasks.len() {
                         let edges =
-                            display_inter_task_edges(stage, task_i, child_stage, child_task_i)?;
+                            display_inter_task_edges(stage, task_i, input_stage, input_task_i)?;
                         writeln!(
                             f,
                             "// edges from child stage {} task {} to stage {} task {}\n {}",
-                            child_stage.num, child_task_i, stage.num, task_i, edges
+                            input_stage.num, input_task_i, stage.num, task_i, edges
                         )?;
                     }
                 }
@@ -772,8 +822,8 @@ pub fn display_single_plan(
 fn display_inter_task_edges(
     stage: &StageExec,
     task_i: usize,
-    child_stage: &StageExec,
-    child_task_i: usize,
+    input_stage: &StageExec,
+    input_task_i: usize,
 ) -> Result<String> {
     let mut f = String::new();
     let partition_group =
@@ -790,7 +840,7 @@ fn display_inter_task_edges(
             let NetworkShuffleExec::Ready(node) = node else {
                 continue;
             };
-            if node.stage_num != child_stage.num {
+            if node.stage_num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -804,9 +854,9 @@ fn display_inter_task_edges(
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {} [color={}]",
-                    child_stage.plan.name(),
-                    child_stage.num,
-                    child_task_i,
+                    input_stage.plan.name(),
+                    input_stage.num,
+                    input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p + (task_i * output_partitions),
                     plan.name(),
@@ -822,12 +872,12 @@ fn display_inter_task_edges(
             let NetworkCoalesceExec::Ready(node) = node else {
                 continue;
             };
-            if node.stage_num != child_stage.num {
+            if node.stage_num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            let input_partitions_per_task = output_partitions / child_stage.tasks.len();
+            let input_partitions_per_task = output_partitions / input_stage.tasks.len();
             for p in 0..input_partitions_per_task {
                 let mut style = "";
                 if found_isolator && !partition_group.contains(&p) {
@@ -837,16 +887,16 @@ fn display_inter_task_edges(
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s {} [color={}]",
-                    child_stage.plan.name(),
-                    child_stage.num,
-                    child_task_i,
+                    input_stage.plan.name(),
+                    input_stage.num,
+                    input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p,
                     plan.name(),
                     stage.num,
                     task_i,
                     index,
-                    p + (child_task_i * input_partitions_per_task),
+                    p + (input_task_i * input_partitions_per_task),
                     style,
                     p % NUM_COLORS + 1
                 )?;

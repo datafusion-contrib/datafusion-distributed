@@ -3,12 +3,13 @@ use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::protobuf::{
-    DistributedCodec, StageExecProto, StageKey, datafusion_error_to_tonic_status, stage_from_proto,
+    DistributedCodec, StageKey, datafusion_error_to_tonic_status, stage_from_proto,
 };
 use arrow_flight::Ticket;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
+use bytes::Bytes;
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::TryStreamExt;
@@ -19,9 +20,9 @@ use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
-    /// The ExecutionStage that we are going to execute
-    #[prost(message, optional, tag = "1")]
-    pub stage_proto: Option<StageExecProto>,
+    /// The [StageExec] we are going to execute encoded as protobuf bytes.
+    #[prost(bytes, tag = "1")]
+    pub stage_proto: Bytes,
     /// The index to the task within the stage that we want to execute
     #[prost(uint64, tag = "2")]
     pub target_task_index: u64,
@@ -79,7 +80,7 @@ impl ArrowFlightEndpoint {
 
         let stage_data = once
             .get_or_try_init(|| async {
-                let stage_proto = doget.stage_proto.ok_or_else(missing("stage_proto"))?;
+                let stage_proto = doget.stage_proto;
                 let stage = stage_from_proto(stage_proto, &session_state, &self.runtime, &codec)
                     .map_err(|err| {
                         Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
@@ -219,7 +220,7 @@ mod tests {
             let stage_proto = stage_proto_for_closure.clone();
             // Create DoGet message
             let doget = DoGet {
-                stage_proto: Some(stage_proto),
+                stage_proto: stage_proto.encode_to_vec().into(),
                 target_task_index: task_number,
                 target_partition: partition,
                 stage_key: Some(stage_key),

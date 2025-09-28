@@ -268,7 +268,6 @@ impl DistributedPhysicalOptimizerRule {
             Ok(Transformed::new(node, true, TreeNodeRecursion::Jump))
         })?;
 
-        let inputs = inputs.into_iter().map(Arc::new).collect();
         let mut stage = StageExec::new(query_id, *num, distributed.data, inputs, n_tasks);
         *num += 1;
 

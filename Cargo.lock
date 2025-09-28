@@ -1111,6 +1111,7 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
+ "bytes",
  "chrono",
  "dashmap",
  "datafusion",
