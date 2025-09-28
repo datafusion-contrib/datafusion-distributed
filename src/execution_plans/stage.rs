@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
-use datafusion::common::{internal_datafusion_err, internal_err};
+use datafusion::common::{exec_err, internal_datafusion_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
@@ -170,15 +170,6 @@ impl StageExec {
         format!("Stage {:<3}{}", self.num, child_str)
     }
 
-    pub fn try_assign(self, channel_resolver: &impl ChannelResolver) -> Result<Self> {
-        let urls: Vec<Url> = channel_resolver.get_urls()?;
-        if urls.is_empty() {
-            return internal_err!("No URLs found in ChannelManager");
-        }
-
-        Ok(self)
-    }
-
     fn try_assign_urls(&self, urls: &[Url]) -> Result<Self> {
         let assigned_children = self
             .child_stages_iter()
@@ -268,6 +259,12 @@ impl ExecutionPlan for StageExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<datafusion::execution::SendableRecordBatchStream> {
+        if partition > 0 {
+            return exec_err!(
+                "an executable StageExec must only have 1 partition, but it was called with partition index {partition}"
+            );
+        }
+
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
         let assigned_stage = self
