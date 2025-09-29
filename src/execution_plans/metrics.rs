@@ -1,3 +1,4 @@
+use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, StageExec};
 use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
 use arrow::ipc::writer::DictionaryTracker;
@@ -50,26 +51,24 @@ impl TreeNodeRewriter for TaskMetricsCollector {
     type Node = Arc<dyn ExecutionPlan>;
 
     fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
-        // If the plan is an NetworkShuffleExec, assume it has collected metrics already
+        // If the plan is a NetwordBoundary, assume it has collected metrics already
         // from child tasks.
         let metrics_collection =
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-                let NetworkShuffleExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkShuffleExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                node.metrics_collection()
+                    .map(Some)
+                    .ok_or(DataFusionError::Internal(
+                        "could not collect metrics from NetworkShuffleExec".to_string(),
+                    ))
             } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-                let NetworkCoalesceExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkCoalesceExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                node.metrics_collection()
+                    .map(Some)
+                    .ok_or(DataFusionError::Internal(
+                        "could not collect metrics from NetworkCoalesceExec".to_string(),
+                    ))
             } else {
-                None
-            };
+                Ok(None)
+            }?;
 
         if let Some(metrics_collection) = metrics_collection {
             for mut entry in metrics_collection.iter_mut() {

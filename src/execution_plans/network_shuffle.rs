@@ -136,15 +136,7 @@ pub struct NetworkShuffleReadyExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: PlanProperties,
     pub(crate) stage_num: usize,
-    /// metrics_collection is used to collect metrics from child tasks. It is empty when an
-    /// is instantiated (deserialized, created via [NetworkShuffleExec::new_ready] etc...).
-    /// Metrics are populated in this map via [NetworkShuffleExec::execute].
-    ///
-    /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
-    /// the stage it is reading from. This is because, by convention, the ArrowFlightEndpoint
-    /// sends metrics for a task to the last NetworkShuffleExec to read from it, which may or may
-    /// not be this instance.
-    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    pub(crate) child_task_metrics: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }
 
 impl NetworkShuffleExec {
@@ -209,7 +201,7 @@ impl NetworkBoundary for NetworkShuffleExec {
             NetworkShuffleExec::Ready(prev) => NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
                 properties: prev.properties.clone(),
                 stage_num: prev.stage_num,
-                metrics_collection: Arc::clone(&prev.metrics_collection),
+                child_task_metrics: Arc::clone(&prev.child_task_metrics),
             }),
         })
     }
@@ -226,10 +218,17 @@ impl NetworkBoundary for NetworkShuffleExec {
         let ready = NetworkShuffleReadyExec {
             properties: pending.repartition_exec.properties().clone(),
             stage_num,
-            metrics_collection: Default::default(),
+            child_task_metrics: Default::default(),
         };
 
         Ok(Arc::new(Self::Ready(ready)))
+    }
+
+    fn metrics_collection(&self) -> Option<Arc<DashMap<StageKey, Vec<MetricsSetProto>>>> {
+        match self {
+            NetworkShuffleExec::Pending(_) => None,
+            NetworkShuffleExec::Ready(v) => Some(v.child_task_metrics.clone()),
+        }
     }
 }
 
@@ -331,7 +330,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 },
             );
 
-            let metrics_collection_capture = self_ready.metrics_collection.clone();
+            let metrics_collection_capture = self_ready.child_task_metrics.clone();
             async move {
                 let url = task.url.ok_or(internal_datafusion_err!(
                     "NetworkShuffleExec: task is unassigned, cannot proceed"

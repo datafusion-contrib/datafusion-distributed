@@ -90,15 +90,7 @@ pub struct NetworkCoalesceReady {
     pub(crate) properties: PlanProperties,
     pub(crate) stage_num: usize,
     pub(crate) input_tasks: usize,
-    /// metrics_collection is used to collect metrics from child tasks. It is empty when an
-    /// is instantiated (deserialized, created via [NetworkCoalesceExec::new_ready] etc...).
-    /// Metrics are populated in this map via [NetworkCoalesceExec::execute].
-    ///
-    /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
-    /// the stage it is reading from. This is because, by convention, the ArrowFlightEndpoint
-    /// sends metrics for a task to the last NetworkCoalesceExec to read from it, which may or may
-    /// not be this instance.
-    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    pub(crate) child_task_metrics: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }
 
 impl NetworkCoalesceExec {
@@ -164,7 +156,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             }),
             stage_num,
             input_tasks: pending.input_tasks,
-            metrics_collection: Default::default(),
+            child_task_metrics: Default::default(),
         };
 
         Ok(Arc::new(Self::Ready(ready)))
@@ -185,9 +177,16 @@ impl NetworkBoundary for NetworkCoalesceExec {
                 }),
                 stage_num: ready.stage_num,
                 input_tasks,
-                metrics_collection: Arc::clone(&ready.metrics_collection),
+                child_task_metrics: Arc::clone(&ready.child_task_metrics),
             }),
         })
+    }
+
+    fn metrics_collection(&self) -> Option<Arc<DashMap<StageKey, Vec<MetricsSetProto>>>> {
+        match self {
+            NetworkCoalesceExec::Pending(_) => None,
+            NetworkCoalesceExec::Ready(v) => Some(v.child_task_metrics.clone()),
+        }
     }
 }
 
@@ -298,7 +297,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return internal_err!("NetworkCoalesceExec: task is unassigned, cannot proceed");
         };
 
-        let metrics_collection_capture = self_ready.metrics_collection.clone();
+        let metrics_collection_capture = self_ready.child_task_metrics.clone();
         let stream = async move {
             let channel = channel_resolver.get_channel_for_url(&url).await?;
             let stream = FlightServiceClient::new(channel)

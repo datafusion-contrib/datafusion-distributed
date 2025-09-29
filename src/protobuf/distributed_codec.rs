@@ -234,7 +234,7 @@ fn new_network_hash_shuffle_exec(
             Boundedness::Bounded,
         ),
         stage_num,
-        metrics_collection: Default::default(),
+        child_task_metrics: Default::default(),
     })
 }
 
@@ -268,7 +268,7 @@ fn new_network_coalesce_tasks_exec(
         ),
         stage_num,
         input_tasks,
-        metrics_collection: Default::default(),
+        child_task_metrics: Default::default(),
     })
 }
 

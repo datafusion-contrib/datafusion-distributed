@@ -1,5 +1,8 @@
 use super::{NetworkShuffleExec, PartitionIsolatorExec, StageExec};
 use crate::execution_plans::NetworkCoalesceExec;
+use crate::metrics::proto::MetricsSetProto;
+use crate::protobuf::StageKey;
+use dashmap::DashMap;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::source::DataSourceExec;
@@ -317,6 +320,20 @@ pub trait NetworkBoundary: ExecutionPlan {
             );
         }
         Ok(Arc::clone(children.first().unwrap()))
+    }
+
+    /// metrics_collection is used to collect metrics from child tasks. It is empty when a
+    /// [NetworkBoundary] is instantiated (deserialized, created via new() etc...).
+    /// Metrics are populated by executing() the [NetworkBoundary]. It's expected that the
+    /// collection is complete after the [NetworkBoundary] has been executed. It is undefined
+    /// what this returns during execution.
+    ///
+    /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks
+    /// in the stage it is reading from. This is because, by convention, the ArrowFlightEndpoint
+    /// sends metrics for a task to the last [NetworkBoundary] to read from it, which may or may
+    /// not be this instance.
+    fn metrics_collection(&self) -> Option<Arc<DashMap<StageKey, Vec<MetricsSetProto>>>> {
+        None
     }
 }
 
