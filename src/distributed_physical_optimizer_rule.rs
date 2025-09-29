@@ -160,7 +160,7 @@ impl DistributedPhysicalOptimizerRule {
                 {
                     return Ok(Transformed::no(plan));
                 }
-                let node = NetworkCoalesceExec::from_coalesce_partitions_exec(node, tasks)?;
+                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
 
                 let plan = plan.with_new_children(vec![Arc::new(node)])?;
 
@@ -174,7 +174,7 @@ impl DistributedPhysicalOptimizerRule {
                 plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
                 self.network_coalesce_tasks,
             ) {
-                let node = NetworkCoalesceExec::from_sort_preserving_merge_exec(node, tasks)?;
+                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
 
                 let plan = plan.with_new_children(vec![Arc::new(node)])?;
 
