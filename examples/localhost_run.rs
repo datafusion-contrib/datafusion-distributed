@@ -53,12 +53,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
 
-    ctx.register_parquet(
-        "weather",
-        "testdata/weather",
-        ParquetReadOptions::default(),
-    )
-    .await?;
+    ctx.register_parquet("weather", "testdata/weather", ParquetReadOptions::default())
+        .await?;
 
     let df = ctx.sql(&args.query).await?;
     if args.explain {
