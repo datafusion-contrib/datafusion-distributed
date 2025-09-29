@@ -88,7 +88,10 @@ fn encode_tasks(tasks: &[ExecutionTask]) -> Vec<ExecutionTaskProto> {
         .collect()
 }
 
-pub fn proto_from_input_stage(
+/// Encodes an [InputStage] as protobuf [Bytes]:
+/// - If the input is [InputStage::Decoded], it will serialize the inner plan as protobuf bytes.
+/// - If the input is [InputStage::Encoded], it will pass through the [Bytes] in a zero-copy manner.
+pub(crate) fn proto_from_input_stage(
     input_stage: &InputStage,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<Bytes, DataFusionError> {
@@ -101,6 +104,12 @@ pub fn proto_from_input_stage(
     }
 }
 
+/// Converts a [StageExec] into a [StageExecProto], which makes it suitable to be serialized and
+/// sent over the wire.
+///
+/// If the input [InputStage]s of the provided [StageExec] are already encoded as protobuf [Bytes],
+/// they will not be decoded and re-encoded, the [Bytes] are just passthrough as-is in a zero copy
+/// manner.
 pub(crate) fn proto_from_stage(
     stage: &StageExec,
     codec: &dyn PhysicalExtensionCodec,
@@ -140,7 +149,13 @@ pub(crate) fn proto_from_stage(
     })
 }
 
-pub fn stage_from_proto(
+/// Decodes the provided protobuf [Bytes] as a [StageExec]. Rather than recursively decoding all the
+/// input [InputStage]s, it performs a shallow decoding of just the first [StageExec] level, leaving
+/// all the inputs in [InputStage::Encoded] state.
+///
+/// This prevents decoding and then re-encoding the whole plan recursively, and only decodes the
+/// things that are strictly needed.
+pub(crate) fn stage_from_proto(
     msg: Bytes,
     registry: &dyn FunctionRegistry,
     runtime: &RuntimeEnv,
