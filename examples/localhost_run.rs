@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     ctx.register_parquet(
         "weather",
-        "testdata/weather.parquet",
+        "testdata/weather",
         ParquetReadOptions::default(),
     )
     .await?;
