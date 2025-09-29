@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
-    pub(super) task_data_entries: TTLMap<StageKey, Arc<OnceCell<TaskData>>>,
+    pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
 }
 
@@ -28,7 +28,7 @@ impl ArrowFlightEndpoint {
         let ttl_map = TTLMap::try_new(TTLMapConfig::default())?;
         Ok(Self {
             runtime: Arc::new(RuntimeEnv::default()),
-            task_data_entries: ttl_map,
+            task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(session_builder),
         })
     }
