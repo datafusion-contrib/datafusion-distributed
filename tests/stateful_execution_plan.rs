@@ -40,6 +40,12 @@ mod tests {
     use tokio_stream::StreamExt;
     use tokio_stream::wrappers::ReceiverStream;
 
+    // This test proves that execution nodes do not get early dropped in the ArrowFlightEndpoint
+    // when all the partitions start being consumed.
+    //
+    // It uses a StatefulInt64ListExec custom node whose execution depends on it not being dropped.
+    // If for some reason ArrowFlightEndpoint drops the node before the stream ends, this test
+    // will fail.
     #[tokio::test]
     async fn stateful_execution_plan() -> Result<(), Box<dyn std::error::Error>> {
         async fn build_state(
