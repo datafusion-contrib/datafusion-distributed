@@ -5,4 +5,5 @@ pub mod metrics;
 pub mod mock_exec;
 pub mod parquet;
 pub mod session_context;
+pub mod sqllogictest;
 pub mod tpch;
