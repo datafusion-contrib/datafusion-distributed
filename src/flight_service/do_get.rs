@@ -1,3 +1,4 @@
+use crate::common::with_callback;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
@@ -11,6 +12,7 @@ use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -126,7 +128,17 @@ impl ArrowFlightEndpoint {
             .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-        Ok(record_batch_stream_to_response(stream))
+        let schema = stream.schema();
+        let stream = with_callback(stream, move |_| {
+            // We need to hold a reference to the plan for at least as long as the stream is
+            // execution. Some plans might store state necessary for the stream to work, and
+            // dropping the plan early could drop this state too soon.
+            let _ = stage.plan;
+        });
+
+        Ok(record_batch_stream_to_response(Box::pin(
+            RecordBatchStreamAdapter::new(schema, stream),
+        )))
     }
 }
 
