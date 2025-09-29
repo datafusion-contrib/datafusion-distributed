@@ -206,15 +206,6 @@ impl StageExec {
         self.inputs.iter()
     }
 
-    pub fn try_assign(self, channel_resolver: &impl ChannelResolver) -> Result<Self> {
-        let urls: Vec<Url> = channel_resolver.get_urls()?;
-        if urls.is_empty() {
-            return internal_err!("No URLs found in ChannelManager");
-        }
-
-        Ok(self)
-    }
-
     fn try_assign_urls(&self, urls: &[Url]) -> Result<Self> {
         let assigned_input_stages = self
             .input_stages_iter()
@@ -310,11 +301,27 @@ impl ExecutionPlan for StageExec {
         self.plan.properties()
     }
 
+    /// Executes a query in a distributed manner. This method will lazily perform URL assignation
+    /// to all the tasks, therefore, it must only be called once.
+    ///
+    /// [StageExec::execute] is only used for starting the distributed query in the same machine
+    /// that planned it, but it's not used for task execution in `ArrowFlightEndpoint`, there,
+    /// the inner `stage.plan` is executed directly.
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<datafusion::execution::SendableRecordBatchStream> {
+        if partition > 0 {
+            // The StageExec node calls try_assign_urls() lazily upon calling .execute(). This means
+            // that .execute() must only be called once, as we cannot afford to perform several
+            // random URL assignation while calling multiple partitions, as they will differ,
+            // producing an invalid plan
+            return exec_err!(
+                "an executable StageExec must only have 1 partition, but it was called with partition index {partition}"
+            );
+        }
+
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
         let assigned_stage = self

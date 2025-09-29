@@ -5,6 +5,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -119,8 +120,14 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 impl DistributedPhysicalOptimizerRule {
     fn apply_network_boundaries(
         &self,
-        plan: Arc<dyn ExecutionPlan>,
+        mut plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        if plan.output_partitioning().partition_count() > 1 {
+            // Coalescing partitions here will allow us to put a NetworkCoalesceExec on top
+            // of the plan, executing it in parallel.
+            plan = Arc::new(CoalescePartitionsExec::new(plan))
+        }
+
         let result = plan.transform_up(|plan| {
             // If this node is a DataSourceExec, we need to wrap it with PartitionIsolatorExec so
             // that not all tasks have access to all partitions of the underlying DataSource.
@@ -160,7 +167,7 @@ impl DistributedPhysicalOptimizerRule {
                 {
                     return Ok(Transformed::no(plan));
                 }
-                let node = NetworkCoalesceExec::from_coalesce_partitions_exec(node, tasks)?;
+                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
 
                 let plan = plan.with_new_children(vec![Arc::new(node)])?;
 
@@ -174,7 +181,7 @@ impl DistributedPhysicalOptimizerRule {
                 plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
                 self.network_coalesce_tasks,
             ) {
-                let node = NetworkCoalesceExec::from_sort_preserving_merge_exec(node, tasks)?;
+                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
 
                 let plan = plan.with_new_children(vec![Arc::new(node)])?;
 
@@ -205,7 +212,7 @@ impl DistributedPhysicalOptimizerRule {
     ) -> Result<StageExec, DataFusionError> {
         let mut inputs = vec![];
 
-        let distributed = plan.clone().transform_down(|plan| {
+        let mut distributed = plan.clone().transform_down(|plan| {
             // We cannot break down CollectLeft hash joins into more than 1 task, as these need
             // a full materialized build size with all the data in it.
             //
@@ -267,6 +274,13 @@ impl DistributedPhysicalOptimizerRule {
             inputs.push(stage);
             Ok(Transformed::new(node, true, TreeNodeRecursion::Jump))
         })?;
+
+        // The head stage is executable, and upon execution, it will lazily assign worker URLs to
+        // all tasks. This must only be done once, so the executable StageExec must only be called
+        // once on 1 partition.
+        if depth == 0 && distributed.data.output_partitioning().partition_count() > 1 {
+            distributed.data = Arc::new(CoalescePartitionsExec::new(distributed.data));
+        }
 
         let mut stage = StageExec::new(query_id, *num, distributed.data, inputs, n_tasks);
         *num += 1;
@@ -395,8 +409,9 @@ mod tests {
         let query = r#"SELECT * FROM weather"#;
         let plan = sql_to_explain(query, 1).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 1   Tasks: t0:[p0,p1,p2] 
-        │ DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+        ┌───── Stage 1   Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
         └──────────────────────────────────────────────────
         ");
     }
@@ -462,12 +477,13 @@ mod tests {
         let query = r#"SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday" "#;
         let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 1   Tasks: t0:[p0,p1,p2] 
-        │ CoalesceBatchesExec: target_batch_size=8192
-        │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-        │     CoalescePartitionsExec
-        │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-        │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
+        ┌───── Stage 1   Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   CoalesceBatchesExec: target_batch_size=8192
+        │     HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+        │       CoalescePartitionsExec
+        │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+        │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         └──────────────────────────────────────────────────
         ");
     }
@@ -500,15 +516,16 @@ mod tests {
         "#;
         let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 4   Tasks: t0:[p0,p1,p2,p3] 
-        │ CoalesceBatchesExec: target_batch_size=8192
-        │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
-        │     CoalescePartitionsExec
-        │       NetworkCoalesceExec read_from=Stage 2, output_partitions=8, input_tasks=2
-        │     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
-        │       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
-        │         CoalesceBatchesExec: target_batch_size=8192
-        │           NetworkShuffleExec read_from=Stage 3, output_partitions=4, n_tasks=1, input_tasks=2
+        ┌───── Stage 4   Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   CoalesceBatchesExec: target_batch_size=8192
+        │     HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
+        │       CoalescePartitionsExec
+        │         NetworkCoalesceExec read_from=Stage 2, output_partitions=8, input_tasks=2
+        │       ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
+        │         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
+        │           CoalesceBatchesExec: target_batch_size=8192
+        │             NetworkShuffleExec read_from=Stage 3, output_partitions=4, n_tasks=1, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] t1:[p0,p1,p2,p3] 
           │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
@@ -559,18 +576,22 @@ mod tests {
         let query = r#"SELECT DISTINCT "RainToday", "WindGustDir" FROM weather"#;
         let plan = sql_to_explain(query, 2).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] 
-        │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-        │   CoalesceBatchesExec: target_batch_size=8192
-        │     NetworkShuffleExec read_from=Stage 1, output_partitions=4, n_tasks=1, input_tasks=2
+        ┌───── Stage 3   Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   NetworkCoalesceExec read_from=Stage 2, output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3] t1:[p0,p1,p2,p3] 
-          │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 4), input_partitions=4
-          │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
-          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-          │       PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
+          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3] t1:[p0,p1,p2,p3] 
+          │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
+          │   CoalesceBatchesExec: target_batch_size=8192
+          │     NetworkShuffleExec read_from=Stage 1, output_partitions=4, n_tasks=2, input_tasks=2
           └──────────────────────────────────────────────────
+            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7] t1:[p0,p1,p2,p3,p4,p5,p6,p7] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 8), input_partitions=4
+            │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+            │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
+            │       PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
+            │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
+            └──────────────────────────────────────────────────
         ");
     }
 

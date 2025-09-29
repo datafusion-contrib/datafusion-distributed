@@ -16,8 +16,6 @@ use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{TryFutureExt, TryStreamExt};
@@ -101,21 +99,9 @@ pub struct NetworkCoalesceReady {
 }
 
 impl NetworkCoalesceExec {
-    pub fn from_coalesce_partitions_exec(
-        input: &CoalescePartitionsExec,
-        input_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        Self::from_input(input, input_tasks)
-    }
-
-    pub fn from_sort_preserving_merge_exec(
-        input: &SortPreservingMergeExec,
-        input_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        Self::from_input(input, input_tasks)
-    }
-
-    pub fn from_input(
+    /// Creates a new [NetworkCoalesceExec] node from a [CoalescePartitionsExec] and
+    /// [SortPreservingMergeExec].
+    pub fn from_input_exec(
         input: &dyn ExecutionPlan,
         input_tasks: usize,
     ) -> Result<Self, DataFusionError> {

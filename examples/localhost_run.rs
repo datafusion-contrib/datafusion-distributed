@@ -27,6 +27,12 @@ struct Args {
 
     #[structopt(long)]
     explain: bool,
+
+    #[structopt(long, default_value = "3")]
+    network_shuffle_tasks: usize,
+
+    #[structopt(long, default_value = "3")]
+    network_coalesce_tasks: usize,
 }
 
 #[tokio::main]
@@ -41,7 +47,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_channel_resolver(localhost_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule::new()))
+        .with_physical_optimizer_rule(Arc::new(
+            DistributedPhysicalOptimizerRule::new()
+                .with_network_coalesce_tasks(args.network_coalesce_tasks)
+                .with_network_shuffle_tasks(args.network_shuffle_tasks),
+        ))
         .build();
 
     let ctx = SessionContext::from(state);
@@ -53,12 +63,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
 
-    ctx.register_parquet(
-        "weather",
-        "testdata/weather.parquet",
-        ParquetReadOptions::default(),
-    )
-    .await?;
+    ctx.register_parquet("weather", "testdata/weather", ParquetReadOptions::default())
+        .await?;
 
     let df = ctx.sql(&args.query).await?;
     if args.explain {
