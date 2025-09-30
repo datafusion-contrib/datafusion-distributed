@@ -282,7 +282,6 @@ impl DistributedPhysicalOptimizerRule {
             distributed.data = Arc::new(CoalescePartitionsExec::new(distributed.data));
         }
 
-        let inputs = inputs.into_iter().map(Arc::new).collect();
         let mut stage = StageExec::new(query_id, *num, distributed.data, inputs, n_tasks);
         *num += 1;
 

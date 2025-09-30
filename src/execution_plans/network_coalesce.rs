@@ -6,7 +6,7 @@ use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_er
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::DoGet;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::{DistributedCodec, StageKey, proto_from_stage};
+use crate::protobuf::{DistributedCodec, StageKey, proto_from_input_stage};
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -235,12 +235,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
         // the `NetworkCoalesceExec` node can only be executed in the context of a `StageExec`
         let stage = StageExec::from_ctx(&context)?;
 
-        // of our child stages find the one that matches the one we are supposed to be
-        // reading from
-        let child_stage = stage.child_stage(self_ready.stage_num)?;
+        // of our input stages find the one that we are supposed to be reading from
+        let input_stage = stage.input_stage(self_ready.stage_num)?;
 
         let codec = DistributedCodec::new_combined_with_user(context.session_config());
-        let child_stage_proto = proto_from_stage(child_stage, &codec).map_err(|e| {
+        let input_stage_proto = proto_from_input_stage(input_stage, &codec).map_err(|e| {
             internal_datafusion_err!("NetworkCoalesceExec: failed to convert stage to proto: {e}")
         })?;
 
@@ -251,7 +250,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         }
 
         let partitions_per_task =
-            self.properties().partitioning.partition_count() / child_stage.tasks.len();
+            self.properties().partitioning.partition_count() / input_stage.tasks().len();
 
         let target_task = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
@@ -261,11 +260,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
-                    stage_proto: Some(child_stage_proto.clone()),
+                    stage_proto: input_stage_proto,
                     target_partition: target_partition as u64,
                     stage_key: Some(StageKey {
                         query_id: stage.query_id.to_string(),
-                        stage_id: child_stage.num as u64,
+                        stage_id: input_stage.num() as u64,
                         task_number: target_task as u64,
                     }),
                     target_task_index: target_task as u64,
@@ -275,7 +274,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             },
         );
 
-        let Some(task) = child_stage.tasks.get(target_task) else {
+        let Some(task) = input_stage.tasks().get(target_task) else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
         };
 

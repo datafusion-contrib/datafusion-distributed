@@ -1,16 +1,17 @@
-use crate::execution_plans::{ExecutionTask, StageExec};
+use crate::execution_plans::{ExecutionTask, InputStage, StageExec};
+use bytes::Bytes;
+use datafusion::common::exec_err;
 use datafusion::{
     common::internal_datafusion_err,
     error::{DataFusionError, Result},
     execution::{FunctionRegistry, runtime_env::RuntimeEnv},
-    physical_plan::ExecutionPlan,
 };
 use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
     protobuf::PhysicalPlanNode,
 };
+use prost::Message;
 use std::fmt::Display;
-use std::sync::Arc;
 use url::Url;
 
 /// A key that uniquely identifies a stage in a query
@@ -53,11 +54,21 @@ pub struct StageExecProto {
     plan: Option<Box<PhysicalPlanNode>>,
     /// The input stages to this stage
     #[prost(repeated, message, tag = "5")]
-    inputs: Vec<StageExecProto>,
+    inputs: Vec<StageInputProto>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     #[prost(message, repeated, tag = "6")]
     tasks: Vec<ExecutionTaskProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StageInputProto {
+    #[prost(uint64, tag = "1")]
+    num: u64,
+    #[prost(message, repeated, tag = "2")]
+    tasks: Vec<ExecutionTaskProto>,
+    #[prost(bytes, tag = "3")]
+    stage: Bytes,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -68,14 +79,64 @@ pub struct ExecutionTaskProto {
     url_str: Option<String>,
 }
 
-pub fn proto_from_stage(
+fn encode_tasks(tasks: &[ExecutionTask]) -> Vec<ExecutionTaskProto> {
+    tasks
+        .iter()
+        .map(|task| ExecutionTaskProto {
+            url_str: task.url.as_ref().map(|v| v.to_string()),
+        })
+        .collect()
+}
+
+/// Encodes an [InputStage] as protobuf [Bytes]:
+/// - If the input is [InputStage::Decoded], it will serialize the inner plan as protobuf bytes.
+/// - If the input is [InputStage::Encoded], it will pass through the [Bytes] in a zero-copy manner.
+pub(crate) fn proto_from_input_stage(
+    input_stage: &InputStage,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Bytes, DataFusionError> {
+    match input_stage {
+        InputStage::Decoded(v) => {
+            let stage = StageExec::from_dyn(v);
+            Ok(proto_from_stage(stage, codec)?.encode_to_vec().into())
+        }
+        InputStage::Encoded { proto, .. } => Ok(proto.clone()),
+    }
+}
+
+/// Converts a [StageExec] into a [StageExecProto], which makes it suitable to be serialized and
+/// sent over the wire.
+///
+/// If the input [InputStage]s of the provided [StageExec] are already encoded as protobuf [Bytes],
+/// they will not be decoded and re-encoded, the [Bytes] are just passthrough as-is in a zero copy
+/// manner.
+pub(crate) fn proto_from_stage(
     stage: &StageExec,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<StageExecProto, DataFusionError> {
     let proto_plan = PhysicalPlanNode::try_from_physical_plan(stage.plan.clone(), codec)?;
     let inputs = stage
-        .child_stages_iter()
-        .map(|s| proto_from_stage(s, codec))
+        .input_stages_iter()
+        .map(|s| match s {
+            InputStage::Decoded(s) => {
+                let Some(s) = s.as_any().downcast_ref::<StageExec>() else {
+                    return exec_err!(
+                        "Programming error: StageExec input must always be other StageExec"
+                    );
+                };
+
+                Ok(StageInputProto {
+                    num: s.num as u64,
+                    tasks: encode_tasks(&s.tasks),
+                    stage: proto_from_stage(s, codec)?.encode_to_vec().into(),
+                })
+            }
+            InputStage::Encoded { num, tasks, proto } => Ok(StageInputProto {
+                num: *num as u64,
+                tasks: encode_tasks(tasks),
+                stage: proto.clone(),
+            }),
+        })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(StageExecProto {
@@ -84,22 +145,39 @@ pub fn proto_from_stage(
         name: stage.name(),
         plan: Some(Box::new(proto_plan)),
         inputs,
-        tasks: stage
-            .tasks
-            .iter()
-            .map(|task| ExecutionTaskProto {
-                url_str: task.url.as_ref().map(|v| v.to_string()),
-            })
-            .collect(),
+        tasks: encode_tasks(&stage.tasks),
     })
 }
 
-pub fn stage_from_proto(
-    msg: StageExecProto,
+/// Decodes the provided protobuf [Bytes] as a [StageExec]. Rather than recursively decoding all the
+/// input [InputStage]s, it performs a shallow decoding of just the first [StageExec] level, leaving
+/// all the inputs in [InputStage::Encoded] state.
+///
+/// This prevents decoding and then re-encoding the whole plan recursively, and only decodes the
+/// things that are strictly needed.
+pub(crate) fn stage_from_proto(
+    msg: Bytes,
     registry: &dyn FunctionRegistry,
     runtime: &RuntimeEnv,
     codec: &dyn PhysicalExtensionCodec,
 ) -> Result<StageExec> {
+    fn decode_tasks(tasks: Vec<ExecutionTaskProto>) -> Result<Vec<ExecutionTask>> {
+        tasks
+            .into_iter()
+            .map(|task| {
+                Ok(ExecutionTask {
+                    url: task
+                        .url_str
+                        .map(|u| {
+                            Url::parse(&u).map_err(|_| internal_datafusion_err!("Invalid URL: {u}"))
+                        })
+                        .transpose()?,
+                })
+            })
+            .collect()
+    }
+    let msg = StageExecProto::decode(msg)
+        .map_err(|e| internal_datafusion_err!("Cannot decode StageExecProto: {e}"))?;
     let plan_node = msg.plan.ok_or(internal_datafusion_err!(
         "ExecutionStageMsg is missing the plan"
     ))?;
@@ -110,8 +188,11 @@ pub fn stage_from_proto(
         .inputs
         .into_iter()
         .map(|s| {
-            stage_from_proto(s, registry, runtime, codec)
-                .map(|s| Arc::new(s) as Arc<dyn ExecutionPlan>)
+            Ok(InputStage::Encoded {
+                num: s.num as usize,
+                tasks: decode_tasks(s.tasks)?,
+                proto: s.stage,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -124,20 +205,7 @@ pub fn stage_from_proto(
         name: msg.name,
         plan,
         inputs,
-        tasks: msg
-            .tasks
-            .into_iter()
-            .map(|task| {
-                Ok(ExecutionTask {
-                    url: task
-                        .url_str
-                        .map(|u| {
-                            Url::parse(&u).map_err(|_| internal_datafusion_err!("Invalid URL: {u}"))
-                        })
-                        .transpose()?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
+        tasks: decode_tasks(msg.tasks)?,
         depth: 0,
     })
 }
@@ -148,7 +216,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::StageExec;
-    use crate::protobuf::stage_proto::StageExecProto;
     use crate::protobuf::{proto_from_stage, stage_from_proto};
     use datafusion::{
         arrow::{
@@ -217,13 +284,9 @@ mod tests {
             .encode(&mut buf)
             .map_err(|e| internal_datafusion_err!("couldn't encode {e:#?}"))?;
 
-        // Deserialize from bytes
-        let decoded_msg = StageExecProto::decode(&buf[..])
-            .map_err(|e| internal_datafusion_err!("couldn't decode {e:#?}"))?;
-
         // Convert back to ExecutionStage
         let round_trip_stage = stage_from_proto(
-            decoded_msg,
+            buf.into(),
             &ctx,
             ctx.runtime_env().as_ref(),
             &DefaultPhysicalExtensionCodec {},

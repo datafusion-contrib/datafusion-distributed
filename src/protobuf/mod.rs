@@ -11,7 +11,9 @@ pub(crate) use errors::{
     datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
     map_status_to_datafusion_error,
 };
-pub(crate) use stage_proto::{StageExecProto, StageKey, proto_from_stage, stage_from_proto};
+#[cfg(test)]
+pub(crate) use stage_proto::proto_from_stage;
+pub(crate) use stage_proto::{StageKey, proto_from_input_stage, stage_from_proto};
 pub(crate) use user_codec::{
     get_distributed_user_codecs, set_distributed_user_codec, set_distributed_user_codec_arc,
 };
