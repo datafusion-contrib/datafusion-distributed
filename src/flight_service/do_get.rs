@@ -81,9 +81,8 @@ impl ArrowFlightEndpoint {
             .await
             .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
-        let ctx = SessionContext::new();
-
         let codec = DistributedCodec::new_combined_with_user(session_state.config());
+        let ctx = SessionContext::new_with_state(session_state.clone());
 
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
         // so here we either retrieve the existing one or create a new one if it does not exist.
