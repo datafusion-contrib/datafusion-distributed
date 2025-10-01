@@ -3,6 +3,7 @@ use crate::{
     DistributedSessionBuilder, DistributedSessionBuilderContext,
     MappedDistributedSessionBuilderExt,
 };
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -98,10 +99,13 @@ impl ChannelResolver for LocalHostChannelResolver {
             .map(|url| Url::parse(&url).map_err(external_err))
             .collect::<Result<Vec<Url>, _>>()
     }
-    async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         let endpoint = Channel::from_shared(url.to_string()).map_err(external_err)?;
         let channel = endpoint.connect().await.map_err(external_err)?;
-        Ok(BoxCloneSyncChannel::new(channel))
+        Ok(FlightServiceClient::new(BoxCloneSyncChannel::new(channel)))
     }
 }
 

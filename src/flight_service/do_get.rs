@@ -10,15 +10,15 @@ use crate::protobuf::{
     AppMetadata, DistributedCodec, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
     datafusion_error_to_tonic_status, stage_from_proto,
 };
-use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
-use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use arrow_flight::FlightData;
 use arrow_flight::Ticket;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;

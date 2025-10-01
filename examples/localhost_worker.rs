@@ -1,3 +1,4 @@
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
@@ -55,7 +56,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Clone)]
 struct LocalhostChannelResolver {
     ports: Vec<u16>,
-    cached: DashMap<Url, BoxCloneSyncChannel>,
+    cached: DashMap<Url, FlightServiceClient<BoxCloneSyncChannel>>,
 }
 
 #[async_trait]
@@ -68,14 +69,17 @@ impl ChannelResolver for LocalhostChannelResolver {
             .collect())
     }
 
-    async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         match self.cached.entry(url.clone()) {
             Entry::Occupied(v) => Ok(v.get().clone()),
             Entry::Vacant(v) => {
                 let channel = Channel::from_shared(url.to_string())
                     .unwrap()
                     .connect_lazy();
-                let channel = BoxCloneSyncChannel::new(channel);
+                let channel = FlightServiceClient::new(BoxCloneSyncChannel::new(channel));
                 v.insert(channel.clone());
                 Ok(channel)
             }
