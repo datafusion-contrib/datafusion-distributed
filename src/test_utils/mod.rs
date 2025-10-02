@@ -6,4 +6,5 @@ pub mod mock_exec;
 pub mod parquet;
 pub mod plans;
 pub mod session_context;
+pub mod sqllogictest;
 pub mod tpch;

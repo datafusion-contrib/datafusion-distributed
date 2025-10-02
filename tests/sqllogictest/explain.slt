@@ -1,0 +1,24 @@
+# EXPLAIN queries for DataFusion Distributed
+
+# This should produce the distributed physical plan with network shuffle stages
+query T nosort
+EXPLAIN SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+----
+┌───── Stage 3   Tasks: t0:[p0] 
+│ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+│   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+│     NetworkCoalesceExec read_from=Stage 2, output_partitions=6, input_tasks=2
+└──────────────────────────────────────────────────
+  ┌───── Stage 2   Tasks: t0:[p0,p1,p2] t1:[p0,p1,p2] 
+  │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+  │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+  │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+  │       CoalesceBatchesExec: target_batch_size=8192
+  │         NetworkShuffleExec read_from=Stage 1, output_partitions=3, n_tasks=2, input_tasks=2
+  └──────────────────────────────────────────────────
+    ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3,p4,p5] t1:[p0,p1,p2,p3,p4,p5] 
+    │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=2
+    │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+    │     PartitionIsolatorExec Tasks: t0:[p0,p1,__] t1:[__,__,p0] 
+    │       DataSourceExec: file_groups={3 groups: [[datafusion-distributed/testdata/weather/result-000000.parquet], [datafusion-distributed/testdata/weather/result-000001.parquet], [datafusion-distributed/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+    └──────────────────────────────────────────────────

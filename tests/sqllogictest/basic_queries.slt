@@ -1,0 +1,32 @@
+# Basic SELECT queries for DataFusion Distributed
+
+# Group By
+query IT nosort
+SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+----
+66 Yes
+300 No
+
+# Count
+query I
+SELECT COUNT(*) FROM weather
+----
+366
+
+# Filtering
+query I
+SELECT COUNT(*) FROM weather WHERE "RainToday" = 'Yes'
+----
+66
+
+# Filtering
+query I
+SELECT COUNT(*) FROM weather WHERE "RainToday" = 'No'
+----
+300
+
+# Count
+query I rowsort
+SELECT COUNT(*) FROM flights_1m LIMIT 1
+----
+1000000
