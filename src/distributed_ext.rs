@@ -180,6 +180,7 @@ pub trait DistributedExt: Sized {
     /// Example:
     ///
     /// ```
+    /// # use arrow_flight::flight_service_client::FlightServiceClient;
     /// # use async_trait::async_trait;
     /// # use datafusion::common::DataFusionError;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -195,7 +196,7 @@ pub trait DistributedExt: Sized {
     ///         todo!()
     ///     }
     ///
-    ///     async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+    ///     async fn get_flight_client_for_url(&self, url: &Url) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
     ///         todo!()
     ///     }
     /// }

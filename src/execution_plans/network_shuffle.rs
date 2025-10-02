@@ -12,7 +12,6 @@ use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_e
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
-use arrow_flight::flight_service_client::FlightServiceClient;
 use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::DataFusionError;
@@ -337,8 +336,8 @@ impl ExecutionPlan for NetworkShuffleExec {
                     "NetworkShuffleExec: task is unassigned, cannot proceed"
                 ))?;
 
-                let channel = channel_resolver.get_channel_for_url(&url).await?;
-                let stream = FlightServiceClient::new(channel)
+                let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
+                let stream = client
                     .do_get(ticket)
                     .await
                     .map_err(map_status_to_datafusion_error)?

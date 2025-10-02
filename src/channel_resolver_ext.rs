@@ -1,3 +1,4 @@
+use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
@@ -38,8 +39,11 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 pub trait ChannelResolver {
     /// Gets all available worker URLs. Used during stage assignment.
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError>;
-    /// For a given URL, get a channel for communicating to it.
-    async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError>;
+    /// For a given URL, get an Arrow Flight client for communicating to it.
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError>;
 }
 
 #[async_trait]
@@ -48,7 +52,10 @@ impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
         self.as_ref().get_urls()
     }
 
-    async fn get_channel_for_url(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
-        self.as_ref().get_channel_for_url(url).await
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        self.as_ref().get_flight_client_for_url(url).await
     }
 }

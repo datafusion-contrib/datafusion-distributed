@@ -2,6 +2,7 @@ use crate::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
     DistributedSessionBuilderContext,
 };
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -15,7 +16,7 @@ const DUMMY_URL: &str = "http://localhost:50051";
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
 pub struct InMemoryChannelResolver {
-    channel: BoxCloneSyncChannel,
+    channel: FlightServiceClient<BoxCloneSyncChannel>,
 }
 
 impl Default for InMemoryChannelResolver {
@@ -39,7 +40,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: BoxCloneSyncChannel::new(channel),
+            channel: FlightServiceClient::new(BoxCloneSyncChannel::new(channel)),
         };
         let this_clone = this.clone();
 
@@ -73,10 +74,10 @@ impl ChannelResolver for InMemoryChannelResolver {
         Ok(vec![url::Url::parse(DUMMY_URL).unwrap()])
     }
 
-    async fn get_channel_for_url(
+    async fn get_flight_client_for_url(
         &self,
         _: &url::Url,
-    ) -> Result<BoxCloneSyncChannel, DataFusionError> {
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         Ok(self.channel.clone())
     }
 }
