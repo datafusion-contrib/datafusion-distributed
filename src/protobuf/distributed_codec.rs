@@ -8,7 +8,7 @@ use datafusion::execution::FunctionRegistry;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
-use datafusion::prelude::SessionConfig;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
@@ -35,7 +35,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        registry: &dyn FunctionRegistry,
+        _registry: &dyn FunctionRegistry,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let DistributedExecProto {
             node: Some(distributed_exec_node),
@@ -45,6 +45,11 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 "Expected DistributedExecNode in DistributedExecProto",
             ));
         };
+
+        // TODO: The PhysicalExtensionCodec trait doesn't provide access to session state,
+        // so we create a new SessionContext which loses any custom UDFs, UDAFs, and other
+        // user configurations. This is a limitation of the current trait design.
+        let ctx = SessionContext::new();
 
         match distributed_exec_node {
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
@@ -59,7 +64,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
-                    registry,
+                    &ctx,
                     &schema,
                     &DistributedCodec {},
                 )?
@@ -84,7 +89,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
-                    registry,
+                    &ctx,
                     &schema,
                     &DistributedCodec {},
                 )?

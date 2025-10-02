@@ -4,7 +4,7 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
-use tonic::body::BoxBody;
+use tonic::body::Body;
 use url::Url;
 
 pub(crate) fn set_distributed_channel_resolver(
@@ -28,8 +28,8 @@ pub(crate) fn get_distributed_channel_resolver(
 struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
 
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
-    http::Request<BoxBody>,
-    http::Response<BoxBody>,
+    http::Request<Body>,
+    http::Response<Body>,
     tonic::transport::Error,
 >;
 
