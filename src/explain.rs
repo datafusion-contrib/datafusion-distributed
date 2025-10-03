@@ -1,16 +1,16 @@
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use crate::execution_plans::{DisplayCtx, StageExec};
+use crate::metrics::MetricsCollectorResult;
+use crate::metrics::TaskMetricsCollector;
+use crate::metrics::proto::MetricsSetProto;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::StageKey;
-use std::sync::Arc;
-use datafusion::physical_plan::ExecutionPlan;
-use crate::metrics::TaskMetricsCollector;
-use datafusion::error::DataFusionError;
-use crate::metrics::MetricsCollectorResult;
-use crate::metrics::proto::MetricsSetProto;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRewriter};
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRewriter};
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use std::sync::Arc;
 
 pub struct DisplayCtxReWriter {
     display_ctx: DisplayCtx,
@@ -40,33 +40,43 @@ impl TreeNodeRewriter for DisplayCtxReWriter {
             Some(stage_exec) => {
                 let mut copy = stage_exec.clone();
                 copy.display_ctx = Some(self.display_ctx.clone());
-                Ok(Transformed::new(Arc::new(copy), true, TreeNodeRecursion::Continue))
-            },
+                Ok(Transformed::new(
+                    Arc::new(copy),
+                    true,
+                    TreeNodeRecursion::Continue,
+                ))
+            }
             None => Err(DataFusionError::Internal("expected stage exec".to_string())),
         }
     }
 }
 
-
 pub fn explain_analyze(executed: Arc<dyn ExecutionPlan>) -> Result<String, DataFusionError> {
     let plan = match executed.as_any().downcast_ref::<StageExec>() {
         None => executed,
         Some(stage_exec) => {
-            let MetricsCollectorResult{task_metrics, mut input_task_metrics} = TaskMetricsCollector::new()
-                .collect(stage_exec.plan.clone())?;
-            input_task_metrics.insert(StageKey{
-                query_id: stage_exec.query_id.to_string(),
-                stage_id: stage_exec.num as u64,
-                task_number: 0,
-            }, task_metrics.into_iter()
-            .map(|metrics| df_metrics_set_to_proto(&metrics))
-            .collect::<Result<Vec<MetricsSetProto>, DataFusionError>>()?);
+            let MetricsCollectorResult {
+                task_metrics,
+                mut input_task_metrics,
+            } = TaskMetricsCollector::new().collect(stage_exec.plan.clone())?;
+            input_task_metrics.insert(
+                StageKey {
+                    query_id: stage_exec.query_id.to_string(),
+                    stage_id: stage_exec.num as u64,
+                    task_number: 0,
+                },
+                task_metrics
+                    .into_iter()
+                    .map(|metrics| df_metrics_set_to_proto(&metrics))
+                    .collect::<Result<Vec<MetricsSetProto>, DataFusionError>>()?,
+            );
 
             let display_ctx = DisplayCtx::new(input_task_metrics);
             DisplayCtxReWriter::new(display_ctx).rewrite(executed.clone())?
-        },
+        }
     };
 
-    Ok(DisplayableExecutionPlan::new(plan.as_ref()).indent(true).to_string())
+    Ok(DisplayableExecutionPlan::new(plan.as_ref())
+        .indent(true)
+        .to_string())
 }
-    

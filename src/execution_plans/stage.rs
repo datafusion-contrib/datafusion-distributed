@@ -1,4 +1,5 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
+use crate::execution_plans::MetricsWrapperExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::metrics::TaskMetricsRewriter;
 use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
@@ -10,7 +11,6 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, displayable,
 };
 use datafusion::prelude::SessionContext;
-use datafusion::sql::sqlparser::keywords::CHAIN;
 use itertools::Itertools;
 use rand::Rng;
 use std::collections::VecDeque;
@@ -303,18 +303,22 @@ impl ExecutionPlan for StageExec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let num_children = children.len();
         let child_stage_execs = children
-        .into_iter()
-        .filter(|child| child.as_any().downcast_ref::<StageExec>().is_some())
-        .map(|child| child.as_any().downcast_ref::<StageExec>().unwrap().clone()).collect::<Vec<_>>();
+            .into_iter()
+            .filter(|child| child.as_any().downcast_ref::<StageExec>().is_some())
+            .map(|child| child.as_any().downcast_ref::<StageExec>().unwrap().clone())
+            .collect::<Vec<_>>();
         if child_stage_execs.len() != num_children {
             return plan_err!("not all children are StageExec");
         }
-        let stage = StageExec{
-            query_id: self.query_id.clone(),
+        let stage = StageExec {
+            query_id: self.query_id,
             num: self.num,
             name: self.name.clone(),
             plan: self.plan.clone(),
-            inputs: child_stage_execs.into_iter().map(|s| InputStage::Decoded(Arc::new(s))).collect(),
+            inputs: child_stage_execs
+                .into_iter()
+                .map(|s| InputStage::Decoded(Arc::new(s)))
+                .collect(),
             tasks: self.tasks.clone(),
             depth: self.depth,
             display_ctx: self.display_ctx.clone(),
@@ -369,12 +373,12 @@ impl ExecutionPlan for StageExec {
     }
 }
 
-use bytes::Bytes;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::physical_expr::Partitioning;
-use datafusion::common::HashMap;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
+use bytes::Bytes;
+use datafusion::common::HashMap;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::physical_expr::Partitioning;
 
 /// Be able to display a nice tree for stages.
 ///
@@ -410,14 +414,25 @@ impl DisplayCtx {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TaskFmt {
+    All,
+    TaskID { task_id: usize },
+}
+
 impl StageExec {
-    fn format(&self, plan: &dyn ExecutionPlan, indent: usize, f: &mut String) -> std::fmt::Result {
-        // println!("plan {:?}", plan);
+    fn format(
+        &self,
+        plan: &dyn ExecutionPlan,
+        indent: usize,
+        task_fmt: TaskFmt,
+        f: &mut String,
+    ) -> std::fmt::Result {
         let mut node_str = match &self.display_ctx {
             None => displayable(plan).one_line().to_string(),
-            Some(_) => {
-               DisplayableExecutionPlan::with_metrics(plan).one_line().to_string()
-            }
+            Some(_) => DisplayableExecutionPlan::with_metrics(plan)
+                .one_line()
+                .to_string(),
         };
         node_str.pop();
         write!(f, "{} {node_str}", " ".repeat(indent))?;
@@ -455,17 +470,29 @@ impl StageExec {
             )?;
         }
 
-        if let Some(isolator) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
-            write!(
-                f,
-                " {}",
-                format_tasks_for_partition_isolator(isolator, &self.tasks)
-            )?;
+        let mut maybe_partition_isolator = plan;
+        if self.display_ctx.is_some() {
+            if let Some(wrapper) = plan.as_any().downcast_ref::<MetricsWrapperExec>() {
+                maybe_partition_isolator = wrapper.get_inner().as_ref();
+            }
+        }
+
+        if let Some(isolator) = maybe_partition_isolator
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+        {
+            let task_info = match task_fmt {
+                TaskFmt::All => format_tasks_for_partition_isolator(isolator, &self.tasks),
+                TaskFmt::TaskID { task_id } => {
+                    format_task_for_partition_isolator(isolator, task_id, self.tasks.len())
+                }
+            };
+            write!(f, " {}", task_info)?;
         }
         writeln!(f)?;
 
         for child in plan.children() {
-            self.format(child.as_ref(), indent + 2, f)?;
+            self.format(child.as_ref(), indent + 2, task_fmt, f)?;
         }
         Ok(())
     }
@@ -491,7 +518,7 @@ impl DisplayAs for StageExec {
                         )?;
 
                         let mut plan_str = String::new();
-                        self.format(self.plan.as_ref(), 0, &mut plan_str)?;
+                        self.format(self.plan.as_ref(), 0, TaskFmt::All, &mut plan_str)?;
                         let plan_str = plan_str
                             .split('\n')
                             .filter(|v| !v.is_empty())
@@ -511,7 +538,7 @@ impl DisplayAs for StageExec {
                     }
                     Some(display_ctx) => {
                         for (i, _) in self.tasks.iter().enumerate() {
-                            let mut extra_spacing = "".to_string(); 
+                            let mut extra_spacing = "".to_string();
                             if i > 0 {
                                 writeln!(f)?; // Add newline for each task
                                 extra_spacing = "  ".repeat(self.depth); // with_indent() in DisplayableExectutionPlan will not add indentation for tasks, so we add it manually.
@@ -535,34 +562,38 @@ impl DisplayAs for StageExec {
                             let mut plan_str = String::new();
                             let plan = match display_ctx.metrics.get(&key) {
                                 Some(metrics) => {
-                                    let result = TaskMetricsRewriter::new(metrics.to_owned()).enrich_task_with_metrics(self.plan.clone());
+                                    let result = TaskMetricsRewriter::new(metrics.to_owned())
+                                        .enrich_task_with_metrics(self.plan.clone());
                                     if let Err(e) = result {
                                         write!(f, "Error enriching task with metrics: {}", e)?;
                                         return Err(std::fmt::Error);
                                     }
                                     result.unwrap()
                                 }
-                                None => {
-                                  self.plan.clone() 
-                                }
+                                None => self.plan.clone(),
                             };
-                             self.format(plan.as_ref(), 0, &mut plan_str)?;
-                                    let plan_str = plan_str
-                                        .split('\n')
-                                        .filter(|v| !v.is_empty())
-                                        .collect::<Vec<_>>()
-                                        .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
-                                    writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
-                            // Add bottom border 
+                            self.format(
+                                plan.as_ref(),
+                                0,
+                                TaskFmt::TaskID { task_id: i },
+                                &mut plan_str,
+                            )?;
+                            let plan_str = plan_str
+                                .split('\n')
+                                .filter(|v| !v.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
+                            writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
+                            // Add bottom border
                             write!(
                                 f,
                                 "{}{}{}",
                                 "  ".repeat(self.depth),
                                 LDCORNER,
                                 HORIZONTAL.repeat(50)
-                                )?;
+                            )?;
                         }
-                        return Ok(());
+                        Ok(())
                     }
                 }
             }
@@ -604,7 +635,7 @@ fn format_task_for_stage(task_number: usize, head: &Arc<dyn ExecutionPlan>) -> S
         .map(|v| format!("p{v}"))
         .join(",");
     result += "] ";
-     
+
     result
 }
 
@@ -628,6 +659,28 @@ fn format_tasks_for_partition_isolator(
         }
         result += &format!("t{i}:[{}] ", partitions[i].join(","));
     }
+    result
+}
+
+fn format_task_for_partition_isolator(
+    isolator: &PartitionIsolatorExec,
+    task_number: usize,
+    num_tasks: usize,
+) -> String {
+    let input_partitions = isolator.input().output_partitioning().partition_count();
+    let partition_groups = PartitionIsolatorExec::partition_groups(input_partitions, num_tasks);
+
+    let n: usize = partition_groups.iter().map(|v| v.len()).sum();
+    let mut partitions = vec!["__".to_string(); n];
+
+    let mut result = "Task ".to_string();
+    partition_groups
+        .get(task_number)
+        .unwrap()
+        .iter()
+        .enumerate()
+        .for_each(|(j, p)| partitions[*p] = format!("p{j}"));
+    result += &format!("t{task_number}:[{}] ", partitions.join(","));
     result
 }
 

@@ -6,9 +6,9 @@ mod config_extension_ext;
 mod distributed_ext;
 mod distributed_physical_optimizer_rule;
 mod execution_plans;
+mod explain;
 mod flight_service;
 mod metrics;
-mod explain;
 
 mod protobuf;
 #[cfg(any(feature = "integration", test))]
@@ -22,9 +22,9 @@ pub use execution_plans::{
     DistributedTaskContext, ExecutionTask, NetworkCoalesceExec, NetworkShuffleExec,
     PartitionIsolatorExec, StageExec,
 };
+pub use explain::explain_analyze;
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
     MappedDistributedSessionBuilderExt,
 };
-pub use explain::explain_analyze;

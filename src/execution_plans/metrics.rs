@@ -27,6 +27,10 @@ impl MetricsWrapperExec {
             children: None,
         }
     }
+
+    pub(crate) fn get_inner(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.inner
+    }
 }
 
 /// MetricsWrapperExec is invisible during display.
