@@ -511,13 +511,15 @@ impl DisplayAs for StageExec {
                     }
                     Some(display_ctx) => {
                         for (i, _) in self.tasks.iter().enumerate() {
+                            let mut extra_spacing = "".to_string(); 
                             if i > 0 {
-                                writeln!(f)?;
+                                writeln!(f)?; // Add newline for each task
+                                extra_spacing = "  ".repeat(self.depth); // with_indent() in DisplayableExectutionPlan will not add indentation for tasks, so we add it manually.
                             }
                             writeln!(
                                 f,
                                 "{}{}{}{} {}",
-                                "  ".repeat(self.depth),
+                                extra_spacing,
                                 LTCORNER,
                                 HORIZONTAL.repeat(5),
                                 format!(" {} ", self.name),
