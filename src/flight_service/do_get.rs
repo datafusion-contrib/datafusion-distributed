@@ -3,7 +3,6 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::flight_service::trailing_flight_data_stream::TrailingFlightDataStream;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
@@ -16,18 +15,17 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+
 use datafusion::common::exec_datafusion_err;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
-use futures::TryStreamExt;
-use futures::{Stream, stream};
+use futures::stream;
+use futures::{StreamExt, TryStreamExt};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -173,51 +171,82 @@ fn flight_stream_from_record_batch_stream(
     evict_stage: impl FnOnce() + Send + 'static,
     stream: SendableRecordBatchStream,
 ) -> Response<<ArrowFlightEndpoint as FlightService>::DoGetStream> {
-    let flight_data_stream =
+    let mut flight_data_stream =
         FlightDataEncoderBuilder::new()
             .with_schema(stream.schema().clone())
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
 
-    let trailing_metrics_stream = TrailingFlightDataStream::new(
-        move || {
-            if stage_data
-                .num_partitions_remaining
-                .fetch_sub(1, Ordering::SeqCst)
-                == 1
-            {
-                evict_stage();
+    // executed once when the stream ends
+    // decorates the last flight data with our metrics
+    let mut final_closure = Some(move |last_flight_data| {
+        if stage_data
+            .num_partitions_remaining
+            .fetch_sub(1, Ordering::SeqCst)
+            == 1
+        {
+            evict_stage();
 
-                let metrics_stream =
-                    collect_and_create_metrics_flight_data(stage_key, stage_data.stage).map_err(
-                        |err| {
-                            Status::internal(format!(
-                                "error collecting metrics in arrow flight endpoint: {err}"
-                            ))
-                        },
-                    )?;
+            collect_and_create_metrics_flight_data(stage_key, stage_data.stage, last_flight_data)
+        } else {
+            Ok(last_flight_data)
+        }
+    });
 
-                return Ok(Some(metrics_stream));
-            }
+    // this is used to peek the new value
+    // so that we can add our metrics to the last flight data
+    let mut current_value = None;
 
-            Ok(None)
-        },
-        flight_data_stream,
-    );
+    let stream =
+        stream::poll_fn(
+            move |cx| match futures::ready!(flight_data_stream.poll_next_unpin(cx)) {
+                Some(Ok(new_val)) => {
+                    match current_value.take() {
+                        // This is the first value, so we store it and repoll to get the next value
+                        None => {
+                            current_value = Some(new_val);
+                            cx.waker().wake_by_ref();
+                            Poll::Pending
+                        }
 
-    Response::new(Box::pin(trailing_metrics_stream.map_err(|err| match err {
+                        Some(existing) => {
+                            current_value = Some(new_val);
+
+                            Poll::Ready(Some(Ok(existing)))
+                        }
+                    }
+                }
+                // this is our last value, so we add our metrics to this flight data
+                None => match current_value.take() {
+                    Some(existing) => {
+                        // make sure we wake ourselves to finish the stream
+                        cx.waker().wake_by_ref();
+
+                        if let Some(closure) = final_closure.take() {
+                            Poll::Ready(Some(closure(existing)))
+                        } else {
+                            unreachable!("the closure is only executed once")
+                        }
+                    }
+                    None => Poll::Ready(None),
+                },
+                err => Poll::Ready(err),
+            },
+        );
+
+    Response::new(Box::pin(stream.map_err(|err| match err {
         FlightError::Tonic(status) => *status,
         _ => Status::internal(format!("Error during flight stream: {err}")),
     })))
 }
 
-// Collects metrics from the provided stage and encodes it into a stream of flight data using
-// the schema of the stage.
+/// Collects metrics from the provided stage and includes it in the flight data
 fn collect_and_create_metrics_flight_data(
     stage_key: StageKey,
     stage: Arc<StageExec>,
-) -> Result<impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static, FlightError> {
+    incoming: FlightData,
+) -> Result<FlightData, FlightError> {
     // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
     let mut result = TaskMetricsCollector::new()
         .collect(stage.plan.clone())
@@ -252,35 +281,12 @@ fn collect_and_create_metrics_flight_data(
         })),
     };
 
-    let metrics_flight_data =
-        empty_flight_data_with_app_metadata(flight_app_metadata, stage.plan.schema())?;
-    Ok(Box::pin(stream::once(
-        async move { Ok(metrics_flight_data) },
-    )))
-}
-
-/// Creates a FlightData with the given app_metadata and empty RecordBatch using the provided schema.
-/// We don't use [arrow_flight::encode::FlightDataEncoder] (and by extension, the [arrow_flight::encode::FlightDataEncoderBuilder])
-/// since they skip messages with empty RecordBatch data.
-pub fn empty_flight_data_with_app_metadata(
-    metadata: FlightAppMetadata,
-    schema: SchemaRef,
-) -> Result<FlightData, FlightError> {
     let mut buf = vec![];
-    metadata
+    flight_app_metadata
         .encode(&mut buf)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
-    let empty_batch = RecordBatch::new_empty(schema);
-    let options = IpcWriteOptions::default();
-    let data_gen = IpcDataGenerator::default();
-    let mut dictionary_tracker = DictionaryTracker::new(false);
-    let (_, encoded_data) = data_gen
-        .encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
-        .map_err(|e| {
-            FlightError::ProtocolError(format!("Failed to create empty batch FlightData: {e}"))
-        })?;
-    Ok(FlightData::from(encoded_data).with_app_metadata(buf))
+    Ok(incoming.with_app_metadata(buf))
 }
 
 #[cfg(test)]
