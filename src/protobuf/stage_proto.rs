@@ -207,6 +207,7 @@ pub(crate) fn stage_from_proto(
         inputs,
         tasks: decode_tasks(msg.tasks)?,
         depth: 0,
+        display_ctx: None,
     })
 }
 
@@ -273,6 +274,7 @@ mod tests {
             inputs: vec![],
             tasks: vec![],
             depth: 0,
+            display_ctx: None,
         };
 
         // Convert to proto message

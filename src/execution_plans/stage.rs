@@ -1,13 +1,16 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::execution_plans::NetworkCoalesceExec;
+use crate::metrics::TaskMetricsRewriter;
 use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, displayable,
 };
 use datafusion::prelude::SessionContext;
+use datafusion::sql::sqlparser::keywords::CHAIN;
 use itertools::Itertools;
 use rand::Rng;
 use std::collections::VecDeque;
@@ -91,6 +94,8 @@ pub struct StageExec {
     pub tasks: Vec<ExecutionTask>,
     /// tree depth of our location in the stage tree, used for display only
     pub depth: usize,
+
+    pub display_ctx: Option<DisplayCtx>,
 }
 
 /// A [StageExec] that is the input of another [StageExec].
@@ -192,6 +197,7 @@ impl StageExec {
                 .collect(),
             tasks: vec![ExecutionTask { url: None }; n_tasks],
             depth: 0,
+            display_ctx: None,
         }
     }
 
@@ -239,6 +245,7 @@ impl StageExec {
             inputs: assigned_input_stages,
             tasks: assigned_tasks,
             depth: self.depth,
+            display_ctx: self.display_ctx.clone(),
         };
 
         Ok(assigned_stage)
@@ -292,9 +299,27 @@ impl ExecutionPlan for StageExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        plan_err!("with_new_children() not supported for StageExec")
+        let num_children = children.len();
+        let child_stage_execs = children
+        .into_iter()
+        .filter(|child| child.as_any().downcast_ref::<StageExec>().is_some())
+        .map(|child| child.as_any().downcast_ref::<StageExec>().unwrap().clone()).collect::<Vec<_>>();
+        if child_stage_execs.len() != num_children {
+            return plan_err!("not all children are StageExec");
+        }
+        let stage = StageExec{
+            query_id: self.query_id.clone(),
+            num: self.num,
+            name: self.name.clone(),
+            plan: self.plan.clone(),
+            inputs: child_stage_execs.into_iter().map(|s| InputStage::Decoded(Arc::new(s))).collect(),
+            tasks: self.tasks.clone(),
+            depth: self.depth,
+            display_ctx: self.display_ctx.clone(),
+        };
+        Ok(Arc::new(stage))
     }
 
     fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
@@ -347,6 +372,10 @@ impl ExecutionPlan for StageExec {
 use bytes::Bytes;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_expr::Partitioning;
+use datafusion::common::HashMap;
+use crate::metrics::proto::MetricsSetProto;
+use crate::protobuf::StageKey;
+
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVistor`
@@ -367,9 +396,29 @@ const LDCORNER: &str = "└"; // Left bottom corner
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
 
+// Context used to display a StageExec, tasks, and plans.
+#[derive(Debug, Clone)]
+pub struct DisplayCtx {
+    metrics: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
+}
+
+impl DisplayCtx {
+    pub fn new(metrics: HashMap<StageKey, Vec<MetricsSetProto>>) -> Self {
+        Self {
+            metrics: Arc::new(metrics),
+        }
+    }
+}
+
 impl StageExec {
     fn format(&self, plan: &dyn ExecutionPlan, indent: usize, f: &mut String) -> std::fmt::Result {
-        let mut node_str = displayable(plan).one_line().to_string();
+        // println!("plan {:?}", plan);
+        let mut node_str = match &self.display_ctx {
+            None => displayable(plan).one_line().to_string(),
+            Some(_) => {
+               DisplayableExecutionPlan::with_metrics(plan).one_line().to_string()
+            }
+        };
         node_str.pop();
         write!(f, "{} {node_str}", " ".repeat(indent))?;
 
@@ -430,32 +479,90 @@ impl DisplayAs for StageExec {
                 write!(f, "{}", self.name)
             }
             DisplayFormatType::Verbose => {
-                writeln!(
-                    f,
-                    "{}{} {} {}",
-                    LTCORNER,
-                    HORIZONTAL.repeat(5),
-                    self.name,
-                    format_tasks_for_stage(self.tasks.len(), &self.plan)
-                )?;
+                match &self.display_ctx {
+                    None => {
+                        writeln!(
+                            f,
+                            "{}{} {} {}",
+                            LTCORNER,
+                            HORIZONTAL.repeat(5),
+                            self.name,
+                            format_tasks_for_stage(self.tasks.len(), &self.plan)
+                        )?;
 
-                let mut plan_str = String::new();
-                self.format(self.plan.as_ref(), 0, &mut plan_str)?;
-                let plan_str = plan_str
-                    .split('\n')
-                    .filter(|v| !v.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
-                writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
-                write!(
-                    f,
-                    "{}{}{}",
-                    "  ".repeat(self.depth),
-                    LDCORNER,
-                    HORIZONTAL.repeat(50)
-                )?;
+                        let mut plan_str = String::new();
+                        self.format(self.plan.as_ref(), 0, &mut plan_str)?;
+                        let plan_str = plan_str
+                            .split('\n')
+                            .filter(|v| !v.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
+                        writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
+                        // Add bottom border
+                        write!(
+                            f,
+                            "{}{}{}",
+                            "  ".repeat(self.depth),
+                            LDCORNER,
+                            HORIZONTAL.repeat(50)
+                        )?;
 
-                Ok(())
+                        Ok(())
+                    }
+                    Some(display_ctx) => {
+                        for (i, _) in self.tasks.iter().enumerate() {
+                            if i > 0 {
+                                writeln!(f)?;
+                            }
+                            writeln!(
+                                f,
+                                "{}{}{}{} {}",
+                                "  ".repeat(self.depth),
+                                LTCORNER,
+                                HORIZONTAL.repeat(5),
+                                format!(" {} ", self.name),
+                                format_task_for_stage(i, &self.plan),
+                            )?;
+                            // Uniquely identify the task.
+                            let key = StageKey {
+                                query_id: self.query_id.to_string(),
+                                stage_id: self.num as u64,
+                                task_number: i as u64,
+                            };
+
+                            let mut plan_str = String::new();
+                            let plan = match display_ctx.metrics.get(&key) {
+                                Some(metrics) => {
+                                    let result = TaskMetricsRewriter::new(metrics.to_owned()).enrich_task_with_metrics(self.plan.clone());
+                                    if let Err(e) = result {
+                                        write!(f, "Error enriching task with metrics: {}", e)?;
+                                        return Err(std::fmt::Error);
+                                    }
+                                    result.unwrap()
+                                }
+                                None => {
+                                  self.plan.clone() 
+                                }
+                            };
+                             self.format(plan.as_ref(), 0, &mut plan_str)?;
+                                    let plan_str = plan_str
+                                        .split('\n')
+                                        .filter(|v| !v.is_empty())
+                                        .collect::<Vec<_>>()
+                                        .join(&format!("\n{}{}", "  ".repeat(self.depth), VERTICAL));
+                                    writeln!(f, "{}{}{}", "  ".repeat(self.depth), VERTICAL, plan_str)?;
+                            // Add bottom border 
+                            write!(
+                                f,
+                                "{}{}{}",
+                                "  ".repeat(self.depth),
+                                LDCORNER,
+                                HORIZONTAL.repeat(50)
+                                )?;
+                        }
+                        return Ok(());
+                    }
+                }
             }
             DisplayFormatType::TreeRender => write!(
                 f,
@@ -480,6 +587,22 @@ fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> Stri
         result += "] ";
         off += if hash_shuffle { 0 } else { input_partitions }
     }
+    result
+}
+
+fn format_task_for_stage(task_number: usize, head: &Arc<dyn ExecutionPlan>) -> String {
+    let partitioning = head.properties().output_partitioning();
+    let input_partitions = partitioning.partition_count();
+    let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
+    let off = task_number * if hash_shuffle { 0 } else { input_partitions };
+
+    let mut result = "Task ".to_string();
+    result += &format!("t{task_number}:[");
+    result += &(off..(off + input_partitions))
+        .map(|v| format!("p{v}"))
+        .join(",");
+    result += "] ";
+     
     result
 }
 

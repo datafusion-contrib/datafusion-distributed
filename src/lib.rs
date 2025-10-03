@@ -8,6 +8,7 @@ mod distributed_physical_optimizer_rule;
 mod execution_plans;
 mod flight_service;
 mod metrics;
+mod explain;
 
 mod protobuf;
 #[cfg(any(feature = "integration", test))]
@@ -26,3 +27,4 @@ pub use flight_service::{
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
     MappedDistributedSessionBuilderExt,
 };
+pub use explain::explain_analyze;

@@ -324,6 +324,7 @@ mod tests {
             inputs: vec![],
             tasks,
             depth: 0,
+            display_ctx: None,
         };
 
         let task_keys = [
