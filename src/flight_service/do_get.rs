@@ -274,7 +274,7 @@ pub fn empty_flight_data_with_app_metadata(
     let empty_batch = RecordBatch::new_empty(schema);
     let options = IpcWriteOptions::default();
     let data_gen = IpcDataGenerator::default();
-    let mut dictionary_tracker = DictionaryTracker::new(true);
+    let mut dictionary_tracker = DictionaryTracker::new(false);
     let (_, encoded_data) = data_gen
         .encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
         .map_err(|e| {
