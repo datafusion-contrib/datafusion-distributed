@@ -1105,6 +1105,7 @@ dependencies = [
  "pin-project",
  "prost",
  "rand 0.8.5",
+ "regex",
  "structopt",
  "tokio",
  "tokio-stream",
