@@ -1,4 +1,3 @@
-use crate::StageExec;
 use crate::distributed_physical_optimizer_rule::limit_tasks_err;
 use crate::execution_plans::DistributedTaskContext;
 use datafusion::common::{exec_err, plan_err};
@@ -191,12 +190,14 @@ impl ExecutionPlan for PartitionIsolatorExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let stage = StageExec::from_ctx(&context)?;
 
         let input_partitions = self_ready.input.output_partitioning().partition_count();
 
-        let partition_group =
-            Self::partition_group(input_partitions, task_context.task_index, stage.tasks.len());
+        let partition_group = Self::partition_group(
+            input_partitions,
+            task_context.task_index,
+            task_context.task_count,
+        );
 
         // if our partition group is [7,8,9] and we are asked for parittion 1,
         // then look up that index in our group and execute that partition, in this

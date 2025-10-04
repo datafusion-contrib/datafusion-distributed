@@ -149,13 +149,10 @@ pub struct ExecutionTask {
 #[derive(Debug, Clone, Default)]
 pub struct DistributedTaskContext {
     pub task_index: usize,
+    pub task_count: usize,
 }
 
 impl DistributedTaskContext {
-    pub fn new(task_index: usize) -> Self {
-        Self { task_index }
-    }
-
     pub fn from_ctx(ctx: &Arc<TaskContext>) -> Arc<Self> {
         ctx.session_config()
             .get_extension::<Self>()
@@ -335,7 +332,10 @@ impl ExecutionPlan for StageExec {
             .session_config()
             .clone()
             .with_extension(assigned_stage.clone())
-            .with_extension(Arc::new(DistributedTaskContext { task_index: 0 }));
+            .with_extension(Arc::new(DistributedTaskContext {
+                task_index: 0,
+                task_count: 1,
+            }));
 
         let new_ctx =
             SessionContext::new_with_config_rt(config, context.runtime_env().clone()).task_ctx();

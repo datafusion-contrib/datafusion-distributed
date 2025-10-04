@@ -113,9 +113,10 @@ impl ArrowFlightEndpoint {
         let cfg = session_state.config_mut();
         cfg.set_extension(Arc::clone(&stage));
         cfg.set_extension(Arc::new(ContextGrpcMetadata(metadata.into_headers())));
-        cfg.set_extension(Arc::new(DistributedTaskContext::new(
-            doget.target_task_index as usize,
-        )));
+        cfg.set_extension(Arc::new(DistributedTaskContext {
+            task_index: doget.target_task_index as usize,
+            task_count: stage.tasks.len(),
+        }));
 
         let partition_count = stage.plan.properties().partitioning.partition_count();
         let target_partition = doget.target_partition as usize;
