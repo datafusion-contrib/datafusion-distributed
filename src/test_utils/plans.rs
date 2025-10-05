@@ -1,15 +1,13 @@
-use std::sync::Arc;
-
+use bytes::Bytes;
 use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
 };
+use std::sync::Arc;
 
-use crate::{
-    StageExec,
-    execution_plans::{InputStage, NetworkCoalesceExec, NetworkShuffleExec},
-    protobuf::StageKey,
-};
+use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
+use crate::execution_plans::DistributedExec;
+use crate::{Stage, protobuf::StageKey};
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
 /// This does NOT traverse child stages, only the execution plan tree within this stage.
@@ -20,9 +18,11 @@ pub fn count_plan_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
 
     while let Some(plan) = queue.pop() {
         // Skip [NetworkBoundary] nodes from the count.
-        if !plan.as_any().is::<NetworkCoalesceExec>() && !plan.as_any().is::<NetworkShuffleExec>() {
-            count += 1;
+        if plan.as_ref().is_network_boundary() {
+            continue;
         }
+
+        count += 1;
 
         // Add children to the queue for BFS traversal
         for child in plan.children() {
@@ -36,11 +36,10 @@ pub fn count_plan_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
 /// - a map of all stages
 /// - a set of all the stage keys (one per task)
 pub fn get_stages_and_stage_keys(
-    stage: &StageExec,
-) -> (HashMap<usize, &StageExec>, HashSet<StageKey>) {
-    let query_id = stage.query_id;
+    stage: &DistributedExec,
+) -> (HashMap<usize, &Stage>, HashSet<StageKey>) {
     let mut i = 0;
-    let mut queue = vec![stage];
+    let mut queue = find_input_stages(stage);
     let mut stage_keys = HashSet::new();
     let mut stages_map = HashMap::new();
 
@@ -52,7 +51,7 @@ pub fn get_stages_and_stage_keys(
         // Add each task.
         for j in 0..stage.tasks.len() {
             let stage_key = StageKey {
-                query_id: query_id.to_string(),
+                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
                 stage_id: stage.num as u64,
                 task_number: j as u64,
             };
@@ -60,16 +59,21 @@ pub fn get_stages_and_stage_keys(
         }
 
         // Add any child stages
-        queue.extend(
-            stage
-                .input_stages_iter()
-                .map(|input_stage| match input_stage {
-                    InputStage::Decoded(plan) => StageExec::from_dyn(plan),
-                    InputStage::Encoded { .. } => {
-                        unimplemented!();
-                    }
-                }),
-        );
+        queue.extend(find_input_stages(stage.plan.decoded().unwrap().as_ref()));
     }
     (stages_map, stage_keys)
+}
+
+fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
+    let mut result = vec![];
+    for child in plan.children() {
+        if let Some(plan) = child.as_network_boundary() {
+            if let Some(stage) = plan.input_stage() {
+                result.push(stage);
+            }
+        } else {
+            result.extend(find_input_stages(child.as_ref()));
+        }
+    }
+    result
 }

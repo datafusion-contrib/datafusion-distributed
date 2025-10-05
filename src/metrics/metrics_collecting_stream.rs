@@ -137,12 +137,12 @@ mod tests {
     async fn test_metrics_collecting_stream_extracts_and_removes_metadata() {
         let stage_keys = vec![
             StageKey {
-                query_id: "test_query".to_string(),
+                query_id: Bytes::from("test_query"),
                 stage_id: 1,
                 task_number: 1,
             },
             StageKey {
-                query_id: "test_query".to_string(),
+                query_id: Bytes::from("test_query"),
                 stage_id: 1,
                 task_number: 2,
             },

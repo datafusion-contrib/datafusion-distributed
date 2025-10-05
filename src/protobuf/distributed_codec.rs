@@ -1,8 +1,13 @@
 use super::get_distributed_user_codecs;
+use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
+use crate::stage::MaybeEncodedPlan;
+use crate::{ExecutionTask, NetworkShuffleExec, PartitionIsolatorExec, Stage};
+use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::internal_datafusion_err;
+use datafusion::error::DataFusionError;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -15,6 +20,7 @@ use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
 use std::sync::Arc;
+use url::Url;
 
 /// DataFusion [PhysicalExtensionCodec] implementation that allows serializing and
 /// deserializing the custom ExecutionPlans in this project
@@ -50,11 +56,47 @@ impl PhysicalExtensionCodec for DistributedCodec {
         // user configurations. This is a limitation of the current trait design.
         let ctx = SessionContext::new();
 
+        fn parse_stage_proto(
+            proto: Option<StageProto>,
+            inputs: &[Arc<dyn ExecutionPlan>],
+        ) -> Result<Stage, DataFusionError> {
+            let Some(proto) = proto else {
+                return Err(proto_error("Empty StageProto"));
+            };
+            let plan_proto = match proto.plan_proto.is_empty() {
+                true => None,
+                false => Some(proto.plan_proto),
+            };
+
+            let plan = match (plan_proto, inputs.first()) {
+                (Some(plan_proto), None) => MaybeEncodedPlan::Encoded(plan_proto),
+                (None, Some(child)) => MaybeEncodedPlan::Decoded(Arc::clone(child)),
+                (Some(_), Some(_)) => {
+                    return Err(proto_error(
+                        "When building a Stage from protobuf, either an already decoded child or its serialized bytes must be passed, but not both",
+                    ));
+                }
+                (None, None) => {
+                    return Err(proto_error(
+                        "When building a Stage from protobuf, an already decoded child or its serialized bytes must be passed",
+                    ));
+                }
+            };
+
+            Ok(Stage {
+                query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
+                    .map_err(|_| proto_error("Invalid query_id in ExecutionStageProto"))?,
+                num: proto.num as usize,
+                plan,
+                tasks: decode_tasks(proto.tasks)?,
+            })
+        }
+
         match distributed_exec_node {
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
-                stage_num,
+                input_stage,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -72,14 +114,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
                     Arc::new(schema),
-                    stage_num as usize,
+                    parse_stage_proto(input_stage, inputs)?,
                 )))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
                 partitioning,
-                stage_num,
-                input_tasks,
+                input_stage,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -97,8 +138,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
                     Arc::new(schema),
-                    stage_num as usize,
-                    input_tasks as usize,
+                    parse_stage_proto(input_stage, inputs)?,
                 )))
             }
             DistributedExecNode::PartitionIsolator(PartitionIsolatorExecProto { n_tasks }) => {
@@ -124,19 +164,29 @@ impl PhysicalExtensionCodec for DistributedCodec {
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
+        fn encode_stage_proto(stage: Option<&Stage>) -> Result<StageProto, DataFusionError> {
+            let stage = stage.ok_or(proto_error(
+                "Cannot encode a NetworkBoundary that has no stage assinged",
+            ))?;
+            Ok(StageProto {
+                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
+                num: stage.num as u64,
+                tasks: encode_tasks(&stage.tasks),
+                plan_proto: match &stage.plan {
+                    MaybeEncodedPlan::Decoded(_) => Bytes::new(),
+                    MaybeEncodedPlan::Encoded(proto) => proto.clone(),
+                },
+            })
+        }
+
         if let Some(node) = node.as_any().downcast_ref::<NetworkShuffleExec>() {
-            let NetworkShuffleExec::Ready(ready_node) = node else {
-                return Err(proto_error(
-                    "deserialized an NetworkShuffleExec that is not ready",
-                ));
-            };
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
                 )?),
-                stage_num: ready_node.stage_num as u64,
+                input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
 
             let wrapper = DistributedExecProto {
@@ -145,20 +195,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            let NetworkCoalesceExec::Ready(ready_node) = node else {
-                return Err(proto_error(
-                    "deserialized an NetworkCoalesceExec that is not ready",
-                ));
-            };
-
             let inner = NetworkCoalesceExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
                 )?),
-                stage_num: ready_node.stage_num as u64,
-                input_tasks: ready_node.input_tasks as u64,
+                input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
 
             let wrapper = DistributedExecProto {
@@ -187,9 +230,48 @@ impl PhysicalExtensionCodec for DistributedCodec {
     }
 }
 
+/// A key that uniquely identifies a stage in a query
+#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
+pub struct StageKey {
+    /// Our query id
+    #[prost(bytes, tag = "1")]
+    pub query_id: Bytes,
+    /// Our stage id
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+    /// The task number within the stage
+    #[prost(uint64, tag = "3")]
+    pub task_number: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StageProto {
+    /// Our query id
+    #[prost(bytes, tag = "1")]
+    pub query_id: Bytes,
+    /// Our stage number
+    #[prost(uint64, tag = "2")]
+    pub num: u64,
+    /// Our tasks which tell us how finely grained to execute the partitions in
+    /// the plan
+    #[prost(message, repeated, tag = "3")]
+    pub tasks: Vec<ExecutionTaskProto>,
+    /// The child plan already serialized
+    #[prost(bytes, tag = "4")]
+    pub plan_proto: Bytes, // Apparently, with an optional keyword, we cannot put Bytes here.
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutionTaskProto {
+    /// The url of the worker that will execute this task.  A None value is interpreted as
+    /// unassigned.
+    #[prost(string, optional, tag = "1")]
+    pub url_str: Option<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -218,14 +300,14 @@ pub struct NetworkShuffleExecProto {
     schema: Option<protobuf::Schema>,
     #[prost(message, optional, tag = "2")]
     partitioning: Option<protobuf::Partitioning>,
-    #[prost(uint64, tag = "3")]
-    stage_num: u64,
+    #[prost(message, optional, tag = "3")]
+    input_stage: Option<StageProto>,
 }
 
 fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
-    stage_num: usize,
+    input_stage: Stage,
 ) -> NetworkShuffleExec {
     NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
         properties: PlanProperties::new(
@@ -234,7 +316,7 @@ fn new_network_hash_shuffle_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         ),
-        stage_num,
+        input_stage,
         metrics_collection: Default::default(),
     })
 }
@@ -248,17 +330,14 @@ pub struct NetworkCoalesceExecProto {
     schema: Option<protobuf::Schema>,
     #[prost(message, optional, tag = "2")]
     partitioning: Option<protobuf::Partitioning>,
-    #[prost(uint64, tag = "3")]
-    stage_num: u64,
-    #[prost(uint64, tag = "4")]
-    input_tasks: u64,
+    #[prost(message, optional, tag = "3")]
+    input_stage: Option<StageProto>,
 }
 
 fn new_network_coalesce_tasks_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
-    stage_num: usize,
-    input_tasks: usize,
+    input_stage: Stage,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec::Ready(NetworkCoalesceReady {
         properties: PlanProperties::new(
@@ -267,10 +346,34 @@ fn new_network_coalesce_tasks_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         ),
-        stage_num,
-        input_tasks,
+        input_stage,
         metrics_collection: Default::default(),
     })
+}
+
+fn encode_tasks(tasks: &[ExecutionTask]) -> Vec<ExecutionTaskProto> {
+    tasks
+        .iter()
+        .map(|task| ExecutionTaskProto {
+            url_str: task.url.as_ref().map(|v| v.to_string()),
+        })
+        .collect()
+}
+
+fn decode_tasks(tasks: Vec<ExecutionTaskProto>) -> Result<Vec<ExecutionTask>, DataFusionError> {
+    tasks
+        .into_iter()
+        .map(|task| {
+            Ok(ExecutionTask {
+                url: task
+                    .url_str
+                    .map(|u| {
+                        Url::parse(&u).map_err(|_| internal_datafusion_err!("Invalid URL: {u}"))
+                    })
+                    .transpose()?,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -278,11 +381,25 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::physical_expr::LexOrdering;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::{
         execution::registry::MemoryFunctionRegistry,
         physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
+
+    fn empty_exec() -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(SchemaRef::new(Schema::empty())))
+    }
+
+    fn dummy_stage() -> Stage {
+        Stage {
+            query_id: Default::default(),
+            num: 0,
+            plan: MaybeEncodedPlan::Decoded(empty_exec()),
+            tasks: vec![],
+        }
+    }
 
     fn schema_i32(name: &str) -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]))
@@ -299,12 +416,13 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(part, schema, 0));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage()));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
 
-        let decoded = codec.try_decode(&buf, &[], &registry)?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &registry)?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -319,7 +437,7 @@ mod tests {
         let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
             schema,
-            0,
+            dummy_stage(),
         ));
 
         let plan: Arc<dyn ExecutionPlan> =
@@ -343,12 +461,12 @@ mod tests {
         let left = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
-            0,
+            dummy_stage(),
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
-            1,
+            dummy_stage(),
         ));
 
         let union = Arc::new(UnionExec::new(vec![left.clone(), right.clone()]));
@@ -373,7 +491,7 @@ mod tests {
         let flight = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::UnknownPartitioning(1),
             schema.clone(),
-            0,
+            dummy_stage(),
         ));
 
         let sort_expr = PhysicalSortExpr {

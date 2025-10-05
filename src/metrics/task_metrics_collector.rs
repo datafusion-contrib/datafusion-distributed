@@ -68,7 +68,7 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                     // sent metrics (the NetworkShuffleExec tracks it for us).
                     Some(_) => {
                         return internal_err!(
-                            "duplicate task metrics for key {} during metrics collection",
+                            "duplicate task metrics for key {:?} during metrics collection",
                             stage_key
                         );
                     }
@@ -126,12 +126,13 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
 
+    use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
-    use crate::metrics::proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
+    use crate::execution_plans::DistributedExec;
+    use crate::metrics::proto::metrics_set_proto_to_df;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{DistributedExt, StageExec};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -221,11 +222,14 @@ mod tests {
     }
 
     /// runs a sql query and returns the coordinator StageExec
-    async fn plan_sql(ctx: &SessionContext, sql: &str) -> StageExec {
+    async fn plan_sql(ctx: &SessionContext, sql: &str) -> DistributedExec {
         let df = ctx.sql(sql).await.unwrap();
         let physical_distributed = df.create_physical_plan().await.unwrap();
 
-        let stage_exec = match physical_distributed.as_any().downcast_ref::<StageExec>() {
+        let stage_exec = match physical_distributed
+            .as_any()
+            .downcast_ref::<DistributedExec>()
+        {
             Some(stage_exec) => stage_exec.clone(),
             None => panic!(
                 "expected StageExec from distributed optimization, got: {}",
@@ -235,7 +239,7 @@ mod tests {
         stage_exec
     }
 
-    async fn execute_plan(stage_exec: &StageExec, ctx: &SessionContext) {
+    async fn execute_plan(stage_exec: &DistributedExec, ctx: &SessionContext) {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
@@ -264,29 +268,20 @@ mod tests {
 
         // Collect metrics for all tasks from the root StageExec.
         let collector = TaskMetricsCollector::new();
+
         let result = collector.collect(stage_exec.plan.clone()).unwrap();
-        let mut actual_collected_metrics = result.input_task_metrics;
-        actual_collected_metrics.insert(
-            StageKey {
-                query_id: stage_exec.query_id.to_string(),
-                stage_id: stage_exec.num as u64,
-                task_number: 0,
-            },
-            result
-                .task_metrics
-                .iter()
-                .map(|m| df_metrics_set_to_proto(m).unwrap())
-                .collect::<Vec<_>>(),
-        );
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_stage_key in expected_stage_keys {
             // Get the collected metrics for this task.
-            let actual_metrics = actual_collected_metrics.get(&expected_stage_key).unwrap();
+            let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
 
             // Assert that there's metrics for each node in this task.
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
-            assert_eq!(actual_metrics.len(), count_plan_nodes(&stage.plan));
+            assert_eq!(
+                actual_metrics.len(),
+                count_plan_nodes(stage.plan.decoded().unwrap())
+            );
 
             // Ensure each node has at least one metric which was collected.
             for metrics_set in actual_metrics.iter() {
