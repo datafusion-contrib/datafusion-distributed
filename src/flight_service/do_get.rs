@@ -1,4 +1,4 @@
-use crate::common::with_callback;
+use crate::common::map_last_stream;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
@@ -17,15 +17,11 @@ use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
 
 use datafusion::common::exec_datafusion_err;
-use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
-use futures::stream;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::Poll;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -132,113 +128,31 @@ impl ArrowFlightEndpoint {
             .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-        let schema = stream.schema();
-
-        // TODO: We don't need to do this since the stage / plan is captured again by the
-        // TrailingFlightDataStream. However, we will eventuall only use the TrailingFlightDataStream
-        // if we are running an `explain (analyze)` command. We should update this section
-        // to only use one or the other - not both.
-        let plan_capture = stage.plan.clone();
-        let stream = with_callback(stream, move |_| {
-            // We need to hold a reference to the plan for at least as long as the stream is
-            // execution. Some plans might store state necessary for the stream to work, and
-            // dropping the plan early could drop this state too soon.
-            let _ = plan_capture;
-        });
-
-        let record_batch_stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream));
-        let task_data_capture = self.task_data_entries.clone();
-        Ok(flight_stream_from_record_batch_stream(
-            key.clone(),
-            stage_data.clone(),
-            move || {
-                task_data_capture.remove(key.clone());
-            },
-            record_batch_stream,
-        ))
-    }
-}
-
-fn missing(field: &'static str) -> impl FnOnce() -> Status {
-    move || Status::invalid_argument(format!("Missing field '{field}'"))
-}
-
-/// Creates a tonic response from a stream of record batches. Handles
-/// - RecordBatch to flight conversion partition tracking, stage eviction, and trailing metrics.
-fn flight_stream_from_record_batch_stream(
-    stage_key: StageKey,
-    stage_data: TaskData,
-    evict_stage: impl FnOnce() + Send + 'static,
-    stream: SendableRecordBatchStream,
-) -> Response<<ArrowFlightEndpoint as FlightService>::DoGetStream> {
-    let mut flight_data_stream =
-        FlightDataEncoderBuilder::new()
+        let stream = FlightDataEncoderBuilder::new()
             .with_schema(stream.schema().clone())
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
 
-    // executed once when the stream ends
-    // decorates the last flight data with our metrics
-    let mut final_closure = Some(move |last_flight_data| {
-        if stage_data
-            .num_partitions_remaining
-            .fetch_sub(1, Ordering::SeqCst)
-            == 1
-        {
-            evict_stage();
+        let task_data_entries = Arc::clone(&self.task_data_entries);
+        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
 
-            collect_and_create_metrics_flight_data(stage_key, stage_data.stage, last_flight_data)
-        } else {
-            Ok(last_flight_data)
-        }
-    });
+        let stream = map_last_stream(stream, move |last| {
+            if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                task_data_entries.remove(key.clone());
+            }
+            last.and_then(|el| collect_and_create_metrics_flight_data(key, stage, el))
+        });
 
-    // this is used to peek the new value
-    // so that we can add our metrics to the last flight data
-    let mut current_value = None;
+        Ok(Response::new(Box::pin(stream.map_err(|err| match err {
+            FlightError::Tonic(status) => *status,
+            _ => Status::internal(format!("Error during flight stream: {err}")),
+        }))))
+    }
+}
 
-    let stream =
-        stream::poll_fn(
-            move |cx| match futures::ready!(flight_data_stream.poll_next_unpin(cx)) {
-                Some(Ok(new_val)) => {
-                    match current_value.take() {
-                        // This is the first value, so we store it and repoll to get the next value
-                        None => {
-                            current_value = Some(new_val);
-                            cx.waker().wake_by_ref();
-                            Poll::Pending
-                        }
-
-                        Some(existing) => {
-                            current_value = Some(new_val);
-
-                            Poll::Ready(Some(Ok(existing)))
-                        }
-                    }
-                }
-                // this is our last value, so we add our metrics to this flight data
-                None => match current_value.take() {
-                    Some(existing) => {
-                        // make sure we wake ourselves to finish the stream
-                        cx.waker().wake_by_ref();
-
-                        if let Some(closure) = final_closure.take() {
-                            Poll::Ready(Some(closure(existing)))
-                        } else {
-                            unreachable!("the closure is only executed once")
-                        }
-                    }
-                    None => Poll::Ready(None),
-                },
-                err => Poll::Ready(err),
-            },
-        );
-
-    Response::new(Box::pin(stream.map_err(|err| match err {
-        FlightError::Tonic(status) => *status,
-        _ => Status::internal(format!("Error during flight stream: {err}")),
-    })))
+fn missing(field: &'static str) -> impl FnOnce() -> Status {
+    move || Status::invalid_argument(format!("Missing field '{field}'"))
 }
 
 /// Collects metrics from the provided stage and includes it in the flight data
