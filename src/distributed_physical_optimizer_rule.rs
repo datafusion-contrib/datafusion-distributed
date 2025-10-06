@@ -113,7 +113,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     }
 
     fn schema_check(&self) -> bool {
-        true
+        false
     }
 }
 

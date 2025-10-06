@@ -9,7 +9,10 @@ use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{DistributedCodec, StageKey, proto_from_input_stage};
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use arrow::datatypes::Schema;
 use arrow_flight::Ticket;
+use datafusion::physical_expr::EquivalenceProperties;
+use uuid::Uuid;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use dashmap::DashMap;
@@ -143,10 +146,35 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return internal_err!("NetworkCoalesceExec is already distributed");
         };
 
+        // Scale the partitioning properties  
+        let scaled_props = scale_partitioning_props(stage_head.properties(), |p| {
+            p * pending.input_tasks
+        });
+
+        // Create new schema with random metadata
+        let base_schema = scaled_props.eq_properties.schema();
+        let mut metadata = base_schema.metadata().clone();
+        metadata.insert("network_boundary".to_string(), "true".to_string());
+        metadata.insert("boundary_id".to_string(), Uuid::new_v4().to_string());
+        
+        let new_schema = Arc::new(Schema::new_with_metadata(
+            base_schema.fields().clone(),
+            metadata
+        ));
+
+        // Create new equivalence properties with the updated schema
+        let new_equiv = EquivalenceProperties::new(new_schema);
+
+        // Create new plan properties using the constructor with updated equivalence properties
+        let new_properties = PlanProperties::new(
+            new_equiv,
+            scaled_props.partitioning.clone(),
+            scaled_props.emission_type,
+            scaled_props.boundedness,
+        );
+
         let ready = NetworkCoalesceReady {
-            properties: scale_partitioning_props(stage_head.properties(), |p| {
-                p * pending.input_tasks
-            }),
+            properties: new_properties,
             stage_num,
             input_tasks: pending.input_tasks,
             metrics_collection: Default::default(),
