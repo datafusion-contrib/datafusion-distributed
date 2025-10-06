@@ -1,5 +1,4 @@
 use super::get_distributed_user_codecs;
-use crate::common::ComposedPhysicalExtensionCodec;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::arrow::datatypes::Schema;
@@ -9,9 +8,9 @@ use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::{ComposedPhysicalExtensionCodec, PhysicalExtensionCodec};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use prost::Message;
