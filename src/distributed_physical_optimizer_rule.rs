@@ -20,6 +20,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
+use std::any::{Any, TypeId};
 
 /// Physical optimizer rule that inspects the plan, places the appropriate network
 /// boundaries and breaks it down into stages that can be executed in a distributed manner.
@@ -328,6 +329,7 @@ pub trait NetworkBoundaryExt {
     }
 }
 
+
 impl NetworkBoundaryExt for dyn ExecutionPlan {
     fn as_network_boundary(&self) -> Option<&dyn NetworkBoundary> {
         if let Some(node) = self.as_any().downcast_ref::<NetworkShuffleExec>() {
@@ -394,8 +396,10 @@ mod tests {
     use crate::distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{assert_snapshot, display_plan_ascii};
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use std::sync::Arc;
 
@@ -646,4 +650,17 @@ mod tests {
         let physical_plan = df.create_physical_plan().await?;
         Ok(display_plan_ascii(physical_plan.as_ref()))
     }
+
+    #[tokio::test]
+    async fn test_to_network_boundary() -> Result<(), DataFusionError> {
+        let plan = EmptyExec::new(
+            Arc::new(Schema::new(
+                vec![Field::new("a", DataType::Int64, false)],
+            )),
+        );
+
+        Ok(())
+    }
 }
+
+
