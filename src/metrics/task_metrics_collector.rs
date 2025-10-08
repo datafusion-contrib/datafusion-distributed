@@ -250,9 +250,13 @@ mod tests {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
+        let schema = stream.schema();
+
         let mut stream = stream;
         while let Some(batch) = stream.next().await {
-            batch.unwrap();
+            let batch = batch.unwrap();
+
+            assert_eq!(schema, batch.schema())
         }
     }
 
