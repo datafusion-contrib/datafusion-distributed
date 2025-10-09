@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
-use crate::common::{one_child, scale_partitioning};
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_physical_optimizer_rule::NetworkBoundary;
+use crate::execution_plans::common::{require_one_child, scale_partitioning};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
@@ -292,12 +292,12 @@ impl ExecutionPlan for NetworkShuffleExec {
         match self.as_ref() {
             Self::Pending(v) => {
                 let mut v = v.clone();
-                v.repartition_exec = one_child(&children)?;
+                v.repartition_exec = require_one_child(&children)?;
                 Ok(Arc::new(Self::Pending(v)))
             }
             Self::Ready(v) => {
                 let mut v = v.clone();
-                v.input_stage.plan = MaybeEncodedPlan::Decoded(one_child(&children)?);
+                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(&children)?);
                 Ok(Arc::new(Self::Ready(v)))
             }
         }

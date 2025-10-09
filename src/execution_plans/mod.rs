@@ -1,3 +1,4 @@
+mod common;
 mod distributed;
 mod metrics;
 mod network_coalesce;
