@@ -27,6 +27,8 @@ pub use flight_service::{
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
     MappedDistributedSessionBuilderExt,
 };
+pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
+    explain_analyze,
 };

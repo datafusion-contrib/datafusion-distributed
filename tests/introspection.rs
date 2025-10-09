@@ -33,7 +33,7 @@ mod tests {
             .with_network_coalesce_tasks(2)
             .optimize(physical.clone(), &Default::default())?;
 
-        let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref());
+        let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,
             @r"

@@ -232,25 +232,7 @@ mod tests {
         ctx
     }
 
-    /// runs a sql query and returns the coordinator StageExec
-    async fn plan_sql(ctx: &SessionContext, sql: &str) -> DistributedExec {
-        let df = ctx.sql(sql).await.unwrap();
-        let physical_distributed = df.create_physical_plan().await.unwrap();
-
-        let stage_exec = match physical_distributed
-            .as_any()
-            .downcast_ref::<DistributedExec>()
-        {
-            Some(stage_exec) => stage_exec.clone(),
-            None => panic!(
-                "expected StageExec from distributed optimization, got: {}",
-                physical_distributed.name()
-            ),
-        };
-        stage_exec
-    }
-
-    async fn execute_plan(stage_exec: &DistributedExec, ctx: &SessionContext) {
+    async fn execute_plan(stage_exec: Arc<dyn ExecutionPlan>, ctx: &SessionContext) {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
@@ -270,21 +252,27 @@ mod tests {
     async fn run_metrics_collection_e2e_test(sql: &str) {
         // Plan and execute the query
         let ctx = make_test_ctx().await;
-        let stage_exec = plan_sql(&ctx, sql).await;
-        execute_plan(&stage_exec, &ctx).await;
+        let df = ctx.sql(sql).await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        execute_plan(plan.clone(), &ctx).await;
+
+        let dist_exec = plan
+            .as_any()
+            .downcast_ref::<DistributedExec>()
+            .expect("expected DistributedExec");
 
         // Assert to ensure the distributed test case is sufficiently complex.
-        let (stages, expected_stage_keys) = get_stages_and_stage_keys(&stage_exec);
+        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
         assert!(
             expected_stage_keys.len() > 1,
             "expected more than 1 stage key in test. the plan was not distributed):\n{}",
-            DisplayableExecutionPlan::new(&stage_exec).indent(true)
+            DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
 
         // Collect metrics for all tasks from the root StageExec.
         let collector = TaskMetricsCollector::new();
 
-        let result = collector.collect(stage_exec.plan.clone()).unwrap();
+        let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_stage_key in expected_stage_keys {

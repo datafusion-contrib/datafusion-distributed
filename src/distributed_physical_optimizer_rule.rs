@@ -710,6 +710,6 @@ mod tests {
         let df = ctx.sql(query).await?;
 
         let physical_plan = df.create_physical_plan().await?;
-        Ok(display_plan_ascii(physical_plan.as_ref()))
+        Ok(display_plan_ascii(physical_plan.as_ref(), false))
     }
 }
