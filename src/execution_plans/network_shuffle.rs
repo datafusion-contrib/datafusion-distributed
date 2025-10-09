@@ -15,6 +15,7 @@ use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_datafusion_err, plan_err};
+use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
@@ -328,8 +329,12 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self_ready.properties.partitioning.partition_count() * task_context.task_index;
 
+        let adapter = DefaultSchemaAdapterFactory::from_schema(self.schema());
+        let (mapper, _indices) = adapter.map_schema(&self.schema())?;
+
         let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
             let channel_resolver = Arc::clone(&channel_resolver);
+            let mapper = mapper.clone();
 
             let ticket = Request::from_parts(
                 MetadataMap::from_headers(context_headers.clone()),
@@ -370,7 +375,12 @@ impl ExecutionPlan for NetworkShuffleExec {
 
                 Ok(
                     FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
-                        .map_err(map_flight_to_datafusion_error),
+                        .map_err(map_flight_to_datafusion_error)
+                        .map(move |batch| {
+                            let batch = batch?;
+
+                            mapper.map_batch(batch)
+                        }),
                 )
             }
             .try_flatten_stream()

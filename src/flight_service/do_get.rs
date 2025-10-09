@@ -1,9 +1,8 @@
 use crate::DistributedTaskContext;
-use crate::common::with_callback;
+use crate::common::map_last_stream;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
-use crate::flight_service::trailing_flight_data_stream::TrailingFlightDataStream;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
@@ -16,19 +15,14 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
-use futures::{Stream, stream};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -137,30 +131,26 @@ impl ArrowFlightEndpoint {
             .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-        let schema = stream.schema();
+        let stream = FlightDataEncoderBuilder::new()
+            .with_schema(stream.schema().clone())
+            .build(stream.map_err(|err| {
+                FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
+            }));
 
-        // TODO: We don't need to do this since the stage / plan is captured again by the
-        // TrailingFlightDataStream. However, we will eventuall only use the TrailingFlightDataStream
-        // if we are running an `explain (analyze)` command. We should update this section
-        // to only use one or the other - not both.
-        let plan_capture = plan.clone();
-        let stream = with_callback(stream, move |_| {
-            // We need to hold a reference to the plan for at least as long as the stream is
-            // execution. Some plans might store state necessary for the stream to work, and
-            // dropping the plan early could drop this state too soon.
-            let _ = plan_capture;
+        let task_data_entries = Arc::clone(&self.task_data_entries);
+        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+
+        let stream = map_last_stream(stream, move |last| {
+            if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                task_data_entries.remove(key.clone());
+            }
+            last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
         });
 
-        let record_batch_stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream));
-        let task_data_capture = self.task_data_entries.clone();
-        Ok(flight_stream_from_record_batch_stream(
-            key.clone(),
-            stage_data.clone(),
-            move || {
-                task_data_capture.remove(key.clone());
-            },
-            record_batch_stream,
-        ))
+        Ok(Response::new(Box::pin(stream.map_err(|err| match err {
+            FlightError::Tonic(status) => *status,
+            _ => Status::internal(format!("Error during flight stream: {err}")),
+        }))))
     }
 }
 
@@ -168,62 +158,15 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
     move || Status::invalid_argument(format!("Missing field '{field}'"))
 }
 
-/// Creates a tonic response from a stream of record batches. Handles
-/// - RecordBatch to flight conversion partition tracking, stage eviction, and trailing metrics.
-fn flight_stream_from_record_batch_stream(
-    stage_key: StageKey,
-    stage_data: TaskData,
-    evict_stage: impl FnOnce() + Send + 'static,
-    stream: SendableRecordBatchStream,
-) -> Response<<ArrowFlightEndpoint as FlightService>::DoGetStream> {
-    let flight_data_stream =
-        FlightDataEncoderBuilder::new()
-            .with_schema(stream.schema().clone())
-            .build(stream.map_err(|err| {
-                FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
-            }));
-
-    let trailing_metrics_stream = TrailingFlightDataStream::new(
-        move || {
-            if stage_data
-                .num_partitions_remaining
-                .fetch_sub(1, Ordering::SeqCst)
-                == 1
-            {
-                evict_stage();
-
-                let metrics_stream =
-                    collect_and_create_metrics_flight_data(stage_key, stage_data.plan).map_err(
-                        |err| {
-                            Status::internal(format!(
-                                "error collecting metrics in arrow flight endpoint: {err}"
-                            ))
-                        },
-                    )?;
-
-                return Ok(Some(metrics_stream));
-            }
-
-            Ok(None)
-        },
-        flight_data_stream,
-    );
-
-    Response::new(Box::pin(trailing_metrics_stream.map_err(|err| match err {
-        FlightError::Tonic(status) => *status,
-        _ => Status::internal(format!("Error during flight stream: {err}")),
-    })))
-}
-
-// Collects metrics from the provided stage and encodes it into a stream of flight data using
-// the schema of the stage.
+/// Collects metrics from the provided stage and includes it in the flight data
 fn collect_and_create_metrics_flight_data(
     stage_key: StageKey,
     plan: Arc<dyn ExecutionPlan>,
-) -> Result<impl Stream<Item = Result<FlightData, FlightError>> + Send + 'static, FlightError> {
+    incoming: FlightData,
+) -> Result<FlightData, FlightError> {
     // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
     let mut result = TaskMetricsCollector::new()
-        .collect(plan.clone())
+        .collect(plan)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
     // Add the metrics for this task into the collection of task metrics.
@@ -255,35 +198,12 @@ fn collect_and_create_metrics_flight_data(
         })),
     };
 
-    let metrics_flight_data =
-        empty_flight_data_with_app_metadata(flight_app_metadata, plan.schema())?;
-    Ok(Box::pin(stream::once(
-        async move { Ok(metrics_flight_data) },
-    )))
-}
-
-/// Creates a FlightData with the given app_metadata and empty RecordBatch using the provided schema.
-/// We don't use [arrow_flight::encode::FlightDataEncoder] (and by extension, the [arrow_flight::encode::FlightDataEncoderBuilder])
-/// since they skip messages with empty RecordBatch data.
-pub fn empty_flight_data_with_app_metadata(
-    metadata: FlightAppMetadata,
-    schema: SchemaRef,
-) -> Result<FlightData, FlightError> {
     let mut buf = vec![];
-    metadata
+    flight_app_metadata
         .encode(&mut buf)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
-    let empty_batch = RecordBatch::new_empty(schema);
-    let options = IpcWriteOptions::default();
-    let data_gen = IpcDataGenerator::default();
-    let mut dictionary_tracker = DictionaryTracker::new(true);
-    let (_, encoded_data) = data_gen
-        .encoded_batch(&empty_batch, &mut dictionary_tracker, &options)
-        .map_err(|e| {
-            FlightError::ProtocolError(format!("Failed to create empty batch FlightData: {e}"))
-        })?;
-    Ok(FlightData::from(encoded_data).with_app_metadata(buf))
+    Ok(incoming.with_app_metadata(buf))
 }
 
 #[cfg(test)]
