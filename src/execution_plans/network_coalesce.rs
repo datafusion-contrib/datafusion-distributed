@@ -127,6 +127,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return plan_err!("can only return wrapped child if on Pending state");
         };
 
+        // As this node coalesces multiple tasks into 1, it must run in a stage with 1 task.
         if n_tasks > 1 {
             return Err(limit_tasks_err(1));
         }
