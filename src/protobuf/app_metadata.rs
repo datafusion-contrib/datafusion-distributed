@@ -1,5 +1,5 @@
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::StageKey;
+use crate::protobuf::distributed_codec::StageKey;
 
 /// A collection of metrics for a set of tasks in an ExecutionPlan. each
 /// entry should have a distinct [StageKey].

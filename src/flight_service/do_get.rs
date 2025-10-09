@@ -1,13 +1,13 @@
+use crate::DistributedTaskContext;
 use crate::common::map_last_stream;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::execution_plans::{DistributedTaskContext, StageExec};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
     AppMetadata, DistributedCodec, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
-    datafusion_error_to_tonic_status, stage_from_proto,
+    datafusion_error_to_tonic_status,
 };
 use arrow_flight::FlightData;
 use arrow_flight::Ticket;
@@ -17,7 +17,11 @@ use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
 
 use datafusion::common::exec_datafusion_err;
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -26,20 +30,22 @@ use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
-    /// The [StageExec] we are going to execute encoded as protobuf bytes.
+    /// The [Arc<dyn ExecutionPlan>] we are going to execute encoded as protobuf bytes.
     #[prost(bytes, tag = "1")]
-    pub stage_proto: Bytes,
+    pub plan_proto: Bytes,
     /// The index to the task within the stage that we want to execute
     #[prost(uint64, tag = "2")]
     pub target_task_index: u64,
-    /// the partition number we want to execute
     #[prost(uint64, tag = "3")]
+    pub target_task_count: u64,
+    /// the partition number we want to execute
+    #[prost(uint64, tag = "4")]
     pub target_partition: u64,
     /// The stage key that identifies the stage.  This is useful to keep
     /// outside of the stage proto as it is used to store the stage
     /// and we may not need to deserialize the entire stage proto
     /// if we already have stored it
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "5")]
     pub stage_key: Option<StageKey>,
 }
 
@@ -47,7 +53,7 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
-    pub(super) stage: Arc<StageExec>,
+    pub(super) plan: Arc<dyn ExecutionPlan>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
@@ -87,33 +93,31 @@ impl ArrowFlightEndpoint {
 
         let stage_data = once
             .get_or_try_init(|| async {
-                let stage_proto = doget.stage_proto;
-                let stage =
-                    stage_from_proto(stage_proto, &ctx, &self.runtime, &codec).map_err(|err| {
-                        Status::invalid_argument(format!("Cannot decode stage proto: {err}"))
-                    })?;
+                let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
+                let plan = proto_node.try_into_physical_plan(&ctx, &self.runtime, &codec)?;
 
                 // Initialize partition count to the number of partitions in the stage
-                let total_partitions = stage.plan.properties().partitioning.partition_count();
-                Ok::<_, Status>(TaskData {
-                    stage: Arc::new(stage),
+                let total_partitions = plan.properties().partitioning.partition_count();
+                Ok::<_, DataFusionError>(TaskData {
+                    plan,
                     num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 })
             })
-            .await?;
-        let stage = Arc::clone(&stage_data.stage);
+            .await
+            .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
+        let plan = Arc::clone(&stage_data.plan);
 
         // Find out which partition group we are executing
         let cfg = session_state.config_mut();
-        cfg.set_extension(Arc::clone(&stage));
         cfg.set_extension(Arc::new(ContextGrpcMetadata(metadata.into_headers())));
-        cfg.set_extension(Arc::new(DistributedTaskContext::new(
-            doget.target_task_index as usize,
-        )));
+        cfg.set_extension(Arc::new(DistributedTaskContext {
+            task_index: doget.target_task_index as usize,
+            task_count: doget.target_task_count as usize,
+        }));
 
-        let partition_count = stage.plan.properties().partitioning.partition_count();
+        let partition_count = plan.properties().partitioning.partition_count();
         let target_partition = doget.target_partition as usize;
-        let plan_name = stage.plan.name();
+        let plan_name = plan.name();
         if target_partition >= partition_count {
             return Err(datafusion_error_to_tonic_status(&exec_datafusion_err!(
                 "partition {target_partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
@@ -123,8 +127,7 @@ impl ArrowFlightEndpoint {
         // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
         // as executing `StageExec` performs some worker assignation that should have already been
         // done in the head stage.
-        let stream = stage
-            .plan
+        let stream = plan
             .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
@@ -141,7 +144,7 @@ impl ArrowFlightEndpoint {
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 task_data_entries.remove(key.clone());
             }
-            last.and_then(|el| collect_and_create_metrics_flight_data(key, stage, el))
+            last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
         });
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
@@ -158,12 +161,12 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
 /// Collects metrics from the provided stage and includes it in the flight data
 fn collect_and_create_metrics_flight_data(
     stage_key: StageKey,
-    stage: Arc<StageExec>,
+    plan: Arc<dyn ExecutionPlan>,
     incoming: FlightData,
 ) -> Result<FlightData, FlightError> {
     // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
     let mut result = TaskMetricsCollector::new()
-        .collect(stage.plan.clone())
+        .collect(plan)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
     // Add the metrics for this task into the collection of task metrics.
@@ -208,7 +211,6 @@ mod tests {
     use super::*;
     use crate::ExecutionTask;
     use crate::flight_service::session_builder::DefaultSessionBuilder;
-    use crate::protobuf::proto_from_stage;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
     use datafusion::physical_expr::Partitioning;
@@ -230,50 +232,46 @@ mod tests {
         let num_tasks = 3;
         let num_partitions_per_task = 3;
         let stage_id = 1;
-        let query_id = Uuid::new_v4();
+        let query_id = Bytes::from(Uuid::new_v4().into_bytes().to_vec());
 
         // Set up protos.
         let mut tasks = Vec::new();
         for _ in 0..num_tasks {
             tasks.push(ExecutionTask { url: None });
         }
-
-        let stage = StageExec {
-            query_id,
-            num: 1,
-            name: format!("test_stage_{}", 1),
-            plan: create_mock_physical_plan(num_partitions_per_task),
-            inputs: vec![],
-            tasks,
-            depth: 0,
-        };
+        let plan = create_mock_physical_plan(num_partitions_per_task);
+        let plan_proto: Bytes =
+            PhysicalPlanNode::try_from_physical_plan(plan, &DefaultPhysicalExtensionCodec {})
+                .unwrap()
+                .encode_to_vec()
+                .into();
 
         let task_keys = [
             StageKey {
-                query_id: query_id.to_string(),
+                query_id: query_id.clone(),
                 stage_id,
                 task_number: 0,
             },
             StageKey {
-                query_id: query_id.to_string(),
+                query_id: query_id.clone(),
                 stage_id,
                 task_number: 1,
             },
             StageKey {
-                query_id: query_id.to_string(),
+                query_id: query_id.clone(),
                 stage_id,
                 task_number: 2,
             },
         ];
-        let stage_proto = proto_from_stage(&stage, &DefaultPhysicalExtensionCodec {}).unwrap();
-        let stage_proto_for_closure = stage_proto.clone();
+        let plan_proto_for_closure = plan_proto.clone();
         let endpoint_ref = &endpoint;
 
         let do_get = async move |partition: u64, task_number: u64, stage_key: StageKey| {
-            let stage_proto = stage_proto_for_closure.clone();
+            let plan_proto = plan_proto_for_closure.clone();
             let doget = DoGet {
-                stage_proto: stage_proto.encode_to_vec().into(),
+                plan_proto,
                 target_task_index: task_number,
+                target_task_count: num_tasks,
                 target_partition: partition,
                 stage_key: Some(stage_key),
             };
@@ -300,7 +298,7 @@ mod tests {
         }
 
         // Check that the endpoint has not evicted any task states.
-        assert_eq!(endpoint.task_data_entries.len(), num_tasks);
+        assert_eq!(endpoint.task_data_entries.len(), num_tasks as usize);
 
         // Run the last partition of task 0. Any partition number works. Verify that the task state
         // is evicted because all partitions have been processed.

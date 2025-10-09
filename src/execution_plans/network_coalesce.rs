@@ -1,19 +1,19 @@
-use crate::ChannelResolver;
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
-use crate::common::scale_partitioning_props;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_err};
-use crate::execution_plans::{DistributedTaskContext, StageExec};
+use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::{DistributedCodec, StageKey, proto_from_input_stage};
-use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use crate::stage::MaybeEncodedPlan;
+use crate::{ChannelResolver, DistributedTaskContext, Stage};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
+use bytes::Bytes;
 use dashmap::DashMap;
-use datafusion::common::{exec_err, internal_datafusion_err, internal_err, plan_err};
+use datafusion::common::{exec_err, internal_err, plan_err};
 use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -86,8 +86,7 @@ pub struct NetworkCoalescePending {
 pub struct NetworkCoalesceReady {
     /// the properties we advertise for this execution plan
     pub(crate) properties: PlanProperties,
-    pub(crate) stage_num: usize,
-    pub(crate) input_tasks: usize,
+    pub(crate) input_stage: Stage,
     /// metrics_collection is used to collect metrics from child tasks. It is empty when an
     /// is instantiated (deserialized, created via [NetworkCoalesceExec::new_ready] etc...).
     /// Metrics are populated in this map via [NetworkCoalesceExec::execute].
@@ -128,6 +127,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return plan_err!("can only return wrapped child if on Pending state");
         };
 
+        // As this node coalesces multiple tasks into 1, it must run in a stage with 1 task.
         if n_tasks > 1 {
             return Err(limit_tasks_err(1));
         }
@@ -135,51 +135,66 @@ impl NetworkBoundary for NetworkCoalesceExec {
         Ok((Arc::clone(&pending.child), pending.input_tasks))
     }
 
-    fn to_distributed(
+    fn with_input_stage(
         &self,
-        stage_num: usize,
-        stage_head: &Arc<dyn ExecutionPlan>,
+        input_stage: Stage,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let NetworkCoalesceExec::Pending(pending) = self else {
-            return internal_err!("NetworkCoalesceExec is already distributed");
-        };
+        match self {
+            Self::Pending(pending) => {
+                let properties = input_stage.plan.decoded()?.properties();
+                let ready = NetworkCoalesceReady {
+                    properties: scale_partitioning_props(properties, |p| p * pending.input_tasks),
+                    input_stage,
+                    metrics_collection: Default::default(),
+                };
 
-        let ready = NetworkCoalesceReady {
-            properties: scale_partitioning_props(stage_head.properties(), |p| {
-                p * pending.input_tasks
-            }),
-            stage_num,
-            input_tasks: pending.input_tasks,
-            metrics_collection: Default::default(),
-        };
-
-        Ok(Arc::new(Self::Ready(ready)))
+                Ok(Arc::new(Self::Ready(ready)))
+            }
+            Self::Ready(ready) => {
+                let mut ready = ready.clone();
+                ready.input_stage = input_stage;
+                Ok(Arc::new(Self::Ready(ready)))
+            }
+        }
     }
 
-    fn with_input_tasks(&self, input_tasks: usize) -> Arc<dyn NetworkBoundary> {
-        Arc::new(match self {
-            NetworkCoalesceExec::Pending(pending) => {
-                NetworkCoalesceExec::Pending(NetworkCoalescePending {
-                    properties: pending.properties.clone(),
-                    input_tasks,
-                    child: pending.child.clone(),
-                })
-            }
-            NetworkCoalesceExec::Ready(ready) => NetworkCoalesceExec::Ready(NetworkCoalesceReady {
-                properties: scale_partitioning_props(&ready.properties, |p| {
-                    p * input_tasks / ready.input_tasks
-                }),
-                stage_num: ready.stage_num,
+    fn input_stage(&self) -> Option<&Stage> {
+        match self {
+            Self::Pending(_) => None,
+            Self::Ready(v) => Some(&v.input_stage),
+        }
+    }
+
+    fn with_input_task_count(
+        &self,
+        input_tasks: usize,
+    ) -> Result<Arc<dyn NetworkBoundary>, DataFusionError> {
+        Ok(Arc::new(match self {
+            Self::Pending(pending) => Self::Pending(NetworkCoalescePending {
+                properties: pending.properties.clone(),
                 input_tasks,
-                metrics_collection: Arc::clone(&ready.metrics_collection),
+                child: pending.child.clone(),
             }),
-        })
+            Self::Ready(_) => {
+                plan_err!("Self can only re-assign input tasks if in 'Pending' state")?
+            }
+        }))
     }
 }
 
 impl DisplayAs for NetworkCoalesceExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "NetworkCoalesceExec")
+        let Self::Ready(self_ready) = self else {
+            return write!(f, "NetworkCoalesceExec");
+        };
+
+        let input_tasks = self_ready.input_stage.tasks.len();
+        let partitions = self_ready.properties.partitioning.partition_count();
+        let stage = self_ready.input_stage.num;
+        write!(
+            f,
+            "[Stage {stage}] => NetworkCoalesceExec: output_partitions={partitions}, input_tasks={input_tasks}",
+        )
     }
 }
 
@@ -202,7 +217,10 @@ impl ExecutionPlan for NetworkCoalesceExec {
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match self {
             NetworkCoalesceExec::Pending(v) => vec![&v.child],
-            NetworkCoalesceExec::Ready(_) => vec![],
+            NetworkCoalesceExec::Ready(v) => match &v.input_stage.plan {
+                MaybeEncodedPlan::Decoded(v) => vec![v],
+                MaybeEncodedPlan::Encoded(_) => vec![],
+            },
         }
     }
 
@@ -210,13 +228,18 @@ impl ExecutionPlan for NetworkCoalesceExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        if !children.is_empty() {
-            return plan_err!(
-                "NetworkCoalesceExec: wrong number of children, expected 0, got {}",
-                children.len()
-            );
+        match self.as_ref() {
+            Self::Pending(v) => {
+                let mut v = v.clone();
+                v.child = require_one_child(&children)?;
+                Ok(Arc::new(Self::Pending(v)))
+            }
+            Self::Ready(v) => {
+                let mut v = v.clone();
+                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(&children)?);
+                Ok(Arc::new(Self::Ready(v)))
+            }
         }
-        Ok(self)
     }
 
     fn execute(
@@ -233,16 +256,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
-        // the `NetworkCoalesceExec` node can only be executed in the context of a `StageExec`
-        let stage = StageExec::from_ctx(&context)?;
-
-        // of our input stages find the one that we are supposed to be reading from
-        let input_stage = stage.input_stage(self_ready.stage_num)?;
-
-        let codec = DistributedCodec::new_combined_with_user(context.session_config());
-        let input_stage_proto = proto_from_input_stage(input_stage, &codec).map_err(|e| {
-            internal_datafusion_err!("NetworkCoalesceExec: failed to convert stage to proto: {e}")
-        })?;
+        let input_stage = &self_ready.input_stage;
+        let encoded_input_plan = input_stage.plan.encoded()?;
 
         let context_headers = ContextGrpcMetadata::headers_from_ctx(&context);
         let task_context = DistributedTaskContext::from_ctx(&context);
@@ -251,7 +266,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         }
 
         let partitions_per_task =
-            self.properties().partitioning.partition_count() / input_stage.tasks().len();
+            self.properties().partitioning.partition_count() / input_stage.tasks.len();
 
         let target_task = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
@@ -261,21 +276,22 @@ impl ExecutionPlan for NetworkCoalesceExec {
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
-                    stage_proto: input_stage_proto,
+                    plan_proto: encoded_input_plan.clone(),
                     target_partition: target_partition as u64,
                     stage_key: Some(StageKey {
-                        query_id: stage.query_id.to_string(),
-                        stage_id: input_stage.num() as u64,
+                        query_id: Bytes::from(input_stage.query_id.as_bytes().to_vec()),
+                        stage_id: input_stage.num as u64,
                         task_number: target_task as u64,
                     }),
                     target_task_index: target_task as u64,
+                    target_task_count: input_stage.tasks.len() as u64,
                 }
                 .encode_to_vec()
                 .into(),
             },
         );
 
-        let Some(task) = input_stage.tasks().get(target_task) else {
+        let Some(task) = input_stage.tasks.get(target_task) else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
         };
 

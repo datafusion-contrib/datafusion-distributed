@@ -1,6 +1,5 @@
-use crate::StageExec;
+use crate::DistributedTaskContext;
 use crate::distributed_physical_optimizer_rule::limit_tasks_err;
-use crate::execution_plans::DistributedTaskContext;
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
@@ -138,7 +137,27 @@ impl PartitionIsolatorExec {
 
 impl DisplayAs for PartitionIsolatorExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "PartitionIsolatorExec",)
+        let PartitionIsolatorExec::Ready(self_ready) = self else {
+            return write!(f, "PartitionIsolatorExec");
+        };
+        let input_partitions = self.input().output_partitioning().partition_count();
+        let partition_groups =
+            PartitionIsolatorExec::partition_groups(input_partitions, self_ready.n_tasks);
+
+        let n: usize = partition_groups.iter().map(|v| v.len()).sum();
+        let mut partitions = vec![];
+        for _ in 0..self_ready.n_tasks {
+            partitions.push(vec!["__".to_string(); n]);
+        }
+
+        write!(f, "PartitionIsolatorExec: ")?;
+        for (i, partition_group) in partition_groups.iter().enumerate() {
+            for (j, p) in partition_group.iter().enumerate() {
+                partitions[i][*p] = format!("p{j}")
+            }
+            write!(f, "t{i}:[{}] ", partitions[i].join(","))?;
+        }
+        Ok(())
     }
 }
 
@@ -191,12 +210,14 @@ impl ExecutionPlan for PartitionIsolatorExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let stage = StageExec::from_ctx(&context)?;
 
         let input_partitions = self_ready.input.output_partitioning().partition_count();
 
-        let partition_group =
-            Self::partition_group(input_partitions, task_context.task_index, stage.tasks.len());
+        let partition_group = Self::partition_group(
+            input_partitions,
+            task_context.task_index,
+            task_context.task_count,
+        );
 
         // if our partition group is [7,8,9] and we are asked for parittion 1,
         // then look up that index in our group and execute that partition, in this

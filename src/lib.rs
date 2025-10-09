@@ -8,6 +8,7 @@ mod distributed_physical_optimizer_rule;
 mod execution_plans;
 mod flight_service;
 mod metrics;
+mod stage;
 
 mod protobuf;
 #[cfg(any(feature = "integration", test))]
@@ -15,14 +16,15 @@ pub mod test_utils;
 
 pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
-pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
-pub use execution_plans::display_plan_graphviz;
-pub use execution_plans::{
-    DistributedTaskContext, ExecutionTask, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec, StageExec,
+pub use distributed_physical_optimizer_rule::{
+    DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
 };
+pub use execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec};
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
     MappedDistributedSessionBuilderExt,
+};
+pub use stage::{
+    DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
 };

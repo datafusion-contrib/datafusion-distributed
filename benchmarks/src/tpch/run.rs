@@ -47,7 +47,7 @@ use datafusion_distributed::test_utils::localhost::{
 };
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
-    DistributedSessionBuilderContext, StageExec,
+    DistributedSessionBuilderContext, NetworkBoundaryExt, Stage,
 };
 use log::info;
 use std::fs;
@@ -331,8 +331,8 @@ impl RunOpt {
         }
         let mut n_tasks = 0;
         physical_plan.clone().transform_down(|node| {
-            if let Some(node) = node.as_any().downcast_ref::<StageExec>() {
-                n_tasks += node.tasks.len()
+            if let Some(node) = node.as_network_boundary() {
+                n_tasks += node.input_stage().map(|v| v.tasks.len()).unwrap_or(0)
             }
             Ok(Transformed::no(node))
         })?;

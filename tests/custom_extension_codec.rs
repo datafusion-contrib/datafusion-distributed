@@ -25,6 +25,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
         DistributedExt, DistributedSessionBuilderContext, PartitionIsolatorExec, assert_snapshot,
+        display_plan_ascii,
     };
     use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkShuffleExec};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -59,18 +60,18 @@ mod tests {
         let distributed_plan = build_plan(true)?;
         let distributed_plan = DistributedPhysicalOptimizerRule::distribute_plan(distributed_plan)?;
 
-        assert_snapshot!(displayable(&distributed_plan).indent(true).to_string(), @r"
-        ┌───── Stage 3   Tasks: t0:[p0] 
+        assert_snapshot!(display_plan_ascii(distributed_plan.as_ref()), @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
         │   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
-        │     NetworkShuffleExec read_from=Stage 2, output_partitions=10, n_tasks=1, input_tasks=10
+        │     [Stage 2] => NetworkShuffleExec: output_partitions=10, input_tasks=10
         └──────────────────────────────────────────────────
-          ┌───── Stage 2   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t1:[p10,p11,p12,p13,p14,p15,p16,p17,p18,p19] t2:[p20,p21,p22,p23,p24,p25,p26,p27,p28,p29] t3:[p30,p31,p32,p33,p34,p35,p36,p37,p38,p39] t4:[p40,p41,p42,p43,p44,p45,p46,p47,p48,p49] t5:[p50,p51,p52,p53,p54,p55,p56,p57,p58,p59] t6:[p60,p61,p62,p63,p64,p65,p66,p67,p68,p69] t7:[p70,p71,p72,p73,p74,p75,p76,p77,p78,p79] t8:[p80,p81,p82,p83,p84,p85,p86,p87,p88,p89] t9:[p90,p91,p92,p93,p94,p95,p96,p97,p98,p99] 
+          ┌───── Stage 2 ── Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t1:[p10,p11,p12,p13,p14,p15,p16,p17,p18,p19] t2:[p20,p21,p22,p23,p24,p25,p26,p27,p28,p29] t3:[p30,p31,p32,p33,p34,p35,p36,p37,p38,p39] t4:[p40,p41,p42,p43,p44,p45,p46,p47,p48,p49] t5:[p50,p51,p52,p53,p54,p55,p56,p57,p58,p59] t6:[p60,p61,p62,p63,p64,p65,p66,p67,p68,p69] t7:[p70,p71,p72,p73,p74,p75,p76,p77,p78,p79] t8:[p80,p81,p82,p83,p84,p85,p86,p87,p88,p89] t9:[p90,p91,p92,p93,p94,p95,p96,p97,p98,p99] 
           │ RepartitionExec: partitioning=RoundRobinBatch(10), input_partitions=1
           │   SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
-          │     NetworkShuffleExec read_from=Stage 1, output_partitions=1, n_tasks=10, input_tasks=1
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=1
           └──────────────────────────────────────────────────
-            ┌───── Stage 1   Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
+            ┌───── Stage 1 ── Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
             │ RepartitionExec: partitioning=Hash([numbers@0], 10), input_partitions=1
             │   FilterExec: numbers@0 > 1
             │     Int64ListExec: length=6
@@ -92,7 +93,7 @@ mod tests {
         +---------+
         ");
 
-        let stream = execute_stream(Arc::new(distributed_plan), ctx.task_ctx())?;
+        let stream = execute_stream(distributed_plan, ctx.task_ctx())?;
         let batches_distributed = stream.try_collect::<Vec<_>>().await?;
 
         assert_snapshot!(pretty_format_batches(&batches_distributed).unwrap(), @r"

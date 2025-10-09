@@ -49,7 +49,7 @@ mod tests {
             )?);
         }
         let plan = DistributedPhysicalOptimizerRule::distribute_plan(plan)?;
-        let stream = execute_stream(Arc::new(plan), ctx.task_ctx())?;
+        let stream = execute_stream(plan, ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {
             panic!("Should have failed")
