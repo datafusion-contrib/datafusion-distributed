@@ -11,7 +11,7 @@ use std::fmt::{Debug, Formatter};
 /// A transparent wrapper that delegates all execution to its child but returns custom metrics. This node is invisible during display.
 /// The structure of a plan tree is closely tied to the [TaskMetricsRewriter].
 pub struct MetricsWrapperExec {
-    inner: Arc<dyn ExecutionPlan>,
+    pub(crate) inner: Arc<dyn ExecutionPlan>,
     /// metrics for this plan node.
     metrics: MetricsSet,
     /// children is initially None. When used by the [TaskMetricsRewriter], the children will be updated
@@ -53,7 +53,7 @@ impl ExecutionPlan for MetricsWrapperExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        unimplemented!("MetricsWrapperExec does not implement properties")
+        self.inner.properties()
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

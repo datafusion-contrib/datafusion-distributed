@@ -3,6 +3,7 @@ use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::plan_err;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use itertools::{Either, Itertools};
 use std::collections::VecDeque;
@@ -11,7 +12,7 @@ use url::Url;
 use uuid::Uuid;
 
 /// A unit of isolation for a portion of a physical execution plan
-/// that can be executed independently and across a network boundary.  
+/// that can be executed independently and across a network boundary.
 /// It implements [`ExecutionPlan`] and can be executed to produce a
 /// stream of record batches.
 ///
@@ -39,10 +40,10 @@ use uuid::Uuid;
 ///             ┌──────┴────────┐
 ///        ┌────┴────┐     ┌────┴────┐
 ///        │ stage 4 │     │ Stage 5 │
-///        └─────────┘     └─────────┘                    
+///        └─────────┘     └─────────┘
 ///
 /// ```
-///  
+///
 /// Then executing Stage 1 will run its plan locally.  Stage 1 has two inputs, Stage 2 and Stage 3.  We
 /// know these will execute on remote resources.   As such the plan for Stage 1 must contain an
 /// [`NetworkShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
@@ -53,14 +54,14 @@ use uuid::Uuid;
 /// Arrow Flight Ticket:
 ///
 /// ```text
-///               ┌─────────┐     
-///               │ Stage 2 │    
-///               └────┬────┘   
+///               ┌─────────┐
+///               │ Stage 2 │
+///               └────┬────┘
 ///                    │
 ///             ┌──────┴────────┐
 ///        ┌────┴────┐     ┌────┴────┐
 ///        │ Stage 4 │     │ Stage 5 │
-///        └─────────┘     └─────────┘                    
+///        └─────────┘     └─────────┘
 ///
 /// ```
 ///
@@ -168,7 +169,9 @@ impl Stage {
 }
 
 use crate::distributed_physical_optimizer_rule::{NetworkBoundary, NetworkBoundaryExt};
+use crate::rewrite_distributed_plan_with_metrics;
 use bytes::Bytes;
+use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -187,16 +190,28 @@ use prost::Message;
 /// the Stage tree.
 use std::fmt::Write;
 
+/// explain_analyze renders an [ExecutionPlan] with metrics.
+pub fn explain_analyze(executed: Arc<dyn ExecutionPlan>) -> Result<String, DataFusionError> {
+    match executed.as_any().downcast_ref::<DistributedExec>() {
+        None => Ok(DisplayableExecutionPlan::with_metrics(executed.as_ref())
+            .indent(true)
+            .to_string()),
+        Some(_) => {
+            let executed = rewrite_distributed_plan_with_metrics(executed.clone())?;
+            Ok(display_plan_ascii(executed.as_ref(), true))
+        }
+    }
+}
+
 // Unicode box-drawing characters for creating borders and connections.
 const LTCORNER: &str = "┌"; // Left top corner
 const LDCORNER: &str = "└"; // Left bottom corner
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
-
-pub fn display_plan_ascii(plan: &dyn ExecutionPlan) -> String {
+pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
     if let Some(plan) = plan.as_any().downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(Either::Left(plan), 0, &mut f).unwrap();
+        display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
         displayable(plan).indent(true).to_string()
@@ -206,6 +221,7 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan) -> String {
 fn display_ascii(
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
+    show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
     let plan = match stage {
@@ -244,7 +260,7 @@ fn display_ascii(
     }
 
     let mut plan_str = String::new();
-    display_inner_ascii(plan, 0, &mut plan_str)?;
+    display_inner_ascii(plan, 0, show_metrics, &mut plan_str)?;
     let plan_str = plan_str
         .split('\n')
         .filter(|v| !v.is_empty())
@@ -259,7 +275,7 @@ fn display_ascii(
         HORIZONTAL.repeat(50)
     )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(Either::Right(input_stage), depth + 1, f)?;
+        display_ascii(Either::Right(input_stage), depth + 1, show_metrics, f)?;
     }
     Ok(())
 }
@@ -267,9 +283,16 @@ fn display_ascii(
 fn display_inner_ascii(
     plan: &Arc<dyn ExecutionPlan>,
     indent: usize,
+    show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
-    let node_str = displayable(plan.as_ref()).one_line().to_string();
+    let node_str = if show_metrics {
+        DisplayableExecutionPlan::with_metrics(plan.as_ref())
+            .one_line()
+            .to_string()
+    } else {
+        displayable(plan.as_ref()).one_line().to_string()
+    };
     writeln!(f, "{} {node_str}", " ".repeat(indent))?;
 
     if plan.is_network_boundary() {
@@ -277,7 +300,7 @@ fn display_inner_ascii(
     }
 
     for child in plan.children() {
-        display_inner_ascii(child, indent + 2, f)?;
+        display_inner_ascii(child, indent + 2, show_metrics, f)?;
     }
     Ok(())
 }
@@ -724,7 +747,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     result
 }
 
-fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
+pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
     let mut result = vec![];
     if let Some(plan) = plan.as_network_boundary() {
         if let Some(stage) = plan.input_stage() {

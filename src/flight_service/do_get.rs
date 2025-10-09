@@ -143,8 +143,9 @@ impl ArrowFlightEndpoint {
         let stream = map_last_stream(stream, move |last| {
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 task_data_entries.remove(key.clone());
+                return last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el));
             }
-            last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
+            last
         });
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
@@ -164,7 +165,7 @@ fn collect_and_create_metrics_flight_data(
     plan: Arc<dyn ExecutionPlan>,
     incoming: FlightData,
 ) -> Result<FlightData, FlightError> {
-    // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
+    // Get the metrics for the task executed on this worker + child tasks.
     let mut result = TaskMetricsCollector::new()
         .collect(plan)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;

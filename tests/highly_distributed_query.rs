@@ -36,7 +36,7 @@ mod tests {
 
         let physical_distributed =
             DistributedPhysicalOptimizerRule::distribute_plan(physical_distributed)?;
-        let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref());
+        let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,
             @"DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[FL_DATE, DEP_DELAY, ARR_DELAY, AIR_TIME, DISTANCE, DEP_TIME, ARR_TIME], file_type=parquet",

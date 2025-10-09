@@ -64,7 +64,7 @@ mod tests {
         let distributed_plan = build_plan()?;
         let distributed_plan = DistributedPhysicalOptimizerRule::distribute_plan(distributed_plan)?;
 
-        assert_snapshot!(display_plan_ascii(distributed_plan.as_ref()), @r"
+        assert_snapshot!(display_plan_ascii(distributed_plan.as_ref(), false), @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
         │   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
