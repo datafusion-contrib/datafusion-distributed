@@ -32,14 +32,12 @@ pub struct TaskMetricsRewriter {
 
 impl TaskMetricsRewriter {
     /// Create a new TaskMetricsRewriter. The provided metrics will be used to enrich the plan.
-    #[allow(dead_code)]
     pub fn new(metrics: Vec<MetricsSetProto>) -> Self {
         Self { metrics, idx: 0 }
     }
 
     /// enrich_task_with_metrics rewrites the plan by wrapping nodes. If the length of the provided metrics set vec does not
     /// match the number of nodes in the plan, an error will be returned.
-    #[allow(dead_code)]
     pub fn enrich_task_with_metrics(
         mut self,
         plan: Arc<dyn ExecutionPlan>,

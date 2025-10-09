@@ -1,8 +1,10 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
+use crate::metrics::TaskMetricsRewriter;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::plan_err;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use itertools::{Either, Itertools};
 use std::collections::VecDeque;
@@ -168,7 +170,10 @@ impl Stage {
 }
 
 use crate::distributed_physical_optimizer_rule::{NetworkBoundary, NetworkBoundaryExt};
+use crate::metrics::proto::MetricsSetProto;
+use crate::protobuf::StageKey;
 use bytes::Bytes;
+use datafusion::common::HashMap;
 use datafusion::physical_expr::Partitioning;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -187,6 +192,20 @@ use prost::Message;
 /// the Stage tree.
 use std::fmt::Write;
 
+/// Context used to display a [Stage], tasks, and plans.
+#[derive(Debug, Clone)]
+pub struct DisplayCtx {
+    metrics: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
+}
+
+impl DisplayCtx {
+    pub fn new(metrics: HashMap<StageKey, Vec<MetricsSetProto>>) -> Self {
+        Self {
+            metrics: Arc::new(metrics),
+        }
+    }
+}
+
 // Unicode box-drawing characters for creating borders and connections.
 const LTCORNER: &str = "┌"; // Left top corner
 const LDCORNER: &str = "└"; // Left bottom corner
@@ -196,7 +215,9 @@ const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan) -> String {
     if let Some(plan) = plan.as_any().downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(Either::Left(plan), 0, &mut f).unwrap();
+        display_ascii(Either::Left(plan), 0, plan.display_ctx.clone(), &mut f)
+            .map_err(|e| panic!("Failed to display plan: {}", e))
+            .unwrap();
         f
     } else {
         displayable(plan).indent(true).to_string()
@@ -206,6 +227,7 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan) -> String {
 fn display_ascii(
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
+    display_ctx: Option<DisplayCtx>,
     f: &mut String,
 ) -> std::fmt::Result {
     let plan = match stage {
@@ -217,8 +239,43 @@ fn display_ascii(
             plan
         }
     };
+
+    let display_task = |plan: &Arc<dyn ExecutionPlan>, f: &mut String| -> std::fmt::Result {
+        let mut plan_str = String::new();
+        display_inner_ascii(plan, 0, display_ctx.clone(), &mut plan_str)?;
+        let plan_str = plan_str
+            .split('\n')
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>()
+            .join(&format!("\n{}{}", "  ".repeat(depth), VERTICAL));
+        writeln!(f, "{}{}{}", "  ".repeat(depth), VERTICAL, plan_str)?;
+        Ok(())
+    };
+
+    let display_bottom_border = |f: &mut String| -> std::fmt::Result {
+        writeln!(
+            f,
+            "{}{}{}",
+            "  ".repeat(depth),
+            LDCORNER,
+            HORIZONTAL.repeat(50)
+        )
+    };
+
+    let rewrite_task = |plan: &Arc<dyn ExecutionPlan>,
+                        key: StageKey,
+                        display_ctx: &DisplayCtx|
+     -> Result<Arc<dyn ExecutionPlan>, std::fmt::Error> {
+        match display_ctx.metrics.get(&key) {
+            Some(metrics) => TaskMetricsRewriter::new(metrics.to_owned())
+                .enrich_task_with_metrics(plan.clone())
+                .map_err(|_e| std::fmt::Error),
+            None => Ok(plan.clone()),
+        }
+    };
+
     match stage {
-        Either::Left(_) => {
+        Either::Left(distributed_exec) => {
             writeln!(
                 f,
                 "{}{}{} DistributedExec {} {}",
@@ -228,38 +285,71 @@ fn display_ascii(
                 HORIZONTAL.repeat(2),
                 format_tasks_for_stage(1, plan)
             )?;
+            let plan = match display_ctx.as_ref() {
+                Some(ctx) => rewrite_task(
+                    distributed_exec
+                        .pepared_plan()
+                        .as_ref()
+                        .map_err(|_e| std::fmt::Error)?,
+                    distributed_exec.to_stage_key(),
+                    ctx,
+                )?,
+                None => plan.clone(),
+            };
+            display_task(&plan, f)?;
+            display_bottom_border(f)?;
         }
         Either::Right(stage) => {
-            writeln!(
-                f,
-                "{}{}{} Stage {} {} {}",
-                "  ".repeat(depth),
-                LTCORNER,
-                HORIZONTAL.repeat(5),
-                stage.num,
-                HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.tasks.len(), plan)
-            )?;
+            match display_ctx.as_ref() {
+                Some(ctx) => {
+                    for (i, _) in stage.tasks.iter().enumerate() {
+                        writeln!(
+                            f,
+                            "{}{}{} Stage {} {} {}",
+                            "  ".repeat(depth),
+                            LTCORNER,
+                            HORIZONTAL.repeat(5),
+                            stage.num,
+                            HORIZONTAL.repeat(2),
+                            format_task_for_stage(i, plan)
+                        )?;
+                        // Uniquely identify the task.
+                        let key = StageKey {
+                            query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
+                            stage_id: stage.num as u64,
+                            task_number: i as u64,
+                        };
+
+                        let plan = rewrite_task(plan, key, ctx)?;
+                        display_task(&plan, f)?;
+                        display_bottom_border(f)?;
+                    }
+                }
+                None => {
+                    writeln!(
+                        f,
+                        "{}{}{} Stage {} {} {}",
+                        "  ".repeat(depth),
+                        LTCORNER,
+                        HORIZONTAL.repeat(5),
+                        stage.num,
+                        HORIZONTAL.repeat(2),
+                        format_tasks_for_stage(stage.tasks.len(), plan)
+                    )?;
+                    display_task(plan, f)?;
+                    display_bottom_border(f)?;
+                }
+            }
         }
     }
 
-    let mut plan_str = String::new();
-    display_inner_ascii(plan, 0, &mut plan_str)?;
-    let plan_str = plan_str
-        .split('\n')
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join(&format!("\n{}{}", "  ".repeat(depth), VERTICAL));
-    writeln!(f, "{}{}{}", "  ".repeat(depth), VERTICAL, plan_str)?;
-    writeln!(
-        f,
-        "{}{}{}",
-        "  ".repeat(depth),
-        LDCORNER,
-        HORIZONTAL.repeat(50)
-    )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(Either::Right(input_stage), depth + 1, f)?;
+        display_ascii(
+            Either::Right(input_stage),
+            depth + 1,
+            display_ctx.clone(),
+            f,
+        )?;
     }
     Ok(())
 }
@@ -267,9 +357,15 @@ fn display_ascii(
 fn display_inner_ascii(
     plan: &Arc<dyn ExecutionPlan>,
     indent: usize,
+    display_ctx: Option<DisplayCtx>,
     f: &mut String,
 ) -> std::fmt::Result {
-    let node_str = displayable(plan.as_ref()).one_line().to_string();
+    let node_str = match display_ctx {
+        Some(_) => DisplayableExecutionPlan::with_metrics(plan.as_ref())
+            .one_line()
+            .to_string(),
+        None => displayable(plan.as_ref()).one_line().to_string(),
+    };
     writeln!(f, "{} {node_str}", " ".repeat(indent))?;
 
     if plan.is_network_boundary() {
@@ -277,7 +373,7 @@ fn display_inner_ascii(
     }
 
     for child in plan.children() {
-        display_inner_ascii(child, indent + 2, f)?;
+        display_inner_ascii(child, indent + 2, display_ctx.clone(), f)?;
     }
     Ok(())
 }
@@ -296,6 +392,22 @@ fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> Stri
         result += "] ";
         off += if hash_shuffle { 0 } else { input_partitions }
     }
+    result
+}
+
+fn format_task_for_stage(task_number: usize, head: &Arc<dyn ExecutionPlan>) -> String {
+    let partitioning = head.properties().output_partitioning();
+    let input_partitions = partitioning.partition_count();
+    let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
+    let off = task_number * if hash_shuffle { 0 } else { input_partitions };
+
+    let mut result = "Task ".to_string();
+    result += &format!("t{task_number}:[");
+    result += &(off..(off + input_partitions))
+        .map(|v| format!("p{v}"))
+        .join(",");
+    result += "] ";
+
     result
 }
 
@@ -724,7 +836,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     result
 }
 
-fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
+pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
     let mut result = vec![];
     if let Some(plan) = plan.as_network_boundary() {
         if let Some(stage) = plan.input_stage() {

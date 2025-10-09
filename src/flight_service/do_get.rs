@@ -143,8 +143,9 @@ impl ArrowFlightEndpoint {
         let stream = map_last_stream(stream, move |last| {
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 task_data_entries.remove(key.clone());
+                return last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el));
             }
-            last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
+            last
         });
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
