@@ -75,7 +75,7 @@ pub enum NetworkCoalesceExec {
 pub struct NetworkCoalescePending {
     properties: PlanProperties,
     input_tasks: usize,
-    child: Arc<dyn ExecutionPlan>,
+    input: Arc<dyn ExecutionPlan>,
 }
 
 /// Ready version of the [NetworkCoalesceExec] node. This node can be created in
@@ -99,22 +99,18 @@ pub struct NetworkCoalesceReady {
 }
 
 impl NetworkCoalesceExec {
-    /// Creates a new [NetworkCoalesceExec] node from a [CoalescePartitionsExec] and
-    /// [SortPreservingMergeExec].
-    pub fn from_input_exec(
-        input: &dyn ExecutionPlan,
-        input_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        let children = input.children();
-        let Some(child) = children.first() else {
-            return internal_err!("Expected a single child");
-        };
-
-        Ok(Self::Pending(NetworkCoalescePending {
-            properties: child.properties().clone(),
+    /// Builds a new [NetworkCoalesceExec] in "Pending" state.
+    ///
+    /// Typically, this node should be place right after nodes that coalesce all the input
+    /// partitions into one, for example:
+    /// - [CoalescePartitionsExec]
+    /// - [SortPreservingMergeExec]
+    pub fn new(input: Arc<dyn ExecutionPlan>, input_tasks: usize) -> Self {
+        Self::Pending(NetworkCoalescePending {
+            properties: input.properties().clone(),
             input_tasks,
-            child: Arc::clone(child),
-        }))
+            input,
+        })
     }
 }
 
@@ -132,7 +128,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return Err(limit_tasks_err(1));
         }
 
-        Ok((Arc::clone(&pending.child), pending.input_tasks))
+        Ok((Arc::clone(&pending.input), pending.input_tasks))
     }
 
     fn with_input_stage(
@@ -173,7 +169,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             Self::Pending(pending) => Self::Pending(NetworkCoalescePending {
                 properties: pending.properties.clone(),
                 input_tasks,
-                child: pending.child.clone(),
+                input: pending.input.clone(),
             }),
             Self::Ready(_) => {
                 plan_err!("Self can only re-assign input tasks if in 'Pending' state")?
@@ -216,7 +212,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match self {
-            NetworkCoalesceExec::Pending(v) => vec![&v.child],
+            NetworkCoalesceExec::Pending(v) => vec![&v.input],
             NetworkCoalesceExec::Ready(v) => match &v.input_stage.plan {
                 MaybeEncodedPlan::Decoded(v) => vec![v],
                 MaybeEncodedPlan::Encoded(_) => vec![],
@@ -231,12 +227,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
         match self.as_ref() {
             Self::Pending(v) => {
                 let mut v = v.clone();
-                v.child = require_one_child(&children)?;
+                v.input = require_one_child(children)?;
                 Ok(Arc::new(Self::Pending(v)))
             }
             Self::Ready(v) => {
                 let mut v = v.clone();
-                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(&children)?);
+                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
                 Ok(Arc::new(Self::Ready(v)))
             }
         }

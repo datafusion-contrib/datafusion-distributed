@@ -7,6 +7,7 @@ mod tests {
     };
     use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
@@ -43,8 +44,10 @@ mod tests {
 
         for size in [1, 2, 3] {
             plan = Arc::new(NetworkShuffleExec::try_new(
-                plan,
-                Partitioning::RoundRobinBatch(size),
+                Arc::new(RepartitionExec::try_new(
+                    plan,
+                    Partitioning::Hash(vec![], size),
+                )?),
                 size,
             )?);
         }

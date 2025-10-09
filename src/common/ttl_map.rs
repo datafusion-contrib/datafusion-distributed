@@ -289,7 +289,7 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::Duration;
 
     #[tokio::test]
     async fn test_basic_insert_and_get() {

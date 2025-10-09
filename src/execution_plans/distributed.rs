@@ -98,7 +98,7 @@ impl ExecutionPlan for DistributedExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(DistributedExec {
-            plan: require_one_child(&children)?,
+            plan: require_one_child(children)?,
         }))
     }
 

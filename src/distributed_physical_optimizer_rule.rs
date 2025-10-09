@@ -123,68 +123,66 @@ impl DistributedPhysicalOptimizerRule {
             plan = Arc::new(CoalescePartitionsExec::new(plan))
         }
 
-        let result = plan.transform_up(|plan| {
-            // If this node is a DataSourceExec, we need to wrap it with PartitionIsolatorExec so
-            // that not all tasks have access to all partitions of the underlying DataSource.
-            if plan.as_any().is::<DataSourceExec>() {
-                let node = PartitionIsolatorExec::new_pending(plan);
+        let result =
+            plan.transform_up(|plan| {
+                // If this node is a DataSourceExec, we need to wrap it with PartitionIsolatorExec so
+                // that not all tasks have access to all partitions of the underlying DataSource.
+                if plan.as_any().is::<DataSourceExec>() {
+                    let node = PartitionIsolatorExec::new(plan);
 
-                return Ok(Transformed::yes(Arc::new(node)));
-            }
-
-            // If this is a hash RepartitionExec, introduce a shuffle.
-            if let (Some(node), Some(tasks)) = (
-                plan.as_any().downcast_ref::<RepartitionExec>(),
-                self.network_shuffle_tasks,
-            ) {
-                if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
-                    return Ok(Transformed::no(plan));
+                    return Ok(Transformed::yes(Arc::new(node)));
                 }
-                let node = NetworkShuffleExec::from_repartition_exec(&plan, tasks)?;
 
-                return Ok(Transformed::yes(Arc::new(node)));
-            }
+                // If this is a hash RepartitionExec, introduce a shuffle.
+                if let (Some(node), Some(tasks)) = (
+                    plan.as_any().downcast_ref::<RepartitionExec>(),
+                    self.network_shuffle_tasks,
+                ) {
+                    if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
+                        return Ok(Transformed::no(plan));
+                    }
+                    let node = NetworkShuffleExec::try_new(plan, tasks)?;
 
-            // If this is a CoalescePartitionsExec, it means that the original plan is trying to
-            // merge all partitions into one. We need to go one step ahead and also merge all tasks
-            // into one.
-            if let (Some(node), Some(tasks)) = (
-                plan.as_any().downcast_ref::<CoalescePartitionsExec>(),
-                self.network_coalesce_tasks,
-            ) {
-                // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
-                // plan is just a couple of non-computational nodes that are probably not worth
-                // distributing.
-                if node
-                    .children()
-                    .first()
-                    .is_some_and(|v| v.as_any().is::<PartitionIsolatorExec>())
-                {
-                    return Ok(Transformed::no(plan));
+                    return Ok(Transformed::yes(Arc::new(node)));
                 }
-                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
 
-                let plan = plan.with_new_children(vec![Arc::new(node)])?;
+                // If this is a CoalescePartitionsExec, it means that the original plan is trying to
+                // merge all partitions into one. We need to go one step ahead and also merge all tasks
+                // into one.
+                if let (Some(node), Some(tasks)) = (
+                    plan.as_any().downcast_ref::<CoalescePartitionsExec>(),
+                    self.network_coalesce_tasks,
+                ) {
+                    // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
+                    // plan is just a couple of non-computational nodes that are probably not worth
+                    // distributing.
+                    if node.input().as_any().is::<PartitionIsolatorExec>() {
+                        return Ok(Transformed::no(plan));
+                    }
 
-                return Ok(Transformed::yes(plan));
-            }
+                    let plan = plan.clone().with_new_children(vec![Arc::new(
+                        NetworkCoalesceExec::new(Arc::clone(node.input()), tasks),
+                    )])?;
 
-            // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
-            // We need to account for it and help it by also coalescing all tasks into one, therefore
-            // a NetworkCoalesceExec is introduced.
-            if let (Some(node), Some(tasks)) = (
-                plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
-                self.network_coalesce_tasks,
-            ) {
-                let node = NetworkCoalesceExec::from_input_exec(node, tasks)?;
+                    return Ok(Transformed::yes(plan));
+                }
 
-                let plan = plan.with_new_children(vec![Arc::new(node)])?;
+                // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
+                // We need to account for it and help it by also coalescing all tasks into one, therefore
+                // a NetworkCoalesceExec is introduced.
+                if let (Some(node), Some(tasks)) = (
+                    plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
+                    self.network_coalesce_tasks,
+                ) {
+                    let plan = plan.clone().with_new_children(vec![Arc::new(
+                        NetworkCoalesceExec::new(Arc::clone(node.input()), tasks),
+                    )])?;
 
-                return Ok(Transformed::yes(plan));
-            }
+                    return Ok(Transformed::yes(plan));
+                }
 
-            Ok(Transformed::no(plan))
-        })?;
+                Ok(Transformed::no(plan))
+            })?;
         Ok(result.data)
     }
 

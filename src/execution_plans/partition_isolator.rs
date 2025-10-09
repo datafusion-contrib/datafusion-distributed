@@ -68,11 +68,11 @@ pub struct PartitionIsolatorReadyExec {
 }
 
 impl PartitionIsolatorExec {
-    pub fn new_pending(input: Arc<dyn ExecutionPlan>) -> Self {
+    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         PartitionIsolatorExec::Pending(PartitionIsolatorPendingExec { input })
     }
 
-    pub fn ready(&self, n_tasks: usize) -> Result<Self, DataFusionError> {
+    pub(crate) fn ready(&self, n_tasks: usize) -> Result<Self, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("PartitionIsolatorExec is already ready");
         };
@@ -101,7 +101,7 @@ impl PartitionIsolatorExec {
         input: Arc<dyn ExecutionPlan>,
         n_tasks: usize,
     ) -> Result<Self, DataFusionError> {
-        Self::new_pending(input).ready(n_tasks)
+        Self::new(input).ready(n_tasks)
     }
 
     pub(crate) fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
@@ -193,9 +193,9 @@ impl ExecutionPlan for PartitionIsolatorExec {
         }
 
         Ok(Arc::new(match self.as_ref() {
-            PartitionIsolatorExec::Pending(_) => Self::new_pending(children[0].clone()),
+            PartitionIsolatorExec::Pending(_) => Self::new(children[0].clone()),
             PartitionIsolatorExec::Ready(ready) => {
-                Self::new_pending(children[0].clone()).ready(ready.n_tasks)?
+                Self::new(children[0].clone()).ready(ready.n_tasks)?
             }
         }))
     }
