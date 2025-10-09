@@ -122,6 +122,7 @@ impl TaskMetricsCollector {
 mod tests {
 
     use super::*;
+    use arrow::datatypes::UInt16Type;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
@@ -183,6 +184,11 @@ mod tests {
             Field::new("name", DataType::Utf8, false),
             Field::new("phone", DataType::Utf8, false),
             Field::new("balance", DataType::Float64, false),
+            Field::new(
+                "company",
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                false,
+            ),
         ]));
 
         let batches2 = vec![
@@ -203,6 +209,11 @@ mod tests {
                     Arc::new(datafusion::arrow::array::Float64Array::from(vec![
                         100.5, 250.0, 50.25,
                     ])),
+                    Arc::new(
+                        vec!["company1", "company1", "company1"]
+                            .into_iter()
+                            .collect::<arrow::array::DictionaryArray<UInt16Type>>(),
+                    ),
                 ],
             )
             .unwrap(),
@@ -239,9 +250,13 @@ mod tests {
         let task_ctx = ctx.task_ctx();
         let stream = stage_exec.execute(0, task_ctx).unwrap();
 
+        let schema = stream.schema();
+
         let mut stream = stream;
         while let Some(batch) = stream.next().await {
-            batch.unwrap();
+            let batch = batch.unwrap();
+
+            assert_eq!(schema, batch.schema())
         }
     }
 
@@ -322,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_collection_e2e_3() {
         run_metrics_collection_e2e_test(
-            "SELECT 
+            "SELECT
                 substring(phone, 1, 2) as country_code,
                 count(*) as num_customers,
                 sum(balance) as total_balance
@@ -337,5 +352,10 @@ mod tests {
             ORDER BY country_code",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_e2e_4() {
+        run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
 }
