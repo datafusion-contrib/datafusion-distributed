@@ -1,13 +1,15 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_err};
+use crate::distributed_physical_optimizer_rule::{
+    InputStageInfo, NetworkBoundary, limit_tasks_err,
+};
 use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
-use crate::stage::MaybeEncodedPlan;
-use crate::{ChannelResolver, DistributedTaskContext, Stage};
+use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::{ChannelResolver, DistributedTaskContext};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -115,10 +117,7 @@ impl NetworkCoalesceExec {
 }
 
 impl NetworkBoundary for NetworkCoalesceExec {
-    fn to_stage_info(
-        &self,
-        n_tasks: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError> {
+    fn get_input_stage_info(&self, n_tasks: usize) -> Result<InputStageInfo, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("can only return wrapped child if on Pending state");
         };
@@ -128,7 +127,10 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return Err(limit_tasks_err(1));
         }
 
-        Ok((Arc::clone(&pending.input), pending.input_tasks))
+        Ok(InputStageInfo {
+            plan: Arc::clone(&pending.input),
+            task_count: pending.input_tasks,
+        })
     }
 
     fn with_input_stage(

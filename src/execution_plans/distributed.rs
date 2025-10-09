@@ -2,7 +2,7 @@ use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
 use crate::execution_plans::common::require_one_child;
 use crate::protobuf::DistributedCodec;
-use crate::{ExecutionTask, Stage};
+use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};

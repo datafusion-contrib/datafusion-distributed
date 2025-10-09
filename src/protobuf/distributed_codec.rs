@@ -1,8 +1,8 @@
 use super::get_distributed_user_codecs;
 use crate::distributed_physical_optimizer_rule::NetworkBoundary;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
-use crate::stage::MaybeEncodedPlan;
-use crate::{ExecutionTask, NetworkShuffleExec, PartitionIsolatorExec, Stage};
+use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
+use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;

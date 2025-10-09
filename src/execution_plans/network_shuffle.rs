@@ -1,14 +1,14 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::NetworkBoundary;
+use crate::distributed_physical_optimizer_rule::{InputStageInfo, NetworkBoundary};
 use crate::execution_plans::common::{require_one_child, scale_partitioning};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
-use crate::stage::MaybeEncodedPlan;
-use crate::{ChannelResolver, DistributedTaskContext, Stage};
+use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::{ChannelResolver, DistributedTaskContext};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -168,10 +168,7 @@ impl NetworkShuffleExec {
 }
 
 impl NetworkBoundary for NetworkShuffleExec {
-    fn to_stage_info(
-        &self,
-        n_tasks: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError> {
+    fn get_input_stage_info(&self, n_tasks: usize) -> Result<InputStageInfo, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("cannot only return wrapped child if on Pending state");
         };
@@ -186,7 +183,10 @@ impl NetworkBoundary for NetworkShuffleExec {
             scale_partitioning(r_exe.partitioning(), |p| p * n_tasks),
         )?);
 
-        Ok((next_stage_plan, pending.input_tasks))
+        Ok(InputStageInfo {
+            plan: next_stage_plan,
+            task_count: pending.input_tasks,
+        })
     }
 
     fn with_input_task_count(

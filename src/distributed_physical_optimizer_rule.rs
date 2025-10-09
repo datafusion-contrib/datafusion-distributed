@@ -1,5 +1,6 @@
-use super::{NetworkShuffleExec, PartitionIsolatorExec, Stage};
+use super::{NetworkShuffleExec, PartitionIsolatorExec};
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
+use crate::stage::Stage;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::source::DataSourceExec;
@@ -232,11 +233,11 @@ impl DistributedPhysicalOptimizerRule {
             };
 
             let stage = loop {
-                let (inner_plan, in_tasks) = dnode.as_ref().to_stage_info(n_tasks)?;
+                let input_stage_info = dnode.as_ref().get_input_stage_info(n_tasks)?;
                 // If the current stage has just 1 task, and the next stage is only going to have
                 // 1 task, there's no point in having a network boundary in between, they can just
                 // communicate in memory.
-                if n_tasks == 1 && in_tasks == 1 {
+                if n_tasks == 1 && input_stage_info.task_count == 1 {
                     let mut n = dnode.as_ref().rollback()?;
                     if let Some(node) = n.as_any().downcast_ref::<PartitionIsolatorExec>() {
                         // Also trim PartitionIsolatorExec out of the plan.
@@ -244,7 +245,7 @@ impl DistributedPhysicalOptimizerRule {
                     }
                     return Ok(Transformed::yes(n));
                 }
-                match Self::_distribute_plan_inner(query_id, inner_plan.clone(), num, depth + 1, in_tasks) {
+                match Self::_distribute_plan_inner(query_id, input_stage_info.plan, num, depth + 1, input_stage_info.task_count) {
                     Ok(v) => break v,
                     Err(e) => match get_distribute_plan_err(&e) {
                         None => return Err(e),
@@ -253,7 +254,7 @@ impl DistributedPhysicalOptimizerRule {
                             // that no more than `limit` tasks can be used for it, so we are going
                             // to limit the amount of tasks to the requested number and try building
                             // the stage again.
-                            if in_tasks == *limit {
+                            if input_stage_info.task_count == *limit {
                                 return plan_err!("A node requested {limit} tasks for the stage its in, but that stage already has that many tasks");
                             }
                             dnode = Referenced::Arced(dnode.as_ref().with_input_task_count(*limit)?);
@@ -278,14 +279,27 @@ impl DistributedPhysicalOptimizerRule {
     }
 }
 
+/// Necessary information for building a [Stage] during distributed planning.
+///
+/// [NetworkBoundary]s return this piece of data so that the distributed planner know how to
+/// build the next [Stage] from which the [NetworkBoundary] is going to receive data.
+///
+/// Some network boundaries might perform some modifications in their children, like scaling
+/// up the number of partitions, or injecting a specific [ExecutionPlan] on top.
+pub struct InputStageInfo {
+    /// The head plan of the [Stage] that is about to be built.
+    pub plan: Arc<dyn ExecutionPlan>,
+    /// The amount of tasks the [Stage] will have.
+    pub task_count: usize,
+}
+
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
 /// The distributed planner, upon stepping into one of these, will break the plan and build a stage
 /// out of it.
 pub trait NetworkBoundary: ExecutionPlan {
-    /// Returns the information necessary for building the next stage.
-    /// - The head node of the stage.
-    /// - the amount of tasks that stage will have.
-    fn to_stage_info(&self, n_tasks: usize) -> Result<(Arc<dyn ExecutionPlan>, usize)>;
+    /// Returns the information necessary for building the next stage from which this
+    /// [NetworkBoundary] is going to collect data.
+    fn get_input_stage_info(&self, task_count: usize) -> Result<InputStageInfo>;
 
     /// re-assigns a different number of input tasks to the current [NetworkBoundary].
     ///
@@ -295,6 +309,8 @@ pub trait NetworkBoundary: ExecutionPlan {
 
     /// Called when a [Stage] is correctly formed. The [NetworkBoundary] can use this
     /// information to perform any internal transformations necessary for distributed execution.
+    ///
+    /// Typically, [NetworkBoundary]s will use this call for transitioning from "Pending" to "ready".
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>>;
 
     /// Returns the assigned input [Stage], if any.
