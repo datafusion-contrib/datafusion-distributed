@@ -1,10 +1,13 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
 use crate::execution_plans::common::require_one_child;
-use crate::protobuf::DistributedCodec;
 use crate::stage::{ExecutionTask, Stage};
+use crate::protobuf::{DistributedCodec, StageKey};
+use crate::stage::DisplayCtx;
+use bytes::Bytes;
 use datafusion::common::exec_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -12,9 +15,10 @@ use rand::Rng;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use std::sync::Mutex;
 use url::Url;
 
-/// [ExecutionPlan] that executes the inner plan in distributed mode.
+/// [ExecutionPan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
 /// 1. Assigns worker URLs to all the stages. A random set of URLs are sampled from the
 ///    channel resolver and assigned to each task in each stage.
@@ -23,11 +27,47 @@ use url::Url;
 #[derive(Debug, Clone)]
 pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
+
+    pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
+    pub display_ctx: Option<DisplayCtx>,
 }
 
 impl DistributedExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self { plan }
+        Self {
+            plan,
+            prepared_plan: Arc::new(Mutex::new(None)),
+            display_ctx: None,
+        }
+    }
+
+    /// Returns a special stage key used to identify the root "stage" of the distributed plan.
+    /// TODO: reconcile this with display_plan_graphviz
+    pub(crate) fn to_stage_key(&self) -> StageKey {
+        StageKey {
+            query_id: Bytes::new(),
+            stage_id: 0_u64,
+            task_number: 0,
+        }
+    }
+
+    pub(crate) fn with_display_ctx(&self, display_ctx: DisplayCtx) -> Self {
+        Self {
+            display_ctx: Some(display_ctx),
+            ..self.clone()
+        }
+    }
+
+    /// Returns the prepared plan which is lazily prepared on execute(). It is updated on every
+    /// call. Returns an error if .execute() has not been called.
+    pub(crate) fn pepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        self.prepared_plan
+            .lock()
+            .map_err(|e| DataFusionError::Internal(format!("Failed to lock prepared plan: {}", e)))?
+            .clone()
+            .ok_or(DataFusionError::Internal(
+                "No prepared plan found. Was execute() called?".to_string(),
+            ))
     }
 
     fn prepare_plan(
@@ -98,7 +138,9 @@ impl ExecutionPlan for DistributedExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(DistributedExec {
-            plan: require_one_child(children)?,
+            plan: require_one_child(&children)?,
+            prepared_plan: self.prepared_plan.clone(),
+            display_ctx: self.display_ctx.clone(),
         }))
     }
 
@@ -120,7 +162,14 @@ impl ExecutionPlan for DistributedExec {
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(context.session_config());
 
-        let plan = self.prepare_plan(&channel_resolver.get_urls()?, &codec)?;
-        plan.execute(partition, context)
+        let prepared = self.prepare_plan(&channel_resolver.get_urls()?, &codec)?;
+        {
+            let mut guard = self.prepared_plan.lock().map_err(|e| {
+                DataFusionError::Internal(format!("Failed to lock prepared plan: {}", e))
+            })?;
+            *guard = Some(prepared.clone());
+        }
+
+        prepared.execute(partition, context)
     }
 }
