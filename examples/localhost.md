@@ -10,6 +10,7 @@ This example queries a couple of test parquet we have for integration tests, and
 so pulling the first is necessary.
 
 ```shell
+git lfs install
 git lfs checkout
 ```
 
