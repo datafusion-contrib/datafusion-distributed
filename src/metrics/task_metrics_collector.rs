@@ -12,7 +12,9 @@ use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::Metric;
 use std::sync::Arc;
+use datafusion::physical_plan::metrics::Label;
 
 /// TaskMetricsCollector is used to collect metrics from a task. It implements [TreeNodeRewriter].
 /// Note: TaskMetricsCollector is not a [datafusion::physical_plan::ExecutionPlanVisitor] to keep
@@ -20,9 +22,11 @@ use std::sync::Arc;
 pub struct TaskMetricsCollector {
     /// metrics contains the metrics for the current task.
     task_metrics: Vec<MetricsSet>,
-    /// input_task_metrics contains metrics for tasks from child [StageExec]s if they were
+    /// input_task_metrics contains metrics for tasks from child stages if they were
     /// collected.
     input_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    /// labels appended to all metrics for the current task 
+    labels: Vec<Label>,
 }
 
 /// MetricsCollectorResult is the result of collecting metrics from a task.
@@ -84,7 +88,16 @@ impl TreeNodeRewriter for TaskMetricsCollector {
 
         // For plan nodes in this task, collect metrics.
         match plan.metrics() {
-            Some(metrics) => self.task_metrics.push(metrics.clone()),
+            Some(metrics) => {
+                let labelled_metrics = metrics.iter().map(|metric| {
+                    Arc::new(Metric::new_with_labels(metric.value().clone(), metric.partition(), self.labels.clone()))
+                }).collect::<Vec<_>>();
+                let mut labelled_metrics_set = MetricsSet::new();
+                for metric in labelled_metrics.into_iter() {
+                    labelled_metrics_set.push(metric);
+                }
+                self.task_metrics.push(labelled_metrics_set);
+            }
             None => {
                 // TODO: Consider using a more efficent encoding scheme to avoid empty slots in the vec.
                 self.task_metrics.push(MetricsSet::new())
@@ -95,10 +108,14 @@ impl TreeNodeRewriter for TaskMetricsCollector {
 }
 
 impl TaskMetricsCollector {
-    pub fn new() -> Self {
+    pub fn new(stage_id: u64, task_number: u64) -> Self {
         Self {
             task_metrics: Vec::new(),
             input_task_metrics: HashMap::new(),
+            labels: vec![
+                Label::new("stage_id", format!("{}", stage_id)),
+                Label::new("task_number", format!("{}", task_number)),
+            ],
         }
     }
 
@@ -282,7 +299,7 @@ mod tests {
         );
 
         // Collect metrics for all tasks from the root StageExec.
-        let collector = TaskMetricsCollector::new();
+        let collector = TaskMetricsCollector::new(stages.len() as u64, 0);
 
         let result = collector.collect(stage_exec.plan.clone()).unwrap();
 

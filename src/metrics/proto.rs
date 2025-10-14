@@ -26,6 +26,12 @@ pub struct MetricsSetProto {
     pub metrics: Vec<MetricProto>,
 }
 
+impl MetricsSetProto {
+    pub fn len(&self) -> usize {
+        self.metrics.len()
+    }
+}
+
 /// MetricValueProto is a protobuf mirror of the [datafusion::physical_plan::metrics::MetricValue] enum.
 #[derive(Clone, PartialEq, Eq, ::prost::Oneof)]
 pub enum MetricValueProto {

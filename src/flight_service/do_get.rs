@@ -165,8 +165,8 @@ fn collect_and_create_metrics_flight_data(
     plan: Arc<dyn ExecutionPlan>,
     incoming: FlightData,
 ) -> Result<FlightData, FlightError> {
-    // Get the metrics for the task executed on this worker. Separately, collect metrics for child tasks.
-    let mut result = TaskMetricsCollector::new()
+    // Get the metrics for the task executed on this worker + child tasks.
+    let mut result = TaskMetricsCollector::new(stage_key.stage_id, stage_key.task_number)
         .collect(plan)
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 

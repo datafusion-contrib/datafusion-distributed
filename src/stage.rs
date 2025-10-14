@@ -1,5 +1,5 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
-use crate::metrics::TaskMetricsRewriter;
+// use crate::metrics::TaskMetricsRewriter;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::plan_err;
 use datafusion::error::Result;
@@ -267,10 +267,11 @@ fn display_ascii(
                         display_ctx: &DisplayCtx|
      -> Result<Arc<dyn ExecutionPlan>, std::fmt::Error> {
         match display_ctx.metrics.get(&key) {
-            Some(metrics) => TaskMetricsRewriter::new(metrics.to_owned())
-                .enrich_task_with_metrics(plan.clone())
-                .map_err(|_e| std::fmt::Error),
-            None => Ok(plan.clone()),
+            // Some(metrics) => TaskMetricsRewriter::new(metrics.to_owned())
+            //     .enrich_task_with_metrics(plan.clone())
+            //     .map_err(|_e| std::fmt::Error),
+            // None => Ok(plan.clone()),
+            _ => Ok(plan.clone()),
         }
     };
 
