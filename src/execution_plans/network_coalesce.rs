@@ -1,13 +1,15 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{NetworkBoundary, limit_tasks_err};
+use crate::distributed_physical_optimizer_rule::{
+    InputStageInfo, NetworkBoundary, limit_tasks_err,
+};
 use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
-use crate::stage::MaybeEncodedPlan;
-use crate::{ChannelResolver, DistributedTaskContext, Stage};
+use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::{ChannelResolver, DistributedTaskContext};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -75,7 +77,7 @@ pub enum NetworkCoalesceExec {
 pub struct NetworkCoalescePending {
     properties: PlanProperties,
     input_tasks: usize,
-    child: Arc<dyn ExecutionPlan>,
+    input: Arc<dyn ExecutionPlan>,
 }
 
 /// Ready version of the [NetworkCoalesceExec] node. This node can be created in
@@ -99,30 +101,23 @@ pub struct NetworkCoalesceReady {
 }
 
 impl NetworkCoalesceExec {
-    /// Creates a new [NetworkCoalesceExec] node from a [CoalescePartitionsExec] and
-    /// [SortPreservingMergeExec].
-    pub fn from_input_exec(
-        input: &dyn ExecutionPlan,
-        input_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        let children = input.children();
-        let Some(child) = children.first() else {
-            return internal_err!("Expected a single child");
-        };
-
-        Ok(Self::Pending(NetworkCoalescePending {
-            properties: child.properties().clone(),
+    /// Builds a new [NetworkCoalesceExec] in "Pending" state.
+    ///
+    /// Typically, this node should be place right after nodes that coalesce all the input
+    /// partitions into one, for example:
+    /// - [CoalescePartitionsExec]
+    /// - [SortPreservingMergeExec]
+    pub fn new(input: Arc<dyn ExecutionPlan>, input_tasks: usize) -> Self {
+        Self::Pending(NetworkCoalescePending {
+            properties: input.properties().clone(),
             input_tasks,
-            child: Arc::clone(child),
-        }))
+            input,
+        })
     }
 }
 
 impl NetworkBoundary for NetworkCoalesceExec {
-    fn to_stage_info(
-        &self,
-        n_tasks: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError> {
+    fn get_input_stage_info(&self, n_tasks: usize) -> Result<InputStageInfo, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("can only return wrapped child if on Pending state");
         };
@@ -132,7 +127,10 @@ impl NetworkBoundary for NetworkCoalesceExec {
             return Err(limit_tasks_err(1));
         }
 
-        Ok((Arc::clone(&pending.child), pending.input_tasks))
+        Ok(InputStageInfo {
+            plan: Arc::clone(&pending.input),
+            task_count: pending.input_tasks,
+        })
     }
 
     fn with_input_stage(
@@ -173,7 +171,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
             Self::Pending(pending) => Self::Pending(NetworkCoalescePending {
                 properties: pending.properties.clone(),
                 input_tasks,
-                child: pending.child.clone(),
+                input: pending.input.clone(),
             }),
             Self::Ready(_) => {
                 plan_err!("Self can only re-assign input tasks if in 'Pending' state")?
@@ -216,7 +214,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match self {
-            NetworkCoalesceExec::Pending(v) => vec![&v.child],
+            NetworkCoalesceExec::Pending(v) => vec![&v.input],
             NetworkCoalesceExec::Ready(v) => match &v.input_stage.plan {
                 MaybeEncodedPlan::Decoded(v) => vec![v],
                 MaybeEncodedPlan::Encoded(_) => vec![],
@@ -231,12 +229,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
         match self.as_ref() {
             Self::Pending(v) => {
                 let mut v = v.clone();
-                v.child = require_one_child(&children)?;
+                v.input = require_one_child(children)?;
                 Ok(Arc::new(Self::Pending(v)))
             }
             Self::Ready(v) => {
                 let mut v = v.clone();
-                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(&children)?);
+                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
                 Ok(Arc::new(Self::Ready(v)))
             }
         }

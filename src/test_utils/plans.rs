@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
-use crate::{Stage, protobuf::StageKey};
+use crate::protobuf::StageKey;
+use crate::stage::Stage;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
 /// This does NOT traverse child stages, only the execution plan tree within this stage.

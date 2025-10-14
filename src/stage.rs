@@ -72,11 +72,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Stage {
     /// Our query_id
-    pub query_id: Uuid,
+    pub(crate) query_id: Uuid,
     /// Our stage number
-    pub num: usize,
+    pub(crate) num: usize,
     /// The physical execution plan that this stage will execute.
-    pub plan: MaybeEncodedPlan,
+    pub(crate) plan: MaybeEncodedPlan,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
@@ -86,7 +86,7 @@ pub struct Stage {
 pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
-    pub url: Option<Url>,
+    pub(crate) url: Option<Url>,
 }
 
 /// An [ExecutionPlan] that can be either:
@@ -94,7 +94,7 @@ pub struct ExecutionTask {
 /// - Encoded: the inner [ExecutionPlan] is stored as protobuf [Bytes]. Storing it this way allow us
 ///   to thread it through the project and eventually send it through gRPC in a zero copy manner.
 #[derive(Debug, Clone)]
-pub enum MaybeEncodedPlan {
+pub(crate) enum MaybeEncodedPlan {
     /// The decoded [ExecutionPlan].
     Decoded(Arc<dyn ExecutionPlan>),
     /// A protobuf encoded version of the [ExecutionPlan]. The inner [Bytes] represent the full
@@ -106,7 +106,7 @@ pub enum MaybeEncodedPlan {
 }
 
 impl MaybeEncodedPlan {
-    pub fn to_encoded(&self, codec: &dyn PhysicalExtensionCodec) -> Result<Self> {
+    pub(crate) fn to_encoded(&self, codec: &dyn PhysicalExtensionCodec) -> Result<Self> {
         Ok(match self {
             Self::Decoded(plan) => Self::Encoded(
                 PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?
@@ -117,14 +117,14 @@ impl MaybeEncodedPlan {
         })
     }
 
-    pub fn decoded(&self) -> Result<&Arc<dyn ExecutionPlan>> {
+    pub(crate) fn decoded(&self) -> Result<&Arc<dyn ExecutionPlan>> {
         match self {
             MaybeEncodedPlan::Decoded(v) => Ok(v),
             MaybeEncodedPlan::Encoded(_) => plan_err!("Expected plan to be in a decoded state"),
         }
     }
 
-    pub fn encoded(&self) -> Result<&Bytes> {
+    pub(crate) fn encoded(&self) -> Result<&Bytes> {
         match self {
             MaybeEncodedPlan::Decoded(_) => plan_err!("Expected plan to be in a encoded state"),
             MaybeEncodedPlan::Encoded(v) => Ok(v),

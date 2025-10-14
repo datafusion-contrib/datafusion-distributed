@@ -209,8 +209,8 @@ fn collect_and_create_metrics_flight_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExecutionTask;
     use crate::flight_service::session_builder::DefaultSessionBuilder;
+    use crate::stage::ExecutionTask;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
     use datafusion::physical_expr::Partitioning;

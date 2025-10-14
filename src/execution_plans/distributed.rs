@@ -2,7 +2,7 @@ use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
 use crate::execution_plans::common::require_one_child;
 use crate::protobuf::DistributedCodec;
-use crate::{ExecutionTask, Stage};
+use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -98,7 +98,7 @@ impl ExecutionPlan for DistributedExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(DistributedExec {
-            plan: require_one_child(&children)?,
+            plan: require_one_child(children)?,
         }))
     }
 

@@ -1,6 +1,7 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::physical_expr::Partitioning;
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
@@ -25,8 +26,10 @@ mod tests {
         let mut physical_distributed = physical.clone();
         for size in [1, 10, 5] {
             physical_distributed = Arc::new(NetworkShuffleExec::try_new(
-                physical_distributed,
-                Partitioning::RoundRobinBatch(size),
+                Arc::new(RepartitionExec::try_new(
+                    physical_distributed,
+                    Partitioning::Hash(vec![], size),
+                )?),
                 size,
             )?);
         }

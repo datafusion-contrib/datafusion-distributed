@@ -1,14 +1,14 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::NetworkBoundary;
+use crate::distributed_physical_optimizer_rule::{InputStageInfo, NetworkBoundary};
 use crate::execution_plans::common::{require_one_child, scale_partitioning};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
-use crate::stage::MaybeEncodedPlan;
-use crate::{ChannelResolver, DistributedTaskContext, Stage};
+use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::{ChannelResolver, DistributedTaskContext};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -124,7 +124,7 @@ pub enum NetworkShuffleExec {
 /// [NetworkShuffleReadyExec] node.
 #[derive(Debug, Clone)]
 pub struct NetworkShufflePendingExec {
-    repartition_exec: Arc<dyn ExecutionPlan>,
+    input: Arc<dyn ExecutionPlan>,
     input_tasks: usize,
 }
 
@@ -149,54 +149,44 @@ pub struct NetworkShuffleReadyExec {
 }
 
 impl NetworkShuffleExec {
+    /// Builds a new [NetworkShuffleExec] in "Pending" state.
+    ///
+    /// Typically, the `input` to this
+    /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        partitioning: Partitioning,
         input_tasks: usize,
     ) -> Result<Self, DataFusionError> {
+        if !matches!(input.output_partitioning(), Partitioning::Hash(_, _)) {
+            return plan_err!("NetworkShuffleExec input must be hash partitioned");
+        }
         Ok(Self::Pending(NetworkShufflePendingExec {
-            repartition_exec: Arc::new(RepartitionExec::try_new(input, partitioning)?),
-            input_tasks,
-        }))
-    }
-
-    pub fn from_repartition_exec(
-        r_exe: &Arc<dyn ExecutionPlan>,
-        input_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        if !r_exe.as_any().is::<RepartitionExec>() {
-            return plan_err!("Expected RepartitionExec");
-        };
-
-        Ok(Self::Pending(NetworkShufflePendingExec {
-            repartition_exec: Arc::clone(r_exe),
+            input,
             input_tasks,
         }))
     }
 }
 
 impl NetworkBoundary for NetworkShuffleExec {
-    fn to_stage_info(
-        &self,
-        n_tasks: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, usize), DataFusionError> {
+    fn get_input_stage_info(&self, n_tasks: usize) -> Result<InputStageInfo, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("cannot only return wrapped child if on Pending state");
         };
 
-        let children = pending.repartition_exec.children();
-        let Some(child) = children.first() else {
-            return plan_err!("RepartitionExec must have a child");
+        // TODO: Avoid downcasting once https://github.com/apache/datafusion/pull/17990 is shipped.
+        let Some(r_exe) = pending.input.as_any().downcast_ref::<RepartitionExec>() else {
+            return plan_err!("NetworkShuffleExec.input must always be RepartitionExec");
         };
 
         let next_stage_plan = Arc::new(RepartitionExec::try_new(
-            Arc::clone(child),
-            scale_partitioning(pending.repartition_exec.output_partitioning(), |p| {
-                p * n_tasks
-            }),
+            require_one_child(r_exe.children())?,
+            scale_partitioning(r_exe.partitioning(), |p| p * n_tasks),
         )?);
 
-        Ok((next_stage_plan, pending.input_tasks))
+        Ok(InputStageInfo {
+            plan: next_stage_plan,
+            task_count: pending.input_tasks,
+        })
     }
 
     fn with_input_task_count(
@@ -205,7 +195,7 @@ impl NetworkBoundary for NetworkShuffleExec {
     ) -> Result<Arc<dyn NetworkBoundary>, DataFusionError> {
         Ok(Arc::new(match self {
             Self::Pending(prev) => Self::Pending(NetworkShufflePendingExec {
-                repartition_exec: Arc::clone(&prev.repartition_exec),
+                input: Arc::clone(&prev.input),
                 input_tasks,
             }),
             Self::Ready(_) => plan_err!(
@@ -221,7 +211,7 @@ impl NetworkBoundary for NetworkShuffleExec {
         match self {
             Self::Pending(pending) => {
                 let ready = NetworkShuffleReadyExec {
-                    properties: pending.repartition_exec.properties().clone(),
+                    properties: pending.input.properties().clone(),
                     input_stage,
                     metrics_collection: Default::default(),
                 };
@@ -270,14 +260,14 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn properties(&self) -> &PlanProperties {
         match self {
-            NetworkShuffleExec::Pending(v) => v.repartition_exec.properties(),
+            NetworkShuffleExec::Pending(v) => v.input.properties(),
             NetworkShuffleExec::Ready(v) => &v.properties,
         }
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match self {
-            NetworkShuffleExec::Pending(v) => vec![&v.repartition_exec],
+            NetworkShuffleExec::Pending(v) => vec![&v.input],
             NetworkShuffleExec::Ready(v) => match &v.input_stage.plan {
                 MaybeEncodedPlan::Decoded(v) => vec![v],
                 MaybeEncodedPlan::Encoded(_) => vec![],
@@ -292,12 +282,12 @@ impl ExecutionPlan for NetworkShuffleExec {
         match self.as_ref() {
             Self::Pending(v) => {
                 let mut v = v.clone();
-                v.repartition_exec = require_one_child(&children)?;
+                v.input = require_one_child(children)?;
                 Ok(Arc::new(Self::Pending(v)))
             }
             Self::Ready(v) => {
                 let mut v = v.clone();
-                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(&children)?);
+                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
                 Ok(Arc::new(Self::Ready(v)))
             }
         }

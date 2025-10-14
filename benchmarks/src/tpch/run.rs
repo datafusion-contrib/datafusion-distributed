@@ -47,7 +47,7 @@ use datafusion_distributed::test_utils::localhost::{
 };
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
-    DistributedSessionBuilderContext, NetworkBoundaryExt, Stage,
+    DistributedSessionBuilderContext, NetworkBoundaryExt,
 };
 use log::info;
 use std::fs;

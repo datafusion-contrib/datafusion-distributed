@@ -17,9 +17,11 @@ pub mod test_utils;
 pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
 pub use distributed_physical_optimizer_rule::{
-    DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
+    DistributedPhysicalOptimizerRule, InputStageInfo, NetworkBoundary, NetworkBoundaryExt,
 };
-pub use execution_plans::{NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec};
+pub use execution_plans::{
+    DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
+};
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
