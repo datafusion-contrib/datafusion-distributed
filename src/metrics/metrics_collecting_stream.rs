@@ -155,7 +155,10 @@ mod tests {
                     tasks: vec![TaskMetrics {
                         stage_key: Some(stage_key.clone()),
                         // use the task number to seed the test metrics set for convenience
-                        metrics: vec![make_test_metrics_set_proto_from_seed(stage_key.task_number)],
+                        metrics: vec![make_test_metrics_set_proto_from_seed(
+                            stage_key.task_number,
+                            4,
+                        )],
                     }],
                 })),
             })
@@ -200,7 +203,7 @@ mod tests {
             assert_eq!(collected_metrics.len(), 1);
             assert_eq!(
                 collected_metrics[0],
-                make_test_metrics_set_proto_from_seed(stage_key.task_number)
+                make_test_metrics_set_proto_from_seed(stage_key.task_number, 4)
             );
         }
     }
@@ -209,7 +212,7 @@ mod tests {
     async fn test_metrics_collecting_stream_error_missing_stage_key() {
         let task_metrics_with_no_stage_key = TaskMetrics {
             stage_key: None,
-            metrics: vec![make_test_metrics_set_proto_from_seed(1)],
+            metrics: vec![make_test_metrics_set_proto_from_seed(1, 4)],
         };
 
         let invalid_app_metadata = FlightAppMetadata {

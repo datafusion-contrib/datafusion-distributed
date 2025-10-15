@@ -1,10 +1,9 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
 use crate::execution_plans::common::require_one_child;
-use crate::stage::{ExecutionTask, Stage};
-use crate::protobuf::{DistributedCodec, StageKey};
+use crate::protobuf::DistributedCodec;
 use crate::stage::DisplayCtx;
-use bytes::Bytes;
+use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
@@ -27,7 +26,6 @@ use url::Url;
 #[derive(Debug, Clone)]
 pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
-
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     pub display_ctx: Option<DisplayCtx>,
 }
@@ -41,16 +39,6 @@ impl DistributedExec {
         }
     }
 
-    /// Returns a special stage key used to identify the root "stage" of the distributed plan.
-    /// TODO: reconcile this with display_plan_graphviz
-    pub(crate) fn to_stage_key(&self) -> StageKey {
-        StageKey {
-            query_id: Bytes::new(),
-            stage_id: 0_u64,
-            task_number: 0,
-        }
-    }
-
     pub(crate) fn with_display_ctx(&self, display_ctx: DisplayCtx) -> Self {
         Self {
             display_ctx: Some(display_ctx),
@@ -58,8 +46,8 @@ impl DistributedExec {
         }
     }
 
-    /// Returns the prepared plan which is lazily prepared on execute(). It is updated on every
-    /// call. Returns an error if .execute() has not been called.
+    /// Returns the plan which is lazily prepared on execute() and actually gets executed.
+    /// It is updated on every call to execute(). Returns an error if .execute() has not been called.
     pub(crate) fn pepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         self.prepared_plan
             .lock()

@@ -24,8 +24,8 @@ pub fn settings() -> insta::Settings {
     );
     settings.add_filter(r"\d+\.\.\d+", "<int>..<int>");
 
-    // Metric filters - only replace known metric names to avoid false positives
-    settings.add_filter(r"output_rows=\d+", "output_rows=<metric>");
+    // Since metrics are not deterministic, we replace them with <metric> in test outputs.
+    // Note taht we leave metrics like `output_rows` since that is deterministic.
     settings.add_filter(
         r"elapsed_compute=[\d.]+[a-zA-Zµnms]+",
         "elapsed_compute=<metric>",
