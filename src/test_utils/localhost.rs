@@ -44,34 +44,34 @@ where
         })
         .collect();
 
-    let channel_resolver = LocalHostChannelResolver::new(ports.clone());
-    let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
-        let channel_resolver = channel_resolver.clone();
-        Ok(builder
-            .with_distributed_channel_resolver(channel_resolver)
-            .build())
-    });
+    // let channel_resolver = LocalHostChannelResolver::new(ports.clone());
+    // let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
+    //     let channel_resolver = channel_resolver.clone();
+    //     Ok(builder
+    //         .with_distributed_channel_resolver(channel_resolver)
+    //         .build())
+    // });
     let mut join_set = JoinSet::new();
-    for listener in listeners {
-        let session_builder = session_builder.clone();
-        join_set.spawn(async move {
-            spawn_flight_service(session_builder, listener)
-                .await
-                .unwrap();
-        });
-    }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // for listener in listeners {
+    //     let session_builder = session_builder.clone();
+    //     join_set.spawn(async move {
+    //         spawn_flight_service(session_builder, listener)
+    //             .await
+    //             .unwrap();
+    //     });
+    // }
+    // tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut state = session_builder
-        .build_session_state(DistributedSessionBuilderContext {
-            runtime_env: Arc::new(RuntimeEnv::default()),
-            headers: Default::default(),
-        })
-        .await
-        .unwrap();
-    state.config_mut().options_mut().execution.target_partitions = 3;
+    // let mut state = session_builder
+    //     .build_session_state(DistributedSessionBuilderContext {
+    //         runtime_env: Arc::new(RuntimeEnv::default()),
+    //         headers: Default::default(),
+    //     })
+    //     .await
+    //     .unwrap();
+    // state.config_mut().options_mut().execution.target_partitions = 3;
 
-    (SessionContext::from(state), join_set)
+    (SessionContext::new(), join_set)
 }
 
 #[derive(Clone)]
