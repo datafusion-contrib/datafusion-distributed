@@ -3,7 +3,6 @@ mod distributed_codec;
 mod errors;
 mod user_codec;
 
-#[allow(unused_imports)]
 pub(crate) use app_metadata::{AppMetadata, FlightAppMetadata, MetricsCollection, TaskMetrics};
 pub(crate) use distributed_codec::{DistributedCodec, StageKey};
 pub(crate) use errors::{
