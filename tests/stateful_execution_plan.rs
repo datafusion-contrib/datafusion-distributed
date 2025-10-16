@@ -70,12 +70,12 @@ mod tests {
         │   RepartitionExec: partitioning=RoundRobinBatch(1), input_partitions=10
         │     [Stage 2] => NetworkShuffleExec: output_partitions=10, input_tasks=10
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t1:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t2:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t3:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t4:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t5:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t6:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t7:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t8:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] t9:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p9] t1:[p0..p9] t2:[p0..p9] t3:[p0..p9] t4:[p0..p9] t5:[p0..p9] t6:[p0..p9] t7:[p0..p9] t8:[p0..p9] t9:[p0..p9] 
           │ RepartitionExec: partitioning=Hash([], 10), input_partitions=1
           │   SortExec: expr=[numbers@0 DESC NULLS LAST], preserve_partitioning=[false]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=1
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p9] 
             │ RepartitionExec: partitioning=Hash([numbers@0], 10), input_partitions=1
             │   FilterExec: numbers@0 > 1
             │     StatefulInt64ListExec: length=6
