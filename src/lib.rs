@@ -6,7 +6,6 @@ mod config_extension_ext;
 mod distributed_ext;
 mod distributed_physical_optimizer_rule;
 mod execution_plans;
-mod explain;
 mod flight_service;
 mod metrics;
 mod stage;
@@ -23,7 +22,6 @@ pub use distributed_physical_optimizer_rule::{
 pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
 };
-pub use explain::explain_analyze;
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
     DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
@@ -32,4 +30,5 @@ pub use flight_service::{
 pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
+    explain_analyze,
 };

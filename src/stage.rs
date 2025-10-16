@@ -169,7 +169,9 @@ impl Stage {
 }
 
 use crate::distributed_physical_optimizer_rule::{NetworkBoundary, NetworkBoundaryExt};
+use crate::rewrite_distributed_plan_with_metrics;
 use bytes::Bytes;
+use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -201,6 +203,19 @@ impl DisplayCtx {
     pub fn with_metrics(mut self) -> Self {
         self.show_metrics = true;
         self
+    }
+}
+
+/// explain_analyze renders an [ExecutionPlan] with metrics.
+pub fn explain_analyze(executed: Arc<dyn ExecutionPlan>) -> Result<String, DataFusionError> {
+    match executed.as_any().downcast_ref::<DistributedExec>() {
+        None => Ok(DisplayableExecutionPlan::with_metrics(executed.as_ref())
+            .indent(true)
+            .to_string()),
+        Some(_) => {
+            let executed = rewrite_distributed_plan_with_metrics(executed.clone())?;
+            Ok(display_plan_ascii(executed.as_ref()))
+        }
     }
 }
 

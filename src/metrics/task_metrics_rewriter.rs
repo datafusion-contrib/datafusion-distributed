@@ -13,7 +13,6 @@ use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::tree_node::TreeNodeRewriter;
 use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
@@ -26,23 +25,16 @@ use std::vec;
 pub fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if !plan.as_any().is::<DistributedExec>() {
+    let Some(distributed_exec) = plan.as_any().downcast_ref::<DistributedExec>() else {
         return Ok(plan);
-    }
-
-    // Metrics are available in the prepared plan of the DistributedExec.
-    let executed_plan = plan
-        .as_any()
-        .downcast_ref::<DistributedExec>()
-        .unwrap()
-        .pepared_plan()?;
+    };
 
     // Collect metrics from the DistributedExec.
     // TODO: Should we move this into the DistributedExec itself or a new ExplainAnalyzeExec?
     let MetricsCollectorResult {
         task_metrics,       // Metrics for the DistributedExec plan
         input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new().collect(executed_plan.clone())?;
+    } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
 
     let metrics_collection = Arc::new(input_task_metrics);
 
@@ -54,17 +46,15 @@ pub fn rewrite_distributed_plan_with_metrics(
                     // TODO: This transform is a bit inefficient because we traverse the plan nodes more than once.
                     // For now, this is acceptable for clarity.
                     let plan_with_metrics =
-                        StageMetricsRewriter::new(stage, metrics_collection.clone())?.rewrite()?;
-                    Ok(Transformed::new(
-                        network_boundary.with_input_stage(Stage::new(
+                        stage_metrics_rewriter(stage, metrics_collection.clone())?;
+                    Ok(Transformed::yes(network_boundary.with_input_stage(
+                        Stage::new(
                             stage.query_id,
                             stage.num,
                             plan_with_metrics,
                             stage.tasks.len(),
-                        ))?,
-                        true,
-                        TreeNodeRecursion::Continue,
-                    ))
+                        ),
+                    )?))
                 }
                 None => {
                     internal_err!("Expected input stage to be set in network boundary")
@@ -77,13 +67,9 @@ pub fn rewrite_distributed_plan_with_metrics(
             let plan_with_metrics =
                 rewrite_local_plan_with_metrics(dist_exec.plan.clone(), task_metrics.clone())?;
             let new_dist_exec = Arc::new(dist_exec).with_new_children(vec![plan_with_metrics])?;
-            return Ok(Transformed::new(
-                new_dist_exec,
-                true,
-                TreeNodeRecursion::Continue,
-            ));
+            return Ok(Transformed::yes(new_dist_exec));
         }
-        Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
+        Ok(Transformed::no(plan))
     })?;
     Ok(transformed.data)
 }
@@ -116,16 +102,15 @@ pub fn rewrite_local_plan_with_metrics(
             }
             let node_metrics = metrics[idx].clone();
             idx += 1;
-            Ok(Transformed::new(
-                Arc::new(MetricsWrapperExec::new(node.clone(), node_metrics)),
-                true,
-                TreeNodeRecursion::Continue,
-            ))
+            Ok(Transformed::yes(Arc::new(MetricsWrapperExec::new(
+                node.clone(),
+                node_metrics,
+            ))))
         })?
         .data)
 }
 
-/// MetricsRewriter is used to enrich a stage with metrics from each task by re-writing the plan using
+/// Enriches a stage with metrics from each task by re-writing the plan using
 /// [MetricsWrapperExec] nodes.
 ///
 /// Example:
@@ -154,42 +139,15 @@ pub fn rewrite_local_plan_with_metrics(
 ///
 /// TODO(#184): Collect metrics from network nodes
 /// TODO(#185): Add labels for each task
-pub struct StageMetricsRewriter<'a> {
-    /// A mapping from [StageKey] (which uniquely identifies a task)
-    /// to a list of [MetricsSetProto]. `metrics_collection[task][i]` is the metrics for
-    /// the i-th node in the task encountered via a pre-order traversal.
+pub fn stage_metrics_rewriter(
+    stage: &Stage,
     metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
-    /// The stage containing the plan to be rewritten.
-    stage: &'a Stage,
-    /// The index of a node in the plan.
-    idx: usize,
-}
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut node_idx = 0;
 
-impl<'a> StageMetricsRewriter<'a> {
-    /// Create a new StageMetricsRewriter. The provided metrics will be used to enrich the plan.
-    pub fn new(
-        stage: &'a Stage,
-        metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
-    ) -> Result<Self> {
-        Ok(Self {
-            metrics_collection,
-            stage,
-            idx: 0,
-        })
-    }
+    let plan = stage.plan.decoded()?;
 
-    /// enrich_task_with_metrics rewrites the plan by wrapping nodes. If the length of the provided metrics set vec does not
-    /// match the number of nodes in the plan, an error will be returned.
-    pub fn rewrite(mut self) -> Result<Arc<dyn ExecutionPlan>> {
-        let transformed = self.stage.plan.decoded()?.clone().rewrite(&mut self)?;
-        Ok(transformed.data)
-    }
-}
-
-impl TreeNodeRewriter for StageMetricsRewriter<'_> {
-    type Node = Arc<dyn ExecutionPlan>;
-
-    fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
+    plan.clone().transform_down(|plan| {
         // Stop at network boundaries.
         if plan.as_network_boundary().is_some() {
             return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
@@ -198,21 +156,21 @@ impl TreeNodeRewriter for StageMetricsRewriter<'_> {
         // Collect metrics for this node. It should contain metrics from each task.
         let mut stage_metrics = MetricsSetProto::new();
 
-        for idx in 0..self.stage.tasks.len() {
+        for idx in 0..stage.tasks.len() {
             let stage_key = StageKey {
-                query_id: Bytes::from(self.stage.query_id.as_bytes().to_vec()),
-                stage_id: self.stage.num as u64,
+                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
+                stage_id: stage.num as u64,
                 task_number: idx as u64,
             };
-            match self.metrics_collection.get(&stage_key) {
+            match metrics_collection.get(&stage_key) {
                 Some(task_metrics) => {
-                    if self.idx >= task_metrics.len() {
+                    if node_idx >= task_metrics.len() {
                         return internal_err!(
                             "not enough metrics provided to rewrite task: {} metrics provided",
                             task_metrics.len()
                         );
                     }
-                    let node_metrics = task_metrics[self.idx].clone();
+                    let node_metrics = task_metrics[node_idx].clone();
                     for metric in node_metrics.metrics.iter() {
                         stage_metrics.push(metric.clone());
                     }
@@ -221,20 +179,20 @@ impl TreeNodeRewriter for StageMetricsRewriter<'_> {
                     return internal_err!(
                         "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
                         idx,
-                        self.stage.num
+                        stage.num
                     );
                 }
             }
         }
 
+        node_idx += 1;
+
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan.clone(),
             metrics_set_proto_to_df(&stage_metrics)?,
         ));
-        let result = Transformed::new(wrapped_plan_node, true, TreeNodeRecursion::Continue);
-        self.idx += 1;
-        Ok(result)
-    }
+        Ok(Transformed::yes(wrapped_plan_node))
+    }).map(|v| v.data)
 }
 
 #[cfg(test)]
@@ -245,6 +203,7 @@ mod tests {
         MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
     };
     use crate::metrics::rewrite_distributed_plan_with_metrics;
+    use crate::metrics::task_metrics_rewriter::stage_metrics_rewriter;
     use crate::protobuf::StageKey;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
@@ -268,7 +227,6 @@ mod tests {
 
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
-    use crate::metrics::StageMetricsRewriter;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use datafusion::physical_plan::metrics::MetricsSet;
 
@@ -420,8 +378,7 @@ mod tests {
         let metrics_collection = Arc::new(metrics_collection);
 
         // Rewrite the plan.
-        let rewriter = StageMetricsRewriter::new(&stage, metrics_collection.clone()).unwrap();
-        let rewritten_plan = rewriter.rewrite().unwrap();
+        let rewritten_plan = stage_metrics_rewriter(&stage, metrics_collection.clone()).unwrap();
 
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];

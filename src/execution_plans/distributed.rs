@@ -5,6 +5,7 @@ use crate::protobuf::DistributedCodec;
 use crate::stage::DisplayCtx;
 use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
+use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -17,13 +18,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use url::Url;
 
-/// [ExecutionPan] that executes the inner plan in distributed mode.
+/// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
 /// 1. Assigns worker URLs to all the stages. A random set of URLs are sampled from the
 ///    channel resolver and assigned to each task in each stage.
 /// 2. Encodes all the plans in protobuf format so that network boundary nodes can send them
 ///    over the wire.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
@@ -39,23 +40,25 @@ impl DistributedExec {
         }
     }
 
+    /// Returns a copy of this plan with the display context set.
     pub(crate) fn with_display_ctx(&self, display_ctx: DisplayCtx) -> Self {
         Self {
             display_ctx: Some(display_ctx),
-            ..self.clone()
+            prepared_plan: self.prepared_plan.clone(),
+            plan: self.plan.clone(),
         }
     }
 
     /// Returns the plan which is lazily prepared on execute() and actually gets executed.
     /// It is updated on every call to execute(). Returns an error if .execute() has not been called.
-    pub(crate) fn pepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    pub(crate) fn prepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         self.prepared_plan
             .lock()
-            .map_err(|e| DataFusionError::Internal(format!("Failed to lock prepared plan: {}", e)))?
+            .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?
             .clone()
-            .ok_or(DataFusionError::Internal(
-                "No prepared plan found. Was execute() called?".to_string(),
-            ))
+            .ok_or_else(|| {
+                internal_datafusion_err!("No prepared plan found. Was execute() called?")
+            })
     }
 
     fn prepare_plan(
@@ -152,9 +155,10 @@ impl ExecutionPlan for DistributedExec {
 
         let prepared = self.prepare_plan(&channel_resolver.get_urls()?, &codec)?;
         {
-            let mut guard = self.prepared_plan.lock().map_err(|e| {
-                DataFusionError::Internal(format!("Failed to lock prepared plan: {}", e))
-            })?;
+            let mut guard = self
+                .prepared_plan
+                .lock()
+                .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?;
             *guard = Some(prepared.clone());
         }
 
