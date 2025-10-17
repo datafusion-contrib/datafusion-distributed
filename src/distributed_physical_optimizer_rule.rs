@@ -10,6 +10,7 @@ use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::streaming::StreamingTableExec;
 use datafusion::{
     common::tree_node::{Transformed, TreeNode},
     config::ConfigOptions,
@@ -196,7 +197,23 @@ impl DistributedPhysicalOptimizerRule {
     pub fn distribute_plan(
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let stage = Self::_distribute_plan_inner(Uuid::new_v4(), plan, &mut 1, 0, 1)?;
+        let stage = match Self::_distribute_plan_inner(Uuid::new_v4(), plan.clone(), &mut 1, 0, 1) {
+            Ok(stage) => stage,
+            Err(err) => {
+                return match get_distribute_plan_err(&err) {
+                    Some(DistributedPlanError::NonDistributable(_)) => plan
+                        .transform_down(|plan| {
+                            // If the node cannot be distributed, rollback all the network boundaries.
+                            if let Some(nb) = plan.as_network_boundary() {
+                                return Ok(Transformed::yes(nb.rollback()?));
+                            }
+                            Ok(Transformed::no(plan))
+                        })
+                        .map(|v| v.data),
+                    _ => Err(err),
+                };
+            }
+        };
         let plan = stage.plan.decoded()?;
         Ok(Arc::new(DistributedExec::new(Arc::clone(plan))))
     }
@@ -217,6 +234,11 @@ impl DistributedPhysicalOptimizerRule {
                 if n_tasks > 1 && node.mode == PartitionMode::CollectLeft {
                     return Err(limit_tasks_err(1));
                 }
+            }
+
+            // We cannot distribute [StreamingTableExec] nodes, so abort distribution.
+            if plan.as_any().is::<StreamingTableExec>() {
+                return Err(non_distributable_err(StreamingTableExec::static_name()))
             }
 
             if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
@@ -258,6 +280,11 @@ impl DistributedPhysicalOptimizerRule {
                                 return plan_err!("A node requested {limit} tasks for the stage its in, but that stage already has that many tasks");
                             }
                             dnode = Referenced::Arced(dnode.as_ref().with_input_task_count(*limit)?);
+                        }
+                        Some(DistributedPlanError::NonDistributable(_)) => {
+                            // This full plan is non-distributable, so abort any task and stage
+                            // assignation.
+                            return Err(e);
                         }
                     },
                 }
@@ -376,14 +403,17 @@ enum DistributedPlanError {
     /// Prompts the planner to limit the amount of tasks used in the stage that is currently
     /// being planned.
     LimitTasks(usize),
+    /// Signals the planner that this whole plan is non-distributable. This can happen if
+    /// certain nodes are present, like [StreamingTableExec], which are typically used in
+    /// queries that rather performing some execution, they perform some introspection.
+    NonDistributable(&'static str),
 }
 
 impl Display for DistributedPlanError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            DistributedPlanError::LimitTasks(n) => {
-                write!(f, "LimitTasksErr: {n}")
-            }
+            DistributedPlanError::LimitTasks(n) => write!(f, "LimitTasksErr: {n}"),
+            DistributedPlanError::NonDistributable(name) => write!(f, "NonDistributable: {name}"),
         }
     }
 }
@@ -394,6 +424,12 @@ impl Error for DistributedPlanError {}
 /// to try rebuilding the current stage with a limited amount of tasks.
 pub fn limit_tasks_err(limit: usize) -> DataFusionError {
     DataFusionError::External(Box::new(DistributedPlanError::LimitTasks(limit)))
+}
+
+/// Builds a [DistributedPlanError::NonDistributable] error. This error prompts the distributed
+/// planner to not distribute the query at all.
+pub fn non_distributable_err(name: &'static str) -> DataFusionError {
+    DataFusionError::External(Box::new(DistributedPlanError::NonDistributable(name)))
 }
 
 fn get_distribute_plan_err(err: &DataFusionError) -> Option<&DistributedPlanError> {
@@ -630,6 +666,20 @@ mod tests {
         ");
     }
 
+    #[tokio::test]
+    async fn test_show_columns() {
+        let query = r#"SHOW COLUMNS from weather"#;
+        let plan = sql_to_explain(query, 2).await.unwrap();
+        assert_snapshot!(plan, @r"
+        CoalescePartitionsExec
+          ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
+            CoalesceBatchesExec: target_batch_size=8192
+              FilterExec: table_name@2 = weather
+                RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+                  StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
+        ");
+    }
+
     async fn sql_to_explain(query: &str, tasks: usize) -> Result<String, DataFusionError> {
         sql_to_explain_with_rule(
             query,
@@ -644,7 +694,9 @@ mod tests {
         query: &str,
         rule: DistributedPhysicalOptimizerRule,
     ) -> Result<String, DataFusionError> {
-        let config = SessionConfig::new().with_target_partitions(4);
+        let config = SessionConfig::new()
+            .with_target_partitions(4)
+            .with_information_schema(true);
 
         let state = SessionStateBuilder::new()
             .with_default_features()
