@@ -5,7 +5,7 @@ use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
-use itertools::{Either, Itertools};
+use itertools::Either;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use url::Url;
@@ -313,9 +313,12 @@ fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> Stri
     let mut off = 0;
     for i in 0..n_tasks {
         result += &format!("t{i}:[");
-        result += &(off..(off + input_partitions))
-            .map(|v| format!("p{v}"))
-            .join(",");
+        let end = off + input_partitions - 1;
+        if input_partitions == 1 {
+            result += &format!("p{off}");
+        } else {
+            result += &format!("p{off}..p{end}");
+        }
         result += "] ";
         off += if hash_shuffle { 0 } else { input_partitions }
     }
