@@ -55,7 +55,7 @@ mod tests {
         │           CoalesceBatchesExec: target_batch_size=8192
         │             [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0,p1,p2] t1:[p0,p1,p2] 
+          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
           │ RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=2
           │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
@@ -132,13 +132,13 @@ mod tests {
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=18, input_tasks=6
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0,p1,p2] t1:[p0,p1,p2] t2:[p0,p1,p2] t3:[p0,p1,p2] t4:[p0,p1,p2] t5:[p0,p1,p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] t4:[p0..p2] t5:[p0..p2] 
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     CoalesceBatchesExec: target_batch_size=8192
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15,p16,p17] t1:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15,p16,p17] t2:[p0,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15,p16,p17] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p17] t1:[p0..p17] t2:[p0..p17] 
             │ RepartitionExec: partitioning=Hash([RainToday@0], 18), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
