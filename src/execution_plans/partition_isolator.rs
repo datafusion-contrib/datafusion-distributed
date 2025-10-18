@@ -1,5 +1,5 @@
 use crate::DistributedTaskContext;
-use crate::distributed_physical_optimizer_rule::limit_tasks_err;
+use crate::distributed_planner::limit_tasks_err;
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;

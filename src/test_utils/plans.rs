@@ -5,7 +5,7 @@ use datafusion::{
 };
 use std::sync::Arc;
 
-use crate::distributed_physical_optimizer_rule::NetworkBoundaryExt;
+use crate::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
 use crate::protobuf::StageKey;
 use crate::stage::Stage;

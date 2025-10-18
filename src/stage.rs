@@ -168,8 +168,8 @@ impl Stage {
     }
 }
 
-use crate::distributed_physical_optimizer_rule::{NetworkBoundary, NetworkBoundaryExt};
 use crate::rewrite_distributed_plan_with_metrics;
+use crate::{NetworkBoundary, NetworkBoundaryExt};
 use bytes::Bytes;
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;

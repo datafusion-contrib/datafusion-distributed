@@ -1,6 +1,5 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{InputStageInfo, NetworkBoundary};
 use crate::execution_plans::common::{require_one_child, scale_partitioning};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
@@ -8,7 +7,7 @@ use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{ChannelResolver, DistributedTaskContext};
+use crate::{ChannelResolver, DistributedTaskContext, InputStageInfo, NetworkBoundary};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
