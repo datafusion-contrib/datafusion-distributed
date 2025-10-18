@@ -14,8 +14,7 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
-        NetworkShuffleExec,
+        DistributedExt, DistributedSessionBuilderContext, NetworkShuffleExec, distribute_plan,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -51,7 +50,7 @@ mod tests {
                 size,
             )?);
         }
-        let plan = DistributedPhysicalOptimizerRule::distribute_plan(plan)?;
+        let plan = distribute_plan(plan)?;
         let stream = execute_stream(plan, ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {

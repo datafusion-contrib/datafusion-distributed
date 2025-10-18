@@ -153,11 +153,9 @@ mod tests {
             .with_default_features()
             .with_config(config)
             .with_distributed_channel_resolver(InMemoryChannelResolver::new())
-            .with_physical_optimizer_rule(Arc::new(
-                DistributedPhysicalOptimizerRule::default()
-                    .with_network_coalesce_tasks(2)
-                    .with_network_shuffle_tasks(2),
-            ))
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_network_coalesce_tasks(2)
+            .with_distributed_network_shuffle_tasks(2)
             .build();
 
         let ctx = SessionContext::from(state);

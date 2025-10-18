@@ -14,9 +14,11 @@ mod tests {
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
     };
+    use datafusion_distributed::NetworkShuffleExec;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
-    use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkShuffleExec};
+    use datafusion_distributed::{
+        DistributedExt, DistributedSessionBuilderContext, distribute_plan,
+    };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -56,7 +58,7 @@ mod tests {
             )?);
         }
 
-        let plan = DistributedPhysicalOptimizerRule::distribute_plan(plan)?;
+        let plan = distribute_plan(plan)?;
         let stream = execute_stream(plan, ctx.task_ctx())?;
         // It should not fail.
         stream.try_collect::<Vec<_>>().await?;

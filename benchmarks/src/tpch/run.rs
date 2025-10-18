@@ -159,10 +159,14 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
         if !self.workers.is_empty() {
-            let rule = DistributedPhysicalOptimizerRule::new()
-                .with_network_coalesce_tasks(self.coalesce_tasks.unwrap_or(self.workers.len()))
-                .with_network_shuffle_tasks(self.shuffle_tasks.unwrap_or(self.workers.len()));
-            builder = builder.with_physical_optimizer_rule(Arc::new(rule));
+            builder = builder
+                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_network_coalesce_tasks(
+                    self.coalesce_tasks.unwrap_or(self.workers.len()),
+                )
+                .with_distributed_network_shuffle_tasks(
+                    self.shuffle_tasks.unwrap_or(self.workers.len()),
+                );
         }
 
         Ok(builder

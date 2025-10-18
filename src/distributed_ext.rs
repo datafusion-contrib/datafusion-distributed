@@ -1,9 +1,12 @@
-use crate::ChannelResolver;
 use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
+use crate::distributed_planner::{
+    set_distributed_network_coalesce_tasks, set_distributed_network_shuffle_tasks,
+};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
+use crate::{ChannelResolver, IntoPlanDependantUsize};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -221,6 +224,32 @@ pub trait DistributedExt: Sized {
         &mut self,
         resolver: T,
     );
+
+    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
+    /// ```text
+    ///              ( task 1 )
+    ///                  ▲
+    ///      ┌───────────┴──────────┐
+    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
+    /// ```
+    /// This parameter defines N
+    fn with_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(self, tasks: T) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_network_coalesce_tasks] but with an in-place mutation.
+    fn set_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+
+    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
+    /// ```text
+    ///  ( task 1 )  ( task 2 ) ( task 3 )
+    ///      ▲           ▲          ▲
+    ///      └────┬──────┴─────┬────┘
+    ///       ( task 1 )  ( task 2 )       N tasks
+    /// ```
+    /// This parameter defines N
+    fn with_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(self, tasks: T) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_network_shuffle_tasks] but with an in-place mutation.
+    fn set_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
 }
 
 impl DistributedExt for SessionConfig {
@@ -253,6 +282,14 @@ impl DistributedExt for SessionConfig {
         set_distributed_channel_resolver(self, resolver)
     }
 
+    fn set_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T) {
+        set_distributed_network_coalesce_tasks(self, tasks)
+    }
+
+    fn set_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T) {
+        set_distributed_network_shuffle_tasks(self, tasks)
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -274,6 +311,14 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            #[call(set_distributed_network_coalesce_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
+
+            #[call(set_distributed_network_shuffle_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
         }
     }
 }
@@ -305,6 +350,16 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            fn set_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_coalesce_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
+
+            fn set_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_shuffle_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
         }
     }
 }
@@ -336,6 +391,16 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            fn set_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_coalesce_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
+
+            fn set_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_shuffle_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(mut self, tasks: T) -> Self;
         }
     }
 }
@@ -367,6 +432,16 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
+
+            fn set_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_coalesce_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_coalesce_tasks<T: IntoPlanDependantUsize>(self, tasks: T) -> Self;
+
+            fn set_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(&mut self, tasks: T);
+            #[call(set_distributed_network_shuffle_tasks)]
+            #[expr($;self)]
+            fn with_distributed_network_shuffle_tasks<T: IntoPlanDependantUsize>(self, tasks: T) -> Self;
         }
     }
 }
