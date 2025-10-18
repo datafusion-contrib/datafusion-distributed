@@ -1,13 +1,12 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::physical_optimizer::PhysicalOptimizerRule;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedPhysicalOptimizerRule, assert_snapshot,
-        display_plan_ascii,
+        DefaultSessionBuilder, DistributedConfig, apply_network_boundaries, assert_snapshot,
+        display_plan_ascii, distribute_plan,
     };
     use futures::TryStreamExt;
     use std::error::Error;
@@ -24,9 +23,9 @@ mod tests {
 
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
-        let physical_distributed = DistributedPhysicalOptimizerRule::default()
-            .with_network_shuffle_tasks(2)
-            .optimize(physical.clone(), &Default::default())?;
+        let cfg = DistributedConfig::default().with_network_shuffle_tasks(2);
+        let physical_distributed = apply_network_boundaries(physical.clone(), &cfg)?;
+        let physical_distributed = distribute_plan(physical_distributed)?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
@@ -108,10 +107,11 @@ mod tests {
 
         let physical_str = displayable(physical.as_ref()).indent(true).to_string();
 
-        let physical_distributed = DistributedPhysicalOptimizerRule::default()
+        let cfg = DistributedConfig::default()
             .with_network_shuffle_tasks(6)
-            .with_network_coalesce_tasks(6)
-            .optimize(physical.clone(), &Default::default())?;
+            .with_network_coalesce_tasks(6);
+        let physical_distributed = apply_network_boundaries(physical.clone(), &cfg)?;
+        let physical_distributed = distribute_plan(physical_distributed)?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 

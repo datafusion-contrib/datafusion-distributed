@@ -23,12 +23,12 @@ mod tests {
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
     };
+    use datafusion_distributed::NetworkShuffleExec;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
         DistributedExt, DistributedSessionBuilderContext, PartitionIsolatorExec, assert_snapshot,
-        display_plan_ascii,
+        display_plan_ascii, distribute_plan,
     };
-    use datafusion_distributed::{DistributedPhysicalOptimizerRule, NetworkShuffleExec};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
     use futures::TryStreamExt;
@@ -62,7 +62,7 @@ mod tests {
         let (ctx, _guard) = start_localhost_context(3, build_state).await;
 
         let distributed_plan = build_plan()?;
-        let distributed_plan = DistributedPhysicalOptimizerRule::distribute_plan(distributed_plan)?;
+        let distributed_plan = distribute_plan(distributed_plan)?;
 
         assert_snapshot!(display_plan_ascii(distributed_plan.as_ref(), false), @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 

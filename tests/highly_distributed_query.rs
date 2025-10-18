@@ -6,8 +6,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedPhysicalOptimizerRule, NetworkShuffleExec,
-        assert_snapshot, display_plan_ascii,
+        DefaultSessionBuilder, NetworkShuffleExec, assert_snapshot, display_plan_ascii,
+        distribute_plan,
     };
     use futures::TryStreamExt;
     use std::error::Error;
@@ -34,8 +34,7 @@ mod tests {
             )?);
         }
 
-        let physical_distributed =
-            DistributedPhysicalOptimizerRule::distribute_plan(physical_distributed)?;
+        let physical_distributed = distribute_plan(physical_distributed)?;
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,
