@@ -10,15 +10,30 @@ use arrow_flight::{
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::BoxStream;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status, Streaming};
 
+#[allow(clippy::type_complexity)]
+pub(super) struct ArrowFlightEndpointHooks {
+    pub(super) on_plan: Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>,
+}
+
+impl Default for ArrowFlightEndpointHooks {
+    fn default() -> Self {
+        Self {
+            on_plan: Arc::new(|plan| plan),
+        }
+    }
+}
+
 pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
+    pub(super) hooks: ArrowFlightEndpointHooks,
 }
 
 impl ArrowFlightEndpoint {
@@ -30,7 +45,20 @@ impl ArrowFlightEndpoint {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(session_builder),
+            hooks: ArrowFlightEndpointHooks::default(),
         })
+    }
+
+    /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.
+    ///
+    /// The callback takes the plan and returns another plan that must be either the same,
+    /// or equivalent in terms of execution. Mutating the plan by adding nodes or removing them
+    /// will make the query blow up in unexpected ways.
+    pub fn on_plan(
+        &mut self,
+        cbk: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
+    ) {
+        self.hooks.on_plan = Arc::new(cbk);
     }
 }
 
