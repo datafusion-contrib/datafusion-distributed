@@ -17,16 +17,10 @@ use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
+#[derive(Default)]
 pub(super) struct ArrowFlightEndpointHooks {
-    pub(super) on_plan: Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>,
-}
-
-impl Default for ArrowFlightEndpointHooks {
-    fn default() -> Self {
-        Self {
-            on_plan: Arc::new(|plan| plan),
-        }
-    }
+    pub(super) on_plan:
+        Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
 pub struct ArrowFlightEndpoint {
@@ -54,11 +48,11 @@ impl ArrowFlightEndpoint {
     /// The callback takes the plan and returns another plan that must be either the same,
     /// or equivalent in terms of execution. Mutating the plan by adding nodes or removing them
     /// will make the query blow up in unexpected ways.
-    pub fn on_plan(
+    pub fn add_on_plan_hook(
         &mut self,
-        cbk: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
+        hook: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
     ) {
-        self.hooks.on_plan = Arc::new(cbk);
+        self.hooks.on_plan.push(Arc::new(hook));
     }
 }
 

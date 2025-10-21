@@ -94,8 +94,10 @@ impl ArrowFlightEndpoint {
         let stage_data = once
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
-                let plan = proto_node.try_into_physical_plan(&ctx, &self.runtime, &codec)?;
-                let plan = (self.hooks.on_plan)(plan);
+                let mut plan = proto_node.try_into_physical_plan(&ctx, &self.runtime, &codec)?;
+                for hook in self.hooks.on_plan.iter() {
+                    plan = hook(plan)
+                }
 
                 // Initialize partition count to the number of partitions in the stage
                 let total_partitions = plan.properties().partitioning.partition_count();
@@ -232,7 +234,7 @@ mod tests {
         let plans_received = Arc::new(AtomicUsize::default());
         {
             let plans_received = Arc::clone(&plans_received);
-            endpoint.on_plan(move |plan| {
+            endpoint.add_on_plan_hook(move |plan| {
                 plans_received.fetch_add(1, Ordering::SeqCst);
                 plan
             });
