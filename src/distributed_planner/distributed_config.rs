@@ -11,6 +11,12 @@ pub struct PlanDependantUsize(
     pub(crate) Arc<dyn Fn(&Arc<dyn ExecutionPlan>) -> usize + Send + Sync>,
 );
 
+impl PlanDependantUsize {
+    pub fn call(&self, plan: &Arc<dyn ExecutionPlan>) -> usize {
+        self.0(plan)
+    }
+}
+
 pub trait IntoPlanDependantUsize {
     fn into_plan_dependant_usize(self) -> PlanDependantUsize;
 }
