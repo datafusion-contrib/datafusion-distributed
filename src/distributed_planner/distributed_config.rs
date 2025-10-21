@@ -66,7 +66,7 @@ extensions_options! {
         ///       ( task 1 )  ( task 2 )       N tasks
         /// ```
         /// This parameter defines N
-        pub(crate) network_shuffle_tasks: Option<PlanDependantUsize>, default = None
+        pub network_shuffle_tasks: Option<PlanDependantUsize>, default = None
         /// Upon merging multiple tasks into one, this defines how many tasks are merged.
         /// ```text
         ///              ( task 1 )
@@ -75,7 +75,7 @@ extensions_options! {
         ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
         /// ```
         /// This parameter defines N
-        pub(crate) network_coalesce_tasks: Option<PlanDependantUsize>, default = None
+        pub network_coalesce_tasks: Option<PlanDependantUsize>, default = None
     }
 }
 
