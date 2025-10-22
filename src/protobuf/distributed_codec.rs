@@ -8,7 +8,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
-use datafusion::execution::FunctionRegistry;
+use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
@@ -40,7 +40,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _registry: &dyn FunctionRegistry,
+        registry: &dyn FunctionRegistry,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let DistributedExecProto {
             node: Some(distributed_exec_node),
@@ -54,7 +54,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
         // TODO: The PhysicalExtensionCodec trait doesn't provide access to session state,
         // so we create a new SessionContext which loses any custom UDFs, UDAFs, and other
         // user configurations. This is a limitation of the current trait design.
-        let ctx = SessionContext::new();
+        let state = SessionStateBuilder::new()
+            .with_scalar_functions(
+                registry
+                    .udfs()
+                    .iter()
+                    .map(|f| registry.udf(f))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .build();
+        let ctx = SessionContext::from(state);
 
         fn parse_stage_proto(
             proto: Option<StageProto>,
