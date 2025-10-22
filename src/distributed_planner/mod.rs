@@ -7,7 +7,7 @@ pub(crate) use distributed_config::{
     set_distributed_network_coalesce_tasks, set_distributed_network_shuffle_tasks,
 };
 
-pub use distributed_config::{DistributedConfig, IntoPlanDependantUsize, PlanDependantUsize};
+pub use distributed_config::{DistributedConfig, IntoPlanDependentUsize, PlanDependentUsize};
 pub use distributed_physical_optimizer_rule::{
     DistributedPhysicalOptimizerRule, apply_network_boundaries, distribute_plan,
 };
