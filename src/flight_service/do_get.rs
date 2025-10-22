@@ -94,7 +94,10 @@ impl ArrowFlightEndpoint {
         let stage_data = once
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
-                let plan = proto_node.try_into_physical_plan(&ctx, &self.runtime, &codec)?;
+                let mut plan = proto_node.try_into_physical_plan(&ctx, &self.runtime, &codec)?;
+                for hook in self.hooks.on_plan.iter() {
+                    plan = hook(plan)
+                }
 
                 // Initialize partition count to the number of partitions in the stage
                 let total_partitions = plan.properties().partitioning.partition_count();
@@ -226,8 +229,16 @@ mod tests {
     #[tokio::test]
     async fn test_task_data_partition_counting() {
         // Create ArrowFlightEndpoint with DefaultSessionBuilder
-        let endpoint =
+        let mut endpoint =
             ArrowFlightEndpoint::try_new(DefaultSessionBuilder).expect("Failed to create endpoint");
+        let plans_received = Arc::new(AtomicUsize::default());
+        {
+            let plans_received = Arc::clone(&plans_received);
+            endpoint.add_on_plan_hook(move |plan| {
+                plans_received.fetch_add(1, Ordering::SeqCst);
+                plan
+            });
+        }
 
         // Create 3 tasks with 3 partitions each.
         let num_tasks = 3;
@@ -297,6 +308,8 @@ mod tests {
                 assert!(result.is_ok());
             }
         }
+        // As many plans as tasks should have been received.
+        assert_eq!(plans_received.load(Ordering::SeqCst), task_keys.len());
 
         // Check that the endpoint has not evicted any task states.
         assert_eq!(endpoint.task_data_entries.len(), num_tasks as usize);
