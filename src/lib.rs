@@ -17,7 +17,9 @@ pub mod test_utils;
 pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver};
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedPhysicalOptimizerRule, InputStageInfo, NetworkBoundary, NetworkBoundaryExt,
+    DistributedConfig, DistributedPhysicalOptimizerRule, InputStageInfo, IntoPlanDependentUsize,
+    NetworkBoundary, NetworkBoundaryExt, PlanDependentUsize, apply_network_boundaries,
+    distribute_plan,
 };
 pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,

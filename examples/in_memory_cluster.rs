@@ -28,6 +28,12 @@ struct Args {
 
     #[structopt(long)]
     explain: bool,
+
+    #[structopt(long, default_value = "3")]
+    network_shuffle_tasks: usize,
+
+    #[structopt(long, default_value = "3")]
+    network_coalesce_tasks: usize,
 }
 
 #[tokio::main]
@@ -37,7 +43,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_channel_resolver(InMemoryChannelResolver::new())
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule::new()))
+        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_network_coalesce_tasks(args.network_shuffle_tasks)
+        .with_distributed_network_shuffle_tasks(args.network_coalesce_tasks)
         .build();
 
     let ctx = SessionContext::from(state);

@@ -10,14 +10,13 @@ mod tests {
     };
     use datafusion::physical_expr::expressions::lit;
     use datafusion::physical_expr::{Partitioning, ScalarFunctionExpr};
-    use datafusion::physical_optimizer::PhysicalOptimizerRule;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, assert_snapshot,
-        display_plan_ascii,
+        DistributedConfig, DistributedSessionBuilderContext, apply_network_boundaries,
+        assert_snapshot, display_plan_ascii, distribute_plan,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -59,10 +58,12 @@ mod tests {
 
         let node = wrap(wrap(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))));
 
-        let physical_distributed = DistributedPhysicalOptimizerRule::default()
+        let cfg = DistributedConfig::default()
             .with_network_shuffle_tasks(2)
-            .with_network_coalesce_tasks(2)
-            .optimize(node, &Default::default())?;
+            .with_network_coalesce_tasks(2);
+        let node = apply_network_boundaries(node, &cfg)?;
+
+        let physical_distributed = distribute_plan(node)?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
