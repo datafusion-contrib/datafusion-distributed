@@ -1,8 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::distributed_physical_optimizer_rule::{
-    InputStageInfo, NetworkBoundary, limit_tasks_err,
-};
+use crate::distributed_planner::{InputStageInfo, NetworkBoundary, limit_tasks_err};
 use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;

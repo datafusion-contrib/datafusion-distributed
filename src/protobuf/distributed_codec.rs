@@ -1,5 +1,5 @@
 use super::get_distributed_user_codecs;
-use crate::distributed_physical_optimizer_rule::NetworkBoundary;
+use crate::NetworkBoundary;
 use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};

@@ -1,4 +1,4 @@
-use crate::NetworkBoundaryExt;
+use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
 use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::MetricsCollectorResult;

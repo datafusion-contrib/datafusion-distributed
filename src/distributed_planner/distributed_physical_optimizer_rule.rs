@@ -1,6 +1,10 @@
-use super::{NetworkShuffleExec, PartitionIsolatorExec};
+use crate::distributed_planner::distributed_plan_error::get_distribute_plan_err;
+use crate::distributed_planner::{
+    DistributedPlanError, NetworkBoundaryExt, limit_tasks_err, non_distributable_err,
+};
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::stage::Stage;
+use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::source::DataSourceExec;
@@ -18,8 +22,6 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{ExecutionPlan, repartition::RepartitionExec},
 };
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -305,82 +307,6 @@ impl DistributedPhysicalOptimizerRule {
         Ok(stage)
     }
 }
-
-/// Necessary information for building a [Stage] during distributed planning.
-///
-/// [NetworkBoundary]s return this piece of data so that the distributed planner know how to
-/// build the next [Stage] from which the [NetworkBoundary] is going to receive data.
-///
-/// Some network boundaries might perform some modifications in their children, like scaling
-/// up the number of partitions, or injecting a specific [ExecutionPlan] on top.
-pub struct InputStageInfo {
-    /// The head plan of the [Stage] that is about to be built.
-    pub plan: Arc<dyn ExecutionPlan>,
-    /// The amount of tasks the [Stage] will have.
-    pub task_count: usize,
-}
-
-/// This trait represents a node that introduces the necessity of a network boundary in the plan.
-/// The distributed planner, upon stepping into one of these, will break the plan and build a stage
-/// out of it.
-pub trait NetworkBoundary: ExecutionPlan {
-    /// Returns the information necessary for building the next stage from which this
-    /// [NetworkBoundary] is going to collect data.
-    fn get_input_stage_info(&self, task_count: usize) -> Result<InputStageInfo>;
-
-    /// re-assigns a different number of input tasks to the current [NetworkBoundary].
-    ///
-    /// This will be called if upon building a stage, a [DistributedPlanError::LimitTasks] error
-    /// is returned, prompting the [NetworkBoundary] to choose a different number of input tasks.
-    fn with_input_task_count(&self, input_tasks: usize) -> Result<Arc<dyn NetworkBoundary>>;
-
-    /// Called when a [Stage] is correctly formed. The [NetworkBoundary] can use this
-    /// information to perform any internal transformations necessary for distributed execution.
-    ///
-    /// Typically, [NetworkBoundary]s will use this call for transitioning from "Pending" to "ready".
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>>;
-
-    /// Returns the assigned input [Stage], if any.
-    fn input_stage(&self) -> Option<&Stage>;
-
-    /// The planner might decide to remove this [NetworkBoundary] from the plan if it decides that
-    /// it's not going to bring any benefit. The [NetworkBoundary] will be replaced with whatever
-    /// this function returns.
-    fn rollback(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        let children = self.children();
-        if children.len() != 1 {
-            return plan_err!(
-                "Expected distributed node {} to have exactly 1 children, but got {}",
-                self.name(),
-                children.len()
-            );
-        }
-        Ok(Arc::clone(children.first().unwrap()))
-    }
-}
-
-/// Extension trait for downcasting dynamic types to [NetworkBoundary].
-pub trait NetworkBoundaryExt {
-    /// Downcasts self to a [NetworkBoundary] if possible.
-    fn as_network_boundary(&self) -> Option<&dyn NetworkBoundary>;
-    /// Returns whether self is a [NetworkBoundary] or not.
-    fn is_network_boundary(&self) -> bool {
-        self.as_network_boundary().is_some()
-    }
-}
-
-impl NetworkBoundaryExt for dyn ExecutionPlan {
-    fn as_network_boundary(&self) -> Option<&dyn NetworkBoundary> {
-        if let Some(node) = self.as_any().downcast_ref::<NetworkShuffleExec>() {
-            Some(node)
-        } else if let Some(node) = self.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            Some(node)
-        } else {
-            None
-        }
-    }
-}
-
 /// Helper enum for storing either borrowed or owned trait object references
 enum Referenced<'a, T: ?Sized> {
     Borrowed(&'a T),
@@ -396,59 +322,15 @@ impl<T: ?Sized> Referenced<'_, T> {
     }
 }
 
-/// Error thrown during distributed planning that prompts the planner to change something and
-/// try again.
-#[derive(Debug)]
-enum DistributedPlanError {
-    /// Prompts the planner to limit the amount of tasks used in the stage that is currently
-    /// being planned.
-    LimitTasks(usize),
-    /// Signals the planner that this whole plan is non-distributable. This can happen if
-    /// certain nodes are present, like [StreamingTableExec], which are typically used in
-    /// queries that rather performing some execution, they perform some introspection.
-    NonDistributable(&'static str),
-}
-
-impl Display for DistributedPlanError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DistributedPlanError::LimitTasks(n) => write!(f, "LimitTasksErr: {n}"),
-            DistributedPlanError::NonDistributable(name) => write!(f, "NonDistributable: {name}"),
-        }
-    }
-}
-
-impl Error for DistributedPlanError {}
-
-/// Builds a [DistributedPlanError::LimitTasks] error. This error prompts the distributed planner
-/// to try rebuilding the current stage with a limited amount of tasks.
-pub fn limit_tasks_err(limit: usize) -> DataFusionError {
-    DataFusionError::External(Box::new(DistributedPlanError::LimitTasks(limit)))
-}
-
-/// Builds a [DistributedPlanError::NonDistributable] error. This error prompts the distributed
-/// planner to not distribute the query at all.
-pub fn non_distributable_err(name: &'static str) -> DataFusionError {
-    DataFusionError::External(Box::new(DistributedPlanError::NonDistributable(name)))
-}
-
-fn get_distribute_plan_err(err: &DataFusionError) -> Option<&DistributedPlanError> {
-    let DataFusionError::External(err) = err else {
-        return None;
-    };
-    err.downcast_ref()
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
+    use crate::distributed_planner::distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{assert_snapshot, display_plan_ascii};
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use std::sync::Arc;
-
     /* shema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
