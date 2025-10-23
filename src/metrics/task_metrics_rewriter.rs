@@ -217,14 +217,14 @@ mod tests {
     use itertools::Itertools;
     use uuid::Uuid;
 
-    use datafusion::prelude::SessionConfig;
-    use datafusion::prelude::SessionContext;
-    use std::sync::Arc;
-
     use crate::DistributedExt;
     use crate::DistributedPhysicalOptimizerRule;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
+    use datafusion::prelude::SessionConfig;
+    use datafusion::prelude::SessionContext;
+    use std::sync::Arc;
 
     async fn make_test_ctx() -> SessionContext {
         make_test_ctx_inner(false).await
@@ -459,7 +459,6 @@ mod tests {
             let is_partition_isolator =
                 if let Some(metrics_wrapper) = plan.as_any().downcast_ref::<MetricsWrapperExec>() {
                     metrics_wrapper
-                        .inner
                         .as_any()
                         .downcast_ref::<PartitionIsolatorExec>()
                         .is_some()
@@ -491,5 +490,21 @@ mod tests {
         assert!(plan.as_any().is::<DistributedExec>());
         let rewritten_plan = rewrite_distributed_plan_with_metrics(plan).unwrap();
         assert_metrics_present_in_plan(&rewritten_plan);
+    }
+
+    #[test]
+    // An important feature of DF execution plans which we want to preserve is the ability
+    // to traverse a plan and collect metrics from specific nodes. To do this, the wrapper must
+    // allow access to the inner node. This test asserts that we support this.
+    fn test_wrapped_node_is_accessible() {
+        let example_node = Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]))));
+
+        let wrapped = MetricsWrapperExec::new(example_node, MetricsSet::new());
+        assert_eq!(wrapped.name(), "EmptyExec");
+        assert!(wrapped.as_any().is::<EmptyExec>());
     }
 }
