@@ -110,14 +110,13 @@ pub fn apply_network_boundaries(
         }
 
         // If this is a hash RepartitionExec, introduce a shuffle.
-        if let (Some(node), Some(tasks)) = (
+        if let (Some(node), Some(input_tasks)) = (
             plan.as_any().downcast_ref::<RepartitionExec>(),
-            cfg.network_shuffle_tasks.clone(),
+            cfg.network_shuffle_tasks,
         ) {
             if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
                 return Ok(Transformed::no(plan));
             }
-            let input_tasks = tasks.0(&plan);
             if input_tasks == 0 {
                 return Ok(Transformed::no(plan));
             }
@@ -129,9 +128,9 @@ pub fn apply_network_boundaries(
         // If this is a CoalescePartitionsExec, it means that the original plan is trying to
         // merge all partitions into one. We need to go one step ahead and also merge all tasks
         // into one.
-        if let (Some(node), Some(tasks)) = (
+        if let (Some(node), Some(input_tasks)) = (
             plan.as_any().downcast_ref::<CoalescePartitionsExec>(),
-            cfg.network_coalesce_tasks.clone(),
+            cfg.network_coalesce_tasks,
         ) {
             // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
             // plan is just a couple of non-computational nodes that are probably not worth
@@ -140,7 +139,6 @@ pub fn apply_network_boundaries(
                 return Ok(Transformed::no(plan));
             }
 
-            let input_tasks = tasks.0(&plan);
             if input_tasks == 0 {
                 return Ok(Transformed::no(plan));
             }
@@ -154,11 +152,10 @@ pub fn apply_network_boundaries(
         // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
         // We need to account for it and help it by also coalescing all tasks into one, therefore
         // a NetworkCoalesceExec is introduced.
-        if let (Some(node), Some(tasks)) = (
+        if let (Some(node), Some(input_tasks)) = (
             plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
-            cfg.network_coalesce_tasks.clone(),
+            cfg.network_coalesce_tasks,
         ) {
-            let input_tasks = tasks.0(&plan);
             if input_tasks == 0 {
                 return Ok(Transformed::no(plan));
             }
