@@ -5,13 +5,14 @@ use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
+use delegate::delegate;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 
 /// A transparent wrapper that delegates all execution to its child but returns custom metrics. This node is invisible during display.
 /// The structure of a plan tree is closely tied to the [TaskMetricsRewriter].
 pub struct MetricsWrapperExec {
-    pub(crate) inner: Arc<dyn ExecutionPlan>,
+    inner: Arc<dyn ExecutionPlan>,
     /// metrics for this plan node.
     metrics: MetricsSet,
     /// children is initially None. When used by the [TaskMetricsRewriter], the children will be updated
@@ -31,7 +32,7 @@ impl MetricsWrapperExec {
 
 /// MetricsWrapperExec is invisible during display.
 impl DisplayAs for MetricsWrapperExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         self.inner.fmt_as(t, f)
     }
 }
@@ -44,18 +45,15 @@ impl Debug for MetricsWrapperExec {
 }
 
 impl ExecutionPlan for MetricsWrapperExec {
-    fn name(&self) -> &str {
-        "MetricsWrapperExec"
+    delegate! {
+        to self.inner {
+            fn name(&self) -> &str;
+            fn properties(&self) -> &PlanProperties;
+            fn as_any(&self) -> &dyn Any;
+        }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        self.inner.properties()
-    }
-
+    /// Retrusn
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match &self.children {
             Some(children) => children.iter().collect(),
