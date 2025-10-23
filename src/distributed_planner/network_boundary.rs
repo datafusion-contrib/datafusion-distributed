@@ -35,6 +35,9 @@ pub trait NetworkBoundary: ExecutionPlan {
         input_tasks: usize,
     ) -> datafusion::common::Result<Arc<dyn NetworkBoundary>>;
 
+    /// Returns the input tasks assigned to this [NetworkBoundary].
+    fn input_task_count(&self) -> usize;
+
     /// Called when a [Stage] is correctly formed. The [NetworkBoundary] can use this
     /// information to perform any internal transformations necessary for distributed execution.
     ///
