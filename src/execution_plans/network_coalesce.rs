@@ -176,6 +176,13 @@ impl NetworkBoundary for NetworkCoalesceExec {
             }
         }))
     }
+
+    fn input_task_count(&self) -> usize {
+        match self {
+            Self::Pending(v) => v.input_tasks,
+            Self::Ready(v) => v.input_stage.tasks.len(),
+        }
+    }
 }
 
 impl DisplayAs for NetworkCoalesceExec {
