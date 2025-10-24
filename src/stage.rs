@@ -68,7 +68,7 @@ use uuid::Uuid;
 /// The receiving ArrowFlightEndpoint will then execute Stage 2 and will repeat this process.
 ///
 /// When Stage 4 is executed, it has no input tasks, so it is assumed that the plan included in that
-/// Stage can complete on its own; its likely holding a leaf node in the overall phyysical plan and
+/// Stage can complete on its own; it's likely holding a leaf node in the overall physical plan and
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
 pub struct Stage {
