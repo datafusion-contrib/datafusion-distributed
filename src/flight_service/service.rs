@@ -28,12 +28,8 @@ pub struct ArrowFlightEndpoint {
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
     pub(super) hooks: ArrowFlightEndpointHooks,
-    max_message_size: usize,
+    pub(super) max_message_size: Option<usize>,
 }
-
-/// Default maximum message size for FlightData chunks in ArrowFlightEndpoint.
-/// This is the size used for chunking FlightData within the endpoint.
-const DEFAULT_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
 impl ArrowFlightEndpoint {
     pub fn try_new(
@@ -45,7 +41,7 @@ impl ArrowFlightEndpoint {
             task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(session_builder),
             hooks: ArrowFlightEndpointHooks::default(),
-            max_message_size: DEFAULT_MESSAGE_SIZE,
+            max_message_size: None,
         })
     }
 
@@ -62,14 +58,19 @@ impl ArrowFlightEndpoint {
     }
 
     /// Set the maximum message size for FlightData chunks.
-    /// Defaults to 2 MB.
+    ///
+    /// Defaults to None, which uses `arrow-rs` default, curerntly 2MB.
+    /// See [`FlightDataEncoderBuilder::with_max_flight_data_size`] for details.
+    ///
     /// If you change this, ensure you configure the server's max_encoding_message_size and
     /// max_decoding_message_size to at least 2x this value to allow for overhead.
     /// If your service communication is purely internal and there is no risk of DOS attacks,
     /// you may want to set this to a considerably larger value to minimize the overhead of chunking
     /// larger datasets.
+    ///
+    /// [`FlightDataEncoderBuilder::with_max_flight_data_size`]: https://arrow.apache.org/rust/arrow_flight/encode/struct.FlightDataEncoderBuilder.html#structfield.max_flight_data_size
     pub fn with_max_message_size(mut self, size: usize) -> Self {
-        self.max_message_size = size;
+        self.max_message_size = Some(size);
         self
     }
 }
