@@ -25,6 +25,13 @@ struct Args {
     cluster_ports: Vec<u16>,
 }
 
+/// Maximum message size for FlightData chunks in ArrowFlightEndpoint.
+const ENDPOINT_MESSAGE_SIZE: usize = 128 * 1024 * 1024; // 128 MB
+
+/// Maximum message size for gRPC server encoding and decoding.
+/// This should be 2x the ArrowFlightEndpoint max_message_size to allow for overhead.
+const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024; // 256 MB
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
@@ -43,10 +50,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .with_default_features()
                 .build())
         }
-    })?;
+    })?
+    .with_max_message_size(ENDPOINT_MESSAGE_SIZE);
 
     Server::builder()
-        .add_service(FlightServiceServer::new(endpoint))
+        .add_service(
+            FlightServiceServer::new(endpoint)
+                .max_decoding_message_size(MAX_MESSAGE_SIZE)
+                .max_encoding_message_size(MAX_MESSAGE_SIZE),
+        )
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port))
         .await?;
 

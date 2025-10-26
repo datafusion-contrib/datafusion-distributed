@@ -28,7 +28,12 @@ pub struct ArrowFlightEndpoint {
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
     pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
     pub(super) hooks: ArrowFlightEndpointHooks,
+    max_message_size: usize,
 }
+
+/// Default maximum message size for FlightData chunks in ArrowFlightEndpoint.
+/// This is the size used for chunking FlightData within the endpoint.
+const DEFAULT_MESSAGE_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
 impl ArrowFlightEndpoint {
     pub fn try_new(
@@ -40,6 +45,7 @@ impl ArrowFlightEndpoint {
             task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(session_builder),
             hooks: ArrowFlightEndpointHooks::default(),
+            max_message_size: DEFAULT_MESSAGE_SIZE,
         })
     }
 
@@ -53,6 +59,18 @@ impl ArrowFlightEndpoint {
         hook: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
     ) {
         self.hooks.on_plan.push(Arc::new(hook));
+    }
+
+    /// Set the maximum message size for FlightData chunks.
+    /// Defaults to 2 MB.
+    /// If you change this, ensure you configure the server's max_encoding_message_size and
+    /// max_decoding_message_size to at least 2x this value to allow for overhead.
+    /// If your service communication is purely internal and there is no risk of DOS attacks,
+    /// you may want to set this to a considerably larger value to minimize the overhead of chunking
+    /// larger datasets.
+    pub fn with_max_message_size(mut self, size: usize) -> Self {
+        self.max_message_size = size;
+        self
     }
 }
 

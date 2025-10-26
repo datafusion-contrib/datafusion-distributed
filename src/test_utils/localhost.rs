@@ -18,6 +18,13 @@ use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use url::Url;
 
+/// Maximum message size for FlightData chunks in ArrowFlightEndpoint.
+const ENDPOINT_MESSAGE_SIZE: usize = 128 * 1024 * 1024; // 128 MB
+
+/// Maximum message size for gRPC server encoding and decoding.
+/// This should be 2x the ArrowFlightEndpoint max_message_size to allow for overhead.
+const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024; // 256 MB
+
 pub async fn start_localhost_context<B>(
     num_workers: usize,
     session_builder: B,
@@ -113,12 +120,17 @@ pub async fn spawn_flight_service(
     session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let endpoint = ArrowFlightEndpoint::try_new(session_builder)?;
+    let endpoint =
+        ArrowFlightEndpoint::try_new(session_builder)?.with_max_message_size(ENDPOINT_MESSAGE_SIZE);
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 
     Ok(Server::builder()
-        .add_service(FlightServiceServer::new(endpoint))
+        .add_service(
+            FlightServiceServer::new(endpoint)
+                .max_decoding_message_size(MAX_MESSAGE_SIZE)
+                .max_encoding_message_size(MAX_MESSAGE_SIZE),
+        )
         .serve_with_incoming(incoming)
         .await?)
 }

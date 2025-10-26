@@ -152,6 +152,7 @@ impl ArrowFlightEndpoint {
             // Note that we do garbage collection of unused dictionary values above, so we are not sending
             // unused dictionary values over the wire.
             .with_dictionary_handling(DictionaryHandling::Resend)
+            .with_max_flight_data_size(usize::MAX)
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
