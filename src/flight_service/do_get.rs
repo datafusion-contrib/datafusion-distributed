@@ -11,7 +11,7 @@ use crate::protobuf::{
 };
 use arrow_flight::FlightData;
 use arrow_flight::Ticket;
-use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use bytes::Bytes;
@@ -136,6 +136,7 @@ impl ArrowFlightEndpoint {
 
         let stream = FlightDataEncoderBuilder::new()
             .with_schema(stream.schema().clone())
+            .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));

@@ -14,12 +14,11 @@ use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_err, plan_err};
-use datafusion::datasource::schema_adapter::DefaultSchemaAdapterFactory;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
@@ -296,8 +295,6 @@ impl ExecutionPlan for NetworkCoalesceExec {
         };
 
         let metrics_collection_capture = self_ready.metrics_collection.clone();
-        let adapter = DefaultSchemaAdapterFactory::from_schema(self.schema());
-        let (mapper, _indices) = adapter.map_schema(&self.schema())?;
         let stream = async move {
             let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
             let stream = client
@@ -312,12 +309,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
             Ok(
                 FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
-                    .map_err(map_flight_to_datafusion_error)
-                    .map(move |batch| {
-                        let batch = batch?;
-
-                        mapper.map_batch(batch)
-                    }),
+                    .map_err(map_flight_to_datafusion_error),
             )
         }
         .try_flatten_stream();
