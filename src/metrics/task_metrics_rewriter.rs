@@ -41,7 +41,7 @@ pub fn rewrite_distributed_plan_with_metrics(
 
     let metrics_collection = Arc::new(input_task_metrics);
 
-    let transformed = plan.transform_down(|plan| {
+    let transformed = plan.transform_up(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
         if let Some(network_boundary) = plan.as_network_boundary() {
             return match network_boundary.input_stage() {
@@ -76,13 +76,13 @@ pub fn rewrite_distributed_plan_with_metrics(
 ///
 /// AggregateExec [output_rows = 1, elapsed_compute = 100]
 ///  └── ProjectionExec [output_rows = 2, elapsed_compute = 200]
-///      └── NetworkShuffleExec
+///      └── NetworkShuffleExec [time_to_first_byte = 10ms]
 ///
 /// The result will be:
 ///
 /// MetricsWrapperExec (wrapped: AggregateExec) [output_rows = 1, elapsed_compute = 100]
 ///  └── MetricsWrapperExec (wrapped: ProjectionExec) [output_rows = 2, elapsed_compute = 200]
-///      └── NetworkShuffleExec
+///      └── MetricsWrapperExec (wrapped: NetworkShuffleExec) [time_to_first_byte = 10ms]
 pub fn rewrite_local_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
     metrics: Vec<MetricsSet>,
@@ -90,14 +90,17 @@ pub fn rewrite_local_plan_with_metrics(
     let mut idx = 0;
     Ok(plan
         .transform_down(|node| {
-            if node.is_network_boundary() {
-                return Ok(Transformed::new(node, false, TreeNodeRecursion::Jump));
-            }
             if idx >= metrics.len() {
                 return internal_err!("not enough metrics provided to rewrite plan");
             }
             let node_metrics = metrics[idx].clone();
             idx += 1;
+            if node.is_network_boundary() {
+                return Ok(Transformed::new(Arc::new(MetricsWrapperExec::new(
+                    node.clone(),
+                    node_metrics,
+                )), false, TreeNodeRecursion::Jump));
+            }
             Ok(Transformed::yes(Arc::new(MetricsWrapperExec::new(
                 node.clone(),
                 node_metrics,
@@ -453,6 +456,7 @@ mod tests {
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
     fn assert_metrics_present_in_plan(plan: &Arc<dyn ExecutionPlan>) {
+        println!("{:#?}", plan.name());
         if let Some(metrics) = plan.metrics() {
             assert!(metrics.iter().count() > 0);
         } else {
@@ -466,8 +470,7 @@ mod tests {
                     false
                 };
             assert!(
-                plan.is_network_boundary()
-                    || is_partition_isolator
+                is_partition_isolator
                     || plan.as_any().is::<DistributedExec>()
             );
         }

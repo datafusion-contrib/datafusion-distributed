@@ -8,7 +8,7 @@ use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{ChannelResolver, DistributedTaskContext};
-use arrow_flight::Ticket;
+use arrow_flight::{FlightData, Ticket};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use bytes::Bytes;
@@ -18,14 +18,17 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{TryFutureExt, TryStreamExt};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
+use std::time::Instant;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
+use crate::common::map_last_stream;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a single task without
 /// performing any repartition, and maintaining the same partitioning scheme.
@@ -95,6 +98,8 @@ pub struct NetworkCoalesceReady {
     /// sends metrics for a task to the last NetworkCoalesceExec to read from it, which may or may
     /// not be this instance.
     pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    /// metrics for this execution plan
+    pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
 impl NetworkCoalesceExec {
@@ -141,6 +146,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
                     properties: scale_partitioning_props(properties, |p| p * pending.input_tasks),
                     input_stage,
                     metrics_collection: Default::default(),
+                    metrics: Default::default(),
                 };
 
                 Ok(Arc::new(Self::Ready(ready)))
@@ -226,6 +232,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
         }
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        match self {
+            NetworkCoalesceExec::Pending(_) => None,
+            NetworkCoalesceExec::Ready(v) => Some(v.metrics.clone_inner()),
+        }
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -254,6 +267,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 "NetworkCoalesceExec is not ready, was the distributed optimization step performed?"
             );
         };
+
+        MetricBuilder::new(&self_ready.metrics).start_timestamp(partition).record();
+
+        let time_to_first_byte = MetricBuilder::new(&self_ready.metrics)
+            .subset_time("time_to_first_byte", partition);
+        let network_bytes_read = MetricBuilder::new(&self_ready.metrics)
+            .counter("network_bytes_read", partition);
 
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
@@ -304,13 +324,21 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let metrics_collection_capture = self_ready.metrics_collection.clone();
         let stream = async move {
             let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
+
+            let stream_start = Instant::now();
+            let once = Once::new();
             let stream = client
                 .do_get(ticket)
                 .await
                 .map_err(map_status_to_datafusion_error)?
                 .into_inner()
-                .map_err(|err| FlightError::Tonic(Box::new(err)));
-
+                .map_err(|err| FlightError::Tonic(Box::new(err)))
+                .map_ok(move |msg: FlightData| {
+                    once.call_once(|| time_to_first_byte.add_elapsed(stream_start));
+                    network_bytes_read.add(msg.encoded_len());
+                    msg
+                });
+            
             let metrics_collecting_stream =
                 MetricsCollectingStream::new(stream, metrics_collection_capture);
 

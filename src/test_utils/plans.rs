@@ -18,12 +18,12 @@ pub fn count_plan_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
     let mut queue = vec![plan];
 
     while let Some(plan) = queue.pop() {
-        // Skip [NetworkBoundary] nodes from the count.
+        count += 1;
+
+        // Don't traverse network boundary subtrees.
         if plan.as_ref().is_network_boundary() {
             continue;
         }
-
-        count += 1;
 
         // Add children to the queue for BFS traversal
         for child in plan.children() {

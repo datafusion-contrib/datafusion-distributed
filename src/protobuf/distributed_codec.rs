@@ -327,6 +327,7 @@ fn new_network_hash_shuffle_exec(
         ),
         input_stage,
         metrics_collection: Default::default(),
+        metrics: Default::default(),
     })
 }
 
@@ -357,6 +358,7 @@ fn new_network_coalesce_tasks_exec(
         ),
         input_stage,
         metrics_collection: Default::default(),
+        metrics: Default::default(),
     })
 }
 

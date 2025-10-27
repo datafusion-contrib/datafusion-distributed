@@ -58,6 +58,8 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                 None
             };
 
+        let mut recursion = TreeNodeRecursion::Continue;
+
         if let Some(metrics_collection) = metrics_collection {
             for mut entry in metrics_collection.iter_mut() {
                 let stage_key = entry.key().clone();
@@ -78,8 +80,9 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                     }
                 }
             }
-            // Skip the subtree of the NetworkShuffleExec.
-            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
+
+            // Skip subtrees of network boundaries.
+            recursion = TreeNodeRecursion::Jump;
         }
 
         // For plan nodes in this task, collect metrics.
@@ -90,7 +93,7 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                 self.task_metrics.push(MetricsSet::new())
             }
         }
-        Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
+        Ok(Transformed::new(plan, false, recursion))
     }
 }
 

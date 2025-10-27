@@ -8,7 +8,7 @@ use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{ChannelResolver, DistributedTaskContext, InputStageInfo, NetworkBoundary};
-use arrow_flight::Ticket;
+use arrow_flight::{FlightData, Ticket};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use bytes::Bytes;
@@ -22,14 +22,17 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
+use std::time::Instant;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
+use crate::common::map_last_stream;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -144,6 +147,8 @@ pub struct NetworkShuffleReadyExec {
     /// sends metrics for a task to the last NetworkShuffleExec to read from it, which may or may
     /// not be this instance.
     pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    /// metrics for this execution plan
+    pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
 impl NetworkShuffleExec {
@@ -219,6 +224,7 @@ impl NetworkBoundary for NetworkShuffleExec {
                     properties: pending.input.properties().clone(),
                     input_stage,
                     metrics_collection: Default::default(),
+                    metrics: Default::default(),
                 };
                 Ok(Arc::new(Self::Ready(ready)))
             }
@@ -280,6 +286,13 @@ impl ExecutionPlan for NetworkShuffleExec {
         }
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        match self {
+            NetworkShuffleExec::Pending(_) => None,
+            NetworkShuffleExec::Ready(v) => Some(v.metrics.clone_inner()),
+        }
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -309,6 +322,12 @@ impl ExecutionPlan for NetworkShuffleExec {
             );
         };
 
+        MetricBuilder::new(&self_ready.metrics).start_timestamp(partition).record();
+        let time_to_first_byte = MetricBuilder::new(&self_ready.metrics)
+            .subset_time("time_to_first_byte", partition);
+        let network_bytes_read = MetricBuilder::new(&self_ready.metrics)
+            .counter("network_bytes_read", partition);
+
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
@@ -326,6 +345,8 @@ impl ExecutionPlan for NetworkShuffleExec {
 
         let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
             let channel_resolver = Arc::clone(&channel_resolver);
+            let time_to_first_byte = time_to_first_byte.clone();
+            let network_bytes_read = network_bytes_read.clone();
 
             let ticket = Request::from_parts(
                 MetadataMap::from_headers(context_headers.clone()),
@@ -354,12 +375,20 @@ impl ExecutionPlan for NetworkShuffleExec {
                 ))?;
 
                 let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
+
+                let stream_start = Instant::now();
+                let once = Once::new();
                 let stream = client
                     .do_get(ticket)
                     .await
                     .map_err(map_status_to_datafusion_error)?
                     .into_inner()
-                    .map_err(|err| FlightError::Tonic(Box::new(err)));
+                    .map_err(|err| FlightError::Tonic(Box::new(err)))
+                    .map_ok(move |msg: FlightData| {
+                        once.call_once(|| time_to_first_byte.add_elapsed(stream_start));
+                        network_bytes_read.add(msg.encoded_len());
+                        msg
+                    });
 
                 let metrics_collecting_stream =
                     MetricsCollectingStream::new(stream, metrics_collection_capture);
