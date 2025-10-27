@@ -138,7 +138,7 @@ impl ArrowFlightEndpoint {
 
         let schema = stream.schema().clone();
 
-        // Apply garbage collection of dictionary arrays before sending over the network
+        // Apply garbage collection of dictionary and view arrays before sending over the network
         let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
 
         let stream = FlightDataEncoderBuilder::new()
@@ -149,6 +149,8 @@ impl ArrowFlightEndpoint {
             // The main reason to use `DictionaryHandling::Hydrate` is for compatibility with clients
             // that do not support dictionaries, but since we are using the same server/client on both
             // sides, we can safely use `DictionaryHandling::Resend`.
+            // Note that we do garbage collection of unused dictionary values above, so we are not sending
+            // unused dictionary values over the wire.
             .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
