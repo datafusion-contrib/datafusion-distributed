@@ -2,7 +2,7 @@ use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::DistributedSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
-use arrow_flight::flight_service_server::FlightService;
+use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
@@ -41,7 +41,7 @@ impl ArrowFlightEndpoint {
             task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(session_builder),
             hooks: ArrowFlightEndpointHooks::default(),
-            max_message_size: None,
+            max_message_size: Some(usize::MAX),
         })
     }
 
@@ -59,19 +59,40 @@ impl ArrowFlightEndpoint {
 
     /// Set the maximum message size for FlightData chunks.
     ///
-    /// Defaults to None, which uses `arrow-rs` default, curerntly 2MB.
+    /// Defaults to `usize::MAX` to minimize chunking overhead for internal communication.
     /// See [`FlightDataEncoderBuilder::with_max_flight_data_size`] for details.
     ///
-    /// If you change this, ensure you configure the server's max_encoding_message_size and
-    /// max_decoding_message_size to at least 2x this value to allow for overhead.
-    /// If your service communication is purely internal and there is no risk of DOS attacks,
-    /// you may want to set this to a considerably larger value to minimize the overhead of chunking
-    /// larger datasets.
+    /// If you change this to a lower value, ensure you configure the server's
+    /// max_encoding_message_size and max_decoding_message_size to at least 2x this value
+    /// to allow for overhead. For most use cases, the default of `usize::MAX` is appropriate.
     ///
     /// [`FlightDataEncoderBuilder::with_max_flight_data_size`]: https://arrow.apache.org/rust/arrow_flight/encode/struct.FlightDataEncoderBuilder.html#structfield.max_flight_data_size
     pub fn with_max_message_size(mut self, size: usize) -> Self {
         self.max_message_size = Some(size);
         self
+    }
+
+    /// Converts this endpoint into a [`FlightServiceServer`] with high default message size limits.
+    ///
+    /// This is a convenience method that wraps the endpoint in a [`FlightServiceServer`] and
+    /// configures it with `max_decoding_message_size(usize::MAX)` and
+    /// `max_encoding_message_size(usize::MAX)` to avoid message size limitations for internal
+    /// communication.
+    ///
+    /// You can further customize the returned server by chaining additional tonic methods.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let endpoint = ArrowFlightEndpoint::try_new(session_builder)?;
+    /// let server = endpoint.into_flight_server();
+    /// // Can chain additional tonic methods if needed
+    /// // let server = server.some_other_tonic_method(...);
+    /// ```
+    pub fn into_flight_server(self) -> FlightServiceServer<Self> {
+        FlightServiceServer::new(self)
+            .max_decoding_message_size(usize::MAX)
+            .max_encoding_message_size(usize::MAX)
     }
 }
 

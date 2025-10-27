@@ -35,11 +35,21 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 
 /// Abstracts networking details so that users can implement their own network resolution
 /// mechanism.
+///
+/// # Implementation Note
+///
+/// When implementing `get_flight_client_for_url`, it is recommended to use the
+/// [`create_flight_client`] helper function to ensure clients are configured with
+/// appropriate message size limits for internal communication. This helps avoid message
+/// size errors when transferring large datasets.
 #[async_trait]
 pub trait ChannelResolver {
     /// Gets all available worker URLs. Used during stage assignment.
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError>;
     /// For a given URL, get an Arrow Flight client for communicating to it.
+    ///
+    /// Consider using [`create_flight_client`] to create the client with appropriate
+    /// default message size limits.
     async fn get_flight_client_for_url(
         &self,
         url: &Url,
@@ -58,4 +68,40 @@ impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         self.as_ref().get_flight_client_for_url(url).await
     }
+}
+
+/// Creates a [`FlightServiceClient`] with high default message size limits.
+///
+/// This is a convenience function that wraps [`FlightServiceClient::new`] and configures
+/// it with `max_decoding_message_size(usize::MAX)` and `max_encoding_message_size(usize::MAX)`
+/// to avoid message size limitations for internal communication.
+///
+/// Users implementing custom [`ChannelResolver`]s should use this function in their
+/// `get_flight_client_for_url` implementations to ensure consistent behavior with built-in
+/// implementations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use datafusion_distributed::{create_flight_client, BoxCloneSyncChannel, ChannelResolver};
+/// use arrow_flight::flight_service_client::FlightServiceClient;
+/// use tonic::transport::Channel;
+///
+/// #[async_trait]
+/// impl ChannelResolver for MyResolver {
+///     async fn get_flight_client_for_url(
+///         &self,
+///         url: &Url,
+///     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+///         let channel = Channel::from_shared(url.to_string())?.connect().await?;
+///         Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
+///     }
+/// }
+/// ```
+pub fn create_flight_client(
+    channel: BoxCloneSyncChannel,
+) -> FlightServiceClient<BoxCloneSyncChannel> {
+    FlightServiceClient::new(channel)
+        .max_decoding_message_size(usize::MAX)
+        .max_encoding_message_size(usize::MAX)
 }

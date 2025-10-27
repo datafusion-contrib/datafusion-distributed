@@ -1,10 +1,9 @@
 use crate::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
     DistributedSessionBuilder, DistributedSessionBuilderContext,
-    MappedDistributedSessionBuilderExt,
+    MappedDistributedSessionBuilderExt, create_flight_client,
 };
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::common::runtime::JoinSet;
@@ -17,13 +16,6 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use url::Url;
-
-/// Maximum message size for FlightData chunks in ArrowFlightEndpoint.
-const ENDPOINT_MESSAGE_SIZE: usize = 128 * 1024 * 1024; // 128 MB
-
-/// Maximum message size for gRPC server encoding and decoding.
-/// This should be 2x the ArrowFlightEndpoint max_message_size to allow for overhead.
-const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024; // 256 MB
 
 pub async fn start_localhost_context<B>(
     num_workers: usize,
@@ -112,7 +104,7 @@ impl ChannelResolver for LocalHostChannelResolver {
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         let endpoint = Channel::from_shared(url.to_string()).map_err(external_err)?;
         let channel = endpoint.connect().await.map_err(external_err)?;
-        Ok(FlightServiceClient::new(BoxCloneSyncChannel::new(channel)))
+        Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
     }
 }
 
@@ -120,17 +112,12 @@ pub async fn spawn_flight_service(
     session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let endpoint =
-        ArrowFlightEndpoint::try_new(session_builder)?.with_max_message_size(ENDPOINT_MESSAGE_SIZE);
+    let endpoint = ArrowFlightEndpoint::try_new(session_builder)?;
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 
     Ok(Server::builder()
-        .add_service(
-            FlightServiceServer::new(endpoint)
-                .max_decoding_message_size(MAX_MESSAGE_SIZE)
-                .max_encoding_message_size(MAX_MESSAGE_SIZE),
-        )
+        .add_service(endpoint.into_flight_server())
         .serve_with_incoming(incoming)
         .await?)
 }

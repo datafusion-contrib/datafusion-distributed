@@ -1,6 +1,5 @@
 use arrow::util::pretty::pretty_format_batches;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -8,7 +7,7 @@ use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -76,13 +75,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 const DUMMY_URL: &str = "http://localhost:50051";
 
-/// Maximum message size for FlightData chunks in ArrowFlightEndpoint.
-const ENDPOINT_MESSAGE_SIZE: usize = 128 * 1024 * 1024; // 128 MB
-
-/// Maximum message size for gRPC server encoding and decoding.
-/// This should be 2x the ArrowFlightEndpoint max_message_size to allow for overhead.
-const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024; // 256 MB
-
 /// [ChannelResolver] implementation that returns gRPC clients baked by an in-memory
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
@@ -105,7 +97,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: FlightServiceClient::new(BoxCloneSyncChannel::new(channel)),
+            channel: create_flight_client(BoxCloneSyncChannel::new(channel)),
         };
         let this_clone = this.clone();
 
@@ -120,16 +112,11 @@ impl InMemoryChannelResolver {
                     Ok(builder.build())
                 }
             })
-            .unwrap()
-            .with_max_message_size(ENDPOINT_MESSAGE_SIZE);
+            .unwrap();
 
         tokio::spawn(async move {
             Server::builder()
-                .add_service(
-                    FlightServiceServer::new(endpoint)
-                        .max_decoding_message_size(MAX_MESSAGE_SIZE)
-                        .max_encoding_message_size(MAX_MESSAGE_SIZE),
-                )
+                .add_service(endpoint.into_flight_server())
                 .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server)))
                 .await
         });
