@@ -8,9 +8,11 @@ use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{ChannelResolver, DistributedTaskContext};
+use arrow::array::{AsArray, RecordBatch};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
+use arrow_select::dictionary::garbage_collect_any_dictionary;
 use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::common::{exec_err, internal_err, plan_err};
@@ -18,7 +20,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
@@ -309,7 +311,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
             Ok(
                 FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
-                    .map_err(map_flight_to_datafusion_error),
+                    .map_err(map_flight_to_datafusion_error)
+                    .map(move |batch| {
+                        let batch = batch?;
+
+                        garbage_collect_dictionary_arrays(batch)
+                    }),
             )
         }
         .try_flatten_stream();
@@ -319,4 +326,38 @@ impl ExecutionPlan for NetworkCoalesceExec {
             stream,
         )))
     }
+}
+
+/// Garbage collects dictionary arrays in the given RecordBatch.
+/// 
+/// We apply this before sending RecordBatches over the network to avoid sending
+/// unused dictionary values.
+/// 
+/// Unused dictionary values can arise from operations such as filtering, where
+/// some dictionary keys may no longer be referenced in the filtered result.
+fn garbage_collect_dictionary_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
+    // Check if we have any dictionary arrays
+    let has_dictionary_array = batch
+        .columns()
+        .iter()
+        .any(|array| array.as_any_dictionary_opt().is_some());
+
+    if !has_dictionary_array {
+        return Ok(batch);
+    }
+
+    let (schema, arrays, _row_count) = batch.into_parts();
+
+    let arrays = arrays
+        .into_iter()
+        .map(|array| {
+            if let Some(array) = array.as_any_dictionary_opt() {
+                garbage_collect_any_dictionary(array)
+            } else {
+                Ok(array)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(RecordBatch::try_new(schema, arrays)?)
 }

@@ -15,6 +15,7 @@ chrono = { version = "0.4.42" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 arrow-flight = "56.1.0"
+arrow-select = "56.1.0"
 async-trait = "0.1.88"
 tokio = { version = "1.46.1", features = ["full"] }
 # Updated to 0.13.1 to match arrow-flight 56.1.0
