@@ -143,7 +143,7 @@ impl ArrowFlightEndpoint {
 
         let stream = FlightDataEncoderBuilder::new()
             .with_schema(schema)
-            // This tells the encoder to send dictioanries across the wire as-is.
+            // This tells the encoder to send dictionaries across the wire as-is.
             // The alternative (`DictionaryHandling::Hydrate`) would expand the dictionaries
             // into their value types, which can potentially blow up the size of the data transfer.
             // The main reason to use `DictionaryHandling::Hydrate` is for compatibility with clients
