@@ -157,6 +157,9 @@ mod tests {
     }
 
     /// Test that multiple first_value() aggregations work correctly in distributed queries.
+    // TODO: Once https://github.com/apache/datafusion/pull/18303 is merged, this test will lose
+    //       meaning, since the PR above will mask the underlying problem. Different queries or
+    //       a new approach must be used in this case.
     #[tokio::test]
     async fn test_multiple_first_value_aggregations() -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
