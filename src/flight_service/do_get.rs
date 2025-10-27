@@ -14,7 +14,9 @@ use arrow_flight::Ticket;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
+use arrow_select::dictionary::garbage_collect_any_dictionary;
 use bytes::Bytes;
+use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
@@ -134,8 +136,19 @@ impl ArrowFlightEndpoint {
             .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
+        let schema = stream.schema().clone();
+
+        // Apply garbage collection of dictionary arrays before sending over the network
+        let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
+
         let stream = FlightDataEncoderBuilder::new()
-            .with_schema(stream.schema().clone())
+            .with_schema(schema)
+            // This tells the encoder to send dictioanries across the wire as-is.
+            // The alternative (`DictionaryHandling::Hydrate`) would expand the dictionaries
+            // into their value types, which can potentially blow up the size of the data transfer.
+            // The main reason to use `DictionaryHandling::Hydrate` is for compatibility with clients
+            // that do not support dictionaries, but since we are using the same server/client on both
+            // sides, we can safely use `DictionaryHandling::Resend`.
             .with_dictionary_handling(DictionaryHandling::Resend)
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
@@ -209,6 +222,34 @@ fn collect_and_create_metrics_flight_data(
         .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
 
     Ok(incoming.with_app_metadata(buf))
+}
+
+/// Garbage collects values sub-arrays.
+///
+/// We apply this before sending RecordBatches over the network to avoid sending
+/// values that are not referenced by any dictionary keys or buffers that are not used.
+///
+/// Unused values can arise from operations such as filtering, where
+/// some keys may no longer be referenced in the filtered result.
+fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
+    let (schema, arrays, _row_count) = batch.into_parts();
+
+    let arrays = arrays
+        .into_iter()
+        .map(|array| {
+            if let Some(array) = array.as_any_dictionary_opt() {
+                garbage_collect_any_dictionary(array)
+            } else if let Some(array) = array.as_string_view_opt() {
+                Ok(Arc::new(array.gc()) as Arc<dyn Array>)
+            } else if let Some(array) = array.as_binary_view_opt() {
+                Ok(Arc::new(array.gc()) as Arc<dyn Array>)
+            } else {
+                Ok(array)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(RecordBatch::try_new(schema, arrays)?)
 }
 
 #[cfg(test)]
