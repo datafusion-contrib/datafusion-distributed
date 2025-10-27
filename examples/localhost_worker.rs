@@ -1,12 +1,11 @@
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedSessionBuilderContext,
+    DistributedSessionBuilderContext, create_flight_client,
 };
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -46,7 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     })?;
 
     Server::builder()
-        .add_service(FlightServiceServer::new(endpoint))
+        .add_service(endpoint.into_flight_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port))
         .await?;
 
@@ -79,7 +78,7 @@ impl ChannelResolver for LocalhostChannelResolver {
                 let channel = Channel::from_shared(url.to_string())
                     .unwrap()
                     .connect_lazy();
-                let channel = FlightServiceClient::new(BoxCloneSyncChannel::new(channel));
+                let channel = create_flight_client(BoxCloneSyncChannel::new(channel));
                 v.insert(channel.clone());
                 Ok(channel)
             }

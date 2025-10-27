@@ -1,10 +1,9 @@
 use crate::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
     DistributedSessionBuilder, DistributedSessionBuilderContext,
-    MappedDistributedSessionBuilderExt,
+    MappedDistributedSessionBuilderExt, create_flight_client,
 };
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::common::runtime::JoinSet;
@@ -105,7 +104,7 @@ impl ChannelResolver for LocalHostChannelResolver {
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         let endpoint = Channel::from_shared(url.to_string()).map_err(external_err)?;
         let channel = endpoint.connect().await.map_err(external_err)?;
-        Ok(FlightServiceClient::new(BoxCloneSyncChannel::new(channel)))
+        Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
     }
 }
 
@@ -118,7 +117,7 @@ pub async fn spawn_flight_service(
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 
     Ok(Server::builder()
-        .add_service(FlightServiceServer::new(endpoint))
+        .add_service(endpoint.into_flight_server())
         .serve_with_incoming(incoming)
         .await?)
 }

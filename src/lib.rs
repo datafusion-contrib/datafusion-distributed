@@ -14,7 +14,7 @@ mod protobuf;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
-pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver};
+pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver, create_flight_client};
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, DistributedPhysicalOptimizerRule, InputStageInfo, NetworkBoundary,

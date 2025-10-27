@@ -1,6 +1,5 @@
 use arrow::util::pretty::pretty_format_batches;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -8,7 +7,7 @@ use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -98,7 +97,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: FlightServiceClient::new(BoxCloneSyncChannel::new(channel)),
+            channel: create_flight_client(BoxCloneSyncChannel::new(channel)),
         };
         let this_clone = this.clone();
 
@@ -117,7 +116,7 @@ impl InMemoryChannelResolver {
 
         tokio::spawn(async move {
             Server::builder()
-                .add_service(FlightServiceServer::new(endpoint))
+                .add_service(endpoint.into_flight_server())
                 .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server)))
                 .await
         });

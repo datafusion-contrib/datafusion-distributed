@@ -152,6 +152,15 @@ impl ArrowFlightEndpoint {
             // Note that we do garbage collection of unused dictionary values above, so we are not sending
             // unused dictionary values over the wire.
             .with_dictionary_handling(DictionaryHandling::Resend)
+            // Set max flight data size to unlimited.
+            // This requires servers and clients to also be configured to handle unlimited sizes.
+            // Using unlimited sizes avoids splitting RecordBatches into multiple FlightData messages,
+            // which could add significant overhead for large RecordBatches.
+            // The only reason to split them really is if the client/server are configured with a message size limit,
+            // which mainly makes sense in a public network scenario where you want to avoid DoS attacks.
+            // Since all of our Arrow Flight communication happens within trusted data plane networks,
+            // we can safely use unlimited sizes here.
+            .with_max_flight_data_size(usize::MAX)
             .build(stream.map_err(|err| {
                 FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
             }));
