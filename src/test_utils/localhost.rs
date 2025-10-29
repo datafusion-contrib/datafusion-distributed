@@ -17,6 +17,13 @@ use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use url::Url;
 
+/// Create workers and context on localhost with a fixed number of target partitions.
+///
+/// Creates `num_workers` listeners, all bound to a random OS decided port on `127.0.0.1`, then
+/// attaches a channel resolver that is aware of these addresses to `session_builder` and uses it
+/// to spawn a flight service behind each listener.
+///
+/// Returns a session context aware of these workers, and a join set of all spawned worker tasks.
 pub async fn start_localhost_context<B>(
     num_workers: usize,
     session_builder: B,
