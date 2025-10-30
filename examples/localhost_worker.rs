@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         async move {
             Ok(SessionStateBuilder::new()
                 .with_runtime_env(ctx.runtime_env)
-                .with_distributed_channel_resolver(local_host_resolver)
+                .with_distributed_execution(local_host_resolver)
                 .with_default_features()
                 .build())
         }

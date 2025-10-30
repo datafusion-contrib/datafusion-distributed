@@ -6,12 +6,9 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_distributed::{
-    BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule,
-};
+use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt};
 use futures::TryStreamExt;
 use std::error::Error;
-use std::sync::Arc;
 use structopt::StructOpt;
 use tonic::transport::Channel;
 use url::Url;
@@ -47,8 +44,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_distributed_channel_resolver(localhost_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_execution(localhost_resolver)
         .with_distributed_network_coalesce_tasks(args.network_coalesce_tasks)
         .with_distributed_network_shuffle_tasks(args.network_shuffle_tasks)
         .build();

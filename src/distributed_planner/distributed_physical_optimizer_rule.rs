@@ -66,6 +66,9 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         let Some(cfg) = config.extensions.get::<DistributedConfig>() else {
             return Ok(plan);
         };
+        if cfg.network_coalesce_tasks.is_none() && cfg.network_shuffle_tasks.is_none() {
+            return Ok(plan);
+        }
         // We can only optimize plans that are not already distributed
         distribute_plan(apply_network_boundaries(plan, cfg)?)
     }
@@ -180,6 +183,9 @@ pub fn apply_network_boundaries(
 pub fn distribute_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    if plan.as_any().is::<DistributedExec>() {
+        return Ok(plan);
+    }
     let stage = match _distribute_plan_inner(Uuid::new_v4(), plan.clone(), &mut 1, 0, 1) {
         Ok(stage) => stage,
         Err(err) => {
@@ -304,13 +310,13 @@ impl<T: ?Sized> Referenced<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::DistributedExt;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{DistributedConfig, DistributedPhysicalOptimizerRule};
     use crate::{assert_snapshot, display_plan_ascii};
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
-    use std::sync::Arc;
     /* shema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -580,13 +586,12 @@ mod tests {
     async fn sql_to_explain(query: &str) -> Result<String, DataFusionError> {
         let config = SessionConfig::new()
             .with_target_partitions(4)
-            .with_option_extension(DistributedConfig::default())
             .with_information_schema(true);
 
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_execution(InMemoryChannelResolver::new())
             .build();
 
         let ctx = SessionContext::new_with_state(state);

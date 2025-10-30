@@ -218,7 +218,6 @@ mod tests {
     use uuid::Uuid;
 
     use crate::DistributedExt;
-    use crate::DistributedPhysicalOptimizerRule;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
@@ -245,8 +244,7 @@ mod tests {
 
         if distributed {
             builder = builder
-                .with_distributed_channel_resolver(InMemoryChannelResolver::new())
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_execution(InMemoryChannelResolver::new())
                 .with_distributed_network_coalesce_tasks(2)
                 .with_distributed_network_shuffle_tasks(2)
         }
