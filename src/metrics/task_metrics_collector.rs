@@ -128,7 +128,6 @@ mod tests {
     use futures::StreamExt;
 
     use crate::DistributedExt;
-    use crate::DistributedPhysicalOptimizerRule;
     use crate::execution_plans::DistributedExec;
     use crate::metrics::proto::metrics_set_proto_to_df;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
@@ -152,8 +151,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_channel_resolver(InMemoryChannelResolver::new())
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_execution(InMemoryChannelResolver::new())
             .with_distributed_network_coalesce_tasks(2)
             .with_distributed_network_shuffle_tasks(2)
             .build();

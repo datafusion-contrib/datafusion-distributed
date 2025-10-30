@@ -1,4 +1,3 @@
-use crate::ChannelResolver;
 use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
@@ -7,10 +6,10 @@ use crate::distributed_planner::{
     set_distributed_network_coalesce_tasks, set_distributed_network_shuffle_tasks,
 };
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
+use crate::{ChannelResolver, DistributedConfig, DistributedPhysicalOptimizerRule};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
-use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::execution::SessionStateBuilder;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use delegate::delegate;
 use http::HeaderMap;
@@ -51,8 +50,9 @@ pub trait DistributedExt: Sized {
     /// let mut my_custom_extension = CustomExtension::default();
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
-    /// let mut config = SessionConfig::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap();
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .build();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
@@ -106,8 +106,9 @@ pub trait DistributedExt: Sized {
     /// let mut my_custom_extension = CustomExtension::default();
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
-    /// let mut config = SessionConfig::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap();
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .build();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
@@ -156,7 +157,9 @@ pub trait DistributedExt: Sized {
     ///     }
     /// }
     ///
-    /// let config = SessionConfig::new().with_distributed_user_codec(CustomExecCodec);
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_user_codec(CustomExecCodec)
+    ///     .build();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
@@ -177,8 +180,14 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
-    /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
-    /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
+    /// Enables distributed execution. For this, several things happen:
+    ///
+    /// - Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
+    ///   nodes. When running in distributed mode, setting a [ChannelResolver] is required.
+    /// - Injects a [DistributedPhysicalOptimizerRule] rule that will inject network boundaries
+    ///   in the plan and will break it down into stages.
+    /// - Injects a [DistributedConfig] object with configuration about the amount of tasks that
+    ///   should be spawned while distributing the queries.
     ///
     /// Example:
     ///
@@ -204,23 +213,25 @@ pub trait DistributedExt: Sized {
     ///     }
     /// }
     ///
-    /// let config = SessionConfig::new().with_distributed_channel_resolver(CustomChannelResolver);
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_execution(CustomChannelResolver)
+    ///     .build();
     ///
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     // This function can be provided to an ArrowFlightEndpoint so that it knows how to
     ///     // resolve tonic channels from URLs upon making network calls to other nodes.
     ///     Ok(SessionStateBuilder::new()
-    ///         .with_distributed_channel_resolver(CustomChannelResolver)
+    ///         .with_distributed_execution(CustomChannelResolver)
     ///         .build())
     /// }
     /// ```
-    fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+    fn with_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
         self,
         resolver: T,
     ) -> Self;
 
-    /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
-    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+    /// Same as [DistributedExt::with_distributed_execution] but with an in-place mutation.
+    fn set_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
     );
@@ -252,42 +263,53 @@ pub trait DistributedExt: Sized {
     fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize);
 }
 
-impl DistributedExt for SessionConfig {
+impl DistributedExt for SessionStateBuilder {
     fn set_distributed_option_extension<T: ConfigExtension + Default>(
         &mut self,
         t: T,
     ) -> Result<(), DataFusionError> {
-        set_distributed_option_extension(self, t)
+        set_distributed_option_extension(self.config().get_or_insert_default(), t)
     }
 
     fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(
         &mut self,
         headers: &HeaderMap,
     ) -> Result<(), DataFusionError> {
-        set_distributed_option_extension_from_headers::<T>(self, headers)
+        set_distributed_option_extension_from_headers::<T>(
+            self.config().get_or_insert_default(),
+            headers,
+        )
     }
 
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
-        set_distributed_user_codec(self, codec)
+        set_distributed_user_codec(self.config().get_or_insert_default(), codec)
     }
 
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>) {
-        set_distributed_user_codec_arc(self, codec)
+        set_distributed_user_codec_arc(self.config().get_or_insert_default(), codec)
     }
 
-    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
+    fn set_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
     ) {
-        set_distributed_channel_resolver(self, resolver)
+        let cfg = self.config().get_or_insert_default();
+        set_distributed_channel_resolver(cfg, resolver);
+        let opts = cfg.options_mut();
+        if opts.extensions.get::<DistributedConfig>().is_none() {
+            opts.extensions.insert(DistributedConfig::default());
+        }
+
+        let rules = self.physical_optimizer_rules().get_or_insert_default();
+        rules.push(Arc::new(DistributedPhysicalOptimizerRule));
     }
 
     fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize) {
-        set_distributed_network_coalesce_tasks(self, tasks)
+        set_distributed_network_coalesce_tasks(self.config().get_or_insert_default(), tasks)
     }
 
     fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize) {
-        set_distributed_network_shuffle_tasks(self, tasks)
+        set_distributed_network_shuffle_tasks(self.config().get_or_insert_default(), tasks)
     }
 
     delegate! {
@@ -308,9 +330,9 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-            #[call(set_distributed_channel_resolver)]
+            #[call(set_distributed_execution)]
             #[expr($;self)]
-            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             #[call(set_distributed_network_coalesce_tasks)]
             #[expr($;self)]
@@ -319,129 +341,6 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_network_shuffle_tasks)]
             #[expr($;self)]
             fn with_distributed_network_shuffle_tasks(mut self, tasks: usize) -> Self;
-        }
-    }
-}
-
-impl DistributedExt for SessionStateBuilder {
-    delegate! {
-        to self.config().get_or_insert_default() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension_from_headers)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_distributed_user_codec)]
-            #[expr($;self)]
-            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
-
-            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
-            #[call(set_distributed_user_codec_arc)]
-            #[expr($;self)]
-            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
-
-            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_distributed_channel_resolver)]
-            #[expr($;self)]
-            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
-
-            fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_coalesce_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_coalesce_tasks(mut self, tasks: usize) -> Self;
-
-            fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_shuffle_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_shuffle_tasks(mut self, tasks: usize) -> Self;
-        }
-    }
-}
-
-impl DistributedExt for SessionState {
-    delegate! {
-        to self.config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension_from_headers)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_distributed_user_codec)]
-            #[expr($;self)]
-            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
-
-            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
-            #[call(set_distributed_user_codec_arc)]
-            #[expr($;self)]
-            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
-
-            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_distributed_channel_resolver)]
-            #[expr($;self)]
-            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
-
-            fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_coalesce_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_coalesce_tasks(mut self, tasks: usize) -> Self;
-
-            fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_shuffle_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_shuffle_tasks(mut self, tasks: usize) -> Self;
-        }
-    }
-}
-
-impl DistributedExt for SessionContext {
-    delegate! {
-        to self.state_ref().write().config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
-            #[call(set_distributed_option_extension_from_headers)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
-            #[call(set_distributed_user_codec)]
-            #[expr($;self)]
-            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
-
-            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
-            #[call(set_distributed_user_codec_arc)]
-            #[expr($;self)]
-            fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
-
-            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
-            #[call(set_distributed_channel_resolver)]
-            #[expr($;self)]
-            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
-
-            fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_coalesce_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_coalesce_tasks(self, tasks: usize) -> Self;
-
-            fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize);
-            #[call(set_distributed_network_shuffle_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_shuffle_tasks(self, tasks: usize) -> Self;
         }
     }
 }

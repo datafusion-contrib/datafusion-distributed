@@ -7,13 +7,12 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::tpch;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
-        assert_snapshot, display_plan_ascii, explain_analyze,
+        DistributedExt, DistributedSessionBuilderContext, assert_snapshot, display_plan_ascii,
+        explain_analyze,
     };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fs;
-    use std::sync::Arc;
     use tokio::sync::OnceCell;
 
     const PARTITIONS: usize = 6;
@@ -2200,7 +2199,6 @@ mod tests {
         Ok(SessionStateBuilder::new()
             .with_runtime_env(ctx.runtime_env)
             .with_default_features()
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_network_coalesce_tasks(COALESCE_TASKS)
             .with_distributed_network_shuffle_tasks(SHUFFLE_TASKS)
             .build())
