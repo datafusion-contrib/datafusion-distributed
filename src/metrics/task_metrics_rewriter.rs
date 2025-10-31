@@ -153,11 +153,7 @@ pub fn stage_metrics_rewriter(
         let mut stage_metrics = MetricsSetProto::new();
 
         for idx in 0..stage.tasks.len() {
-            let stage_key = StageKey {
-                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
-                stage_id: stage.num as u64,
-                task_number: idx as u64,
-            };
+            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, idx as u64);
             match metrics_collection.get(&stage_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
@@ -353,11 +349,11 @@ mod tests {
         // Generate metrics for each task and store them in the map.
         let mut metrics_collection = HashMap::new();
         for task_id in 0..stage.tasks.len() {
-            let stage_key = StageKey {
-                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
-                stage_id: stage.num as u64,
-                task_number: task_id as u64,
-            };
+            let stage_key = StageKey::new(
+                Bytes::from(stage.query_id.as_bytes().to_vec()),
+                stage.num as u64,
+                task_id as u64,
+            );
             let metrics = (0..count_plan_nodes(&plan))
                 .map(|node_id| {
                     make_test_metrics_set_proto_from_seed(
@@ -390,11 +386,11 @@ mod tests {
                 .enumerate()
             {
                 let expected_task_node_metrics = metrics_collection
-                    .get(&StageKey {
-                        query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
-                        stage_id: stage.num as u64,
-                        task_number: task_id as u64,
-                    })
+                    .get(&StageKey::new(
+                        Bytes::from(stage.query_id.as_bytes().to_vec()),
+                        stage.num as u64,
+                        task_id as u64,
+                    ))
                     .unwrap()[node_id]
                     .clone();
 

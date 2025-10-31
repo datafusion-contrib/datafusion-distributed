@@ -334,11 +334,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                     ticket: DoGet {
                         plan_proto: encoded_input_plan.clone(),
                         target_partition: (off + partition) as u64,
-                        stage_key: Some(StageKey {
-                            query_id: query_id.clone(),
-                            stage_id: input_stage_num,
-                            task_number: i as u64,
-                        }),
+                        stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
                     }

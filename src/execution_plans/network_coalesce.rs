@@ -280,11 +280,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 ticket: DoGet {
                     plan_proto: encoded_input_plan.clone(),
                     target_partition: target_partition as u64,
-                    stage_key: Some(StageKey {
-                        query_id: Bytes::from(input_stage.query_id.as_bytes().to_vec()),
-                        stage_id: input_stage.num as u64,
-                        task_number: target_task as u64,
-                    }),
+                    stage_key: Some(StageKey::new(
+                        Bytes::from(input_stage.query_id.as_bytes().to_vec()),
+                        input_stage.num as u64,
+                        target_task as u64,
+                    )),
                     target_task_index: target_task as u64,
                     target_task_count: input_stage.tasks.len() as u64,
                 }

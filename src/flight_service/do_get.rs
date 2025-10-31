@@ -311,23 +311,10 @@ mod tests {
                 .encode_to_vec()
                 .into();
 
-        let task_keys = [
-            StageKey {
-                query_id: query_id.clone(),
-                stage_id,
-                task_number: 0,
-            },
-            StageKey {
-                query_id: query_id.clone(),
-                stage_id,
-                task_number: 1,
-            },
-            StageKey {
-                query_id: query_id.clone(),
-                stage_id,
-                task_number: 2,
-            },
-        ];
+        let task_keys: Vec<_> = (0..3)
+            .map(|i| StageKey::new(query_id.clone(), stage_id, i))
+            .collect();
+
         let plan_proto_for_closure = plan_proto.clone();
         let endpoint_ref = &endpoint;
 
