@@ -1,28 +1,52 @@
-use datafusion::common::extensions_options;
-use datafusion::config::ConfigExtension;
-use datafusion::prelude::SessionConfig;
-use std::fmt::Debug;
+use crate::channel_resolver_ext::ChannelResolverExtension;
+use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
+use crate::{BoxCloneSyncChannel, ChannelResolver, TaskEstimator};
+use arrow_flight::flight_service_client::FlightServiceClient;
+use async_trait::async_trait;
+use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
+use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+use url::Url;
 
 extensions_options! {
+    /// Configuration for the distributed planner.
     pub struct DistributedConfig {
-        /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
-        /// ```text
-        ///  ( task 1 )  ( task 2 ) ( task 3 )
-        ///      ▲           ▲          ▲
-        ///      └────┬──────┴─────┬────┘
-        ///       ( task 1 )  ( task 2 )       N tasks
-        /// ```
-        /// This parameter defines N
-        pub network_shuffle_tasks: Option<usize>, default = None
-        /// Upon merging multiple tasks into one, this defines how many tasks are merged.
-        /// ```text
-        ///              ( task 1 )
-        ///                  ▲
-        ///      ┌───────────┴──────────┐
-        ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
-        /// ```
-        /// This parameter defines N
-        pub network_coalesce_tasks: Option<usize>, default = None
+        /// Task multiplying factor for when a node declares that it changes the cardinality
+        /// of the data:
+        /// - If a node is increasing the cardinality of the data, this factor will increase.
+        /// - If a node reduces the cardinality of the data, this factor will decrease.
+        /// - In any other situation, this factor is left intact.
+        pub cardinality_task_count_factor: f64, default = 1.0
+        /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
+        /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
+        pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
+        /// [ChannelResolver] implementation that tells the distributed planner information about
+        /// the available workers ready to execute distributed tasks.
+        pub(crate) __private_channel_resolver: ChannelResolverExtension, default = ChannelResolverExtension::default()
+    }
+}
+
+impl DistributedConfig {
+    /// Appends a [TaskEstimator] to the list. [TaskEstimator] will be executed sequentially in
+    /// order on leaf nodes, and the first one to provide a value is the one that gets to decide
+    /// how many tasks are used for that [Stage].
+    pub fn with_task_estimator(
+        mut self,
+        task_estimator: impl TaskEstimator + Send + Sync + 'static,
+    ) -> Self {
+        self.__private_task_estimator
+            .user_provided
+            .push(Arc::new(task_estimator));
+        self
+    }
+
+    /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
+    pub fn from_config_options(cfg: &ConfigOptions) -> Result<&Self, DataFusionError> {
+        let Some(distributed_cfg) = cfg.extensions.get::<DistributedConfig>() else {
+            return plan_err!("DistributedConfig is not in ConfigOptions.extensions");
+        };
+        Ok(distributed_cfg)
     }
 }
 
@@ -30,32 +54,64 @@ impl ConfigExtension for DistributedConfig {
     const PREFIX: &'static str = "distributed";
 }
 
-impl DistributedConfig {
-    /// Sets the amount of tasks used in a network shuffle operation.
-    pub fn with_network_shuffle_tasks(mut self, tasks: usize) -> Self {
-        self.network_shuffle_tasks = Some(tasks);
-        self
+// FIXME: Ideally, both ChannelResolverExtension and TaskEstimators would be passed as
+//  extensions in SessionConfig's AnyMap instead of the ConfigOptions. However, we need
+//  to pass this as ConfigOptions as we need these two fields to be present during
+//  planning in the DistributedPhysicalOptimizerRule, and the signature of the optimize()
+//  method there accepts a ConfigOptions instead of a SessionConfig.
+//  The following PR addresses this: https://github.com/apache/datafusion/pull/18168
+//  but it still has not been accepted or merged.
+//  Because of this, all the boilerplate trait implementations below are needed.
+impl ConfigField for ChannelResolverExtension {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        // nothing to do.
     }
 
-    /// Sets the amount of tasks used in a network coalesce operation.
-    pub fn with_network_coalesce_tasks(mut self, tasks: usize) -> Self {
-        self.network_coalesce_tasks = Some(tasks);
-        self
+    fn set(&mut self, _: &str, _: &str) -> datafusion::common::Result<()> {
+        not_impl_err!("Not implemented")
     }
 }
 
-pub(crate) fn set_distributed_network_coalesce_tasks(cfg: &mut SessionConfig, tasks: usize) {
-    let ext = &mut cfg.options_mut().extensions;
-    let Some(prev) = ext.get_mut::<DistributedConfig>() else {
-        return ext.insert(DistributedConfig::default().with_network_coalesce_tasks(tasks));
-    };
-    prev.network_coalesce_tasks = Some(tasks);
+impl Default for ChannelResolverExtension {
+    fn default() -> Self {
+        Self(Arc::new(NotImplementedChannelResolver))
+    }
 }
 
-pub(crate) fn set_distributed_network_shuffle_tasks(cfg: &mut SessionConfig, tasks: usize) {
-    let ext = &mut cfg.options_mut().extensions;
-    let Some(prev) = ext.get_mut::<DistributedConfig>() else {
-        return ext.insert(DistributedConfig::default().with_network_shuffle_tasks(tasks));
-    };
-    prev.network_shuffle_tasks = Some(tasks);
+impl Debug for ChannelResolverExtension {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChannelResolverExtension")
+    }
+}
+
+struct NotImplementedChannelResolver;
+
+#[async_trait]
+impl ChannelResolver for NotImplementedChannelResolver {
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        not_impl_err!("Not implemented")
+    }
+
+    async fn get_flight_client_for_url(
+        &self,
+        _: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        not_impl_err!("Not implemented")
+    }
+}
+
+impl ConfigField for CombinedTaskEstimator {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        //nothing to do.
+    }
+
+    fn set(&mut self, _: &str, _: &str) -> Result<(), DataFusionError> {
+        not_impl_err!("not implemented")
+    }
+}
+
+impl Debug for CombinedTaskEstimator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TaskEstimators")
+    }
 }

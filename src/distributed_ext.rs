@@ -2,11 +2,9 @@ use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::distributed_planner::{
-    set_distributed_network_coalesce_tasks, set_distributed_network_shuffle_tasks,
-};
+use crate::distributed_planner::set_distributed_task_estimator;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, DistributedPhysicalOptimizerRule};
+use crate::{ChannelResolver, DistributedPhysicalOptimizerRule, TaskEstimator};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::SessionStateBuilder;
@@ -236,31 +234,22 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
-    /// ```text
-    ///              ( task 1 )
-    ///                  ▲
-    ///      ┌───────────┴──────────┐
-    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
-    /// ```
-    /// This parameter defines N
-    fn with_distributed_network_coalesce_tasks(self, tasks: usize) -> Self;
+    /// Adds a distributed task count estimator. Estimators are executed on leaf nodes
+    /// sequentially until one returns an estimation on the amount of tasks that should be
+    /// used for the stage containing the leaf node.
+    ///
+    /// The first one that returns something for a leaf node is the one that decides how many
+    /// tasks are used.
+    fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+        self,
+        estimator: T,
+    ) -> Self;
 
-    /// Same as [DistributedExt::with_distributed_network_coalesce_tasks] but with an in-place mutation.
-    fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize);
-
-    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
-    /// ```text
-    ///  ( task 1 )  ( task 2 ) ( task 3 )
-    ///      ▲           ▲          ▲
-    ///      └────┬──────┴─────┬────┘
-    ///       ( task 1 )  ( task 2 )       N tasks
-    /// ```
-    /// This parameter defines N
-    fn with_distributed_network_shuffle_tasks(self, tasks: usize) -> Self;
-
-    /// Same as [DistributedExt::with_distributed_network_shuffle_tasks] but with an in-place mutation.
-    fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize);
+    /// Same as [DistributedExt::with_distributed_task_estimator] but with an in-place mutation.
+    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+        &mut self,
+        estimator: T,
+    );
 }
 
 impl DistributedExt for SessionStateBuilder {
@@ -295,21 +284,15 @@ impl DistributedExt for SessionStateBuilder {
     ) {
         let cfg = self.config().get_or_insert_default();
         set_distributed_channel_resolver(cfg, resolver);
-        let opts = cfg.options_mut();
-        if opts.extensions.get::<DistributedConfig>().is_none() {
-            opts.extensions.insert(DistributedConfig::default());
-        }
-
         let rules = self.physical_optimizer_rules().get_or_insert_default();
         rules.push(Arc::new(DistributedPhysicalOptimizerRule));
     }
 
-    fn set_distributed_network_coalesce_tasks(&mut self, tasks: usize) {
-        set_distributed_network_coalesce_tasks(self.config().get_or_insert_default(), tasks)
-    }
-
-    fn set_distributed_network_shuffle_tasks(&mut self, tasks: usize) {
-        set_distributed_network_shuffle_tasks(self.config().get_or_insert_default(), tasks)
+    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+        &mut self,
+        estimator: T,
+    ) {
+        set_distributed_task_estimator(self.config().get_or_insert_default(), estimator)
     }
 
     delegate! {
@@ -334,13 +317,9 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            #[call(set_distributed_network_coalesce_tasks)]
+            #[call(set_distributed_task_estimator)]
             #[expr($;self)]
-            fn with_distributed_network_coalesce_tasks(mut self, tasks: usize) -> Self;
-
-            #[call(set_distributed_network_shuffle_tasks)]
-            #[expr($;self)]
-            fn with_distributed_network_shuffle_tasks(mut self, tasks: usize) -> Self;
+            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
         }
     }
 }

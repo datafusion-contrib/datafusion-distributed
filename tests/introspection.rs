@@ -7,8 +7,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedConfig, MappedDistributedSessionBuilderExt,
-        apply_network_boundaries, assert_snapshot, display_plan_ascii, distribute_plan,
+        DefaultSessionBuilder, MappedDistributedSessionBuilderExt, assert_snapshot,
+        display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::error::Error;
@@ -26,11 +26,7 @@ mod tests {
         register_parquet_tables(&ctx).await?;
 
         let df = ctx.sql(r#"SHOW COLUMNS from weather"#).await?;
-        let physical = df.create_physical_plan().await?;
-        let cfg = DistributedConfig::default()
-            .with_network_shuffle_tasks(2)
-            .with_network_coalesce_tasks(2);
-        let physical_distributed = distribute_plan(apply_network_boundaries(physical, &cfg)?)?;
+        let physical_distributed = df.create_physical_plan().await?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 

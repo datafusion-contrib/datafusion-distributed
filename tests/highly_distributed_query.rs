@@ -34,7 +34,7 @@ mod tests {
             )?);
         }
 
-        let physical_distributed = distribute_plan(physical_distributed)?;
+        let physical_distributed = distribute_plan(physical_distributed)?.unwrap();
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,

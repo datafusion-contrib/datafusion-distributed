@@ -1,6 +1,7 @@
+use crate::DistributedConfig;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
-use datafusion::common::exec_datafusion_err;
+use datafusion::common::exec_err;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
@@ -11,21 +12,30 @@ pub(crate) fn set_distributed_channel_resolver(
     cfg: &mut SessionConfig,
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
 ) {
-    cfg.set_extension(Arc::new(ChannelResolverExtension(Arc::new(
-        channel_resolver,
-    ))));
+    let opts = cfg.options_mut();
+    let channel_resolver_ext = ChannelResolverExtension(Arc::new(channel_resolver));
+    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
+        distributed_cfg.__private_channel_resolver = channel_resolver_ext;
+    } else {
+        opts.extensions.insert(DistributedConfig {
+            __private_channel_resolver: channel_resolver_ext,
+            ..Default::default()
+        });
+    }
 }
 
 pub(crate) fn get_distributed_channel_resolver(
     cfg: &SessionConfig,
 ) -> Result<Arc<dyn ChannelResolver + Send + Sync>, DataFusionError> {
-    cfg.get_extension::<ChannelResolverExtension>()
-        .map(|cm| cm.0.clone())
-        .ok_or_else(|| exec_datafusion_err!("ChannelResolver not present in the session config"))
+    let opts = cfg.options();
+    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
+        return exec_err!("ChannelResolver not present in the session config");
+    };
+    Ok(Arc::clone(&distributed_cfg.__private_channel_resolver.0))
 }
 
 #[derive(Clone)]
-struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
+pub(crate) struct ChannelResolverExtension(pub(crate) Arc<dyn ChannelResolver + Send + Sync>);
 
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
     http::Request<Body>,

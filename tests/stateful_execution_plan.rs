@@ -62,7 +62,7 @@ mod tests {
         let (ctx, _guard) = start_localhost_context(3, build_state).await;
 
         let distributed_plan = build_plan()?;
-        let distributed_plan = distribute_plan(distributed_plan)?;
+        let distributed_plan = distribute_plan(distributed_plan)?.unwrap();
 
         assert_snapshot!(display_plan_ascii(distributed_plan.as_ref(), false), @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 

@@ -45,9 +45,9 @@ use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
     LocalHostChannelResolver, spawn_flight_service,
 };
+use datafusion_distributed::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
-    DistributedSessionBuilderContext, NetworkBoundaryExt,
+    DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext, NetworkBoundaryExt,
 };
 use log::info;
 use std::fs;
@@ -101,27 +101,9 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
-    /// ```text
-    ///  ( task 1 )  ( task 2 ) ( task 3 )
-    ///      ▲           ▲          ▲
-    ///      └────┬──────┴─────┬────┘
-    ///       ( task 1 )  ( task 2 )       N tasks
-    /// ```
-    /// This parameter defines N
+    /// Sets how many tasks are used per stage.
     #[structopt(long)]
-    shuffle_tasks: Option<usize>,
-
-    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
-    /// ```text
-    ///              ( task 1 )
-    ///                  ▲
-    ///      ┌───────────┴──────────┐
-    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
-    /// ```
-    /// This parameter defines N
-    #[structopt(long)]
-    coalesce_tasks: Option<usize>,
+    stage_tasks: Option<usize>,
 
     /// Spawns a worker in the specified port.
     #[structopt(long)]
@@ -160,13 +142,9 @@ impl DistributedSessionBuilder for RunOpt {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
         if !self.workers.is_empty() {
-            builder = builder
-                .with_distributed_network_coalesce_tasks(
-                    self.coalesce_tasks.unwrap_or(self.workers.len()),
-                )
-                .with_distributed_network_shuffle_tasks(
-                    self.shuffle_tasks.unwrap_or(self.workers.len()),
-                );
+            builder = builder.with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(
+                self.stage_tasks.unwrap_or(self.workers.len()),
+            ));
         }
 
         Ok(builder.build())

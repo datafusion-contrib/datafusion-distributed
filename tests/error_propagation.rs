@@ -50,7 +50,7 @@ mod tests {
                 size,
             )?);
         }
-        let plan = distribute_plan(plan)?;
+        let plan = distribute_plan(plan)?.unwrap();
         let stream = execute_stream(plan, ctx.task_ctx())?;
 
         let Err(err) = stream.try_collect::<Vec<_>>().await else {

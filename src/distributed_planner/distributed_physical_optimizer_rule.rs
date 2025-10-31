@@ -1,18 +1,19 @@
 use crate::distributed_planner::distributed_config::DistributedConfig;
 use crate::distributed_planner::distributed_plan_error::get_distribute_plan_err;
+use crate::distributed_planner::task_estimator::TaskEstimator;
 use crate::distributed_planner::{
     DistributedPlanError, NetworkBoundaryExt, limit_tasks_err, non_distributable_err,
 };
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::stage::Stage;
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
+use crate::{ChannelResolver, NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::streaming::StreamingTableExec;
@@ -61,16 +62,13 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        config: &ConfigOptions,
+        cfg: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let Some(cfg) = config.extensions.get::<DistributedConfig>() else {
-            return Ok(plan);
-        };
-        if cfg.network_coalesce_tasks.is_none() && cfg.network_shuffle_tasks.is_none() {
-            return Ok(plan);
-        }
         // We can only optimize plans that are not already distributed
-        distribute_plan(apply_network_boundaries(plan, cfg)?)
+        match distribute_plan(apply_network_boundaries(Arc::clone(&plan), cfg)?)? {
+            None => Ok(plan),
+            Some(distributed_plan) => Ok(distributed_plan),
+        }
     }
 
     fn name(&self) -> &str {
@@ -92,86 +90,169 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 /// - A [DataSourceExec] is wrapped with a [PartitionIsolatorExec] so that each distributed task
 ///   only executes a certain amount of partitions.
 ///
-/// How many tasks are employed in each step is controlled by the user through [DistributedConfig].
+/// The amount of tasks that each injected [NetworkBoundary] will spawn is calculated like this:
+///
+/// 1. Leaf nodes have the opportunity to provide an estimation of how many tasks should be employed
+///    in the [Stage] that contains them.
+///
+/// 2. If a [Stage] contains multiple leaf nodes, and all provide a task count estimation, the
+///    biggest is taken.
+///
+/// 3. When traversing the plan in a bottom to top fashion, this function looks for nodes that either
+///    increase or reduce cardinality.
+///     - If there's a node that increases cardinality, the next stage will spawn more tasks than the
+///       current one.
+///     - If there's a node that reduces cardinality, the next stage will spawn fewer tasks than the
+///       current one.
+///
+/// 4. While traversing the plan from bottom to top, if a new [NetworkBoundary] needs to be placed,
+///    it will spawn as many tasks as the previous stage multiplied by a factor determined by
+///    wether the cardinality has increased or not.
+///
+/// 5. This is repeated until all the [NetworkBoundary]s are placed.
 pub fn apply_network_boundaries(
     mut plan: Arc<dyn ExecutionPlan>,
-    cfg: &DistributedConfig,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    cfg: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
     if plan.output_partitioning().partition_count() > 1 {
         // Coalescing partitions here will allow us to put a NetworkCoalesceExec on top
         // of the plan, executing it in parallel.
         plan = Arc::new(CoalescePartitionsExec::new(plan))
     }
+    let distributed_cfg = DistributedConfig::from_config_options(cfg)?;
+    let urls = distributed_cfg.__private_channel_resolver.0.get_urls()?;
+    let ctx = _apply_network_boundaries(plan, cfg, urls.len())?;
+    Ok(ctx.plan)
+}
 
-    let result = plan.transform_up(|plan| {
-        // If this node is a DataSourceExec, we need to wrap it with PartitionIsolatorExec so
-        // that not all tasks have access to all partitions of the underlying DataSource.
-        if plan.as_any().is::<DataSourceExec>() {
-            let node = PartitionIsolatorExec::new(plan);
+struct ApplyNetworkBoundariesCtx {
+    task_count: usize,
+    this_stage_sf: f64,
+    next_stage_sf: f64,
+    plan: Arc<dyn ExecutionPlan>,
+}
 
-            return Ok(Transformed::yes(Arc::new(node)));
+impl ApplyNetworkBoundariesCtx {
+    /// Returns the task count with the calculated current scale factor, and swaps the scale
+    /// factor calculated for the next stage by the current one, resetting the next stage scale
+    /// factor.
+    ///
+    /// This is called whenever a new [NetworkBoundary] is introduced, which marks the end of
+    /// one [Stage], and the beginning of the next one.
+    fn scale_task_count_and_swap(&mut self) -> usize {
+        let task_count = (self.task_count as f64 * self.this_stage_sf).ceil() as usize;
+        self.this_stage_sf = self.next_stage_sf;
+        self.next_stage_sf = 1.0;
+        task_count
+    }
+}
+
+fn _apply_network_boundaries(
+    plan: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+    max_tasks: usize,
+) -> Result<ApplyNetworkBoundariesCtx> {
+    let mut ctx = None;
+
+    let children = plan.children();
+    let mut new_children = Vec::with_capacity(children.len());
+    // Recurse now in to the children so that nodes are the bottom are evaluated first.
+    for child in children.iter() {
+        let prev_ctx = _apply_network_boundaries(Arc::clone(child), cfg, max_tasks)?;
+        new_children.push(Arc::clone(&prev_ctx.plan));
+        match &mut ctx {
+            None => {
+                ctx.replace(ApplyNetworkBoundariesCtx {
+                    task_count: prev_ctx.task_count,
+                    this_stage_sf: prev_ctx.this_stage_sf,
+                    next_stage_sf: prev_ctx.next_stage_sf,
+                    plan: Arc::clone(&plan),
+                });
+            }
+            Some(ctx) => {
+                ctx.task_count = ctx.task_count.max(prev_ctx.task_count).min(max_tasks);
+                ctx.next_stage_sf = ctx.next_stage_sf.max(prev_ctx.next_stage_sf);
+            }
+        }
+    }
+
+    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let Some(mut ctx) = ctx else {
+        // As there is no context, it means that children.is_empty() == true and no ctx was set, so
+        // this is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
+        // user. We need to estimate how many tasks are needed for this leaf node, as we'll use
+        // that for choosing the amount of tasks in upper stages.
+        let Some(estimate) = d_cfg.__private_task_estimator.estimate_tasks(&plan, cfg) else {
+            // We could not determine how many tasks this leaf node should run on, so
+            // assume it cannot be distributed and employ just 1 task.
+            return Ok(ApplyNetworkBoundariesCtx {
+                task_count: 1,
+                this_stage_sf: 1.0,
+                next_stage_sf: 1.0,
+                plan,
+            });
+        };
+        return Ok(ApplyNetworkBoundariesCtx {
+            task_count: estimate.task_count,
+            this_stage_sf: 1.0,
+            next_stage_sf: 1.0,
+            plan: estimate.new_plan.unwrap_or(plan),
+        });
+    };
+
+    ctx.plan = ctx.plan.with_new_children(new_children)?;
+
+    // If this is a hash RepartitionExec, introduce a shuffle.
+    if let Some(node) = ctx.plan.as_any().downcast_ref::<RepartitionExec>() {
+        if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
+            return Ok(ctx);
+        }
+        let task_count = ctx.scale_task_count_and_swap();
+        ctx.plan = Arc::new(NetworkShuffleExec::try_new(ctx.plan, task_count)?);
+        return Ok(ctx);
+    }
+
+    // If this is a CoalescePartitionsExec, it means that the original plan is trying to
+    // merge all partitions into one. We need to go one step ahead and also merge all tasks
+    // into one.
+    if let Some(node) = ctx.plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+        let input = Arc::clone(node.input());
+        // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
+        // plan is just a couple of non-computational nodes that are probably not worth
+        // distributing.
+        if input.as_any().is::<PartitionIsolatorExec>() {
+            return Ok(ctx);
         }
 
-        // If this is a hash RepartitionExec, introduce a shuffle.
-        if let (Some(node), Some(input_tasks)) = (
-            plan.as_any().downcast_ref::<RepartitionExec>(),
-            cfg.network_shuffle_tasks,
-        ) {
-            if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
-                return Ok(Transformed::no(plan));
-            }
-            if input_tasks == 0 {
-                return Ok(Transformed::no(plan));
-            }
-            let node = NetworkShuffleExec::try_new(plan, input_tasks)?;
+        let task_count = ctx.scale_task_count_and_swap();
+        let new_child = NetworkCoalesceExec::new(input, task_count);
+        ctx.plan = ctx.plan.with_new_children(vec![Arc::new(new_child)])?;
+        return Ok(ctx);
+    }
 
-            return Ok(Transformed::yes(Arc::new(node)));
-        }
+    // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
+    // We need to account for it and help it by also coalescing all tasks into one, therefore
+    // a NetworkCoalesceExec is introduced.
+    if let Some(node) = ctx.plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+        let input = Arc::clone(node.input());
 
-        // If this is a CoalescePartitionsExec, it means that the original plan is trying to
-        // merge all partitions into one. We need to go one step ahead and also merge all tasks
-        // into one.
-        if let (Some(node), Some(input_tasks)) = (
-            plan.as_any().downcast_ref::<CoalescePartitionsExec>(),
-            cfg.network_coalesce_tasks,
-        ) {
-            // If the immediate child is a PartitionIsolatorExec, it means that the rest of the
-            // plan is just a couple of non-computational nodes that are probably not worth
-            // distributing.
-            if node.input().as_any().is::<PartitionIsolatorExec>() {
-                return Ok(Transformed::no(plan));
-            }
+        let task_count = ctx.scale_task_count_and_swap();
+        let new_child = NetworkCoalesceExec::new(input, task_count);
+        ctx.plan = ctx.plan.with_new_children(vec![Arc::new(new_child)])?;
+        return Ok(ctx);
+    }
 
-            if input_tasks == 0 {
-                return Ok(Transformed::no(plan));
-            }
-            let plan = Arc::clone(&plan).with_new_children(vec![Arc::new(
-                NetworkCoalesceExec::new(Arc::clone(node.input()), input_tasks),
-            )])?;
+    // Scale the tasks count of the next stage. Note that, even if nodes in the current stage scale
+    // up or down the cardinality, that doesn't affect the task count for the current stage, but
+    // for the next one, as that's the one that will see the benefits of the current stage
+    // compressing the amount of data flowing.
+    match ctx.plan.cardinality_effect() {
+        CardinalityEffect::LowerEqual => ctx.next_stage_sf /= d_cfg.cardinality_task_count_factor,
+        CardinalityEffect::GreaterEqual => ctx.next_stage_sf *= d_cfg.cardinality_task_count_factor,
+        _ => {}
+    }
 
-            return Ok(Transformed::yes(plan));
-        }
-
-        // The SortPreservingMergeExec node will try to coalesce all partitions into just 1.
-        // We need to account for it and help it by also coalescing all tasks into one, therefore
-        // a NetworkCoalesceExec is introduced.
-        if let (Some(node), Some(input_tasks)) = (
-            plan.as_any().downcast_ref::<SortPreservingMergeExec>(),
-            cfg.network_coalesce_tasks,
-        ) {
-            if input_tasks == 0 {
-                return Ok(Transformed::no(plan));
-            }
-            let plan = Arc::clone(&plan).with_new_children(vec![Arc::new(
-                NetworkCoalesceExec::new(Arc::clone(node.input()), input_tasks),
-            )])?;
-
-            return Ok(Transformed::yes(plan));
-        }
-
-        Ok(Transformed::no(plan))
-    })?;
-    Ok(result.data)
+    Ok(ctx)
 }
 
 /// Takes a plan with certain network boundaries in it ([NetworkShuffleExec], [NetworkCoalesceExec], ...)
@@ -180,11 +261,13 @@ pub fn apply_network_boundaries(
 /// This can be used a standalone function for distributing arbitrary plans in which users have
 /// manually placed network boundaries, or as part of the [DistributedPhysicalOptimizerRule] that
 /// places the network boundaries automatically as a standard [PhysicalOptimizerRule].
+///
+/// If there's nothing to distribute in the plan, the function returns None.
 pub fn distribute_plan(
     plan: Arc<dyn ExecutionPlan>,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
     if plan.as_any().is::<DistributedExec>() {
-        return Ok(plan);
+        return Ok(Some(plan));
     }
     let stage = match _distribute_plan_inner(Uuid::new_v4(), plan.clone(), &mut 1, 0, 1) {
         Ok(stage) => stage,
@@ -198,13 +281,18 @@ pub fn distribute_plan(
                         }
                         Ok(Transformed::no(plan))
                     })
-                    .map(|v| v.data),
+                    .map(|v| Some(v.data)),
                 _ => Err(err),
             };
         }
     };
+    // After running the distributed planner, only 1 stage was created, meaning that the plan
+    // was not distributed.
+    if stage.num == 1 {
+        return Ok(None);
+    }
     let plan = stage.plan.decoded()?;
-    Ok(Arc::new(DistributedExec::new(Arc::clone(plan))))
+    Ok(Some(Arc::new(DistributedExec::new(Arc::clone(plan)))))
 }
 
 fn _distribute_plan_inner(
@@ -313,6 +401,7 @@ mod tests {
     use crate::DistributedExt;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::parquet::register_parquet_tables;
+    use crate::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
     use crate::{assert_snapshot, display_plan_ascii};
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
@@ -346,26 +435,15 @@ mod tests {
     #[tokio::test]
     async fn test_select_all() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT * FROM weather
         "#;
         let plan = sql_to_explain(query).await.unwrap();
-        assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ CoalescePartitionsExec
-        │   DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
-        └──────────────────────────────────────────────────
-        ");
+        assert_snapshot!(plan, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
     }
 
     #[tokio::test]
     async fn test_aggregation() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query).await.unwrap();
@@ -395,9 +473,6 @@ mod tests {
     #[tokio::test]
     async fn test_aggregation_with_partitions_per_task() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query).await.unwrap();
@@ -427,30 +502,21 @@ mod tests {
     #[tokio::test]
     async fn test_left_join() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
         let plan = sql_to_explain(query).await.unwrap();
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ CoalescePartitionsExec
-        │   CoalesceBatchesExec: target_batch_size=8192
-        │     HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-        │       CoalescePartitionsExec
-        │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-        │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
-        └──────────────────────────────────────────────────
+        CoalesceBatchesExec: target_batch_size=8192
+          HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+            CoalescePartitionsExec
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         ");
     }
 
     #[tokio::test]
     async fn test_left_join_distributed() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         WITH a AS (
             SELECT
                 AVG("MinTemp") as "MinTemp",
@@ -516,9 +582,6 @@ mod tests {
     #[tokio::test]
     async fn test_sort() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT * FROM weather ORDER BY "MinTemp" DESC
         "#;
         let plan = sql_to_explain(query).await.unwrap();
@@ -538,9 +601,6 @@ mod tests {
     #[tokio::test]
     async fn test_distinct() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
         let plan = sql_to_explain(query).await.unwrap();
@@ -567,9 +627,6 @@ mod tests {
     #[tokio::test]
     async fn test_show_columns() {
         let query = r#"
-        SET distributed.network_coalesce_tasks = 2;
-        SET distributed.network_shuffle_tasks = 2;
-
         SHOW COLUMNS from weather
         "#;
         let plan = sql_to_explain(query).await.unwrap();
@@ -592,6 +649,7 @@ mod tests {
             .with_default_features()
             .with_config(config)
             .with_distributed_execution(InMemoryChannelResolver::new())
+            .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(2))
             .build();
 
         let ctx = SessionContext::new_with_state(state);

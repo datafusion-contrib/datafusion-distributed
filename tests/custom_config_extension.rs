@@ -61,7 +61,7 @@ mod tests {
             )?);
         }
 
-        let plan = distribute_plan(plan)?;
+        let plan = distribute_plan(plan)?.unwrap();
         let stream = execute_stream(plan, ctx.task_ctx())?;
         // It should not fail.
         stream.try_collect::<Vec<_>>().await?;

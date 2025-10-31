@@ -70,7 +70,9 @@ impl InMemoryChannelResolver {
 #[async_trait]
 impl ChannelResolver for InMemoryChannelResolver {
     fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap()])
+        // Set to a high number so that the distributed planner does not limit the maximum
+        // spawned tasks to just 1.
+        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 100])
     }
 
     async fn get_flight_client_for_url(
