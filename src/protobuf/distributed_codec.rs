@@ -253,6 +253,16 @@ pub struct StageKey {
     pub task_number: u64,
 }
 
+impl StageKey {
+    pub fn new(query_id: Bytes, stage_id: u64, task_number: u64) -> StageKey {
+        Self {
+            query_id,
+            stage_id,
+            task_number,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StageProto {
     /// Our query id
