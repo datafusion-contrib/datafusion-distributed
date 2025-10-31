@@ -135,19 +135,9 @@ mod tests {
     // and asserts that the metrics are collected correctly.
     #[tokio::test]
     async fn test_metrics_collecting_stream_extracts_and_removes_metadata() {
-        let stage_keys = vec![
-            StageKey {
-                query_id: Bytes::from("test_query"),
-                stage_id: 1,
-                task_number: 1,
-            },
-            StageKey {
-                query_id: Bytes::from("test_query"),
-                stage_id: 1,
-                task_number: 2,
-            },
-        ];
-
+        let stage_keys: Vec<_> = (1..3)
+            .map(|i| StageKey::new(Bytes::from("test_query"), 1, i))
+            .collect();
         let app_metadatas = stage_keys
             .iter()
             .map(|stage_key| FlightAppMetadata {

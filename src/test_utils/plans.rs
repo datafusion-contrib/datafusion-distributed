@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
@@ -51,12 +50,11 @@ pub fn get_stages_and_stage_keys(
 
         // Add each task.
         for j in 0..stage.tasks.len() {
-            let stage_key = StageKey {
-                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
-                stage_id: stage.num as u64,
-                task_number: j as u64,
-            };
-            stage_keys.insert(stage_key);
+            stage_keys.insert(StageKey::new(
+                stage.query_id.as_bytes().to_vec().into(),
+                stage.num as u64,
+                j as u64,
+            ));
         }
 
         // Add any child stages
