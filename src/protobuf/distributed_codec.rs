@@ -239,7 +239,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
     }
 }
 
-/// A key that uniquely identifies a stage in a query
+/// A key that uniquely identifies a stage in a query.
 #[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
 pub struct StageKey {
     /// Our query id
@@ -254,6 +254,7 @@ pub struct StageKey {
 }
 
 impl StageKey {
+    /// Creates a new `StageKey`.
     pub fn new(query_id: Bytes, stage_id: u64, task_number: u64) -> StageKey {
         Self {
             query_id,
