@@ -255,6 +255,15 @@ The integration tests also provide an idea about how to use the library and what
    git lfs checkout
    ```
 
+If the above does not work, try the following:
+   ```bash
+   brew install git-lfs
+   git lfs install
+   git lfs pull
+   ```
+
+This step downloads Parquet files used in some tests. It must be completed successfully for the testing suite to pass.
+
 ### Running Tests
 
 **Unit and integration tests:**
