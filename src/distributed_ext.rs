@@ -4,7 +4,7 @@ use crate::config_extension_ext::{
 };
 use crate::distributed_planner::set_distributed_task_estimator;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedPhysicalOptimizerRule, TaskEstimator};
+use crate::{ChannelResolver, DistributedConfig, DistributedPhysicalOptimizerRule, TaskEstimator};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::SessionStateBuilder;
@@ -250,6 +250,45 @@ pub trait DistributedExt: Sized {
         &mut self,
         estimator: T,
     );
+
+    /// Sets the maximum number of files each task in a stage with a FileScanConfig node will
+    /// handle. Reducing this number will increment the amount of tasks. By default, this
+    /// is close to the number of cores in the machine.
+    fn with_distributed_files_per_task(
+        self,
+        files_per_task: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_files_per_task] but with an in-place mutation.
+    fn set_distributed_files_per_task(
+        &mut self,
+        files_per_task: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// The number of tasks in each stage is calculated in a bottom-to-top fashion.
+    ///
+    /// Bottom stages containing leaf nodes will provide an estimation of the amount of tasks
+    /// for those stages, but upper stages might see a reduction (or increment) in the amount
+    /// of tasks based on the cardinality effect bottom stages have in the data.
+    ///
+    /// For example: If there are two stages, and the leaf stage is estimated to use 10 tasks,
+    ///  the upper stage might use less (e.g. 5) if it sees that the leaf stage is returning
+    ///  less data because of filters or aggregations.
+    ///
+    /// This function sets the scale factor for when encountering these nodes that change the
+    /// cardinality of the data. For example, if a stage with 10 tasks contains an AggregateExec
+    /// node, and the scale factor is 2.0, the following stage will use  10 / 2.0 = 5 tasks.
+    fn with_distributed_cardinality_effect_task_scale_factor(
+        self,
+        factor: f64,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_cardinality_effect_task_scale_factor] but with
+    /// an in-place mutation.
+    fn set_distributed_cardinality_effect_task_scale_factor(
+        &mut self,
+        factor: f64,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionStateBuilder {
@@ -295,6 +334,26 @@ impl DistributedExt for SessionStateBuilder {
         set_distributed_task_estimator(self.config().get_or_insert_default(), estimator)
     }
 
+    fn set_distributed_files_per_task(
+        &mut self,
+        files_per_task: usize,
+    ) -> Result<(), DataFusionError> {
+        let cfg = self.config().get_or_insert_default();
+        let d_cfg = DistributedConfig::from_config_options_mut(cfg.options_mut())?;
+        d_cfg.files_per_task = files_per_task;
+        Ok(())
+    }
+
+    fn set_distributed_cardinality_effect_task_scale_factor(
+        &mut self,
+        factor: f64,
+    ) -> Result<(), DataFusionError> {
+        let cfg = self.config().get_or_insert_default();
+        let d_cfg = DistributedConfig::from_config_options_mut(cfg.options_mut())?;
+        d_cfg.cardinality_task_count_factor = factor;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -320,6 +379,14 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            #[call(set_distributed_files_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_cardinality_effect_task_scale_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
         }
     }
 }

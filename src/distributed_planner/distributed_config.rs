@@ -3,6 +3,7 @@ use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
 use crate::{BoxCloneSyncChannel, ChannelResolver, TaskEstimator};
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
+use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
@@ -12,6 +13,9 @@ use url::Url;
 extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
+        /// Sets the maximum amount of files that will be assigned to each task. Reducing this
+        /// number will spawn more tasks for the same number of files.
+        pub files_per_task: usize, default = get_available_parallelism()
         /// Task multiplying factor for when a node declares that it changes the cardinality
         /// of the data:
         /// - If a node is increasing the cardinality of the data, this factor will increase.
@@ -44,6 +48,14 @@ impl DistributedConfig {
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
     pub fn from_config_options(cfg: &ConfigOptions) -> Result<&Self, DataFusionError> {
         let Some(distributed_cfg) = cfg.extensions.get::<DistributedConfig>() else {
+            return plan_err!("DistributedConfig is not in ConfigOptions.extensions");
+        };
+        Ok(distributed_cfg)
+    }
+
+    /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
+    pub fn from_config_options_mut(cfg: &mut ConfigOptions) -> Result<&mut Self, DataFusionError> {
+        let Some(distributed_cfg) = cfg.extensions.get_mut::<DistributedConfig>() else {
             return plan_err!("DistributedConfig is not in ConfigOptions.extensions");
         };
         Ok(distributed_cfg)

@@ -45,7 +45,6 @@ use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
     LocalHostChannelResolver, spawn_flight_service,
 };
-use datafusion_distributed::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
 use datafusion_distributed::{
     DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext, NetworkBoundaryExt,
 };
@@ -101,10 +100,6 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Sets how many tasks are used per stage.
-    #[structopt(long)]
-    stage_tasks: Option<usize>,
-
     /// Spawns a worker in the specified port.
     #[structopt(long)]
     spawn: Option<u16>,
@@ -116,6 +111,14 @@ pub struct RunOpt {
     /// Number of physical threads per worker.
     #[structopt(long)]
     threads: Option<usize>,
+
+    /// Number of files per each distributed task.
+    #[structopt(long)]
+    files_per_task: Option<usize>,
+
+    /// Task count scale factor for when nodes in stages change the cardinality of the data
+    #[structopt(long)]
+    cardinality_task_sf: Option<f64>,
 }
 
 #[async_trait]
@@ -136,15 +139,16 @@ impl DistributedSessionBuilder for RunOpt {
             .with_config(config)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
             .with_distributed_execution(LocalHostChannelResolver::new(self.workers.clone()))
-            .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?;
+            .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
+            .with_distributed_files_per_task(
+                self.files_per_task.unwrap_or(get_available_parallelism()),
+            )?
+            .with_distributed_cardinality_effect_task_scale_factor(
+                self.cardinality_task_sf.unwrap_or(1.0),
+            )?;
 
         if self.mem_table {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
-        }
-        if !self.workers.is_empty() {
-            builder = builder.with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(
-                self.stage_tasks.unwrap_or(self.workers.len()),
-            ));
         }
 
         Ok(builder.build())

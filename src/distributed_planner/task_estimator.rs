@@ -1,9 +1,10 @@
-use crate::{DistributedConfig, PartitionIsolatorExec};
+use crate::{ChannelResolver, DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -96,14 +97,43 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
     fn estimate_tasks(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
-        _: &ConfigOptions,
+        cfg: &ConfigOptions,
     ) -> Option<TaskEstimation> {
+        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
-        let _config: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+
+        // Count how many distinct files we have in the FileScanConfig.
+        let mut distinct_files = HashSet::new();
+        for file_group in &file_scan.file_groups {
+            for file in file_group.iter() {
+                distinct_files.insert(file.object_meta.location.clone());
+            }
+        }
+        let distinct_files = distinct_files.len();
+
+        // Based on the user-provided files_per_task configuration, do the math to calculate
+        // how many tasks should be used, without surpassing the number of available workers.
+        let mut task_count = distinct_files.div_ceil(d_cfg.files_per_task);
+        let workers = match d_cfg.__private_channel_resolver.0.get_urls() {
+            Ok(urls) => urls.len(),
+            Err(_) => 1,
+        };
+        task_count = task_count.max(workers);
+
+        // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
+        // repartitioning it. This will result in a DataSourceExec with potentially a lot of
+        // partitions, but as we are going wrap it with PartitionIsolatorExec that's fine.
+        let scaled_partitions = task_count * plan.output_partitioning().partition_count();
+        let mut plan = Arc::clone(plan);
+        if let Ok(Some(repartitioned)) = plan.repartitioned(scaled_partitions, cfg) {
+            plan = repartitioned;
+        }
+        plan = Arc::new(PartitionIsolatorExec::new(plan));
 
         Some(TaskEstimation {
-            task_count: 1, // TODO
-            new_plan: Some(Arc::new(PartitionIsolatorExec::new(Arc::clone(plan)))),
+            task_count,
+            new_plan: Some(plan),
         })
     }
 }
