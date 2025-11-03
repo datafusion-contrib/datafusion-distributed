@@ -1,0 +1,31 @@
+[package]
+name = "distributed-datafusion-controller"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ddf_test"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent"
+path = "src/bin/agent.rs"
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+datafusion-distributed = { path = "..", features = ["integration"] }
+moka = {version = "0.12.11",  features = ["sync"]}
+tokio = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+url = { workspace = true }
+futures = { workspace = true }
+datafusion = { workspace = true }
+arrow-flight = "56.1.0"
+async-trait = "0.1.88"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+tempfile = "3.8"
+log = "0.4.28"
+
+
