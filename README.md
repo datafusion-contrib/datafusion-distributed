@@ -250,19 +250,15 @@ The integration tests also provide an idea about how to use the library and what
    ```
 
 2. **Install Git LFS and fetch test data:**
+
+This step downloads Parquet files used in some tests. It must be completed successfully for the testing suite to pass.
+
+Install Git LFS if you don't already have it: [Official docs](https://git-lfs.com/).
+
    ```bash
    git lfs install
    git lfs checkout
    ```
-
-If the above does not work, try the following:
-   ```bash
-   brew install git-lfs
-   git lfs install
-   git lfs pull
-   ```
-
-This step downloads Parquet files used in some tests. It must be completed successfully for the testing suite to pass.
 
 ### Running Tests
 
