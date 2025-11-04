@@ -151,7 +151,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_execution(InMemoryChannelResolver::new())
+            .with_distributed_execution(InMemoryChannelResolver::new(10))
             .with_distributed_task_estimator(2)
             .build();
 

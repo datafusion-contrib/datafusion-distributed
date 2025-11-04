@@ -121,6 +121,11 @@ pub fn apply_network_boundaries(
     }
     let distributed_cfg = DistributedConfig::from_config_options(cfg)?;
     let urls = distributed_cfg.__private_channel_resolver.0.get_urls()?;
+    // If there are 1 or 0 available workers, it does not make sense to distribute the query,
+    // so don't.
+    if urls.len() <= 1 {
+        return Ok(plan);
+    }
     let ctx = _apply_network_boundaries(plan, cfg, urls.len())?;
     Ok(ctx.plan)
 }
@@ -402,7 +407,6 @@ mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{assert_snapshot, display_plan_ascii};
-    use datafusion::error::DataFusionError;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
     /* shema for the "weather" table
@@ -436,7 +440,10 @@ mod tests {
         let query = r#"
         SELECT * FROM weather
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
     }
 
@@ -445,7 +452,10 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
@@ -470,11 +480,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_aggregation_with_fewer_workers_than_files() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(2))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
+          │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+          │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       CoalesceBatchesExec: target_batch_size=8192
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=4
+            │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+            │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+            │       PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
+            │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_with_0_workers() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(0))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+          SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+            SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+              ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+                AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                  CoalesceBatchesExec: target_batch_size=8192
+                    RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_with_high_cardinality_factor() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+                .with_distributed_cardinality_effect_task_scale_factor(3.0)
+                .unwrap()
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+        │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+        │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+        │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+        │           CoalesceBatchesExec: target_batch_size=8192
+        │             [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
+          │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
+          │   RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+          └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_with_a_lot_of_files_per_task() {
+        let query = r#"
+        SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+                .with_distributed_files_per_task(3)
+                .unwrap()
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
+          SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+            SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+              ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+                AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                  CoalesceBatchesExec: target_batch_size=8192
+                    RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=4
+                      RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+                        AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+        ");
+    }
+
+    #[tokio::test]
     async fn test_aggregation_with_partitions_per_task() {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
@@ -503,7 +627,10 @@ mod tests {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         CoalesceBatchesExec: target_batch_size=8192
           HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
@@ -538,7 +665,10 @@ mod tests {
         LEFT JOIN b
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
@@ -583,7 +713,10 @@ mod tests {
         let query = r#"
         SELECT * FROM weather ORDER BY "MinTemp" DESC
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
@@ -602,7 +735,10 @@ mod tests {
         let query = r#"
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
@@ -628,7 +764,10 @@ mod tests {
         let query = r#"
         SHOW COLUMNS from weather
         "#;
-        let plan = sql_to_explain(query).await.unwrap();
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_execution(InMemoryChannelResolver::new(3))
+        })
+        .await;
         assert_snapshot!(plan, @r"
         CoalescePartitionsExec
           ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
@@ -639,26 +778,29 @@ mod tests {
         ");
     }
 
-    async fn sql_to_explain(query: &str) -> Result<String, DataFusionError> {
+    async fn sql_to_explain(
+        query: &str,
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
+    ) -> String {
         let config = SessionConfig::new()
             .with_target_partitions(4)
             .with_information_schema(true);
 
-        let state = SessionStateBuilder::new()
+        let builder = SessionStateBuilder::new()
             .with_default_features()
-            .with_config(config)
-            .with_distributed_execution(InMemoryChannelResolver::new())
-            .build();
+            .with_config(config);
+
+        let state = f(builder).build();
 
         let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await?;
+        register_parquet_tables(&ctx).await.unwrap();
 
         let mut df = None;
         for query in query.split(";") {
-            df = Some(ctx.sql(query).await?);
+            df = Some(ctx.sql(query).await.unwrap());
         }
 
-        let physical_plan = df.unwrap().create_physical_plan().await?;
-        Ok(display_plan_ascii(physical_plan.as_ref(), false))
+        let physical_plan = df.unwrap().create_physical_plan().await.unwrap();
+        display_plan_ascii(physical_plan.as_ref(), false)
     }
 }

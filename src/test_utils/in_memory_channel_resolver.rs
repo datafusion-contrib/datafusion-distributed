@@ -16,16 +16,11 @@ const DUMMY_URL: &str = "http://localhost:50051";
 #[derive(Clone)]
 pub struct InMemoryChannelResolver {
     channel: FlightServiceClient<BoxCloneSyncChannel>,
-}
-
-impl Default for InMemoryChannelResolver {
-    fn default() -> Self {
-        Self::new()
-    }
+    n_workers: usize,
 }
 
 impl InMemoryChannelResolver {
-    pub fn new() -> Self {
+    pub fn new(n_workers: usize) -> Self {
         let (client, server) = tokio::io::duplex(1024 * 1024);
 
         let mut client = Some(client);
@@ -40,6 +35,7 @@ impl InMemoryChannelResolver {
 
         let this = Self {
             channel: create_flight_client(BoxCloneSyncChannel::new(channel)),
+            n_workers,
         };
         let this_clone = this.clone();
 
@@ -72,7 +68,7 @@ impl ChannelResolver for InMemoryChannelResolver {
     fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
         // Set to a high number so that the distributed planner does not limit the maximum
         // spawned tasks to just 1.
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 100])
+        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); self.n_workers])
     }
 
     async fn get_flight_client_for_url(

@@ -244,7 +244,7 @@ mod tests {
 
         if distributed {
             builder = builder
-                .with_distributed_execution(InMemoryChannelResolver::new())
+                .with_distributed_execution(InMemoryChannelResolver::new(10))
                 .with_distributed_task_estimator(2)
         }
 
