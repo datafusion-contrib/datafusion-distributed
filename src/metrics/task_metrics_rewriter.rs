@@ -219,7 +219,6 @@ mod tests {
 
     use crate::DistributedExt;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
-    use crate::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
     use datafusion::prelude::SessionConfig;
@@ -246,7 +245,7 @@ mod tests {
         if distributed {
             builder = builder
                 .with_distributed_execution(InMemoryChannelResolver::new())
-                .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(2))
+                .with_distributed_task_estimator(2)
         }
 
         let state = builder.build();

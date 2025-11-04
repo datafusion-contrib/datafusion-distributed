@@ -4,16 +4,12 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{displayable, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::session_context::register_temp_parquet_table;
-    use datafusion_distributed::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
-    use datafusion_distributed::{
-        DistributedExt, DistributedSessionBuilderContext, assert_snapshot, display_plan_ascii,
-    };
+    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
@@ -21,15 +17,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_aggregation() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard) =
-            start_localhost_context(3, |ctx: DistributedSessionBuilderContext| async move {
-                Ok(SessionStateBuilder::new()
-                    .with_runtime_env(ctx.runtime_env.clone())
-                    .with_default_features()
-                    .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(2))
-                    .build())
-            })
-            .await;
+        let (ctx_distributed, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -72,12 +60,12 @@ mod tests {
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       CoalesceBatchesExec: target_batch_size=8192
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │     PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
+            │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
             │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
             └──────────────────────────────────────────────────
         ",
@@ -117,15 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_aggregation_head_node_partitioned() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard) =
-            start_localhost_context(6, |ctx: DistributedSessionBuilderContext| async move {
-                Ok(SessionStateBuilder::new()
-                    .with_runtime_env(ctx.runtime_env.clone())
-                    .with_default_features()
-                    .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(6))
-                    .build())
-            })
-            .await;
+        let (ctx_distributed, _guard) = start_localhost_context(6, DefaultSessionBuilder).await;
 
         let query = r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday""#;
 
@@ -156,16 +136,16 @@ mod tests {
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=18, input_tasks=6
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] t4:[p0..p2] t5:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     CoalesceBatchesExec: target_batch_size=8192
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p17] t1:[p0..p17] t2:[p0..p17] 
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 18), input_partitions=1
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
             │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
@@ -182,15 +162,7 @@ mod tests {
     //       a new approach must be used in this case.
     #[tokio::test]
     async fn test_multiple_first_value_aggregations() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) =
-            start_localhost_context(3, |ctx: DistributedSessionBuilderContext| async move {
-                Ok(SessionStateBuilder::new()
-                    .with_runtime_env(ctx.runtime_env.clone())
-                    .with_default_features()
-                    .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(3))
-                    .build())
-            })
-            .await;
+        let (ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("group_id", DataType::Int32, false),

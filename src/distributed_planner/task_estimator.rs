@@ -119,7 +119,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
             Ok(urls) => urls.len(),
             Err(_) => 1,
         };
-        task_count = task_count.max(workers);
+        task_count = task_count.min(workers);
 
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of

@@ -5,7 +5,6 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_distributed::test_utils::test_task_estimator::FixedDataSourceExecTaskEstimator;
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
     DistributedSessionBuilderContext, create_flight_client,
@@ -27,9 +26,6 @@ struct Args {
 
     #[structopt(long)]
     explain: bool,
-
-    #[structopt(long, default_value = "3")]
-    stage_tasks: usize,
 }
 
 #[tokio::main]
@@ -39,7 +35,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_execution(InMemoryChannelResolver::new())
-        .with_distributed_task_estimator(FixedDataSourceExecTaskEstimator(args.stage_tasks))
         .build();
 
     let ctx = SessionContext::from(state);

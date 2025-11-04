@@ -15,19 +15,35 @@ extensions_options! {
     pub struct DistributedConfig {
         /// Sets the maximum amount of files that will be assigned to each task. Reducing this
         /// number will spawn more tasks for the same number of files.
-        pub files_per_task: usize, default = get_available_parallelism()
+        pub files_per_task: usize, default = files_per_task_default()
         /// Task multiplying factor for when a node declares that it changes the cardinality
         /// of the data:
         /// - If a node is increasing the cardinality of the data, this factor will increase.
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
-        pub cardinality_task_count_factor: f64, default = 1.0
+        pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
         /// [ChannelResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_channel_resolver: ChannelResolverExtension, default = ChannelResolverExtension::default()
+    }
+}
+
+fn files_per_task_default() -> usize {
+    if cfg!(test) || cfg!(feature = "integration") {
+        1
+    } else {
+        get_available_parallelism()
+    }
+}
+
+fn cardinality_task_count_factor_default() -> f64 {
+    if cfg!(test) || cfg!(feature = "integration") {
+        1.5
+    } else {
+        1.0
     }
 }
 
