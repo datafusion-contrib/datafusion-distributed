@@ -2,6 +2,7 @@ use arrow::util::pretty::pretty_format_batches;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
+use datafusion::common::utils::get_available_parallelism;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
@@ -27,6 +28,12 @@ struct Args {
 
     #[structopt(long)]
     explain: bool,
+
+    #[structopt(long)]
+    files_per_task: Option<usize>,
+
+    #[structopt(long)]
+    cardinality_task_sf: Option<f64>,
 }
 
 #[tokio::main]
@@ -37,6 +44,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_default_features()
         .with_distributed_channel_resolver(InMemoryChannelResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_files_per_task(
+            args.files_per_task.unwrap_or(get_available_parallelism()),
+        )?
+        .with_distributed_cardinality_effect_task_scale_factor(
+            args.cardinality_task_sf.unwrap_or(1.),
+        )?
         .build();
 
     let ctx = SessionContext::from(state);
