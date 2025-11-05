@@ -127,12 +127,12 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
 
-    use crate::DistributedExt;
     use crate::execution_plans::DistributedExec;
     use crate::metrics::proto::metrics_set_proto_to_df;
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
+    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -151,7 +151,8 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_execution(InMemoryChannelResolver::new(10))
+            .with_distributed_channel_resolver(InMemoryChannelResolver::new(10))
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_task_estimator(2)
             .build();
 

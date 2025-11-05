@@ -46,7 +46,8 @@ use datafusion_distributed::test_utils::localhost::{
     LocalHostChannelResolver, spawn_flight_service,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext, NetworkBoundaryExt,
+    DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
+    DistributedSessionBuilderContext, NetworkBoundaryExt,
 };
 use log::info;
 use std::fs;
@@ -138,7 +139,8 @@ impl DistributedSessionBuilder for RunOpt {
             .with_default_features()
             .with_config(config)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
-            .with_distributed_execution(LocalHostChannelResolver::new(self.workers.clone()))
+            .with_distributed_channel_resolver(LocalHostChannelResolver::new(self.workers.clone()))
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
             .with_distributed_files_per_task(
                 self.files_per_task.unwrap_or(get_available_parallelism()),

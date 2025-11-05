@@ -4,7 +4,7 @@ use crate::config_extension_ext::{
 };
 use crate::distributed_planner::set_distributed_task_estimator;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, DistributedPhysicalOptimizerRule, TaskEstimator};
+use crate::{ChannelResolver, DistributedConfig, TaskEstimator};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::SessionStateBuilder;
@@ -178,14 +178,8 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
-    /// Enables distributed execution. For this, several things happen:
-    ///
-    /// - Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
-    ///   nodes. When running in distributed mode, setting a [ChannelResolver] is required.
-    /// - Injects a [DistributedPhysicalOptimizerRule] rule that will inject network boundaries
-    ///   in the plan and will break it down into stages.
-    /// - Injects a [DistributedConfig] object with configuration about the amount of tasks that
-    ///   should be spawned while distributing the queries.
+    /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
+    /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
     ///
     /// Example:
     ///
@@ -196,7 +190,8 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedSessionBuilderContext};
+    /// # use std::sync::Arc;
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext};
     ///
     /// struct CustomChannelResolver;
     ///
@@ -211,25 +206,29 @@ pub trait DistributedExt: Sized {
     ///     }
     /// }
     ///
+    /// // This tweaks the SessionState so that it can plan for distributed queries and execute them.
     /// let state = SessionStateBuilder::new()
-    ///     .with_distributed_execution(CustomChannelResolver)
+    ///     .with_distributed_channel_resolver(CustomChannelResolver)
+    ///     // the DistributedPhysicalOptimizerRule also needs to be passed so that query plans
+    ///     // get distributed.
+    ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
     ///     .build();
     ///
+    /// // This function can be provided to an ArrowFlightEndpoint so that, upon receiving a distributed
+    /// // part of a plan, it knows how to resolve gRPC channels from URLs for making network calls to other nodes.
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint so that it knows how to
-    ///     // resolve tonic channels from URLs upon making network calls to other nodes.
     ///     Ok(SessionStateBuilder::new()
-    ///         .with_distributed_execution(CustomChannelResolver)
+    ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
     /// }
     /// ```
-    fn with_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
+    fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         self,
         resolver: T,
     ) -> Self;
 
-    /// Same as [DistributedExt::with_distributed_execution] but with an in-place mutation.
-    fn set_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
+    /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
+    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
     );
@@ -317,14 +316,12 @@ impl DistributedExt for SessionStateBuilder {
         set_distributed_user_codec_arc(self.config().get_or_insert_default(), codec)
     }
 
-    fn set_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(
+    fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
     ) {
         let cfg = self.config().get_or_insert_default();
         set_distributed_channel_resolver(cfg, resolver);
-        let rules = self.physical_optimizer_rules().get_or_insert_default();
-        rules.push(Arc::new(DistributedPhysicalOptimizerRule));
     }
 
     fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
@@ -372,9 +369,9 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-            #[call(set_distributed_execution)]
+            #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
-            fn with_distributed_execution<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]

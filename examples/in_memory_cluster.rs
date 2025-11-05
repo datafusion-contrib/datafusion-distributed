@@ -7,11 +7,12 @@ use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedSessionBuilderContext, create_flight_client,
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
 use std::error::Error;
+use std::sync::Arc;
 use structopt::StructOpt;
 use tonic::transport::{Endpoint, Server};
 
@@ -34,7 +35,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_distributed_execution(InMemoryChannelResolver::new())
+        .with_distributed_channel_resolver(InMemoryChannelResolver::new())
+        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .build();
 
     let ctx = SessionContext::from(state);
@@ -97,7 +99,7 @@ impl InMemoryChannelResolver {
                 async move {
                     let builder = SessionStateBuilder::new()
                         .with_default_features()
-                        .with_distributed_execution(this)
+                        .with_distributed_channel_resolver(this)
                         .with_runtime_env(ctx.runtime_env.clone());
                     Ok(builder.build())
                 }

@@ -45,7 +45,7 @@ impl InMemoryChannelResolver {
                 async move {
                     let builder = SessionStateBuilder::new()
                         .with_default_features()
-                        .with_distributed_execution(this)
+                        .with_distributed_channel_resolver(this)
                         .with_runtime_env(ctx.runtime_env.clone());
                     Ok(builder.build())
                 }

@@ -1,6 +1,6 @@
 use crate::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedSessionBuilder, DistributedSessionBuilderContext,
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
     MappedDistributedSessionBuilderExt, create_flight_client,
 };
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -53,7 +53,10 @@ where
     let channel_resolver = LocalHostChannelResolver::new(ports.clone());
     let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
         let channel_resolver = channel_resolver.clone();
-        Ok(builder.with_distributed_execution(channel_resolver).build())
+        Ok(builder
+            .with_distributed_channel_resolver(channel_resolver)
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .build())
     });
     let mut join_set = JoinSet::new();
     for listener in listeners {
