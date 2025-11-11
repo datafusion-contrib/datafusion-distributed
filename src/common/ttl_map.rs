@@ -368,7 +368,7 @@ mod tests {
         // All entries expired
     }
 
-    // assert_eventually checks a condition every 10ms for a maximum of timeout
+    // assert_eventually checks a condition every 2ms for a maximum of timeout
     async fn assert_eventually<F>(assertion: F, timeout: Duration)
     where
         F: Fn() -> bool,
@@ -378,17 +378,16 @@ mod tests {
             if assertion() {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         panic!("Assertion failed within {:?}", timeout);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    #[ignore] // the test is flaky, uncomment once flakyness is solved
     async fn test_concurrent_gc_and_access() {
         let ttl_map = TTLMap::<String, i32>::try_new(TTLMapConfig {
-            ttl: Duration::from_millis(10),
-            tick: Duration::from_millis(2),
+            ttl: Duration::from_millis(50),
+            tick: Duration::from_millis(10),
         })
         .unwrap();
 
@@ -421,7 +420,11 @@ mod tests {
             handle.await.unwrap();
         }
 
-        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(20)).await;
+        // Allow time for pending bucket registration messages to be processed
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Wait for GC to clear all entries (5× TTL to account for scheduling delays)
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(250)).await;
     }
 
     #[tokio::test]
