@@ -171,8 +171,12 @@ impl ArrowFlightEndpoint {
         let stream = map_last_stream(stream, move |last| {
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 task_data_entries.remove(key.clone());
+                for hook in self.hooks.after_plan.iter() {
+                    hook(plan.clone())
+                }
                 return last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el));
             }
+            
             last
         });
 
@@ -291,6 +295,9 @@ mod tests {
                 plans_received.fetch_add(1, Ordering::SeqCst);
                 plan
             });
+            // endpoint.add_on_flight_data_hook(move |flight_data| {
+            //     flight_data
+            // });
         }
 
         // Create 3 tasks with 3 partitions each.

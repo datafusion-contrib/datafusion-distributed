@@ -18,11 +18,16 @@ use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
 #[derive(Default)]
+/// Callbacks for the ArrowFlightEndpoint which allow users to modify / observe
+/// [ArrowFlightEndpoint] internals.
 pub(super) struct ArrowFlightEndpointHooks {
     pub(super) on_plan:
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
+    pub(super) after_plan:
+        Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) + Send + Sync>>,
 }
 
+/// Endpoint for distributed datafusion task plans. 
 pub struct ArrowFlightEndpoint {
     pub(super) runtime: Arc<RuntimeEnv>,
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
@@ -55,6 +60,15 @@ impl ArrowFlightEndpoint {
         hook: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
     ) {
         self.hooks.on_plan.push(Arc::new(hook));
+    }
+
+    /// Adds a callback for when an [ExecutionPlan] is finished executing all partitions in the
+    /// `do_get` call. These block the consumer and are executed exactly once.
+    pub fn add_after_plan_hook(
+        &mut self,
+        hook: Arc<dyn Fn(Arc<dyn ExecutionPlan>) + Send + Sync>,
+    ) {
+        self.hooks.after_plan.push(hook);
     }
 
     /// Set the maximum message size for FlightData chunks.
