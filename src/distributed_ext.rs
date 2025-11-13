@@ -239,6 +239,29 @@ pub trait DistributedExt: Sized {
     ///
     /// The first one that returns something for a leaf node is the one that decides how many
     /// tasks are used.
+    ///
+    /// ```text
+    ///     ┌───────────────────────┐
+    ///     │SortPreservingMergeExec│
+    ///     └───────────────────────┘
+    ///                 ▲
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2
+    ///     ┌───────────┴───────────┐    │
+    /// │   │       SortExec        │
+    ///     └───────────────────────┘    │
+    /// │   ┌───────────────────────┐
+    ///     │     AggregateExec     │    │
+    /// │   └───────────────────────┘
+    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1
+    ///     ┌───────────────────────┐    │
+    /// │   │      FilterExec       │
+    ///     └───────────────────────┘    │
+    /// │   ┌───────────────────────┐       TaskEstimator estimates tasks in
+    ///     │       SomeExec        │◀───┼──  stages containing leaf nodes
+    /// │   └───────────────────────┘
+    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    /// ```
     fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
         self,
         estimator: T,
@@ -253,6 +276,29 @@ pub trait DistributedExt: Sized {
     /// Sets the maximum number of files each task in a stage with a FileScanConfig node will
     /// handle. Reducing this number will increment the amount of tasks. By default, this
     /// is close to the number of cores in the machine.
+    ///
+    /// ```text
+    ///     ┌───────────────────────┐
+    ///     │SortPreservingMergeExec│
+    ///     └───────────────────────┘
+    ///                 ▲
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2
+    ///     ┌───────────┴───────────┐    │
+    /// │   │       SortExec        │
+    ///     └───────────────────────┘    │
+    /// │   ┌───────────────────────┐
+    ///     │     AggregateExec     │    │
+    /// │   └───────────────────────┘
+    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1
+    ///     ┌───────────────────────┐    │
+    /// │   │      FilterExec       │
+    ///     └───────────────────────┘    │
+    /// │   ┌───────────────────────┐        Sets the max number of files
+    ///     │    FileScanConfig     │◀───┼─   each task will handle. Less
+    /// │   └───────────────────────┘        files_per_task == more tasks
+    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    ///```
     fn with_distributed_files_per_task(
         self,
         files_per_task: usize,
@@ -277,6 +323,29 @@ pub trait DistributedExt: Sized {
     /// This function sets the scale factor for when encountering these nodes that change the
     /// cardinality of the data. For example, if a stage with 10 tasks contains an AggregateExec
     /// node, and the scale factor is 2.0, the following stage will use  10 / 2.0 = 5 tasks.
+    ///
+    /// ```text
+    ///     ┌───────────────────────┐
+    ///     │SortPreservingMergeExec│
+    ///     └───────────────────────┘
+    ///                 ▲
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2 (N/scale_factor tasks)
+    ///     ┌───────────┴───────────┐    │
+    /// │   │       SortExec        │
+    ///     └───────────────────────┘    │
+    /// │   ┌───────────────────────┐
+    ///     │     AggregateExec     │    │
+    /// │   └───────────────────────┘
+    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
+    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1 (N tasks)
+    ///     ┌───────────────────────┐    │       A filter reduces cardinality,
+    /// │   │      FilterExec       │◀────────therefore the next stage will have
+    ///     └───────────────────────┘    │    less tasks according to this factor
+    /// │   ┌───────────────────────┐
+    ///     │    FileScanConfig     │    │
+    /// │   └───────────────────────┘
+    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    /// ```
     fn with_distributed_cardinality_effect_task_scale_factor(
         self,
         factor: f64,
