@@ -60,6 +60,26 @@ impl TaskEstimator for usize {
     }
 }
 
+impl TaskEstimator for Arc<dyn TaskEstimator> {
+    fn estimate_tasks(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Option<TaskEstimation> {
+        self.as_ref().estimate_tasks(plan, cfg)
+    }
+}
+
+impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
+    fn estimate_tasks(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Option<TaskEstimation> {
+        self.as_ref().estimate_tasks(plan, cfg)
+    }
+}
+
 impl<F: Fn(&Arc<dyn ExecutionPlan>, &ConfigOptions) -> Option<TaskEstimation>> TaskEstimator for F {
     fn estimate_tasks(
         &self,
