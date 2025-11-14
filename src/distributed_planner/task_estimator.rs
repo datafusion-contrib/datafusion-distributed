@@ -110,6 +110,10 @@ pub(crate) fn set_distributed_task_estimator(
     }
 }
 
+/// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
+/// [FileScanConfig]s data sources (e.g. Parquet or CSV files). it will read the
+/// [DistributedConfig].`files_per_task` field and assigns as many task as needed so that
+/// no task handles more than the configured files.
 #[derive(Debug)]
 struct FileScanConfigTaskEstimator;
 
@@ -162,6 +166,9 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
     }
 }
 
+/// Tries multiple user-provided [TaskEstimator]s until one returns an estimation. If none
+/// returns an estimation, a set of default [TaskEstimation] implementations is tried. Right
+/// now the only default [TaskEstimation] is [FileScanConfigTaskEstimator].
 #[derive(Clone, Default)]
 pub(crate) struct CombinedTaskEstimator {
     pub(crate) user_provided: Vec<Arc<dyn TaskEstimator + Send + Sync>>,
