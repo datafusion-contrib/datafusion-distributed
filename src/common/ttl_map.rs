@@ -3,9 +3,9 @@
 //! How the Time Wheel Works
 //!
 //! Time Buckets:  [0] [1] [2] [3] [4] [5] [6] [7] ...
-//! Current Time:           ^
-//!                         |
-//!                    time % buckets.len()
+//! Current Time:       ^
+//!                     |
+//!             (time-1) % buckets.len()
 //!
 //! When inserting key "A" at time=2:
 //! - Key "A" goes into bucket[(2-1) % 8] = bucket[1]
@@ -205,7 +205,7 @@ where
         self.gc_scheduler_task = Some(vec![gc_task]);
     }
 
-    /// get_or_default executes the provided closure with a reference to the map entry for the given key.
+    /// get_or_init executes the provided closure with a reference to the map entry for the given key.
     /// If the key does not exist, it inserts a new entry with the default value.
     pub fn get_or_init<F>(&self, key: K, init: F) -> V
     where
@@ -374,7 +374,7 @@ mod tests {
         F: Fn() -> bool,
     {
         let start = std::time::Instant::now();
-        while start.elapsed() < timeout {
+        while start.elapsed() <= timeout {
             if assertion() {
                 return;
             }
@@ -384,7 +384,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    #[ignore] // the test is flaky, uncomment once flakyness is solved
     async fn test_concurrent_gc_and_access() {
         let ttl_map = TTLMap::<String, i32>::try_new(TTLMapConfig {
             ttl: Duration::from_millis(10),
@@ -421,7 +420,7 @@ mod tests {
             handle.await.unwrap();
         }
 
-        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(20)).await;
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
