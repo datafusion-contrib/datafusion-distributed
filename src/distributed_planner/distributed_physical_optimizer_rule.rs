@@ -110,6 +110,74 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 ///    wether the cardinality has increased or not.
 ///
 /// 5. This is repeated until all the [NetworkBoundary]s are placed.
+///
+/// ## Example:
+///
+/// Given a plan with 3 stages:
+///
+/// ```text
+/// ┌─────────────────┐
+/// │     Stage 3     │? tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 2     │? tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 1     │? tasks
+/// └─────────────────┘
+/// ```
+///
+/// 1. Calculate the number of tasks for a bottom stage based on how much data the leaf nodes
+///    (e.g. `DataSourceExec`s) are expected to pull.
+///
+/// ```text
+/// ┌─────────────────┐
+/// │     Stage 3     │? tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 2     │? tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 1     │3 tasks
+/// └─────────────────┘
+/// ```
+///
+/// 2. Based on the calculated tasks in the leaf stage (e.g. 3 tasks), calculate the amount of
+///    tasks in the next stage.
+///    This is done by multiplying the task count by a scale factor every time a node that
+///    increments or reduces the cardinality of the data appears, which is information present in
+///    the `fn cardinality_effect(&self) -> CardinalityEffect` method. For example, if "Stage 1"
+///    has a partial aggregation step, and the scale factor is 1.5, it will look like this:
+///
+/// ```text
+/// ┌─────────────────┐
+/// │     Stage 3     │? tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 2     │3/1.5 = 2 tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 1     │3 tasks  (cardinality effect factor of 1.5)
+/// └─────────────────┘
+/// ```
+///
+///
+/// 3. This is repeated recursively until all tasks have been assigned to all stages, keeping into
+///    account the cardinality effect different nodes in subplans have. If there is no
+///    cardinality effect (e.g. `ProjectExec` nodes), then the task count is kept across stages:
+///
+/// ```text
+/// ┌─────────────────┐
+/// │     Stage 3     │2 tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 2     │2 tasks
+/// └────────▲────────┘
+/// ┌────────┴────────┐
+/// │     Stage 1     │3 tasks
+/// └─────────────────┘
+/// ```
+///
 pub fn apply_network_boundaries(
     mut plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
@@ -130,6 +198,8 @@ pub fn apply_network_boundaries(
     Ok(ctx.plan)
 }
 
+/// [ApplyNetworkBoundariesCtx] helps keeping track of the stage of the task count calculations
+/// while recursing through [ExecutionPlan]s.
 struct ApplyNetworkBoundariesCtx {
     task_count: usize,
     this_stage_sf: f64,
