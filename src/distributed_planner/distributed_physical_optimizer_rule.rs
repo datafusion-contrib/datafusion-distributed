@@ -144,11 +144,16 @@ impl ApplyNetworkBoundariesCtx {
     ///
     /// This is called whenever a new [NetworkBoundary] is introduced, which marks the end of
     /// one [Stage], and the beginning of the next one.
-    fn scale_task_count_and_swap(&mut self) -> usize {
+    fn scale_task_count_and_swap(&mut self) -> Result<usize, DataFusionError> {
         let task_count = (self.task_count as f64 * self.this_stage_sf).ceil() as usize;
         self.this_stage_sf = self.next_stage_sf;
         self.next_stage_sf = 1.0;
-        task_count
+        if task_count == 0 {
+            return plan_err!(
+                "Attempted to assign a distributed task count of 0. This should never happen."
+            );
+        }
+        Ok(task_count)
     }
 }
 
@@ -212,7 +217,7 @@ fn _apply_network_boundaries(
         if !matches!(node.partitioning(), Partitioning::Hash(_, _)) {
             return Ok(ctx);
         }
-        let task_count = ctx.scale_task_count_and_swap();
+        let task_count = ctx.scale_task_count_and_swap()?;
         ctx.plan = Arc::new(NetworkShuffleExec::try_new(ctx.plan, task_count)?);
         return Ok(ctx);
     }
@@ -229,7 +234,7 @@ fn _apply_network_boundaries(
             return Ok(ctx);
         }
 
-        let task_count = ctx.scale_task_count_and_swap();
+        let task_count = ctx.scale_task_count_and_swap()?;
         let new_child = NetworkCoalesceExec::new(input, task_count);
         ctx.plan = ctx.plan.with_new_children(vec![Arc::new(new_child)])?;
         return Ok(ctx);
@@ -241,7 +246,7 @@ fn _apply_network_boundaries(
     if let Some(node) = ctx.plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
         let input = Arc::clone(node.input());
 
-        let task_count = ctx.scale_task_count_and_swap();
+        let task_count = ctx.scale_task_count_and_swap()?;
         let new_child = NetworkCoalesceExec::new(input, task_count);
         ctx.plan = ctx.plan.with_new_children(vec![Arc::new(new_child)])?;
         return Ok(ctx);
