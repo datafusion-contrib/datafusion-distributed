@@ -40,11 +40,14 @@ mod tests {
         }
 
         let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
-        ctx.set_distributed_option_extension(CustomExtension {
-            foo: "foo".to_string(),
-            bar: 1,
-            baz: true,
-        })?;
+        ctx = SessionStateBuilder::from(ctx.state())
+            .with_distributed_option_extension(CustomExtension {
+                foo: "foo".to_string(),
+                bar: 1,
+                baz: true,
+            })?
+            .build()
+            .into();
 
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CustomConfigExtensionRequiredExec::new());
 
@@ -58,7 +61,7 @@ mod tests {
             )?);
         }
 
-        let plan = distribute_plan(plan)?;
+        let plan = distribute_plan(plan)?.unwrap();
         let stream = execute_stream(plan, ctx.task_ctx())?;
         // It should not fail.
         stream.try_collect::<Vec<_>>().await?;

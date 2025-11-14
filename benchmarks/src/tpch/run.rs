@@ -101,28 +101,6 @@ pub struct RunOpt {
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
 
-    /// Upon shuffling data, this defines how many tasks are employed into performing the shuffling.
-    /// ```text
-    ///  ( task 1 )  ( task 2 ) ( task 3 )
-    ///      ▲           ▲          ▲
-    ///      └────┬──────┴─────┬────┘
-    ///       ( task 1 )  ( task 2 )       N tasks
-    /// ```
-    /// This parameter defines N
-    #[structopt(long)]
-    shuffle_tasks: Option<usize>,
-
-    /// Upon merging multiple tasks into one, this defines how many tasks are merged.
-    /// ```text
-    ///              ( task 1 )
-    ///                  ▲
-    ///      ┌───────────┴──────────┐
-    ///  ( task 1 )  ( task 2 ) ( task 3 )  N tasks
-    /// ```
-    /// This parameter defines N
-    #[structopt(long)]
-    coalesce_tasks: Option<usize>,
-
     /// Spawns a worker in the specified port.
     #[structopt(long)]
     spawn: Option<u16>,
@@ -134,6 +112,14 @@ pub struct RunOpt {
     /// Number of physical threads per worker.
     #[structopt(long)]
     threads: Option<usize>,
+
+    /// Number of files per each distributed task.
+    #[structopt(long)]
+    files_per_task: Option<usize>,
+
+    /// Task count scale factor for when nodes in stages change the cardinality of the data
+    #[structopt(long)]
+    cardinality_task_sf: Option<f64>,
 }
 
 #[async_trait]
@@ -142,37 +128,32 @@ impl DistributedSessionBuilder for RunOpt {
         &self,
         ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
-        let mut builder = SessionStateBuilder::new().with_default_features();
-
+        let rt_builder = self.common.runtime_env_builder()?;
         let config = self
             .common
             .config()?
-            .with_collect_statistics(!self.disable_statistics)
+            .with_target_partitions(self.partitions())
+            .with_collect_statistics(!self.disable_statistics);
+        let mut builder = SessionStateBuilder::new()
+            .with_runtime_env(rt_builder.build_arc()?)
+            .with_default_features()
+            .with_config(config)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
             .with_distributed_channel_resolver(LocalHostChannelResolver::new(self.workers.clone()))
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
-            .with_target_partitions(self.partitions());
-
-        let rt_builder = self.common.runtime_env_builder()?;
+            .with_distributed_files_per_task(
+                self.files_per_task.unwrap_or(get_available_parallelism()),
+            )?
+            .with_distributed_cardinality_effect_task_scale_factor(
+                self.cardinality_task_sf.unwrap_or(1.0),
+            )?;
 
         if self.mem_table {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));
         }
-        if !self.workers.is_empty() {
-            builder = builder
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-                .with_distributed_network_coalesce_tasks(
-                    self.coalesce_tasks.unwrap_or(self.workers.len()),
-                )
-                .with_distributed_network_shuffle_tasks(
-                    self.shuffle_tasks.unwrap_or(self.workers.len()),
-                );
-        }
 
-        Ok(builder
-            .with_config(config)
-            .with_runtime_env(rt_builder.build_arc()?)
-            .build())
+        Ok(builder.build())
     }
 }
 
@@ -196,7 +177,12 @@ impl RunOpt {
     }
 
     async fn run_local(mut self) -> Result<()> {
-        let state = self.build_session_state(Default::default()).await?;
+        let mut state = self.build_session_state(Default::default()).await?;
+        if self.mem_table {
+            state = SessionStateBuilder::from(state)
+                .with_distributed_option_extension(WarmingUpMarker::warming_up())?
+                .build();
+        }
         let ctx = SessionContext::new_with_state(state);
         self.register_tables(&ctx).await?;
 
@@ -218,9 +204,6 @@ impl RunOpt {
             for query_id in query_range.clone() {
                 // put the WarmingUpMarker in the context, otherwise, queries will fail as the
                 // InMemoryCacheExec node will think they should already be warmed up.
-                let ctx = ctx
-                    .clone()
-                    .with_distributed_option_extension(WarmingUpMarker::warming_up())?;
                 for query in get_query_sql(query_id)? {
                     self.execute_query(&ctx, &query).await?;
                 }
