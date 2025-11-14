@@ -123,7 +123,11 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
         let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
 
-        // Count how many distinct files we have in the FileScanConfig.
+        // Count how many distinct files we have in the FileScanConfig. Each file in each
+        // file group is a PartitionedFile rather than a full file, so it's possible that
+        // many entries refer to different chunks of the same physical file. By keeping a
+        // HashSet of the different locations of the PartitionedFiles we count how many actual
+        // different files we have.
         let mut distinct_files = HashSet::new();
         for file_group in &file_scan.file_groups {
             for file in file_group.iter() {
