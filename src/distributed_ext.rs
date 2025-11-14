@@ -7,7 +7,8 @@ use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc
 use crate::{ChannelResolver, DistributedConfig, TaskEstimator};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use delegate::delegate;
 use http::HeaderMap;
@@ -359,53 +360,48 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 }
 
-impl DistributedExt for SessionStateBuilder {
+impl DistributedExt for SessionConfig {
     fn set_distributed_option_extension<T: ConfigExtension + Default>(
         &mut self,
         t: T,
     ) -> Result<(), DataFusionError> {
-        set_distributed_option_extension(self.config().get_or_insert_default(), t)
+        set_distributed_option_extension(self, t)
     }
 
     fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(
         &mut self,
         headers: &HeaderMap,
     ) -> Result<(), DataFusionError> {
-        set_distributed_option_extension_from_headers::<T>(
-            self.config().get_or_insert_default(),
-            headers,
-        )
+        set_distributed_option_extension_from_headers::<T>(self, headers)
     }
 
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
-        set_distributed_user_codec(self.config().get_or_insert_default(), codec)
+        set_distributed_user_codec(self, codec)
     }
 
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>) {
-        set_distributed_user_codec_arc(self.config().get_or_insert_default(), codec)
+        set_distributed_user_codec_arc(self, codec)
     }
 
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
     ) {
-        let cfg = self.config().get_or_insert_default();
-        set_distributed_channel_resolver(cfg, resolver);
+        set_distributed_channel_resolver(self, resolver);
     }
 
     fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
         &mut self,
         estimator: T,
     ) {
-        set_distributed_task_estimator(self.config().get_or_insert_default(), estimator)
+        set_distributed_task_estimator(self, estimator)
     }
 
     fn set_distributed_files_per_task(
         &mut self,
         files_per_task: usize,
     ) -> Result<(), DataFusionError> {
-        let cfg = self.config().get_or_insert_default();
-        let d_cfg = DistributedConfig::from_config_options_mut(cfg.options_mut())?;
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.files_per_task = files_per_task;
         Ok(())
     }
@@ -414,8 +410,7 @@ impl DistributedExt for SessionStateBuilder {
         &mut self,
         factor: f64,
     ) -> Result<(), DataFusionError> {
-        let cfg = self.config().get_or_insert_default();
-        let d_cfg = DistributedConfig::from_config_options_mut(cfg.options_mut())?;
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.cardinality_task_count_factor = factor;
         Ok(())
     }
@@ -453,6 +448,144 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
             fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+        }
+    }
+}
+
+impl DistributedExt for SessionStateBuilder {
+    delegate! {
+        to self.config().get_or_insert_default() {
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension_from_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
+            #[expr($;self)]
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
+            #[expr($;self)]
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_task_estimator)]
+            #[expr($;self)]
+            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_files_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_cardinality_effect_task_scale_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+        }
+    }
+}
+
+impl DistributedExt for SessionState {
+    delegate! {
+        to self.config_mut() {
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension_from_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
+            #[expr($;self)]
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
+            #[expr($;self)]
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_task_estimator)]
+            #[expr($;self)]
+            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_files_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_cardinality_effect_task_scale_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+        }
+    }
+}
+
+impl DistributedExt for SessionContext {
+    delegate! {
+        to self.state_ref().write().config_mut() {
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_option_extension_from_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T);
+            #[call(set_distributed_user_codec)]
+            #[expr($;self)]
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(self, codec: T) -> Self;
+
+            fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_channel_resolver)]
+            #[expr($;self)]
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
+
+            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_task_estimator)]
+            #[expr($;self)]
+            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(self, estimator: T) -> Self;
+
+            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_files_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_files_per_task(self, files_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
+            #[call(set_distributed_cardinality_effect_task_scale_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_cardinality_effect_task_scale_factor(self, factor: f64) -> Result<Self, DataFusionError>;
         }
     }
 }
