@@ -155,6 +155,18 @@ impl ApplyNetworkBoundariesCtx {
         }
         Ok(task_count)
     }
+
+    /// Scale the tasks count of the next stage. Note that, even if nodes in the current stage scale
+    /// up or down the cardinality, that doesn't affect the task count for the current stage, but
+    /// for the next one, as that's the one that will see the benefits of the current stage
+    /// compressing the amount of data flowing.
+    fn apply_scale_factor(&mut self, sf: f64) {
+        match self.plan.cardinality_effect() {
+            CardinalityEffect::LowerEqual => self.next_stage_sf /= sf,
+            CardinalityEffect::GreaterEqual => self.next_stage_sf *= sf,
+            _ => {}
+        }
+    }
 }
 
 fn _apply_network_boundaries(
@@ -252,15 +264,9 @@ fn _apply_network_boundaries(
         return Ok(ctx);
     }
 
-    // Scale the tasks count of the next stage. Note that, even if nodes in the current stage scale
-    // up or down the cardinality, that doesn't affect the task count for the current stage, but
-    // for the next one, as that's the one that will see the benefits of the current stage
-    // compressing the amount of data flowing.
-    match ctx.plan.cardinality_effect() {
-        CardinalityEffect::LowerEqual => ctx.next_stage_sf /= d_cfg.cardinality_task_count_factor,
-        CardinalityEffect::GreaterEqual => ctx.next_stage_sf *= d_cfg.cardinality_task_count_factor,
-        _ => {}
-    }
+    // upscales or downscales the task count factor of the next stage depending on the
+    // cardinality of the current plan.
+    ctx.apply_scale_factor(d_cfg.cardinality_task_count_factor);
 
     Ok(ctx)
 }
