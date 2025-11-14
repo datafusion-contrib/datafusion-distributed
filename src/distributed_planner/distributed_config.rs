@@ -14,7 +14,9 @@ extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
         /// Sets the maximum amount of files that will be assigned to each task. Reducing this
-        /// number will spawn more tasks for the same number of files.
+        /// number will spawn more tasks for the same number of files. This only applies when
+        /// estimating tasks for stages containing `DataSourceExec` nodes with `FileScanConfig`
+        /// implementations.
         pub files_per_task: usize, default = files_per_task_default()
         /// Task multiplying factor for when a node declares that it changes the cardinality
         /// of the data:
