@@ -185,3 +185,99 @@ impl TaskEstimator for CombinedTaskEstimator {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel_resolver_ext::ChannelResolverExtension;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::parquet::register_parquet_tables;
+    use datafusion::error::DataFusionError;
+    use datafusion::prelude::SessionContext;
+
+    #[tokio::test]
+    async fn test_first_user_estimator_wins() -> Result<(), DataFusionError> {
+        let mut combined = CombinedTaskEstimator::default();
+        combined.push(10);
+        combined.push(20);
+
+        let node = make_data_source_exec().await?;
+        assert_eq!(combined.task_count(node, |cfg| cfg), 10);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_continues_until_some() -> Result<(), DataFusionError> {
+        let mut combined = CombinedTaskEstimator::default();
+        combined.push(|_: &Arc<dyn ExecutionPlan>, _: &ConfigOptions| None);
+        combined.push(30);
+
+        let node = make_data_source_exec().await?;
+        assert_eq!(combined.task_count(node, |cfg| cfg), 30);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_defaults_to_file_scan_config_task_estimator() -> Result<(), DataFusionError> {
+        let mut combined = CombinedTaskEstimator::default();
+        combined.push(|_: &Arc<dyn ExecutionPlan>, _: &ConfigOptions| None);
+
+        let node = make_data_source_exec().await?;
+        assert_eq!(combined.task_count(node, |cfg| cfg), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_file_scan_config_task_estimator_max_workers() -> Result<(), DataFusionError> {
+        let mut combined = CombinedTaskEstimator::default();
+        combined.push(|_: &Arc<dyn ExecutionPlan>, _: &ConfigOptions| None);
+
+        let node = make_data_source_exec().await?;
+        assert_eq!(
+            combined.task_count(node, |mut cfg| {
+                cfg.__private_channel_resolver =
+                    ChannelResolverExtension(Arc::new(InMemoryChannelResolver::new(2)));
+                cfg
+            }),
+            2
+        );
+        Ok(())
+    }
+
+    impl CombinedTaskEstimator {
+        fn push(&mut self, value: impl TaskEstimator + Send + Sync + 'static) {
+            self.user_provided.push(Arc::new(value));
+        }
+
+        fn task_count(
+            &self,
+            node: Arc<dyn ExecutionPlan>,
+            f: impl FnOnce(DistributedConfig) -> DistributedConfig,
+        ) -> usize {
+            let mut cfg = ConfigOptions::default();
+            let d_cfg = DistributedConfig {
+                files_per_task: 1,
+                __private_channel_resolver: ChannelResolverExtension(Arc::new(
+                    InMemoryChannelResolver::new(3),
+                )),
+                ..Default::default()
+            };
+            cfg.extensions.insert(f(d_cfg));
+            self.estimate_tasks(&node, &cfg).unwrap().task_count
+        }
+    }
+
+    async fn make_data_source_exec() -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let ctx = SessionContext::new();
+        register_parquet_tables(&ctx).await?;
+        let mut plan = ctx
+            .sql("SELECT * FROM weather")
+            .await?
+            .create_physical_plan()
+            .await?;
+        while !plan.children().is_empty() {
+            plan = Arc::clone(plan.children()[0])
+        }
+        Ok(plan)
+    }
+}
