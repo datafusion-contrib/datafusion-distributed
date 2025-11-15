@@ -1121,6 +1121,7 @@ dependencies = [
 name = "datafusion-distributed-benchmarks"
 version = "0.1.0"
 dependencies = [
+ "arrow-flight",
  "async-trait",
  "chrono",
  "dashmap",
@@ -1136,6 +1137,8 @@ dependencies = [
  "serde_json",
  "structopt",
  "tokio",
+ "tonic",
+ "url",
 ]
 
 [[package]]

@@ -19,7 +19,9 @@
 mod memory;
 mod options;
 mod run;
+mod static_channel_resolver;
 
 pub use memory::{InMemoryCacheExecCodec, InMemoryDataSourceRule, WarmingUpMarker};
 pub use options::CommonOpt;
 pub use run::{BenchmarkRun, QueryIter};
+pub use static_channel_resolver::StaticChannelResolver;
