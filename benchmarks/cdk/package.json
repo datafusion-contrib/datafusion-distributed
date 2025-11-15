@@ -8,7 +8,8 @@
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk"
+    "cdk": "cdk",
+    "sync-bucket": "aws s3 sync ../data s3://datafusion-distributed-benchmarks/"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
