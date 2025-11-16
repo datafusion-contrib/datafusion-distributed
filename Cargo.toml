@@ -4,18 +4,25 @@ members = ["benchmarks"]
 [workspace.dependencies]
 datafusion = { version = "50.0.0", default-features = false }
 datafusion-proto = { version = "50.0.0" }
+arrow-flight = { version = "56.1.0", features = ["flight-sql-experimental"] }
 
 [package]
 name = "datafusion-distributed"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "fuzz_sql_server"
+path = "src/bin/fuzz_sql_server.rs"
+
 [dependencies]
 chrono = { version = "0.4.42" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
-arrow-flight = "56.1.0"
+arrow-flight = { workspace = true }
 arrow-select = "56.1.0"
+arrow-schema = "56.1.0"
+arrow = "56.1.0"
 async-trait = "0.1.88"
 tokio = { version = "1.46.1", features = ["full"] }
 # Updated to 0.13.1 to match arrow-flight 56.1.0
@@ -38,10 +45,12 @@ insta = { version = "1.43.1", features = ["filters"], optional = true }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "482ee68", optional = true }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "482ee68", optional = true }
 parquet = { version = "56.1.0", optional = true }
-arrow = { version = "56.1.0", optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
 hyper-util = { version = "0.1.16", optional = true }
 pin-project = "1.1.10"
+env_logger = "0.10"
+log = "0.4"
+mimalloc = "0.1"
 
 [features]
 integration = [
@@ -49,7 +58,6 @@ integration = [
     "tpchgen",
     "tpchgen-arrow",
     "parquet",
-    "arrow",
     "tokio-stream",
     "hyper-util",
 ]

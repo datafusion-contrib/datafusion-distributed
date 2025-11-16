@@ -7,3 +7,4 @@ pub mod parquet;
 pub mod plans;
 pub mod session_context;
 pub mod tpch;
+pub mod flight_sql_server;
