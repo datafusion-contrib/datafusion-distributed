@@ -1,6 +1,5 @@
 import { RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib/core';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import { AmazonLinuxCpuType } from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
@@ -58,9 +57,7 @@ export class CdkStack extends Stack {
         vpc,
         instanceName: "Distributed DataFusion benchmarking instance",
         instanceType: new ec2.InstanceType(config.instanceType),
-        machineImage: ec2.MachineImage.latestAmazonLinux2023({
-          cpuType: AmazonLinuxCpuType.ARM_64
-        }),
+        machineImage: ec2.MachineImage.latestAmazonLinux2023(),
         securityGroup,
         role,
       });
