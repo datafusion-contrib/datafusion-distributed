@@ -153,58 +153,57 @@ struct Ec2ChannelResolver {
     channels: Arc<DashMap<Url, BoxCloneSyncChannel>>,
 }
 
+async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
+    tokio::spawn(async move {
+        let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+        let ec2_client = Ec2Client::new(&config);
+
+        loop {
+            let result = match ec2_client
+                .describe_instances()
+                .filters(
+                    aws_sdk_ec2::types::Filter::builder()
+                        .name("tag:BenchmarkCluster")
+                        .values("datafusion")
+                        .build(),
+                )
+                .filters(
+                    aws_sdk_ec2::types::Filter::builder()
+                        .name("instance-state-name")
+                        .values("running")
+                        .build(),
+                )
+                .send()
+                .await
+            {
+                Ok(v) => v,
+                Err(err) => {
+                    eprintln!("Error discovering workers: {err}");
+                    continue;
+                }
+            };
+
+            let mut workers = Vec::new();
+            for reservation in result.reservations() {
+                for instance in reservation.instances() {
+                    if let Some(private_ip) = instance.private_ip_address() {
+                        let url = Url::parse(&format!("http://{private_ip}:8001")).unwrap();
+                        workers.push(url);
+                    }
+                }
+            }
+            *urls.write().unwrap() = workers;
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    });
+}
+
 impl Ec2ChannelResolver {
     fn new() -> Self {
         let urls = Arc::new(RwLock::new(Vec::new()));
         let channels = Arc::new(DashMap::new());
-        Self::start_background_channel_update(&urls);
+        tokio::spawn(background_ec2_worker_resolver(urls.clone()));
         Self { urls, channels }
-    }
-
-    fn start_background_channel_update(urls: &Arc<RwLock<Vec<Url>>>) {
-        let urls = Arc::clone(urls);
-        tokio::spawn(async move {
-            let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-            let ec2_client = Ec2Client::new(&config);
-
-            loop {
-                let result = match ec2_client
-                    .describe_instances()
-                    .filters(
-                        aws_sdk_ec2::types::Filter::builder()
-                            .name("tag:BenchmarkCluster")
-                            .values("datafusion")
-                            .build(),
-                    )
-                    .filters(
-                        aws_sdk_ec2::types::Filter::builder()
-                            .name("instance-state-name")
-                            .values("running")
-                            .build(),
-                    )
-                    .send()
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(err) => {
-                        eprintln!("Error discovering workers: {err}");
-                        continue;
-                    }
-                };
-
-                let mut workers = Vec::new();
-                for reservation in result.reservations() {
-                    for instance in reservation.instances() {
-                        if let Some(private_ip) = instance.private_ip_address() {
-                            let url = Url::parse(&format!("http://{private_ip}:8001")).unwrap();
-                            workers.push(url);
-                        }
-                    }
-                }
-                *urls.write().unwrap() = workers;
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
-        });
     }
 }
 
