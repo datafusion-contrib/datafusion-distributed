@@ -19,7 +19,6 @@ use super::{
     TPCH_QUERY_END_ID, TPCH_QUERY_START_ID, TPCH_TABLES, get_query_sql, get_tbl_tpch_table_schema,
     get_tpch_table_schema,
 };
-use crate::StaticChannelResolver;
 use crate::util::{
     BenchmarkRun, CommonOpt, InMemoryCacheExecCodec, InMemoryDataSourceRule, QueryIter,
     WarmingUpMarker,
@@ -43,7 +42,9 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
-use datafusion_distributed::test_utils::localhost::spawn_flight_service;
+use datafusion_distributed::test_utils::localhost::{
+    LocalHostChannelResolver, spawn_flight_service,
+};
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
     DistributedSessionBuilderContext, NetworkBoundaryExt,
@@ -104,9 +105,9 @@ pub struct RunOpt {
     #[structopt(long)]
     spawn: Option<u16>,
 
-    /// The URLs of all the workers involved in the query.
+    /// The ports of all the workers involved in the query.
     #[structopt(long, use_delimiter = true)]
-    workers: Vec<String>,
+    workers: Vec<u16>,
 
     /// Number of physical threads per worker.
     #[structopt(long)]
@@ -138,7 +139,7 @@ impl DistributedSessionBuilder for RunOpt {
             .with_default_features()
             .with_config(config)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
-            .with_distributed_channel_resolver(StaticChannelResolver::new(self.workers.clone()))
+            .with_distributed_channel_resolver(LocalHostChannelResolver::new(self.workers.clone()))
             .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
             .with_distributed_files_per_task(

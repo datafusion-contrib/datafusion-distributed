@@ -35,11 +35,10 @@ wait_for_port() {
 }
 
 cargo build -p datafusion-distributed-benchmarks --release
-WORKER_URLS=$(seq 8000 $((8000+WORKERS-1)) | sed 's|^|http://localhost:|' | paste -sd,)
 
 trap cleanup EXIT INT TERM
 for i in $(seq 0 $((WORKERS-1))); do
-  "$SCRIPT_DIR"/../target/release/dfbench tpch --workers "$WORKER_URLS" --spawn $((8000+i)) "$@" &
+  "$SCRIPT_DIR"/../target/release/dfbench tpch --spawn $((8000+i)) "$@" &
 done
 
 echo "Waiting for worker ports to be ready..."
@@ -47,4 +46,4 @@ for i in $(seq 0 $((WORKERS-1))); do
   wait_for_port $((8000+i))
 done
 
-"$SCRIPT_DIR"/../target/release/dfbench tpch --workers "$WORKER_URLS" "$@"
+"$SCRIPT_DIR"/../target/release/dfbench tpch --workers $(seq -s, 8000 $((8000+WORKERS-1))) "$@"
