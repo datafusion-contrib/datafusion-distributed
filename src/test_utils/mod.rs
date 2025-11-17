@@ -1,3 +1,4 @@
+pub mod fuzz;
 pub mod in_memory_channel_resolver;
 pub mod insta;
 pub mod localhost;
@@ -5,5 +6,7 @@ pub mod metrics;
 pub mod mock_exec;
 pub mod parquet;
 pub mod plans;
+pub mod rand;
 pub mod session_context;
+pub mod tpcds;
 pub mod tpch;

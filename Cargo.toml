@@ -10,6 +10,11 @@ name = "datafusion-distributed"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "fuzz"
+path = "src/bin/fuzz.rs"
+required-features = ["integration"]
+
 [dependencies]
 chrono = { version = "0.4.42" }
 datafusion = { workspace = true }
@@ -32,8 +37,12 @@ prost = "0.13.5"
 rand = "0.8.5"
 object_store = "0.12.3"
 bytes = "1.10.1"
+log = "0.4"
+env_logger = "0.11"
 
 # integration_tests deps
+base64 = { version = "0.22", optional = true }
+clap = { version = "4.5", features = ["derive"] , optional = true}
 insta = { version = "1.43.1", features = ["filters"], optional = true }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "482ee68", optional = true }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "482ee68", optional = true }
@@ -42,9 +51,12 @@ arrow = { version = "56.1.0", optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
 hyper-util = { version = "0.1.16", optional = true }
 pin-project = "1.1.10"
+rand_chacha ={ version = "0.3.1", optional = true }
 
 [features]
 integration = [
+    "base64",
+    "clap",
     "insta",
     "tpchgen",
     "tpchgen-arrow",
@@ -52,6 +64,7 @@ integration = [
     "arrow",
     "tokio-stream",
     "hyper-util",
+    "rand_chacha",
 ]
 
 tpch = ["integration"]
