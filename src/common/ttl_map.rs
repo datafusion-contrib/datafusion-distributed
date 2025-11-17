@@ -184,7 +184,8 @@ where
         Self {
             buckets,
             data: stage_targets,
-            time: Arc::new(AtomicU64::new(0)),
+            // Explicitly initialize `time` to 1 to avoid underflow issues with circular buffer.
+            time: Arc::new(AtomicU64::new(1)),
             gc_scheduler_task: None,
             config,
             #[cfg(test)]
@@ -444,6 +445,34 @@ mod tests {
         assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
         let final_time = ttl_map.time.load(Ordering::SeqCst);
         assert!(final_time < 100);
+    }
+
+    #[tokio::test]
+    async fn test_initial_time() {
+        // Create a map with 7 buckets. 7 is chosen specifically as it
+        // has the property that (2^64 - 1) % 7 = 1, whereas (0 - 1) % 7 = 6.
+        let ttl_map = TTLMap::<String, i32>::_new(TTLMapConfig {
+            ttl: Duration::from_millis(70),
+            tick: Duration::from_millis(10),
+        });
+
+        ttl_map.get_or_init("test_key".to_string(), || 999);
+
+        // Advance GC 3 times, which shouldn't free the first key.
+        for _ in 0..3 {
+            TTLMap::<String, i32>::gc(ttl_map.time.clone(), &ttl_map.buckets);
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Check that we still have our key. Have to wait before asserting to avoid the assertion
+        // being spuriously true.
+        assert_eq!(ttl_map.data.len(), 1);
+
+        // Run GC for 4 more steps, at which point the first key should be removed.
+        for _ in 0..4 {
+            TTLMap::<String, i32>::gc(ttl_map.time.clone(), &ttl_map.buckets);
+        }
+        assert_eventually(|| ttl_map.data.is_empty(), Duration::from_millis(100)).await;
     }
 
     // Run with `cargo test bench_lock_contention --release -- --nocapture` to see output.
