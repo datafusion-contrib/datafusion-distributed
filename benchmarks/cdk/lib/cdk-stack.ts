@@ -1,4 +1,4 @@
-import { RemovalPolicy, Stack, StackProps, Tags, CfnOutput } from 'aws-cdk-lib';
+import { CfnOutput, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -83,7 +83,7 @@ export class CdkStack extends Stack {
       resources: ['*'],
     }));
 
-    // Grant read access to the bucket, worker binary, and queries
+    // Grant read access to the bucket and worker binary
     bucket.grantRead(role);
     workerBinary.grantRead(role);
 
@@ -92,20 +92,16 @@ export class CdkStack extends Stack {
     for (let i = 0; i < config.instanceCount; i++) {
       const userData = ec2.UserData.forLinux();
 
+      // Download worker binary from S3 asset
+      userData.addS3DownloadCommand({
+        bucket: workerBinary.bucket,
+        bucketKey: workerBinary.s3ObjectKey,
+        localFile: '/usr/local/bin/worker',
+      });
+
       userData.addCommands(
-        // Create startup script that downloads binary
-        `cat > /usr/local/bin/start-worker.sh << 'EOF'
-#!/bin/bash
-set -e
-
-# Download latest worker binary from S3
-aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker
-chmod +x /usr/local/bin/worker
-
-# Run worker (it will discover peers itself)
-exec /usr/local/bin/worker --bucket ${bucket.bucketName}
-EOF`,
-        `chmod +x /usr/local/bin/start-worker.sh`,
+        // Make binary executable
+        'chmod +x /usr/local/bin/worker',
 
         // Create systemd service
         `cat > /etc/systemd/system/worker.service << 'EOF'
@@ -115,7 +111,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/start-worker.sh
+ExecStart=/usr/local/bin/worker --bucket ${bucket.bucketName}
 Restart=always
 User=root
 
@@ -137,8 +133,7 @@ EOF`,
         machineImage: ec2.MachineImage.latestAmazonLinux2023(),
         securityGroup,
         role,
-        userData,
-        userDataCausesReplacement: true
+        userData
       });
 
       // Tag for peer discovery
@@ -177,7 +172,11 @@ aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortF
           DocumentName: 'AWS-RunShellScript',
           InstanceIds: instances.map(inst => inst.instanceId),
           Parameters: {
-            commands: ['systemctl restart worker'],
+            commands: [
+              `aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker`,
+              'chmod +x /usr/local/bin/worker',
+              'systemctl restart worker',
+            ],
           },
         },
         physicalResourceId: cr.PhysicalResourceId.of(`restart-${Date.now()}`),
@@ -191,6 +190,6 @@ aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortF
     });
 
     // Ensure instances are created before restarting
-    instances.forEach(inst => restartWorker.node.addDependency(inst));
+    restartWorker.node.addDependency(...instances)
   }
 }

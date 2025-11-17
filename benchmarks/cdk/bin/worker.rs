@@ -5,6 +5,7 @@ use aws_sdk_ec2::Client as Ec2Client;
 use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
 use dashmap::{DashMap, Entry};
 use datafusion::common::DataFusionError;
+use datafusion::common::instant::Instant;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
@@ -13,7 +14,8 @@ use datafusion_distributed::{
     DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
     create_flight_client, display_plan_ascii,
 };
-use futures::TryStreamExt;
+use futures::{TryFutureExt, TryStreamExt};
+use log::{error, info};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
@@ -43,6 +45,7 @@ struct Cmd {
 struct BenchSessionStateBuilder {
     s3_url: Url,
     s3: Arc<dyn ObjectStore>,
+    channel_resolver: Ec2ChannelResolver,
 }
 
 impl BenchSessionStateBuilder {
@@ -53,6 +56,7 @@ impl BenchSessionStateBuilder {
         Ok(Self {
             s3_url,
             s3: Arc::new(s3),
+            channel_resolver: Ec2ChannelResolver::new(),
         })
     }
 }
@@ -68,7 +72,7 @@ impl DistributedSessionBuilder for BenchSessionStateBuilder {
             .with_runtime_env(ctx.runtime_env)
             .with_object_store(&self.s3_url, Arc::clone(&self.s3))
             .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .with_distributed_channel_resolver(Ec2ChannelResolver::new())
+            .with_distributed_channel_resolver(self.channel_resolver.clone())
             .build();
         Ok(state)
     }
@@ -76,19 +80,24 @@ impl DistributedSessionBuilder for BenchSessionStateBuilder {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 
     let cmd = Cmd::from_args();
 
     const LISTENER_ADDR: &str = "0.0.0.0:9000";
     const WORKER_ADDR: &str = "0.0.0.0:9001";
 
+    info!("Starting HTTP listener on {LISTENER_ADDR}...");
     let listener = tokio::net::TcpListener::bind(LISTENER_ADDR).await?;
 
     // Register S3 object store
     let s3_url = Url::parse(&format!("s3://{}", cmd.bucket))?;
     let state_builder = BenchSessionStateBuilder::new(s3_url)?;
 
+    info!("Building shared SessionContext for the whole lifetime of the HTTP listener...");
     let state = state_builder
         .build_session_state(Default::default())
         .await?;
@@ -110,6 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if sql.trim().is_empty() {
                             continue;
                         }
+                        info!("Executing query: {sql}");
                         let df = ctx.sql(sql).await.map_err(err)?;
                         df_opt = Some(df);
                     }
@@ -117,14 +127,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         return Err(err("Empty 'sql' parameter"));
                     };
 
+                    let start = Instant::now();
+
                     let physical = df.create_physical_plan().await.map_err(err)?;
                     let stream = execute_stream(physical.clone(), ctx.task_ctx()).map_err(err)?;
                     let batches = stream.try_collect::<Vec<_>>().await.map_err(err)?;
                     let count = batches.iter().map(|b| b.num_rows()).sum::<usize>();
                     let plan = display_plan_ascii(physical.as_ref(), true);
 
+                    let elapsed = start.elapsed();
+                    let ms = elapsed.as_secs_f64() * 1000.0;
+                    info!("Returned {count} rows in {ms} ms");
+
                     Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
                 }
+                .inspect_err(|(_, msg)| {
+                    error!("Error executing query: {msg}");
+                })
             }),
         ),
     );
@@ -132,8 +151,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_service(arrow_flight_endpoint.into_flight_server())
         .serve(WORKER_ADDR.parse()?);
 
-    println!("Started listener http server in {LISTENER_ADDR}");
-    println!("Started distributed DataFusion worker in {WORKER_ADDR}");
+    info!("Started listener HTTP server in {LISTENER_ADDR}");
+    info!("Started distributed DataFusion worker in {WORKER_ADDR}");
 
     tokio::select! {
         result = http_server => result?,
@@ -178,7 +197,7 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
             {
                 Ok(v) => v,
                 Err(err) => {
-                    eprintln!("Error discovering workers: {err}");
+                    eprintln!("Error discovering workers: {}", err.into_service_error());
                     continue;
                 }
             };
@@ -192,7 +211,17 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
                     }
                 }
             }
-            *urls.write().unwrap() = workers;
+            if !urls.read().unwrap().eq(&workers) {
+                info!(
+                    "New set of workers found: {}",
+                    workers
+                        .iter()
+                        .map(|url| url.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                *urls.write().unwrap() = workers;
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     });
