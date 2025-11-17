@@ -80,8 +80,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cmd = Cmd::from_args();
 
-    const LISTENER_ADDR: &str = "0.0.0.0:8000";
-    const WORKER_ADDR: &str = "0.0.0.0:8001";
+    const LISTENER_ADDR: &str = "0.0.0.0:9000";
+    const WORKER_ADDR: &str = "0.0.0.0:9001";
 
     let listener = tokio::net::TcpListener::bind(LISTENER_ADDR).await?;
 
@@ -187,7 +187,7 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
             for reservation in result.reservations() {
                 for instance in reservation.instances() {
                     if let Some(private_ip) = instance.private_ip_address() {
-                        let url = Url::parse(&format!("http://{private_ip}:8001")).unwrap();
+                        let url = Url::parse(&format!("http://{private_ip}:9001")).unwrap();
                         workers.push(url);
                     }
                 }

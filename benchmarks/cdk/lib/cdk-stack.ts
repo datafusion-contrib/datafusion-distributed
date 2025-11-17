@@ -93,11 +93,6 @@ export class CdkStack extends Stack {
       const userData = ec2.UserData.forLinux();
 
       userData.addCommands(
-        // Extract queries to benchmarking-workspace
-        'mkdir -p /home/ec2-user/benchmarking-workspace',
-        'unzip -q /tmp/queries.zip -d /home/ec2-user/benchmarking-workspace',
-        'chown -R ec2-user:ec2-user /home/ec2-user/benchmarking-workspace',
-
         // Create startup script that downloads binary
         `cat > /usr/local/bin/start-worker.sh << 'EOF'
 #!/bin/bash
@@ -143,6 +138,7 @@ EOF`,
         securityGroup,
         role,
         userData,
+        userDataCausesReplacement: true
       });
 
       // Tag for peer discovery
@@ -165,11 +161,11 @@ aws ssm start-session --target ${inst.instanceId}
     new CfnOutput(this, 'PortForwardCommands', {
       value: instances.map((inst, i) =>
         `
-# instance-${i} (forward port 8000 to localhost:${8000 + i})
-aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortForwardingSession --parameters "portNumber=8000,localPortNumber=${8000 + i}"
+# instance-${i} (forward port 9000 to localhost:${9000 + i})
+aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=${9000 + i}"
 `
       ).join(''),
-      description: 'Port forwarding commands (HTTP server on port 8000)',
+      description: 'Port forwarding commands (HTTP server on port 9000)',
     });
 
     // Custom resource to restart worker service on every deploy
