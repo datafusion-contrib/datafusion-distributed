@@ -2,6 +2,8 @@
 
 Creates automatically the appropriate infrastructure in AWS for running benchmarks.
 
+---
+
 # Deploy
 
 ## Prerequisites
@@ -38,6 +40,8 @@ npm run cdk deploy
 npm run sync-bucket
 ```
 
+---
+
 # Connect to instances
 
 ## Prerequisites
@@ -59,15 +63,15 @@ sudo ln -s /usr/local/sessionmanagerplugin/bin/session-manager-plugin /usr/local
 
 ## Port Forward
 
-After performing a CDK deploy, a CNF output will be printed to stdout with instructions for port-forwarding
-to all the machines, something like this:
+After performing a CDK deploy, a CNF output will be printed to stdout with instructions for port-forwarding to them.
 
 ```shell
-# instance-0 (forward port 8000 to localhost:8000)
-aws ssm start-session --target i-04ed9f331dcfae4b6 --document-name AWS-StartPortForwardingSession --parameters "portNumber=8000,localPortNumber=8000"                                     
+export INSTANCE_ID=i-0000000000000000
+
+aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"                                     
 ```
 
-Just port-forwarding the first instance is enough for making queries.
+Just port-forwarding the first instance is enough for issuing queries.
 
 ## Connect
 
@@ -75,8 +79,45 @@ After performing a CDK deploy, a CNF output will be printed to stdout with instr
 to all the machines, something like this:
 
 ```shell
-# instance-0
-aws ssm start-session --target i-00000000000000000
+export INSTANCE_ID=i-0000000000000000
+
+aws ssm start-session --target $INSTANCE_ID
 ```
 
-Just running one of those commands in the terminal will connect you to the EC2 instance
+The logs can be streamed with:
+
+```shell
+sudo journalctl -u worker.service -f -o cat
+```
+
+---
+
+# Running benchmarks
+
+There's a script that will run the TPCH benchmarks against the remote cluster:
+
+In one terminal, perform a port-forward of one machine in the cluster, something like this:
+
+```shell
+export INSTANCE_ID=i-0000000000000000
+aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"                                     
+```
+
+In another terminal, navigate to the benchmarks/cdk folder:
+
+```shell
+cd benchmarks/cdk
+```
+
+And run the benchmarking script
+
+```shell
+npm run datafusion-bench
+```
+
+Several arguments can be passed for running the benchmarks against different scale factors and with different configs,
+for example:
+
+```shell
+npm run datafusion-bench  -- --sf 10 --files-per-task 4 --query 7
+```
