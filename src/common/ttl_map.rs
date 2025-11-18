@@ -133,10 +133,9 @@ struct TTLMapMetrics {
 /// TTLMapConfig configures the TTLMap parameters such as the TTL and tick period.
 pub struct TTLMapConfig {
     /// How often the map is checks for expired entries.
-    /// This must be less than `ttl`. It's recommended to set `ttl` to a multiple
-    /// of `tick`.
+    /// This must be less than `ttl` and `ttl` must be a multiple of `tick`.
     pub tick: Duration,
-    /// The time-to-live for entries
+    /// The time-to-live for entries.
     pub ttl: Duration,
 }
 
@@ -150,10 +149,16 @@ impl Default for TTLMapConfig {
 }
 
 impl TTLMapConfig {
-    fn is_valid(&self, tick: Duration, ttl: Duration) -> Result<(), DataFusionError> {
-        if tick > ttl && !tick.is_zero() {
+    fn is_valid(&self) -> Result<(), DataFusionError> {
+        if self.tick > self.ttl || self.tick.is_zero() {
             return Err(DataFusionError::Configuration(
                 "`tick` must be nonzero and <= `ttl`".to_string(),
+            ));
+        }
+
+        if self.ttl.as_nanos() % self.tick.as_nanos() != 0 {
+            return Err(DataFusionError::Configuration(
+                "`ttl` must be an integer multiple of tick".to_string(),
             ));
         }
         Ok(())
@@ -167,7 +172,7 @@ where
 {
     // try_new creates a new TTLMap.
     pub fn try_new(config: TTLMapConfig) -> Result<Self, DataFusionError> {
-        config.is_valid(config.tick, config.ttl)?;
+        config.is_valid()?;
         let mut map = Self::_new(config);
         map._start_gc();
         Ok(map)
@@ -290,6 +295,29 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn test_config_validations() {
+        // Stores (tick, ttl, is_valid)
+        let cases = [
+            (Duration::from_secs(1), Duration::from_secs(10), true),
+            (Duration::from_secs(2), Duration::from_secs(10), true),
+            (Duration::from_secs(10), Duration::from_secs(10), true),
+            (Duration::from_millis(250), Duration::from_secs(10), true),
+            (Duration::from_secs(1), Duration::from_secs(0), false),
+            (Duration::from_secs(0), Duration::from_secs(1), false),
+            (Duration::from_secs(0), Duration::from_secs(0), false),
+            (Duration::from_secs(3), Duration::from_secs(10), false),
+            (Duration::from_secs(11), Duration::from_secs(10), false),
+            // 252 is divisible by 3, so the ttl is not an integer multiple of the tick.
+            (Duration::from_millis(252), Duration::from_secs(10), false),
+        ];
+
+        for (tick, ttl, is_valid) in cases {
+            let config = TTLMapConfig { tick, ttl };
+            assert_eq!(config.is_valid().is_ok(), is_valid);
+        }
+    }
 
     #[tokio::test]
     async fn test_basic_insert_and_get() {
