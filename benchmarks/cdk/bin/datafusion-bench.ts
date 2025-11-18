@@ -152,7 +152,10 @@ function createTablesSql (sf: number): string {
     "supplier",
   ]) {
     // language=SQL format=false
-    stmt += `CREATE EXTERNAL TABLE IF NOT EXISTS ${tbl} STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/${tbl}/';\n`
+    stmt += `
+    DROP TABLE IF EXISTS ${tbl};
+    CREATE EXTERNAL TABLE IF NOT EXISTS ${tbl} STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/${tbl}/';
+ `
   }
   return stmt
 }
