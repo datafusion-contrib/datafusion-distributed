@@ -20,10 +20,9 @@ use datafusion::logical_expr::select_expr::SelectExpr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use datafusion::common::not_impl_err;
-
 use super::TPCH_TABLES;
 use super::get_tbl_tpch_table_schema;
+use datafusion::common::not_impl_err;
 use datafusion::error::Result;
 use datafusion::prelude::*;
 use parquet::basic::Compression;
@@ -88,7 +87,9 @@ impl ConvertOpt {
                 options
             };
 
-            let config = SessionConfig::new().with_batch_size(self.batch_size);
+            let config = SessionConfig::new()
+                .with_target_partitions(self.partitions)
+                .with_batch_size(self.batch_size);
             let ctx = SessionContext::new_with_config(config);
 
             // build plan to read the TBL file
@@ -106,9 +107,7 @@ impl ConvertOpt {
             csv = csv.select(selection)?;
             // optionally, repartition the file
             let partitions = self.partitions;
-            if partitions > 1 {
-                csv = csv.repartition(Partitioning::RoundRobinBatch(partitions))?
-            }
+            csv = csv.repartition(Partitioning::RoundRobinBatch(partitions))?;
             let csv = if self.sort {
                 csv.sort_by(vec![col(key_column_name)])?
             } else {
