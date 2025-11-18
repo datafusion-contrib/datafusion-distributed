@@ -141,13 +141,13 @@ EOF`,
       instances.push(instance);
     }
 
-    const firstInstance = instances[0]?.instanceId
     // Output Session Manager commands for all instances
     new CfnOutput(this, 'ConnectCommands', {
-      value: `\n
-export INSTANCE_ID=${firstInstance}
+      value: `
+# === select one instance to connect to ===
+${instances.map(_ => `export INSTANCE_ID=${_.instanceId}`).join("\n")} 
 
-# === port forward the HTTP ===
+# === port forward the HTTP endpoint ===
 aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
 
 # === open a sh session in the remote machine ===
