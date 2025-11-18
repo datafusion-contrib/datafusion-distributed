@@ -1,41 +1,42 @@
 import path from "path";
 import fs from "fs/promises";
-import minimist from "minimist";
+import { Command } from "commander";
 import { z } from 'zod';
 
 const ROOT = path.join(__dirname, '../../..')
 
 async function main () {
-  const argv = minimist(process.argv.slice(2), {
-    default: {
-      sf: 1,
-      iterations: 3,
-      ['files-per-task']: 0,
-      ['cardinality-task-sf']: 0
-    },
-    alias: {
-      iterations: ['i']
-    }
-  })
+  const program = new Command();
 
-  const queries_path = path.join(ROOT, "testdata", "tpch", "queries")
+  program
+    .option('--sf <number>', 'Scale factor', '1')
+    .option('-i, --iterations <number>', 'Number of iterations', '3')
+    .option('--files-per-task <number>', 'Files per task', '4') // workers have 4 CPUs
+    .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
+    .parse(process.argv);
+
+  const options = program.opts();
+
+  const sf = parseInt(options.sf);
+  const iterations = parseInt(options.iterations);
+  const filesPerTask = parseInt(options.filesPerTask);
+  const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+
+  const queriesPath = path.join(ROOT, "testdata", "tpch", "queries")
 
   console.log("Creating tables...")
-  await query(createTablesSql(argv.sf))
-
-  if (argv['files-per-task'] > 0) {
-    await query(`SET distributed.files_per_task=${argv['files-per-task']}`)
-  }
-  if (argv['cardinality-task-sf'] > 0) {
-    await query(`SET distributed.cardinality_task_sf=${argv['cardinality-task-sf']}`)
-  }
+  await query(createTablesSql(sf))
+  await query(`
+    SET distributed.files_per_task=${filesPerTask};
+    SET distributed.cardinality_task_sf=${cardinalityTaskSf}
+  `)
 
   for (let id of IDS) {
-    const filePath = path.join(queries_path, `q${id}.sql`)
+    const filePath = path.join(queriesPath, `q${id}.sql`)
     const content = await fs.readFile(filePath, 'utf-8')
 
     const queryResults: QueryIter[] = []
-    for (let i = 0; i < argv.iterations; i++) {
+    for (let i = 0; i < iterations; i++) {
       const start = new Date()
       const response = await query(content)
       const elapsed = Math.round(new Date().getTime() - start.getTime())
@@ -52,48 +53,26 @@ async function main () {
   }
 }
 
-function createTablesSql (sf: number) {
-  return `
-      DROP TABLE IF EXISTS lineitem;
+function createTablesSql (sf: number): string {
+  let stmt = ''
+  for (const tbl in [
+    "lineitem",
+    "orders",
+    "part",
+    "partsupp",
+    "customer",
+    "nation",
+    "region",
+    "supplier",
+  ]) {
+    stmt += `
+        DROP TABLE IF EXISTS ${tbl}
 
-      CREATE
-      EXTERNAL TABLE lineitem STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/lineitem/';
-
-      DROP TABLE IF EXISTS orders;
-
-      CREATE
-      EXTERNAL TABLE orders STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/orders/';
-
-      DROP TABLE IF EXISTS part;
-
-      CREATE
-      EXTERNAL TABLE part STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/part/';
-
-      DROP TABLE IF EXISTS partsupp;
-
-      CREATE
-      EXTERNAL TABLE partsupp STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/partsupp/';
-
-      DROP TABLE IF EXISTS customer;
-
-      CREATE
-      EXTERNAL TABLE customer STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/customer/';
-
-      DROP TABLE IF EXISTS nation;
-
-      CREATE
-      EXTERNAL TABLE nation STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/nation/';
-
-      DROP TABLE IF EXISTS region;
-
-      CREATE
-      EXTERNAL TABLE region STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/region/';
-
-      DROP TABLE IF EXISTS supplier;
-
-      CREATE
-      EXTERNAL TABLE supplier STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/supplier/';
-  `
+        CREATE
+        EXTERNAL TABLE lineitem STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/${tbl}/';
+    `
+  }
+  return stmt
 }
 
 const IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
