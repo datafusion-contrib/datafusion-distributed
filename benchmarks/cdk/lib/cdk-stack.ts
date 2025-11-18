@@ -141,26 +141,23 @@ EOF`,
       instances.push(instance);
     }
 
+    const firstInstance = instances[0]?.instanceId
     // Output Session Manager commands for all instances
     new CfnOutput(this, 'ConnectCommands', {
-      value: instances.map((inst, i) =>
-        `
-# instance-${i}
-aws ssm start-session --target ${inst.instanceId}
-`
-      ).join(''),
-      description: 'Session Manager commands to connect to instances',
-    });
+      value: `\n
+export INSTANCE_ID=${firstInstance}
 
-    // Output port forwarding commands
-    new CfnOutput(this, 'PortForwardCommands', {
-      value: instances.map((inst, i) =>
-        `
-# instance-${i} (forward port 9000 to localhost:${9000 + i})
-aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=${9000 + i}"
-`
-      ).join(''),
-      description: 'Port forwarding commands (HTTP server on port 9000)',
+# === port forward the HTTP ===
+aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
+
+# === open a sh session in the remote machine ===
+aws ssm start-session --target $INSTANCE_ID
+
+# === See worker logs inside a sh session ===
+sudo journalctl -u worker.service -f -o cat
+
+`,
+      description: 'Session Manager commands to connect to instances',
     });
 
     // Custom resource to restart worker service on every deploy
@@ -180,6 +177,7 @@ aws ssm start-session --target ${inst.instanceId} --document-name AWS-StartPortF
           },
         },
         physicalResourceId: cr.PhysicalResourceId.of(`restart-${Date.now()}`),
+        ignoreErrorCodesMatching: '.*',
       },
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({

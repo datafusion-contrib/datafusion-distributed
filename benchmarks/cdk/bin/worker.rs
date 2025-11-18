@@ -6,6 +6,7 @@ use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
 use dashmap::{DashMap, Entry};
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
@@ -14,15 +15,17 @@ use datafusion_distributed::{
     DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
     create_flight_client, display_plan_ascii,
 };
-use futures::{TryFutureExt, TryStreamExt};
-use log::{error, info};
+use futures::{StreamExt, TryFutureExt};
+use log::{error, info, warn};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use structopt::StructOpt;
 use tonic::transport::{Channel, Server};
 use url::Url;
@@ -119,7 +122,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if sql.trim().is_empty() {
                             continue;
                         }
-                        info!("Executing query: {sql}");
                         let df = ctx.sql(sql).await.map_err(err)?;
                         df_opt = Some(df);
                     }
@@ -129,15 +131,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                     let start = Instant::now();
 
+                    info!("Executing query...");
+                    let abort_notifier = AbortNotifier::new("Query aborted");
+                    let abort_notifier_clone = abort_notifier.clone();
+                    let task = SpawnedTask::spawn(async move {
+                        let _ = abort_notifier_clone;
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            info!("Query still running...");
+                        }
+                    });
                     let physical = df.create_physical_plan().await.map_err(err)?;
-                    let stream = execute_stream(physical.clone(), ctx.task_ctx()).map_err(err)?;
-                    let batches = stream.try_collect::<Vec<_>>().await.map_err(err)?;
-                    let count = batches.iter().map(|b| b.num_rows()).sum::<usize>();
+                    let mut stream =
+                        execute_stream(physical.clone(), ctx.task_ctx()).map_err(err)?;
+                    let mut count = 0;
+                    while let Some(batch) = stream.next().await {
+                        count += batch.map_err(err)?.num_rows();
+                        info!("Gathered {count} rows, query still in progress..")
+                    }
                     let plan = display_plan_ascii(physical.as_ref(), true);
+                    drop(task);
 
                     let elapsed = start.elapsed();
                     let ms = elapsed.as_secs_f64() * 1000.0;
+                    info!("Finished executing query:\n{sql}\n\n{plan}");
                     info!("Returned {count} rows in {ms} ms");
+                    abort_notifier.finished();
 
                     Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
                 }
@@ -160,6 +179,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+struct AbortNotifier {
+    aborted: AtomicBool,
+    msg: String,
+}
+
+impl AbortNotifier {
+    fn new(msg: impl Display) -> Arc<Self> {
+        Arc::new(AbortNotifier {
+            aborted: AtomicBool::new(true),
+            msg: msg.to_string(),
+        })
+    }
+
+    fn finished(&self) {
+        self.aborted
+            .store(false, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for AbortNotifier {
+    fn drop(&mut self) {
+        if self.aborted.load(std::sync::atomic::Ordering::Relaxed) {
+            warn!("{}", self.msg);
+        }
+    }
 }
 
 fn err(s: impl Display) -> (StatusCode, String) {
@@ -222,7 +268,7 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
                 );
                 *urls.write().unwrap() = workers;
             }
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 }

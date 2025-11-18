@@ -15,6 +15,7 @@ async function main () {
     .option('-i, --iterations <number>', 'Number of iterations', '3')
     .option('--files-per-task <number>', 'Files per task', '4')
     .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
+    .option('--query <number>', 'A specific query to run', undefined)
     .parse(process.argv);
 
   const options = program.opts();
@@ -36,6 +37,10 @@ async function main () {
   `)
 
   for (let id of IDS) {
+    if (options.query && parseInt(options.query) !== id) {
+      continue
+    }
+
     const queryId = `q${id}`;
     const filePath = path.join(queriesPath, `${queryId}.sql`)
     const content = await fs.readFile(filePath, 'utf-8')
