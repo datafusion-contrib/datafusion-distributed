@@ -48,7 +48,7 @@ pub struct ConvertOpt {
     #[structopt(short = "c", long = "compression", default_value = "zstd")]
     compression: String,
 
-    /// Number of partitions to produce
+    /// Number of partitions to produce. By default, uses only 1 partition.
     #[structopt(short = "n", long = "partitions", default_value = "1")]
     partitions: usize,
 
@@ -105,9 +105,7 @@ impl ConvertOpt {
                 .collect::<Vec<_>>();
 
             csv = csv.select(selection)?;
-            // optionally, repartition the file
-            let partitions = self.partitions;
-            csv = csv.repartition(Partitioning::RoundRobinBatch(partitions))?;
+            csv = csv.repartition(Partitioning::RoundRobinBatch(self.partitions))?;
             let csv = if self.sort {
                 csv.sort_by(vec![col(key_column_name)])?
             } else {
