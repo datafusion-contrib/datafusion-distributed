@@ -1,0 +1,193 @@
+import { CfnOutput, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import { Construct } from 'constructs';
+import * as path from 'path';
+import { execSync } from 'child_process';
+
+const ROOT = path.join(__dirname, '../../..')
+
+interface CdkStackProps extends StackProps {
+  config: {
+    instanceType: string;
+    instanceCount: number;
+  };
+}
+
+export class CdkStack extends Stack {
+  constructor (scope: Construct, id: string, props: CdkStackProps) {
+    super(scope, id, props);
+
+    const { config } = props;
+
+    // Create VPC with public subnets only (for internet access without NAT gateway)
+    const vpc = new ec2.Vpc(this, 'BenchmarkVPC', {
+      maxAzs: 1,
+      natGateways: 0,
+      subnetConfiguration: [
+        {
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24,
+        },
+      ],
+    });
+
+    // Create security group that allows instances to communicate
+    const securityGroup = new ec2.SecurityGroup(this, 'BenchmarkSG', {
+      vpc,
+      allowAllOutbound: true,
+    });
+
+    // Allow all traffic between instances in the same security group
+    securityGroup.addIngressRule(
+      securityGroup,
+      ec2.Port.allTraffic(),
+      'Allow all traffic between benchmark instances'
+    );
+
+    // Create S3 bucket
+    const bucket = new s3.Bucket(this, 'BenchmarkBucket', {
+      bucketName: "datafusion-distributed-benchmarks",
+      autoDeleteObjects: true,
+      removalPolicy: RemovalPolicy.DESTROY
+    });
+
+    // Build worker binary for Linux
+    console.log('Building worker binary...');
+    execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin worker --target x86_64-unknown-linux-gnu', {
+      cwd: ROOT,
+      stdio: 'inherit',
+    });
+    console.log('Worker binary built successfully');
+
+    // Upload worker binary as an asset
+    const workerBinary = new s3assets.Asset(this, 'WorkerBinary', {
+      path: path.join(ROOT, 'target/x86_64-unknown-linux-gnu/release/worker'),
+    });
+
+    // Create IAM role for EC2 instances
+    const role = new iam.Role(this, 'BenchmarkInstanceRole', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+      ],
+    });
+
+    // Grant permissions to describe EC2 instances (for peer discovery)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+
+    // Grant read access to the bucket and worker binary
+    bucket.grantRead(role);
+    workerBinary.grantRead(role);
+
+    // Create EC2 instances
+    const instances: ec2.Instance[] = [];
+    for (let i = 0; i < config.instanceCount; i++) {
+      const userData = ec2.UserData.forLinux();
+
+      // Download worker binary from S3 asset
+      userData.addS3DownloadCommand({
+        bucket: workerBinary.bucket,
+        bucketKey: workerBinary.s3ObjectKey,
+        localFile: '/usr/local/bin/worker',
+      });
+
+      userData.addCommands(
+        // Make binary executable
+        'chmod +x /usr/local/bin/worker',
+
+        // Create systemd service
+        `cat > /etc/systemd/system/worker.service << 'EOF'
+[Unit]
+Description=DataFusion Distributed Worker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/worker --bucket ${bucket.bucketName}
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF`,
+
+        // Enable and start the service
+        'systemctl daemon-reload',
+        'systemctl enable worker',
+        'systemctl start worker'
+      );
+
+      const instance = new ec2.Instance(this, `BenchmarkInstance${i}`, {
+        vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        instanceName: `instance-${i}`,
+        instanceType: new ec2.InstanceType(config.instanceType),
+        machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+        securityGroup,
+        role,
+        userData
+      });
+
+      // Tag for peer discovery
+      Tags.of(instance).add('BenchmarkCluster', 'datafusion');
+      instances.push(instance);
+    }
+
+    // Output Session Manager commands for all instances
+    new CfnOutput(this, 'ConnectCommands', {
+      value: `
+# === select one instance to connect to ===
+${instances.map(_ => `export INSTANCE_ID=${_.instanceId}`).join("\n")} 
+
+# === port forward the HTTP endpoint ===
+aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
+
+# === open a sh session in the remote machine ===
+aws ssm start-session --target $INSTANCE_ID
+
+# === See worker logs inside a sh session ===
+sudo journalctl -u worker.service -f -o cat
+
+`,
+      description: 'Session Manager commands to connect to instances',
+    });
+
+    // Custom resource to restart worker service on every deploy
+    const restartWorker = new cr.AwsCustomResource(this, 'RestartWorkerService', {
+      onUpdate: {
+        service: 'SSM',
+        action: 'sendCommand',
+        parameters: {
+          DocumentName: 'AWS-RunShellScript',
+          InstanceIds: instances.map(inst => inst.instanceId),
+          Parameters: {
+            commands: [
+              `aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker`,
+              'chmod +x /usr/local/bin/worker',
+              'systemctl restart worker',
+            ],
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(`restart-${Date.now()}`),
+        ignoreErrorCodesMatching: '.*',
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['ssm:SendCommand'],
+          resources: ['*'],
+        }),
+      ]),
+    });
+
+    // Ensure instances are created before restarting
+    restartWorker.node.addDependency(...instances)
+  }
+}

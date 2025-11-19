@@ -20,7 +20,18 @@ chrono = "0.4.41"
 futures = "0.3.31"
 dashmap = "6.1.0"
 prost = "0.13.5"
+url = "2.5.4"
+arrow-flight = "56.1.0"
+tonic = { version = "0.13.1", features = ["transport"] }
+axum = "0.7"
+object_store = { version = "0.12.4", features = ["aws"] }
+aws-config = "<1.1.1"
+aws-sdk-ec2 = "<1.50.1"
 
 [[bin]]
 name = "dfbench"
 path = "src/bin/dfbench.rs"
+
+[[bin]]
+name = "worker"
+path = "cdk/bin/worker.rs"
