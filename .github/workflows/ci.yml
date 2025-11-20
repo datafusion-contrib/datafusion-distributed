@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_validation_test
+      - run: cargo test --features tpch --test 'tpch_*'
 
   format-check:
     runs-on: ubuntu-latest
