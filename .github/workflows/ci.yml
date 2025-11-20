@@ -40,6 +40,38 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features tpch --test 'tpch_*'
 
+  tpcds-randomized-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: ./.github/actions/setup
+      - name: Install DuckDB CLI
+        run: |
+          curl https://install.duckdb.org | sh
+          mkdir -p $HOME/.local/bin
+          mv /home/runner/.duckdb/cli/latest/duckdb $HOME/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Run TPC-DS randomized test
+        id: test
+        run: cargo test --features tpcds --test tpc_ds_randomized
+        continue-on-error: true
+      - name: Upload test artifacts on failure
+        if: failure() || steps.test.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpcds-test-artifacts-${{ github.run_id }}
+          path: testdata/tpcds/data/**
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Clean up test data
+        run: |
+          rm -rf testdata/tpcds/data/*
+          rm -f $HOME/.local/bin/duckdb
+          rm -rf /home/runner/.duckdb
+          df -h
+
   format-check:
     runs-on: ubuntu-latest
     steps:
