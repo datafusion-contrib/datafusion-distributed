@@ -32,6 +32,22 @@ jobs:
           lfs: true
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
+      - name: Show disk usage
+        if: always()
+        run: |
+          echo "=== df -h ==="
+          df -h
+          echo "=== Top directories in workspace ==="
+          du -h . 2>/dev/null | sort -hr | head -n 20 || true
+          echo "=== cargo dirs ==="
+          du -sh ~/.cargo 2>/dev/null || true
+          du -sh ~/.cargo/registry 2>/dev/null || true
+          du -sh ~/.cargo/git 2>/dev/null || true
+          du -sh target 2>/dev/null || true
+          echo "=== target/debug/deps sizes ==="
+          du -h target/debug/deps 2>/dev/null | sort -hr | head -n 30 || true
+          echo "=== home directory ==="
+          du -sh ~ 2>/dev/null | head -n 10 || true
 
   tpch-test:
     runs-on: ubuntu-latest
