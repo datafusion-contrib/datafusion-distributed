@@ -32,6 +32,7 @@ prost = "0.13.5"
 rand = "0.8.5"
 object_store = "0.12.3"
 bytes = "1.10.1"
+pin-project = "1.1.10"
 
 # integration_tests deps
 insta = { version = "1.43.1", features = ["filters"], optional = true }
@@ -41,7 +42,7 @@ parquet = { version = "56.1.0", optional = true }
 arrow = { version = "56.1.0", optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
 hyper-util = { version = "0.1.16", optional = true }
-pin-project = "1.1.10"
+pretty_assertions = { version = "1.4", optional = true }
 
 [features]
 integration = [
@@ -52,6 +53,7 @@ integration = [
     "arrow",
     "tokio-stream",
     "hyper-util",
+    "pretty_assertions"
 ]
 
 tpch = ["integration"]
@@ -65,3 +67,4 @@ parquet = "56.1.0"
 arrow = "56.1.0"
 tokio-stream = "0.1.17"
 hyper-util = "0.1.16"
+pretty_assertions = "1.4"

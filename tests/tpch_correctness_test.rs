@@ -18,124 +18,127 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(1).await
+        test_tpch_query(get_test_tpch_query(1)).await
     }
 
     #[tokio::test]
     async fn test_tpch_2() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(2).await
+        test_tpch_query(get_test_tpch_query(2)).await
     }
 
     #[tokio::test]
     async fn test_tpch_3() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(3).await
+        test_tpch_query(get_test_tpch_query(3)).await
     }
 
     #[tokio::test]
     async fn test_tpch_4() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(4).await
+        test_tpch_query(get_test_tpch_query(4)).await
     }
 
     #[tokio::test]
     async fn test_tpch_5() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(5).await
+        test_tpch_query(get_test_tpch_query(5)).await
     }
 
     #[tokio::test]
     async fn test_tpch_6() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(6).await
+        test_tpch_query(get_test_tpch_query(6)).await
     }
 
     #[tokio::test]
     async fn test_tpch_7() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(7).await
+        test_tpch_query(get_test_tpch_query(7)).await
     }
 
     #[tokio::test]
     async fn test_tpch_8() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(8).await
+        test_tpch_query(get_test_tpch_query(8)).await
     }
 
     #[tokio::test]
     async fn test_tpch_9() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(9).await
+        test_tpch_query(get_test_tpch_query(9)).await
     }
 
     #[tokio::test]
     async fn test_tpch_10() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(10).await
+        let sql = get_test_tpch_query(10);
+        // There is a chance that this query returns non-deterministic results if two entries
+        // happen to have the exact same revenue. With small scales, this never happens, but with
+        // bigger scales, this is very likely to happen.
+        // This extra ordering accounts for it.
+        let sql = sql.replace("revenue desc", "revenue, c_acctbal desc");
+        test_tpch_query(sql).await
     }
 
     #[tokio::test]
     async fn test_tpch_11() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(11).await
+        test_tpch_query(get_test_tpch_query(11)).await
     }
 
     #[tokio::test]
     async fn test_tpch_12() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(12).await
+        test_tpch_query(get_test_tpch_query(12)).await
     }
 
     #[tokio::test]
     async fn test_tpch_13() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(13).await
+        test_tpch_query(get_test_tpch_query(13)).await
     }
 
     #[tokio::test]
     async fn test_tpch_14() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(14).await
+        test_tpch_query(get_test_tpch_query(14)).await
     }
 
     #[tokio::test]
     async fn test_tpch_15() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(15).await
+        test_tpch_query(get_test_tpch_query(15)).await
     }
 
     #[tokio::test]
     async fn test_tpch_16() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(16).await
+        test_tpch_query(get_test_tpch_query(16)).await
     }
 
     #[tokio::test]
     async fn test_tpch_17() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(17).await
+        test_tpch_query(get_test_tpch_query(17)).await
     }
 
     #[tokio::test]
     async fn test_tpch_18() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(18).await
+        test_tpch_query(get_test_tpch_query(18)).await
     }
 
     #[tokio::test]
     async fn test_tpch_19() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(19).await
+        test_tpch_query(get_test_tpch_query(19)).await
     }
 
     #[tokio::test]
     async fn test_tpch_20() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(20).await
+        test_tpch_query(get_test_tpch_query(20)).await
     }
 
     #[tokio::test]
     async fn test_tpch_21() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(21).await
+        test_tpch_query(get_test_tpch_query(21)).await
     }
 
     #[tokio::test]
     async fn test_tpch_22() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(22).await
+        test_tpch_query(get_test_tpch_query(22)).await
     }
 
-    async fn test_tpch_query(query_id: u8) -> Result<(), Box<dyn Error>> {
+    async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
-        let results_d = run_tpch_query(ctx, query_id).await?;
-        let results_s = run_tpch_query(SessionContext::new(), query_id).await?;
 
-        assert_eq!(
-            results_d.to_string(),
-            results_s.to_string(),
-            "Query {query_id} results differ between executions",
-        );
+        let results_d = run_tpch_query(ctx, sql.clone()).await?;
+        let results_s = run_tpch_query(SessionContext::new(), sql).await?;
+
+        pretty_assertions::assert_eq!(results_d.to_string(), results_s.to_string(),);
         Ok(())
     }
 
@@ -143,10 +146,9 @@ mod tests {
     // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(
         ctx: SessionContext,
-        query_id: u8,
+        sql: String,
     ) -> Result<impl Display, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
-        let sql = get_test_tpch_query(query_id);
         ctx.state_ref()
             .write()
             .config_mut()
@@ -170,7 +172,7 @@ mod tests {
         // Query 15 has three queries in it, one creating the view, the second
         // executing, which we want to capture the output of, and the third
         // tearing down the view
-        let stream = if query_id == 15 {
+        let stream = if sql.starts_with("create view") {
             let queries: Vec<&str> = sql
                 .split(';')
                 .map(str::trim)
