@@ -313,7 +313,7 @@ mod tests {
             ),
             DataFusionError::Execution("execution error".to_string()),
             DataFusionError::ResourcesExhausted("resources exhausted".to_string()),
-            DataFusionError::External(Box::new(std::io::Error::new(ErrorKind::Other, "external"))),
+            DataFusionError::External(Box::new(std::io::Error::other("external"))),
             DataFusionError::Context(
                 "context message".to_string(),
                 Box::new(DataFusionError::Internal("nested".to_string())),

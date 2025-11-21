@@ -440,8 +440,7 @@ mod tests {
         let roundtrip_count = roundtrip_metrics_set.iter().count();
         assert_eq!(
             original_count, roundtrip_count,
-            "roundtrip should preserve metrics count for {}",
-            test_name
+            "roundtrip should preserve metrics count for {test_name}"
         );
 
         // Verify equivalence of each metric.
@@ -449,29 +448,25 @@ mod tests {
             assert_eq!(
                 original.partition(),
                 roundtrip.partition(),
-                "partition mismatch in {}",
-                test_name
+                "partition mismatch in {test_name}"
             );
 
             assert_eq!(
                 original.labels().len(),
                 roundtrip.labels().len(),
-                "label count mismatch in {}",
-                test_name
+                "label count mismatch in {test_name}"
             );
 
             for (orig_label, rt_label) in original.labels().iter().zip(roundtrip.labels().iter()) {
                 assert_eq!(
                     orig_label.name(),
                     rt_label.name(),
-                    "label name mismatch in {}",
-                    test_name
+                    "label name mismatch in {test_name}"
                 );
                 assert_eq!(
                     orig_label.value(),
                     rt_label.value(),
-                    "label value mismatch in {}",
-                    test_name
+                    "label value mismatch in {test_name}"
                 );
             }
 

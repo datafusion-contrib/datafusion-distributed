@@ -343,10 +343,9 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         f,
         "digraph G {{
   rankdir=BT
-  edge[colorscheme={}, penwidth=2.0]
+  edge[colorscheme={COLOR_SCHEME}, penwidth=2.0]
   splines=false
-",
-        COLOR_SCHEME
+"
     )?;
 
     if plan.as_any().is::<DistributedExec>() {
@@ -367,7 +366,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         for stage in &all_stages {
             for i in 0..stage.tasks.iter().len() {
                 let p = display_single_task(stage, i)?;
-                writeln!(f, "{}", p)?;
+                writeln!(f, "{p}")?;
             }
         }
         // now draw edges between the tasks
@@ -390,7 +389,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         // single plan, not a stage tree
         writeln!(f, "node[shape=none]")?;
         let p = display_plan(&plan, 0, 1, 0)?;
-        writeln!(f, "{}", p)?;
+        writeln!(f, "{p}")?;
     }
 
     writeln!(f, "}}")?;
@@ -457,7 +456,7 @@ fn display_plan(
     while let Some(plan) = queue.pop_front() {
         node_index += 1;
         let p = display_single_plan(plan.as_ref(), stage_num, task_i, node_index)?;
-        writeln!(f, "{}", p)?;
+        writeln!(f, "{p}")?;
 
         if plan.is_network_boundary() {
             continue;
@@ -605,7 +604,7 @@ pub fn display_single_plan(
     )?;
 
     for i in 0..output_partitions {
-        writeln!(f, "                        <TD PORT='t{}'></TD>", i)?;
+        writeln!(f, "                        <TD PORT='t{i}'></TD>")?;
     }
 
     writeln!(
@@ -631,7 +630,7 @@ pub fn display_single_plan(
     )?;
 
     for i in 0..input_partitions {
-        writeln!(f, "                        <TD PORT='b{}'></TD>", i)?;
+        writeln!(f, "                        <TD PORT='b{i}'></TD>")?;
     }
 
     writeln!(

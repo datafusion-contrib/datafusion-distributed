@@ -236,8 +236,8 @@ mod tests {
 +----------+--------+-----+";
 
         // Print them out, the error message from `assert_eq` is otherwise hard to read.
-        println!("{}", expected_result);
-        println!("{}", actual_result);
+        println!("{expected_result}");
+        println!("{actual_result}");
 
         // Compare against result. The regression this is testing for would have NULL values in
         // the second and third column.

@@ -21,7 +21,7 @@ use tpchgen_arrow::{
 pub fn tpch_query_from_dir(queries_dir: &std::path::Path, num: u8) -> String {
     let query_path = queries_dir.join(format!("q{num}.sql"));
     fs::read_to_string(query_path)
-        .unwrap_or_else(|_| panic!("Failed to read TPCH query file: q{}.sql", num))
+        .unwrap_or_else(|_| panic!("Failed to read TPCH query file: q{num}.sql"))
         .trim()
         .to_string()
 }
@@ -137,7 +137,7 @@ fn generate_table<A>(
 where
     A: Iterator<Item = RecordBatch>,
 {
-    let output_path = data_dir.join(format!("{}.parquet", table_name));
+    let output_path = data_dir.join(format!("{table_name}.parquet"));
 
     if let Some(first_batch) = data_source.next() {
         let file = fs::File::create(&output_path)?;
