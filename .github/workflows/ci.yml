@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  TPCDS_SCALE_FACTOR: 0.5 # 0.5 scale factor produces a data dir which is 124MB
 
 concurrency:
   group: ${{ github.ref }}
@@ -40,7 +41,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features tpch --test 'tpch_*'
 
-  tpcds-randomized-test:
+  tpcds-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,18 +54,9 @@ jobs:
           mkdir -p $HOME/.local/bin
           mv /home/runner/.duckdb/cli/latest/duckdb $HOME/.local/bin/
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-      - name: Run TPC-DS randomized test
+      - name: Run TPC-DS test
         id: test
-        run: cargo test --features tpcds --test tpc_ds_randomized
-        continue-on-error: true
-      - name: Upload test artifacts on failure
-        if: failure() || steps.test.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tpcds-test-artifacts-${{ github.run_id }}
-          path: testdata/tpcds/data/**
-          retention-days: 7
-          if-no-files-found: ignore
+        run: cargo test --features tpcds --test tpcds_test
 
   format-check:
     runs-on: ubuntu-latest
