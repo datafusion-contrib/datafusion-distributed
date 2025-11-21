@@ -5,16 +5,15 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::{
         localhost::start_localhost_context,
-        property_based::Validator,
+        property_based::{compare_ordering, compare_result_set},
         rand::rng,
         tpcds::{generate_tpcds_data, queries, register_tables},
     };
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
+    use rand::Rng;
     use std::env;
 
-    use rand::Rng;
-
-    async fn setup() -> Result<(Validator, JoinSet<()>)> {
+    async fn setup() -> Result<(SessionContext, SessionContext, JoinSet<()>)> {
         let (mut rng, seed_b64) = rng()?;
         eprintln!("Seed: {}", seed_b64);
 
@@ -39,10 +38,7 @@ mod tests {
         let single_node_ctx = SessionContext::new();
         register_tables(&single_node_ctx).await?;
 
-        Ok((
-            Validator::new(distributed_ctx, single_node_ctx).await?,
-            worker_tasks,
-        ))
+        Ok((distributed_ctx, single_node_ctx, worker_tasks))
     }
 
     #[tokio::test]
@@ -59,7 +55,7 @@ mod tests {
         let queries = queries()?;
 
         // Create randomized fuzz config
-        let (test_db, _handles) = setup().await?;
+        let (d_ctx, s_ctx, _handles) = setup().await?;
 
         let mut successful = 0;
         let mut failed = 0;
@@ -67,9 +63,16 @@ mod tests {
 
         for (query_name, query_sql) in queries {
             eprintln!("Executing query: {}", query_name);
+            let df = s_ctx.sql(&query_sql).await?;
+            let results = df.collect().await;
 
-            match test_db.run(&query_sql).await {
-                Ok(results) => match results {
+            let compare_result = tokio::try_join!(
+                compare_result_set(&s_ctx, &d_ctx, &query_sql, &results),
+                compare_ordering(&s_ctx, &d_ctx, &query_sql, &results),
+            );
+
+            match compare_result {
+                Ok(_) => match results.ok() {
                     Some(_batches) => {
                         successful += 1;
                         eprintln!("✅ {} completed", query_name);
