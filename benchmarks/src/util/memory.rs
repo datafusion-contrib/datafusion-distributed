@@ -4,7 +4,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{exec_err, extensions_options, plan_err};
 use datafusion::config::{ConfigExtension, ConfigOptions};
 use datafusion::error::DataFusionError;
-use datafusion::execution::{FunctionRegistry, SendableRecordBatchStream, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -150,7 +150,7 @@ impl PhysicalExtensionCodec for InMemoryCacheExecCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _registry: &dyn FunctionRegistry,
+        _ctx: &TaskContext,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let Ok(proto) = InMemoryCacheExecProto::decode(buf) else {
             return plan_err!("no InMemoryDataSourceExecProto");
