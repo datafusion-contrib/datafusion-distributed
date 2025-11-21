@@ -12,6 +12,9 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Free up disk space
+      shell: bash
+      run: ${{ github.action_path }}/free_disk_space.sh
     - shell: bash
       run: |
         echo $HOME
