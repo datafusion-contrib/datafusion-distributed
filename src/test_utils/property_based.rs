@@ -1,80 +1,64 @@
 use arrow::{
-    array::{ArrayRef, UInt32Array},
+    array::{ArrayRef, Float16Array, Float32Array, Float64Array, UInt32Array},
     compute::{SortColumn, concat_batches, lexsort_to_indices},
     record_batch::RecordBatch,
 };
 use datafusion::{
     common::{internal_datafusion_err, internal_err},
     error::{DataFusionError, Result},
-    execution::context::SessionContext,
     physical_expr::LexOrdering,
+    physical_plan::ExecutionPlan,
 };
 use std::sync::Arc;
 
+/// compares the set of record batches for equality
 pub async fn compare_result_set(
-    _test_ctx: &SessionContext,
-    compare_ctx: &SessionContext,
-    query: &str,
-    test_result: &Result<Vec<RecordBatch>>,
+    actual_result: &Result<Vec<RecordBatch>>,
+    expected_result: &Result<Vec<RecordBatch>>,
 ) -> Result<()> {
-    let df = compare_ctx.sql(query).await?;
-    let compare_result = df.collect().await;
-    let test_batches = match test_result.as_ref() {
+    let test_batches = match actual_result.as_ref() {
         Ok(batches) => batches,
         Err(e) => {
-            if compare_result.is_ok() {
-                return internal_err!(
-                    "query failed in test_ctx but succeeded in the compare_ctx: {}",
-                    e
-                );
+            if expected_result.is_ok() {
+                return internal_err!("expected no error but got: {}", e);
             }
             return Ok(()); // Both errored, so the query is valid
         }
     };
 
-    let compare_batches = match compare_result.as_ref() {
+    let compare_batches = match expected_result.as_ref() {
         Ok(batches) => batches,
         Err(e) => {
-            if compare_result.is_ok() {
-                return internal_err!(
-                    "test_ctx query succeeded but failed in the compare_ctx: {}",
-                    e
-                );
+            if actual_result.is_ok() {
+                return internal_err!("expected error but got none, error: {}", e);
             }
             return Ok(()); // Both errored, so the query is valid
         }
     };
 
-    // Compare result sets
     records_equal_as_sets(test_batches, compare_batches)
-        .map_err(|e| internal_datafusion_err!("ResultSetOracle validation failed: {}", e))?;
-
-    Ok(())
+        .map_err(|e| internal_datafusion_err!("result sets were not equal: {}", e))
 }
 
+// Ensures that the plans have the same ordering properties and that the actual result is sorted
+// correctly.
 pub async fn compare_ordering(
-    ctx: &SessionContext,
-    compare_ctx: &SessionContext,
-    query: &str,
-    test_result: &Result<Vec<RecordBatch>>,
+    actual_physical_plan: Arc<dyn ExecutionPlan>,
+    expected_physical_plan: Arc<dyn ExecutionPlan>,
+    actual_result: &Result<Vec<RecordBatch>>,
 ) -> Result<()> {
     // Only validate if the query succeeded
-    let test_batches = match test_result.as_ref() {
+    let test_batches = match actual_result.as_ref() {
         Ok(batches) => batches,
         Err(_) => return Ok(()),
     };
 
-    let df = ctx.sql(query).await?;
-    let physical_plan = df.create_physical_plan().await?;
-    let actual_ordering = physical_plan.properties().output_ordering();
-
-    let df = compare_ctx.sql(query).await?;
-    let physical_plan = df.create_physical_plan().await?;
-    let expected_ordering = physical_plan.properties().output_ordering();
+    let actual_ordering = actual_physical_plan.properties().output_ordering();
+    let expected_ordering = expected_physical_plan.properties().output_ordering();
 
     if actual_ordering != expected_ordering {
         return internal_err!(
-            "Ordering Oracle validation failed: expected ordering: {:?}, actual ordering: {:?}",
+            "ordering mismatch: expected ordering: {:?}, actual ordering: {:?}",
             expected_ordering,
             actual_ordering
         );
@@ -93,11 +77,10 @@ pub async fn compare_ordering(
             concat_batches(&test_batches[0].schema(), test_batches)?
         };
 
-        // Check if the coalesced batch maintains the expected ordering
         let is_sorted = is_table_same_after_sort(lex_ordering, &coalesced_batch)?;
         if !is_sorted {
             return internal_err!(
-                "OrderingOracle validation failed: result set is not properly sorted according to expected ordering: {:?}",
+                "ordering validation failed: results are not properly sorted according to expected ordering: {:?}",
                 lex_ordering
             );
         }
@@ -178,7 +161,7 @@ fn detailed_batch_comparison(
                 left_only.len()
             ));
             for row in left_only {
-                error_msg.push_str(&format!("\n  {}", row));
+                error_msg.push_str(&format!("\n  {row}"));
             }
         }
 
@@ -188,7 +171,7 @@ fn detailed_batch_comparison(
                 right_only.len()
             ));
             for row in right_only {
-                error_msg.push_str(&format!("\n  {}", row));
+                error_msg.push_str(&format!("\n  {row}"));
             }
         }
 
@@ -213,6 +196,12 @@ fn batch_rows_to_strings(batches: &[RecordBatch]) -> Vec<String> {
 
                 if array.is_null(row_idx) {
                     row_values.push("NULL".to_string());
+                } else if let Some(arr) = array.as_any().downcast_ref::<Float16Array>() {
+                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
+                } else if let Some(arr) = array.as_any().downcast_ref::<Float32Array>() {
+                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
+                } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
                 } else {
                     // Use Arrow's deterministic string representation
                     let value_str = array_value_to_string(array, row_idx)
@@ -292,6 +281,8 @@ mod tests {
 
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::collect;
+    use datafusion::prelude::SessionContext;
 
     use std::sync::Arc;
 
@@ -421,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ordering_oracle() {
+    async fn test_ordering_validation() {
         let actual_ctx = SessionContext::new();
         let expected_ctx = SessionContext::new();
 
@@ -447,11 +438,18 @@ mod tests {
             .unwrap();
 
         // Query which sorted by id should pass.
-        let ordered_query = "SELECT * FROM test_table ORDER BY id";
+        let ordered_query = "SELECT * FROM test_table ORDER BY value";
+
         let df = actual_ctx.sql(ordered_query).await.unwrap();
-        let result = df.collect().await;
+        let task_ctx = actual_ctx.task_ctx();
+        let actual_plan = df.create_physical_plan().await.unwrap();
+        let results = collect(actual_plan.clone(), task_ctx).await;
+
+        let df = expected_ctx.sql(ordered_query).await.unwrap();
+        let expected_plan = df.create_physical_plan().await.unwrap();
+
         assert!(
-            compare_ordering(&actual_ctx, &expected_ctx, ordered_query, &result)
+            compare_ordering(actual_plan.clone(), expected_plan.clone(), &results)
                 .await
                 .is_ok()
         );
@@ -459,14 +457,9 @@ mod tests {
         // This should fail because the batch is not sorted by value
         let result = Ok(vec![batch]);
         assert!(
-            compare_ordering(
-                &actual_ctx,
-                &expected_ctx,
-                "SELECT * FROM test_table ORDER BY value",
-                &result
-            )
-            .await
-            .is_err()
+            compare_ordering(actual_plan.clone(), expected_plan.clone(), &result)
+                .await
+                .is_err()
         );
     }
 }

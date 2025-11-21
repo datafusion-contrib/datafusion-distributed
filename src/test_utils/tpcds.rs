@@ -20,8 +20,8 @@ pub fn get_tpcds_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds")
 }
 
-/// Discover and load TPC-DS queries. The final list of queries is sorted by name.
-pub fn queries() -> Result<Vec<(String, String)>> {
+/// Load a single TPC-DS query by ID (1-99).
+pub fn get_test_tpcds_query(id: usize) -> Result<String> {
     let queries_dir = get_queries_dir();
 
     if !queries_dir.exists() {
@@ -31,41 +31,20 @@ pub fn queries() -> Result<Vec<(String, String)>> {
         );
     }
 
-    let entries = fs::read_dir(&queries_dir).map_err(|e| {
-        internal_datafusion_err!(
-            "Failed to read queries directory {}: {}",
-            queries_dir.display(),
-            e
-        )
-    })?;
+    let query_file = queries_dir.join(format!("q{id}.sql"));
 
-    let mut queries = Vec::new();
-    for entry in entries {
-        let entry =
-            entry.map_err(|e| internal_datafusion_err!("Failed to read directory entry: {}", e))?;
-
-        let path = entry.path();
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
-            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                let query_sql = fs::read_to_string(&path)
-                    .map_err(|e| {
-                        internal_datafusion_err!(
-                            "Failed to read query file {}: {}",
-                            path.display(),
-                            e
-                        )
-                    })?
-                    .trim()
-                    .to_string();
-
-                queries.push((name.to_string(), query_sql));
-            }
-        }
+    if !query_file.exists() {
+        return internal_err!("Query file not found: {}", query_file.display());
     }
 
-    queries.sort_by(|a, b| a.0.cmp(&b.0));
+    let query_sql = fs::read_to_string(&query_file)
+        .map_err(|e| {
+            internal_datafusion_err!("Failed to read query file {}: {}", query_file.display(), e)
+        })?
+        .trim()
+        .to_string();
 
-    Ok(queries)
+    Ok(query_sql)
 }
 
 pub const TPCDS_TABLES: &[&str] = &[
@@ -104,7 +83,7 @@ pub async fn register_tpcds_table(
     let data_path = data_dir.unwrap_or(&default_data_dir);
 
     // Check if this is a single parquet file
-    let table_file_path = data_path.join(format!("{}.parquet", table_name));
+    let table_file_path = data_path.join(format!("{table_name}.parquet"));
     if table_file_path.is_file() {
         ctx.register_parquet(
             table_name,

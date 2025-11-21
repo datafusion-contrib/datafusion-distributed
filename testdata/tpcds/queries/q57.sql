@@ -8,7 +8,8 @@ WITH v1 AS
           avg(sum(cs_sales_price)) OVER (PARTITION BY i_category,
                                                       i_brand,
                                                       cc_name,
-                                                      d_year) avg_monthly_sales,
+                                                      d_year
+                                         ORDER BY d_moy) avg_monthly_sales, -- Modified: Added ORDER BY d_moy to avg() window function for DataFusion compatibility DataFusion requires explicit ordering PARTITION BY
                                         rank() OVER (PARTITION BY i_category,
                                                                   i_brand,
                                                                   cc_name

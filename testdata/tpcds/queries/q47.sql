@@ -1,3 +1,5 @@
+-- TPC-DS Query 47
+-- Modified: Added ORDER BY d_moy to avg() window function for DataFusion compatibility
 WITH v1 AS
   (SELECT i_category,
           i_brand,
@@ -10,7 +12,8 @@ WITH v1 AS
                                                       i_brand,
                                                       s_store_name,
                                                       s_company_name,
-                                                      d_year) avg_monthly_sales,
+                                                      d_year
+                                         ORDER BY d_moy) avg_monthly_sales,
                                         rank() OVER (PARTITION BY i_category,
                                                                   i_brand,
                                                                   s_store_name,

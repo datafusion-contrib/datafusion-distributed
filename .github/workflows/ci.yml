@@ -65,12 +65,6 @@ jobs:
           path: testdata/tpcds/data/**
           retention-days: 7
           if-no-files-found: ignore
-      - name: Clean up test data
-        run: |
-          rm -rf testdata/tpcds/data/*
-          rm -f $HOME/.local/bin/duckdb
-          rm -rf /home/runner/.duckdb
-          df -h
 
   format-check:
     runs-on: ubuntu-latest
