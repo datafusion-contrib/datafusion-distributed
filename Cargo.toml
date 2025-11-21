@@ -16,6 +16,7 @@ datafusion = { workspace = true, features = [
     "parquet",
     "sql",
     "unicode_expressions",
+    "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
 arrow-flight = "57.0.0"
