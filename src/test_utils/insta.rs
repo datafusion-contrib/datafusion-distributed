@@ -63,6 +63,22 @@ pub fn settings() -> insta::Settings {
     settings.add_filter(r"file_open_errors=\d+", "file_open_errors=<metric>");
     settings.add_filter(r"file_scan_errors=\d+", "file_scan_errors=<metric>");
     settings.add_filter(
+        r"aggregate_arguments_time=[\d.]+[a-zA-Zµnms]+",
+        "aggregate_arguments_time=<metric>",
+    );
+    settings.add_filter(
+        r"aggregation_time=[\d.]+[a-zA-Zµnms]+",
+        "aggregation_time=<metric>",
+    );
+    settings.add_filter(
+        r"emitting_time=[\d.]+[a-zA-Zµnms]+",
+        "emitting_time=<metric>",
+    );
+    settings.add_filter(
+        r"time_calculating_group_ids=[\d.]+[a-zA-Zµnms]+",
+        "time_calculating_group_ids=<metric>",
+    );
+    settings.add_filter(
         r"files_ranges_pruned_statistics=\d+",
         "files_ranges_pruned_statistics=<metric>",
     );
@@ -151,6 +167,7 @@ pub fn settings() -> insta::Settings {
     settings.add_filter(r"build_mem_used=\d+", "build_mem_used=<metric>");
     settings.add_filter(r"build_time=[\d.]+[a-zA-Zµnms]+", "build_time=<metric>");
     settings.add_filter(r"join_time=[\d.]+[a-zA-Zµnms]+", "join_time=<metric>");
+    settings.add_filter(r"total → \d+ matched", "total → X matched");
 
     settings
 }
