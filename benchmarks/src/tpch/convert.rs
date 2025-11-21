@@ -24,9 +24,9 @@ use super::TPCH_TABLES;
 use super::get_tbl_tpch_table_schema;
 use datafusion::common::not_impl_err;
 use datafusion::error::Result;
+use datafusion::parquet::basic::Compression;
+use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::*;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
 use structopt::StructOpt;
 
 /// Convert tpch .slt files to .parquet or .csv files
