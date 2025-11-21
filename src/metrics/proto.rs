@@ -160,8 +160,8 @@ pub fn df_metrics_set_to_proto(
             Err(err) => {
                 // Check if this is the specific custom metrics error we want to filter out
                 if let DataFusionError::Internal(msg) = &err {
-                    if msg == CUSTOM_METRICS_NOT_SUPPORTED {
-                        // Filter out custom metrics error - continue processing other metrics
+                    if msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS {
+                        // Filter out custom/unsupported metrics error - continue processing other metrics
                         continue;
                     }
                 }
@@ -190,6 +190,9 @@ pub fn metrics_set_proto_to_df(
 /// Custom metrics are not supported in proto conversion.
 const CUSTOM_METRICS_NOT_SUPPORTED: &str =
     "custom metrics are not supported in metrics proto conversion";
+
+/// New DataFusion metrics that are not yet supported in proto conversion.
+const UNSUPPORTED_METRICS: &str = "metric type not supported in proto conversion";
 
 /// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `MetricProto`. It does not consume the Arc<Metric>.
 pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusionError> {
@@ -285,6 +288,10 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             labels,
         }),
         MetricValue::Custom { .. } => internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED),
+        MetricValue::OutputBytes(_) | MetricValue::PruningMetrics { .. } | MetricValue::Ratio { .. } => {
+            // TODO: Support these metrics
+            internal_err!("{}", UNSUPPORTED_METRICS)
+        }
     }
 }
 

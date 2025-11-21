@@ -7,7 +7,7 @@ mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
-        FunctionRegistry, SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
+        SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{BinaryExpr, col, lit};
@@ -253,7 +253,7 @@ mod tests {
             &self,
             buf: &[u8],
             _: &[Arc<dyn ExecutionPlan>],
-            _registry: &dyn FunctionRegistry,
+            _ctx: &TaskContext,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
             let node =
                 Int64ListExecProto::decode(buf).map_err(|err| proto_error(format!("{err}")))?;

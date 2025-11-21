@@ -53,6 +53,8 @@ pub enum ArrowErrorInnerProto {
     RunEndIndexOverflowError(bool),
     #[prost(uint64, tag = "20")]
     OffsetOverflowError(u64),
+    #[prost(string, tag = "21")]
+    AvroError(String),
 }
 
 impl ArrowErrorProto {
@@ -136,6 +138,10 @@ impl ArrowErrorProto {
                 inner: Some(ArrowErrorInnerProto::OffsetOverflowError(*offset as u64)),
                 ctx: ctx.cloned(),
             },
+            ArrowError::AvroError(msg) => ArrowErrorProto {
+                inner: Some(ArrowErrorInnerProto::AvroError(msg.to_string())),
+                ctx: ctx.cloned(),
+            },
         }
     }
 
@@ -185,6 +191,7 @@ impl ArrowErrorProto {
             ArrowErrorInnerProto::OffsetOverflowError(offset) => {
                 ArrowError::OffsetOverflowError(*offset as usize)
             }
+            ArrowErrorInnerProto::AvroError(msg) => ArrowError::AvroError(msg.to_string()),
         };
         (err, self.ctx.clone())
     }
