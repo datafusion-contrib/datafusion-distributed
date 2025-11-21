@@ -3,7 +3,6 @@ use arrow::{
     compute::{SortColumn, concat_batches, lexsort_to_indices},
     record_batch::RecordBatch,
 };
-use async_trait::async_trait;
 use datafusion::{
     common::{internal_datafusion_err, internal_err},
     error::{DataFusionError, Result},
@@ -12,188 +11,99 @@ use datafusion::{
 };
 use std::sync::Arc;
 
-/// Validator for query outputs
-/// - asserts that the set of rows is the same when running a query on two different execution contexts
-/// - uses oracles to assert properties of the query output
-pub struct Validator {
-    pub test_ctx: SessionContext,
-    pub compare_ctx: SessionContext,
-    pub oracles: Vec<Box<dyn Oracle + Send + Sync>>,
-}
-
-impl Validator {
-    /// Create a new Validator.
-    /// - [actual_ctx] is the context we want to test. It produces the "actual" results
-    /// - [expected_ctx] is the context we want to compare against. It produces the "expected"
-    ///   results
-    pub async fn new(test_ctx: SessionContext, compare_ctx: SessionContext) -> Result<Self> {
-        let oracles: Vec<Box<dyn Oracle + Send + Sync>> =
-            vec![Box::new(ResultSetOracle {}), Box::new(OrderingOracle {})];
-
-        Ok(Validator {
-            test_ctx,
-            compare_ctx,
-            oracles,
-        })
-    }
-
-    /// Create a new Validator with ordering checks enabled.
-    pub async fn new_with_ordering(
-        test_ctx: SessionContext,
-        compare_ctx: SessionContext,
-    ) -> Result<Self> {
-        let oracles: Vec<Box<dyn Oracle + Send + Sync>> =
-            vec![Box::new(ResultSetOracle {}), Box::new(OrderingOracle {})];
-
-        Ok(Validator {
-            test_ctx,
-            compare_ctx,
-            oracles,
-        })
-    }
-
-    // runs a query and returns an error if there is a validation failure. Ok(None) is returned
-    // if the query errors in both the [actual_ctx] and [expected_ctx], otherwise the actual record batches
-    // are returned.
-    pub async fn run(&self, query: &str) -> Result<Option<Vec<RecordBatch>>> {
-        let result = self.run_inner(query).await;
-        for oracle in &self.oracles {
-            oracle
-                .validate(&self.test_ctx, &self.compare_ctx, query, &result)
-                .await?;
-        }
-
-        if result.is_err() {
-            return Ok(None);
-        }
-        result.map(Some)
-    }
-
-    async fn run_inner(&self, query: &str) -> Result<Vec<RecordBatch>> {
-        let df = self.test_ctx.sql(query).await?;
-        df.collect().await
-    }
-}
-
-/// Trait for query result validation oracles
-#[async_trait]
-pub trait Oracle {
-    async fn validate(
-        &self,
-        test_ctx: &SessionContext,
-        compare_ctx: &SessionContext,
-        query: &str,
-        results: &Result<Vec<RecordBatch>>,
-    ) -> Result<()>;
-}
-
-/// Oracle that verifies the set of rows is the same between the test context and compare context.
-pub struct ResultSetOracle {}
-
-#[async_trait]
-impl Oracle for ResultSetOracle {
-    async fn validate(
-        &self,
-        _test_ctx: &SessionContext,
-        compare_ctx: &SessionContext,
-        query: &str,
-        test_result: &Result<Vec<RecordBatch>>,
-    ) -> Result<()> {
-        let df = compare_ctx.sql(query).await?;
-        let compare_result = df.collect().await;
-        let test_batches = match test_result.as_ref() {
-            Ok(batches) => batches,
-            Err(e) => {
-                if compare_result.is_ok() {
-                    return internal_err!(
-                        "query failed in test_ctx but succeeded in the compare_ctx: {}",
-                        e
-                    );
-                }
-                return Ok(()); // Both errored, so the query is valid
-            }
-        };
-
-        let compare_batches = match compare_result.as_ref() {
-            Ok(batches) => batches,
-            Err(e) => {
-                if compare_result.is_ok() {
-                    return internal_err!(
-                        "test_ctx query succeeded but failed in the compare_ctx: {}",
-                        e
-                    );
-                }
-                return Ok(()); // Both errored, so the query is valid
-            }
-        };
-
-        // Compare result sets
-        records_equal_as_sets(test_batches, compare_batches)
-            .map_err(|e| internal_datafusion_err!("ResultSetOracle validation failed: {}", e))?;
-
-        Ok(())
-    }
-}
-
-/// Oracle that asserts ordering based on the ordering properties from the physical plan.
-pub struct OrderingOracle;
-
-#[async_trait]
-impl Oracle for OrderingOracle {
-    async fn validate(
-        &self,
-        ctx: &SessionContext,
-        compare_ctx: &SessionContext,
-        query: &str,
-        test_result: &Result<Vec<RecordBatch>>,
-    ) -> Result<()> {
-        // Only validate if the query succeeded
-        let test_batches = match test_result.as_ref() {
-            Ok(batches) => batches,
-            Err(_) => return Ok(()),
-        };
-
-        let df = ctx.sql(query).await?;
-        let physical_plan = df.create_physical_plan().await?;
-        let actual_ordering = physical_plan.properties().output_ordering();
-
-        let df = compare_ctx.sql(query).await?;
-        let physical_plan = df.create_physical_plan().await?;
-        let expected_ordering = physical_plan.properties().output_ordering();
-
-        if actual_ordering != expected_ordering {
-            return internal_err!(
-                "Ordering Oracle validation failed: expected ordering: {:?}, actual ordering: {:?}",
-                expected_ordering,
-                actual_ordering
-            );
-        }
-
-        // If there's no ordering, there's nothing to validate.
-        let Some(lex_ordering) = actual_ordering else {
-            return Ok(());
-        };
-
-        // Coalesce all batches into a single batch to check ordering across the entire result set
-        if !test_batches.is_empty() {
-            let coalesced_batch = if test_batches.len() == 1 {
-                test_batches[0].clone()
-            } else {
-                concat_batches(&test_batches[0].schema(), test_batches)?
-            };
-
-            // Check if the coalesced batch maintains the expected ordering
-            let is_sorted = is_table_same_after_sort(lex_ordering, &coalesced_batch)?;
-            if !is_sorted {
+pub async fn compare_result_set(
+    _test_ctx: &SessionContext,
+    compare_ctx: &SessionContext,
+    query: &str,
+    test_result: &Result<Vec<RecordBatch>>,
+) -> Result<()> {
+    let df = compare_ctx.sql(query).await?;
+    let compare_result = df.collect().await;
+    let test_batches = match test_result.as_ref() {
+        Ok(batches) => batches,
+        Err(e) => {
+            if compare_result.is_ok() {
                 return internal_err!(
-                    "OrderingOracle validation failed: result set is not properly sorted according to expected ordering: {:?}",
-                    lex_ordering
+                    "query failed in test_ctx but succeeded in the compare_ctx: {}",
+                    e
                 );
             }
+            return Ok(()); // Both errored, so the query is valid
         }
+    };
 
-        Ok(())
+    let compare_batches = match compare_result.as_ref() {
+        Ok(batches) => batches,
+        Err(e) => {
+            if compare_result.is_ok() {
+                return internal_err!(
+                    "test_ctx query succeeded but failed in the compare_ctx: {}",
+                    e
+                );
+            }
+            return Ok(()); // Both errored, so the query is valid
+        }
+    };
+
+    // Compare result sets
+    records_equal_as_sets(test_batches, compare_batches)
+        .map_err(|e| internal_datafusion_err!("ResultSetOracle validation failed: {}", e))?;
+
+    Ok(())
+}
+
+pub async fn compare_ordering(
+    ctx: &SessionContext,
+    compare_ctx: &SessionContext,
+    query: &str,
+    test_result: &Result<Vec<RecordBatch>>,
+) -> Result<()> {
+    // Only validate if the query succeeded
+    let test_batches = match test_result.as_ref() {
+        Ok(batches) => batches,
+        Err(_) => return Ok(()),
+    };
+
+    let df = ctx.sql(query).await?;
+    let physical_plan = df.create_physical_plan().await?;
+    let actual_ordering = physical_plan.properties().output_ordering();
+
+    let df = compare_ctx.sql(query).await?;
+    let physical_plan = df.create_physical_plan().await?;
+    let expected_ordering = physical_plan.properties().output_ordering();
+
+    if actual_ordering != expected_ordering {
+        return internal_err!(
+            "Ordering Oracle validation failed: expected ordering: {:?}, actual ordering: {:?}",
+            expected_ordering,
+            actual_ordering
+        );
     }
+
+    // If there's no ordering, there's nothing to validate.
+    let Some(lex_ordering) = actual_ordering else {
+        return Ok(());
+    };
+
+    // Coalesce all batches into a single batch to check ordering across the entire result set
+    if !test_batches.is_empty() {
+        let coalesced_batch = if test_batches.len() == 1 {
+            test_batches[0].clone()
+        } else {
+            concat_batches(&test_batches[0].schema(), test_batches)?
+        };
+
+        // Check if the coalesced batch maintains the expected ordering
+        let is_sorted = is_table_same_after_sort(lex_ordering, &coalesced_batch)?;
+        if !is_sorted {
+            return internal_err!(
+                "OrderingOracle validation failed: result set is not properly sorted according to expected ordering: {:?}",
+                lex_ordering
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Compare two sets of record batches for equality (order-independent)
@@ -536,15 +446,12 @@ mod tests {
             .register_batch("test_table", batch.clone())
             .unwrap();
 
-        let oracle = OrderingOracle;
-
         // Query which sorted by id should pass.
         let ordered_query = "SELECT * FROM test_table ORDER BY id";
         let df = actual_ctx.sql(ordered_query).await.unwrap();
         let result = df.collect().await;
         assert!(
-            oracle
-                .validate(&actual_ctx, &expected_ctx, ordered_query, &result)
+            compare_ordering(&actual_ctx, &expected_ctx, ordered_query, &result)
                 .await
                 .is_ok()
         );
@@ -552,15 +459,14 @@ mod tests {
         // This should fail because the batch is not sorted by value
         let result = Ok(vec![batch]);
         assert!(
-            oracle
-                .validate(
-                    &actual_ctx,
-                    &expected_ctx,
-                    "SELECT * FROM test_table ORDER BY value",
-                    &result
-                )
-                .await
-                .is_err()
+            compare_ordering(
+                &actual_ctx,
+                &expected_ctx,
+                "SELECT * FROM test_table ORDER BY value",
+                &result
+            )
+            .await
+            .is_err()
         );
     }
 }
