@@ -137,7 +137,7 @@ pub trait DistributedExt: Sized {
     /// ```
     /// # use std::sync::Arc;
     /// # use datafusion::common::DataFusionError;
-    /// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder};
+    /// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::prelude::SessionConfig;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -147,7 +147,7 @@ pub trait DistributedExt: Sized {
     /// struct CustomExecCodec;
     ///
     /// impl PhysicalExtensionCodec for CustomExecCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     ///         todo!()
     ///     }
     ///

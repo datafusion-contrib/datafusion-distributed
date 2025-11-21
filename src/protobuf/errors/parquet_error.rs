@@ -104,10 +104,7 @@ mod tests {
             ParquetError::EOF("end of file".to_string()),
             ParquetError::ArrowError("arrow error".to_string()),
             ParquetError::IndexOutOfBound(42, 100),
-            ParquetError::External(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "external error",
-            ))),
+            ParquetError::External(Box::new(std::io::Error::other("external error"))),
             ParquetError::NeedMoreData(1024),
         ];
 

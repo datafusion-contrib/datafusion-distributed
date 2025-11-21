@@ -53,6 +53,8 @@ pub enum ArrowErrorInnerProto {
     RunEndIndexOverflowError(bool),
     #[prost(uint64, tag = "20")]
     OffsetOverflowError(u64),
+    #[prost(string, tag = "21")]
+    AvroError(String),
 }
 
 impl ArrowErrorProto {
@@ -136,6 +138,10 @@ impl ArrowErrorProto {
                 inner: Some(ArrowErrorInnerProto::OffsetOverflowError(*offset as u64)),
                 ctx: ctx.cloned(),
             },
+            ArrowError::AvroError(msg) => ArrowErrorProto {
+                inner: Some(ArrowErrorInnerProto::AvroError(msg.to_string())),
+                ctx: ctx.cloned(),
+            },
         }
     }
 
@@ -185,6 +191,7 @@ impl ArrowErrorProto {
             ArrowErrorInnerProto::OffsetOverflowError(offset) => {
                 ArrowError::OffsetOverflowError(*offset as usize)
             }
+            ArrowErrorInnerProto::AvroError(msg) => ArrowError::AvroError(msg.to_string()),
         };
         (err, self.ctx.clone())
     }
@@ -200,10 +207,7 @@ mod tests {
     fn test_arrow_error_roundtrip() {
         let test_cases = vec![
             ArrowError::NotYetImplemented("test not implemented".to_string()),
-            ArrowError::ExternalError(Box::new(std::io::Error::new(
-                ErrorKind::Other,
-                "external error",
-            ))),
+            ArrowError::ExternalError(Box::new(std::io::Error::other("external error"))),
             ArrowError::CastError("cast error".to_string()),
             ArrowError::MemoryError("memory error".to_string()),
             ArrowError::ParseError("parse error".to_string()),
@@ -235,8 +239,8 @@ mod tests {
             let (recovered_error, recovered_ctx) = proto.to_arrow_error();
 
             if original_error.to_string() != recovered_error.to_string() {
-                println!("original error: {}", original_error);
-                println!("recovered error: {}", recovered_error);
+                println!("original error: {original_error}");
+                println!("recovered error: {recovered_error}");
             }
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());

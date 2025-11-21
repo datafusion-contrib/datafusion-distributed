@@ -267,7 +267,7 @@ mod tests {
             // Use known store names that will be preserved
             ObjectStoreError::Generic {
                 store: "S3",
-                source: Box::new(std::io::Error::new(ErrorKind::Other, "generic error")),
+                source: Box::new(std::io::Error::other("generic error")),
             },
             ObjectStoreError::NotFound {
                 path: "test/path".to_string(),
@@ -279,14 +279,14 @@ mod tests {
             },
             ObjectStoreError::Precondition {
                 path: "precondition/path".to_string(),
-                source: Box::new(std::io::Error::new(ErrorKind::Other, "precondition failed")),
+                source: Box::new(std::io::Error::other("precondition failed")),
             },
             ObjectStoreError::NotSupported {
                 source: Box::new(std::io::Error::new(ErrorKind::Unsupported, "not supported")),
             },
             ObjectStoreError::NotModified {
                 path: "not/modified".to_string(),
-                source: Box::new(std::io::Error::new(ErrorKind::Other, "not modified")),
+                source: Box::new(std::io::Error::other("not modified")),
             },
             ObjectStoreError::NotImplemented,
             ObjectStoreError::PermissionDenied {
@@ -298,7 +298,7 @@ mod tests {
             },
             ObjectStoreError::Unauthenticated {
                 path: "auth/path".to_string(),
-                source: Box::new(std::io::Error::new(ErrorKind::Other, "unauthenticated")),
+                source: Box::new(std::io::Error::other("unauthenticated")),
             },
             ObjectStoreError::UnknownConfigurationKey {
                 key: "unknown_key".to_string(),

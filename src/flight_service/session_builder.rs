@@ -25,7 +25,7 @@ pub trait DistributedSessionBuilder {
     /// # use std::sync::Arc;
     /// # use async_trait::async_trait;
     /// # use datafusion::error::DataFusionError;
-    /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder};
+    /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
@@ -34,7 +34,7 @@ pub trait DistributedSessionBuilder {
     /// struct CustomExecCodec;
     ///
     /// impl PhysicalExtensionCodec for CustomExecCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], registry: &dyn FunctionRegistry) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     ///         todo!()
     ///     }
     ///

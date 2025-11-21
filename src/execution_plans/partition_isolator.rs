@@ -50,6 +50,7 @@ use std::{fmt::Formatter, sync::Arc};
 /// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
 /// ```
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum PartitionIsolatorExec {
     Pending(PartitionIsolatorPendingExec),
     Ready(PartitionIsolatorReadyExec),
@@ -223,7 +224,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
         // then look up that index in our group and execute that partition, in this
         // example partition 8
 
-        let output_stream = match partition_group.get(partition) {
+        match partition_group.get(partition) {
             Some(actual_partition_number) => {
                 if *actual_partition_number >= input_partitions {
                     //trace!("{} returning empty stream", ctx_name);
@@ -239,8 +240,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
                 Box::pin(EmptyRecordBatchStream::new(self_ready.input.schema()))
                     as SendableRecordBatchStream,
             ),
-        };
-        output_stream
+        }
     }
 }
 

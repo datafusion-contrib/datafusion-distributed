@@ -409,7 +409,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("Assertion failed within {:?}", timeout);
+        panic!("Assertion failed within {timeout:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -543,9 +543,9 @@ mod tests {
         let elapsed = start_time.elapsed();
 
         println!("\n=== TTLMap Lock Contention Benchmark ===");
-        println!("Tasks: {}", task_count);
-        println!("Total time: {:.2?}", elapsed);
-        println!("Average latency: {:.2} ns per operation", avg_time);
+        println!("Tasks: {task_count}");
+        println!("Total time: {elapsed:.2?}");
+        println!("Average latency: {avg_time:.2} ns per operation");
         println!("Entries remaining: {}", ttl_map.data.len());
         println!(
             "DashMap Lock contention time: {}ms",

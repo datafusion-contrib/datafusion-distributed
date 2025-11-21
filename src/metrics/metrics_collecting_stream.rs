@@ -47,7 +47,7 @@ where
 
         let metadata =
             FlightAppMetadata::decode(flight_data.app_metadata.as_ref()).map_err(|e| {
-                FlightError::ProtocolError(format!("failed to decode app_metadata: {}", e))
+                FlightError::ProtocolError(format!("failed to decode app_metadata: {e}"))
             })?;
 
         let Some(content) = metadata.content else {

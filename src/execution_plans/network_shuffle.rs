@@ -112,6 +112,7 @@ use tonic::metadata::MetadataMap;
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
 ///    using Arrow Flight.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum NetworkShuffleExec {
     Pending(NetworkShufflePendingExec),
     Ready(NetworkShuffleReadyExec),

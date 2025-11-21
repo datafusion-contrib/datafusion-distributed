@@ -32,7 +32,7 @@ pub async fn register_temp_parquet_table(
 
     let temp_dir = std::env::temp_dir();
     let file_id = Uuid::new_v4();
-    let temp_file_path = temp_dir.join(format!("{}_{}.parquet", table_name, file_id,));
+    let temp_file_path = temp_dir.join(format!("{table_name}_{file_id}.parquet",));
 
     let file = std::fs::File::create(&temp_file_path)?;
     let schema = batches[0].schema();
