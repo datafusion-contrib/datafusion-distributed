@@ -13,6 +13,7 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{exec_err, internal_datafusion_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -22,12 +23,13 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 
@@ -372,7 +374,39 @@ impl ExecutionPlan for NetworkShuffleExec {
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::select_all(stream),
+            spawn_select_all(stream.collect()),
         )))
     }
+}
+
+const NETWORK_STREAM_BUFFER_BATCHES: usize = 10;
+
+/// Consumes all the provided streams in parallel sending their produced messages to a single
+/// queue in random order. The resulting queue is returned as a stream.
+// FIXME: It should not be necessary to do this, it should be fine to just consume
+//  all the messages with a normal tokio::stream::select_all, however, that has the chance
+//  of deadlocking the stream on the server side (https://github.com/datafusion-contrib/datafusion-distributed/issues/228).
+//  Until we figure out what's wrong there, this is a good enough solution.
+fn spawn_select_all<T>(inner: Vec<T>) -> impl Stream<Item = T::Item>
+where
+    T: Stream + Send + Unpin + 'static,
+    T::Item: Send,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel(NETWORK_STREAM_BUFFER_BATCHES);
+    let mut tasks = vec![];
+    for mut t in inner {
+        let tx = tx.clone();
+        tasks.push(SpawnedTask::spawn(async move {
+            while let Some(msg) = t.next().await {
+                if tx.send(msg).await.is_err() {
+                    return;
+                };
+            }
+        }))
+    }
+
+    ReceiverStream::new(rx).inspect(move |_| {
+        // keep the tasks alive as long as the stream lives
+        let _ = &tasks;
+    })
 }
