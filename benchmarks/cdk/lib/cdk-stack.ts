@@ -93,8 +93,10 @@ export class CdkStack extends Stack {
       const userData = ec2.UserData.forLinux();
 
       userData.addCommands(
-        // Make binary executable
-        'chmod +x /usr/local/bin/worker',
+        // Install Rust tooling.
+        'yum install gcc',
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+        'cargo install --locked tokio-console',
 
         // Create systemd service
         `cat > /etc/systemd/system/worker.service << 'EOF'
