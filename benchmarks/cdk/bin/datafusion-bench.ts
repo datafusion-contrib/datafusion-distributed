@@ -15,6 +15,7 @@ async function main () {
     .option('-i, --iterations <number>', 'Number of iterations', '3')
     .option('--files-per-task <number>', 'Files per task', '4')
     .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
+    .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
     .option('--query <number>', 'A specific query to run', undefined)
     .parse(process.argv);
 
@@ -24,6 +25,7 @@ async function main () {
   const iterations = parseInt(options.iterations);
   const filesPerTask = parseInt(options.filesPerTask);
   const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+  const shuffleBatchSize = parseInt(options.shuffleBatchSize);
 
   // Compare with previous results first
   const results: BenchmarkResults = { queries: [] };
@@ -33,7 +35,8 @@ async function main () {
   await query(createTablesSql(sf))
   await query(`
     SET distributed.files_per_task=${filesPerTask};
-    SET distributed.cardinality_task_count_factor=${cardinalityTaskSf}
+    SET distributed.cardinality_task_count_factor=${cardinalityTaskSf};
+    SET distributed.shuffle_batch_size=${shuffleBatchSize}
   `)
 
   for (let id of IDS) {
