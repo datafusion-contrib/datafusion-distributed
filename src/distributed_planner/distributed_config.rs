@@ -24,6 +24,13 @@ extensions_options! {
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
         pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
+        /// Upon shuffling over the network, data streams need to be disassembled in a lot of output
+        /// partitions, which means the resulting streams might contain a lot of tiny record batches
+        /// to be sent over the wire. This parameter controls the batch size in number of rows for
+        /// the CoalesceBatchExec operator that is placed at the top of the stage for sending bigger
+        /// batches over the wire.
+        /// If set to 0, batch coalescing is disabled on network shuffle operations.
+        pub shuffle_batch_size: usize, default = 8192
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

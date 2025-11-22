@@ -71,8 +71,9 @@ mod tests {
         │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
-          │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │   EmptyExec
+          │ CoalesceBatchesExec: target_batch_size=8192
+          │   RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
+          │     EmptyExec
           └──────────────────────────────────────────────────
         ",
         );
