@@ -1,6 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::execution_plans::common::{require_one_child, scale_partitioning};
+use crate::execution_plans::common::{require_one_child, scale_partitioning, spawn_select_all};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
@@ -8,16 +8,13 @@ use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{ChannelResolver, DistributedTaskContext, InputStageInfo, NetworkBoundary};
-use arrow::record_batch::RecordBatch;
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
-use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{exec_err, internal_datafusion_err, plan_err};
 use datafusion::error::DataFusionError;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -25,13 +22,12 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 
@@ -379,47 +375,4 @@ impl ExecutionPlan for NetworkShuffleExec {
             spawn_select_all(stream.collect(), Arc::clone(context.memory_pool())),
         )))
     }
-}
-
-/// Consumes all the provided streams in parallel sending their produced messages to a single
-/// queue in random order. The resulting queue is returned as a stream.
-// FIXME: It should not be necessary to do this, it should be fine to just consume
-//  all the messages with a normal tokio::stream::select_all, however, that has the chance
-//  of deadlocking the stream on the server side (https://github.com/datafusion-contrib/datafusion-distributed/issues/228).
-//  Even having these channels bounded would result in deadlocks (learned it the hard way).
-//  Until we figure out what's wrong there, this is a good enough solution.
-fn spawn_select_all<T>(
-    inner: Vec<T>,
-    pool: Arc<dyn MemoryPool>,
-) -> impl Stream<Item = Result<RecordBatch, DataFusionError>>
-where
-    T: Stream<Item = Result<RecordBatch, DataFusionError>> + Send + Unpin + 'static,
-{
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let mut tasks = vec![];
-    for mut t in inner {
-        let tx = tx.clone();
-        let pool = Arc::clone(&pool);
-        let consumer = MemoryConsumer::new("NetworkShuffleExec");
-
-        tasks.push(SpawnedTask::spawn(async move {
-            while let Some(msg) = t.next().await {
-                let mut reservation = consumer.clone_with_new_id().register(&pool);
-                if let Ok(msg) = &msg {
-                    reservation.grow(msg.get_array_memory_size());
-                }
-
-                if tx.send((msg, reservation)).is_err() {
-                    return;
-                };
-            }
-        }))
-    }
-
-    UnboundedReceiverStream::new(rx).map(move |(msg, _reservation)| {
-        // keep the tasks alive as long as the stream lives
-        let _ = &tasks;
-        msg
-    })
 }
