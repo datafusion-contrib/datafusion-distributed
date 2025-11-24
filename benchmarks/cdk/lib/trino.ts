@@ -1,15 +1,17 @@
-export function trinoUserDataCommands(instanceIndex: number): string[] {
+const TRINO_VERSION = 476
+
+export function trinoUserDataCommands(instanceIndex: number, region: string): string[] {
   const isCoordinator = instanceIndex === 0;
 
   return [
-    // Install Java 22 for Trino (Trino 461 requires Java 22+)
-    'yum install -y java-22-amazon-corretto-headless python',
+    // Install Java 24 for Trino (Trino 478 requires Java 24+)
+    'yum install -y java-24-amazon-corretto-headless python',
 
-    // Download and install Trino
+    // Download and install Trino 478 (latest version)
     'cd /opt',
-    'curl -L -o trino-server.tar.gz https://repo1.maven.org/maven2/io/trino/trino-server/461/trino-server-461.tar.gz',
+    `curl -L -o trino-server.tar.gz https://repo1.maven.org/maven2/io/trino/trino-server/${TRINO_VERSION}/trino-server-${TRINO_VERSION}.tar.gz`,
     'tar -xzf trino-server.tar.gz',
-    'mv trino-server-461 trino-server',
+    `mv trino-server-${TRINO_VERSION} trino-server`,
     'rm trino-server.tar.gz',
 
     // Create Trino directories
@@ -49,15 +51,22 @@ http-server.http.port=8080
 discovery.uri=http://localhost:8080
 TRINO_EOF`,
 
-    // Configure Hive catalog for S3 Parquet files
+    // Configure Hive catalog with AWS Glue metastore
     `cat > /opt/trino-server/etc/catalog/hive.properties << 'TRINO_EOF'
 connector.name=hive
-hive.metastore=file
-hive.metastore.catalog.dir=/var/trino/metastore
+hive.metastore=glue
+hive.metastore.glue.region=${region}
+fs.native-s3.enabled=true
+s3.region=${region}
+TRINO_EOF`,
+
+    // Configure TPCH catalog for reference
+    `cat > /opt/trino-server/etc/catalog/tpch.properties << 'TRINO_EOF'
+connector.name=tpch
 TRINO_EOF`,
 
     // Download Trino CLI
-    'curl -L -o /usr/local/bin/trino https://repo1.maven.org/maven2/io/trino/trino-cli/461/trino-cli-461-executable.jar',
+    'curl -L -o /usr/local/bin/trino https://repo1.maven.org/maven2/io/trino/trino-cli/478/trino-cli-478-executable.jar',
     'chmod +x /usr/local/bin/trino',
 
     // Create Trino systemd service

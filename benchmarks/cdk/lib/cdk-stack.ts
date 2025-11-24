@@ -84,6 +84,25 @@ export class CdkStack extends Stack {
       resources: ['*'],
     }));
 
+    // Grant Glue permissions for Trino Hive metastore
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'glue:GetDatabase',
+        'glue:GetDatabases',
+        'glue:GetTable',
+        'glue:GetTables',
+        'glue:GetPartition',
+        'glue:GetPartitions',
+        'glue:CreateTable',
+        'glue:UpdateTable',
+        'glue:DeleteTable',
+        'glue:CreateDatabase',
+        'glue:UpdateDatabase',
+        'glue:DeleteDatabase',
+      ],
+      resources: ['*'],
+    }));
+
     // Grant read access to the bucket and worker binary
     bucket.grantRead(role);
     workerBinary.grantRead(role);
@@ -124,7 +143,7 @@ EOF`,
         'systemctl daemon-reload',
         'systemctl enable worker',
         'systemctl start worker',
-        ...trinoUserDataCommands(i)
+        ...trinoUserDataCommands(i, this.region)
       );
 
       const instance = new ec2.Instance(this, `BenchmarkInstance${i}`, {
