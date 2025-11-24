@@ -305,6 +305,11 @@ fn _apply_network_boundaries(
         // which means that each resulting stream might contain tiny batches. It's important to
         // have decent sized batches here as this will ultimately be sent over the wire, and the
         // penalty there for sending many tiny batches instead of few big ones is big.
+        // TODO: After https://github.com/apache/datafusion/issues/18782 is shipped, the batching
+        //  will be integrated in RepartitionExec itself, so we will not need to add a
+        //  CoalesceBatchesExec, we just need to tell RepartitionExec to output a
+        //  `d_cfg.shuffle_batch_size` batch size.
+        //  Tracked by https://github.com/datafusion-contrib/datafusion-distributed/issues/243
         if d_cfg.shuffle_batch_size > 0 {
             ctx.plan = Arc::new(CoalesceBatchesExec::new(ctx.plan, d_cfg.shuffle_batch_size));
         }
