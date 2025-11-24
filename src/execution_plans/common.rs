@@ -66,7 +66,7 @@ where
     for mut t in inner {
         let tx = tx.clone();
         let pool = Arc::clone(&pool);
-        let consumer = MemoryConsumer::new("NetworkShuffleExec");
+        let consumer = MemoryConsumer::new("NetworkBoundary");
 
         tasks.push(SpawnedTask::spawn(async move {
             while let Some(msg) = t.next().await {
