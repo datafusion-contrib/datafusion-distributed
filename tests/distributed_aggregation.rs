@@ -59,8 +59,7 @@ mod tests {
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
             │ CoalesceBatchesExec: target_batch_size=8192
@@ -142,8 +141,7 @@ mod tests {
           ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │     CoalesceBatchesExec: target_batch_size=8192
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
             │ CoalesceBatchesExec: target_batch_size=8192

@@ -310,6 +310,12 @@ fn _apply_network_boundaries(
         }
         ctx.plan = Arc::new(NetworkShuffleExec::try_new(ctx.plan, task_count)?);
         return Ok(ctx);
+    } else if let Some(coalesce_batches) = ctx.plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+        // If the batch coalescing is before the network boundary, remove it, as we don't
+        // want it there, we want it after, and the code that adds it lives just some lines above.
+        if coalesce_batches.input().is_network_boundary() {
+            ctx.plan = Arc::clone(coalesce_batches.input());
+        }
     }
 
     // If this is a CoalescePartitionsExec, it means that the original plan is trying to
@@ -556,8 +562,7 @@ mod tests {
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
             │ CoalesceBatchesExec: target_batch_size=8192
@@ -589,8 +594,7 @@ mod tests {
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
             │ CoalesceBatchesExec: target_batch_size=8192
@@ -644,8 +648,7 @@ mod tests {
         │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
         │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-        │           CoalesceBatchesExec: target_batch_size=8192
-        │             [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        │           [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
           │ CoalesceBatchesExec: target_batch_size=8192
@@ -702,8 +705,7 @@ mod tests {
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
             │ CoalesceBatchesExec: target_batch_size=8192
@@ -772,14 +774,12 @@ mod tests {
         │         [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         │       ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
-        │           CoalesceBatchesExec: target_batch_size=8192
-        │             [Stage 3] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        │           [Stage 3] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
           │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-          │     CoalesceBatchesExec: target_batch_size=8192
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
             │ CoalesceBatchesExec: target_batch_size=8192
@@ -842,8 +842,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
           │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-          │   CoalesceBatchesExec: target_batch_size=8192
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          │   [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
             │ CoalesceBatchesExec: target_batch_size=8192
