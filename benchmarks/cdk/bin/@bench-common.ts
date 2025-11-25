@@ -103,6 +103,9 @@ export async function runBenchmark(
       iterations: []
     };
 
+    console.log(`Warming up query ${id}...`)
+    await runner.executeQuery(queryToExecute);
+
     for (let i = 0; i < iterations; i++) {
       const start = new Date()
       const response = await runner.executeQuery(queryToExecute);
