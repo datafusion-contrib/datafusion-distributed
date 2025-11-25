@@ -1,3 +1,5 @@
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+
 const TRINO_VERSION = 476
 
 export function trinoUserDataCommands(instanceIndex: number, region: string): string[] {
@@ -94,13 +96,12 @@ TRINO_EOF`,
   ];
 }
 
-export function trinoAfterDeployCommands(region: string) {
+export function trinoWorkerCommands(coordinator: ec2.Instance) {
   return [
-    `COORDINATOR_IP=$(aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values=instance-0" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].PrivateIpAddress" --output text)
-cat > /opt/trino-server/etc/config.properties << TRINO_EOF
+    `cat > /opt/trino-server/etc/config.properties << TRINO_EOF
 coordinator=false
 http-server.http.port=8080
-discovery.uri=http://\${COORDINATOR_IP}:8080
+discovery.uri=http://${coordinator.instancePrivateIp}:8080
 TRINO_EOF`,
     'systemctl restart trino',
   ]

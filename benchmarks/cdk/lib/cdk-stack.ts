@@ -7,7 +7,7 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { trinoAfterDeployCommands, trinoUserDataCommands } from "./trino";
+import { trinoWorkerCommands, trinoUserDataCommands } from "./trino";
 
 const ROOT = path.join(__dirname, '../../..')
 
@@ -188,13 +188,10 @@ sudo journalctl -u worker.service -f -o cat
       'systemctl restart worker',
     ])
 
-    // Start coordinator first
-    sendCommandsUnconditionally(this, 'RestartTrinoCoordinator', [instances[0]], [
-      'systemctl start trino',
-    ])
-
     // Then start workers (they will discover the coordinator)
-    sendCommandsUnconditionally(this, 'RestartTrinoWorkers', instances.slice(1), trinoAfterDeployCommands(this.region))
+    const [coordinator, ...workers] = instances
+    sendCommandsUnconditionally(this, 'TrinoCoordinatorCommands', [coordinator], ['systemctl start trino'])
+    sendCommandsUnconditionally(this, 'TrinoWorkerCommands', workers, trinoWorkerCommands(coordinator))
   }
 }
 
