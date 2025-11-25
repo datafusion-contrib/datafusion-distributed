@@ -50,19 +50,18 @@ class TrinoRunner implements BenchmarkRunner {
       'create view revenue0 as select l_suppkey as supplier_no, sum(l_extendedprice * (1 - l_discount)) as total_revenue'
     );
 
-    // Handle multi-statement queries (e.g., query 15 with CREATE VIEW)
-    const statements = sql.split(';').map(s => s.trim()).filter(s => s.length > 0);
-
-    if (statements.length > 1) {
-      // Execute all statements except the last one
-      for (let i = 0; i < statements.length - 1; i++) {
-        await this.executeSingleStatement(statements[i]);
-      }
-      // Execute the last statement and return its result
-      return await this.executeSingleStatement(statements[statements.length - 1]);
+    let response
+    if (sql.includes("create view")) {
+      // This is query 15
+      let [createView, query, dropView] = sql.split(";")
+      await this.executeSingleStatement(createView);
+      response = await this.executeSingleStatement(query);
+      await this.executeSingleStatement(dropView);
+    } else {
+      response = await this.executeSingleStatement(sql)
     }
 
-    return await this.executeSingleStatement(sql);
+    return response
   }
 
   private async executeSingleStatement(sql: string): Promise<{ rowCount: number }> {

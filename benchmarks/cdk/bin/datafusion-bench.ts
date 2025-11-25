@@ -56,7 +56,17 @@ class DataFusionRunner implements BenchmarkRunner {
     }
 
     async executeQuery(sql: string): Promise<{ rowCount: number }> {
-        const response = await this.query(sql);
+        let response
+        if (sql.includes("create view")) {
+            // This is query 15
+            let [createView, query, dropView] = sql.split(";")
+            await this.query(createView);
+            response = await this.query(query)
+            await this.query(dropView);
+        } else {
+            response = await this.query(sql)
+        }
+
         return {rowCount: response.count};
     }
 
