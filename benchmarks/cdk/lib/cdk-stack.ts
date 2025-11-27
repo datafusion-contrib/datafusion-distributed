@@ -112,16 +112,11 @@ export class CdkStack extends Stack {
     for (let i = 0; i < config.instanceCount; i++) {
       const userData = ec2.UserData.forLinux();
 
-      // Download worker binary from S3 asset
-      userData.addS3DownloadCommand({
-        bucket: workerBinary.bucket,
-        bucketKey: workerBinary.s3ObjectKey,
-        localFile: '/usr/local/bin/worker',
-      });
-
       userData.addCommands(
-        // Make binary executable
-        'chmod +x /usr/local/bin/worker',
+        // Install Rust tooling.
+        'yum install gcc',
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+        'cargo install --locked tokio-console',
 
         // Create systemd service
         `cat > /etc/systemd/system/worker.service << 'EOF'
@@ -181,7 +176,9 @@ sudo journalctl -u worker.service -f -o cat
       description: 'Session Manager commands to connect to instances',
     });
 
-    // Custom resource to restart worker service on every deploy
+    // Downloads the latest version of the worker binary and restarts the systemd service.
+    // This is done instead of the userData.addS3Download() so that the instance does not need
+    // to restart every time a new worker binary is available.
     sendCommandsUnconditionally(this, 'RestartWorkerService', instances, [
       `aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker`,
       'chmod +x /usr/local/bin/worker',

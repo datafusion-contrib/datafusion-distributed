@@ -14,6 +14,7 @@ async function main() {
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--files-per-task <number>', 'Files per task', '4')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
+        .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
         .option('--query <number>', 'A specific query to run', undefined)
         .parse(process.argv);
 
@@ -23,11 +24,13 @@ async function main() {
     const iterations = parseInt(options.iterations);
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+    const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const specificQuery = options.query ? parseInt(options.query) : undefined;
 
     const runner = new DataFusionRunner({
         filesPerTask,
         cardinalityTaskSf,
+        shuffleBatchSize,
     });
 
     const outputPath = path.join(ROOT, "benchmarks", "data", `tpch_sf${sf}`, "remote-results.json");
@@ -52,6 +55,7 @@ class DataFusionRunner implements BenchmarkRunner {
     constructor(private readonly options: {
         filesPerTask: number;
         cardinalityTaskSf: number;
+        shuffleBatchSize: number;
     }) {
     }
 
@@ -106,7 +110,8 @@ class DataFusionRunner implements BenchmarkRunner {
         await this.query(stmt);
         await this.query(`
       SET distributed.files_per_task=${this.options.filesPerTask};
-      SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf}
+      SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
+      SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize}
     `);
     }
 

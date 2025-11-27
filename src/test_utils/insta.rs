@@ -164,6 +164,10 @@ pub fn settings() -> insta::Settings {
     settings.add_filter(r"input_batches=\d+", "input_batches=<metric>");
     settings.add_filter(r"input_rows=\d+", "input_rows=<metric>");
     settings.add_filter(r"output_batches=\d+", "output_batches=<metric>");
+    settings.add_filter(
+        r"output_bytes=\d+.\d [(B)|(KB)|(MB)]",
+        "output_bytes=<metric>",
+    );
     settings.add_filter(r"build_mem_used=\d+", "build_mem_used=<metric>");
     settings.add_filter(r"build_time=[\d.]+[a-zA-Zµnms]+", "build_time=<metric>");
     settings.add_filter(r"join_time=[\d.]+[a-zA-Zµnms]+", "join_time=<metric>");
