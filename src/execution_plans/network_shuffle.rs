@@ -13,6 +13,7 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{exec_err, internal_datafusion_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -172,18 +173,29 @@ impl NetworkBoundary for NetworkShuffleExec {
             return plan_err!("cannot only return wrapped child if on Pending state");
         };
 
-        // TODO: Avoid downcasting once https://github.com/apache/datafusion/pull/17990 is shipped.
-        let Some(r_exe) = pending.input.as_any().downcast_ref::<RepartitionExec>() else {
-            return plan_err!("NetworkShuffleExec.input must always be RepartitionExec");
-        };
-
-        let next_stage_plan = Arc::new(RepartitionExec::try_new(
-            require_one_child(r_exe.children())?,
-            scale_partitioning(r_exe.partitioning(), |p| p * n_tasks),
-        )?);
+        let transformed = Arc::clone(&pending.input).transform_down(|plan| {
+            if let Some(r_exe) = plan.as_any().downcast_ref::<RepartitionExec>() {
+                // Scale the input RepartitionExec to account for all the tasks to which it will
+                // need to fan data out.
+                let scaled = Arc::new(RepartitionExec::try_new(
+                    require_one_child(r_exe.children())?,
+                    scale_partitioning(r_exe.partitioning(), |p| p * n_tasks),
+                )?);
+                Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
+            } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
+                // This might be a passthrough node, like a CoalesceBatchesExec or something like that.
+                // This is fine, we can let the node be here.
+                Ok(Transformed::no(plan))
+            } else {
+                return plan_err!(
+                    "NetworkShuffleExec input must be hash partitioned, but {} is not",
+                    plan.name()
+                );
+            }
+        })?;
 
         Ok(InputStageInfo {
-            plan: next_stage_plan,
+            plan: transformed.data,
             task_count: pending.input_tasks,
         })
     }
