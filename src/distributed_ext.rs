@@ -77,8 +77,10 @@ pub trait DistributedExt: Sized {
     /// method with their own extensions to be able to access them in any place in the
     /// plan.
     ///
-    /// This method also adds the provided [ConfigExtension] to the current session option
-    /// extensions, the same as calling [SessionConfig::with_option_extension].
+    /// - If there was a [ConfigExtension] of the same type already present, it's updated with an
+    ///   in-place mutation base on the headers that came over the wire.
+    /// - If there was no [ConfigExtension] set before, it will get added, as if
+    ///   [SessionConfig::with_option_extension] was being called.
     ///
     /// Example:
     ///
@@ -358,6 +360,13 @@ pub trait DistributedExt: Sized {
         &mut self,
         factor: f64,
     ) -> Result<(), DataFusionError>;
+
+    /// Enables metrics collection across network boundaries so that all the metrics gather in
+    /// each node are accessible from the head stage that started running the query.
+    fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_metrics_collection] but with an in-place mutation.
+    fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -372,7 +381,8 @@ impl DistributedExt for SessionConfig {
         &mut self,
         headers: &HeaderMap,
     ) -> Result<(), DataFusionError> {
-        set_distributed_option_extension_from_headers::<T>(self, headers)
+        set_distributed_option_extension_from_headers::<T>(self, headers)?;
+        Ok(())
     }
 
     fn set_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(&mut self, codec: T) {
@@ -415,6 +425,12 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.collect_metrics = enabled;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -448,6 +464,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
             fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_metrics_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -494,6 +514,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
             fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_metrics_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -540,6 +565,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
             fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_metrics_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -586,6 +616,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
             fn with_distributed_cardinality_effect_task_scale_factor(self, factor: f64) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_metrics_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
