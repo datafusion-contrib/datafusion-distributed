@@ -31,6 +31,9 @@ extensions_options! {
         /// batches over the wire.
         /// If set to 0, batch coalescing is disabled on network shuffle operations.
         pub shuffle_batch_size: usize, default = 8192
+        /// Propagate collected metrics from all nodes in the plan across network boundaries
+        /// so that they can be reconstructed on the head node of the plan.
+        pub collect_metrics: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

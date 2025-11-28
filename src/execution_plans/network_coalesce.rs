@@ -1,13 +1,15 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::{InputStageInfo, NetworkBoundary, limit_tasks_err};
-use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
+use crate::execution_plans::common::{
+    manually_propagate_distributed_config, require_one_child, scale_partitioning_props,
+};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{ChannelResolver, DistributedTaskContext};
+use crate::{ChannelResolver, DistributedConfig, DistributedTaskContext};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -18,7 +20,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
@@ -258,6 +260,9 @@ impl ExecutionPlan for NetworkCoalesceExec {
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
+        let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
+        let retrieve_metrics = d_cfg.collect_metrics;
+
         let input_stage = &self_ready.input_stage;
         let encoded_input_plan = input_stage.plan.encoded()?;
 
@@ -273,8 +278,10 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let target_task = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
 
+        // TODO: this propagation should be automatic <link to issue>
+        let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
         let ticket = Request::from_parts(
-            MetadataMap::from_headers(context_headers.clone()),
+            MetadataMap::from_headers(context_headers),
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
@@ -311,13 +318,14 @@ impl ExecutionPlan for NetworkCoalesceExec {
                 .into_inner()
                 .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-            let metrics_collecting_stream =
-                MetricsCollectingStream::new(stream, metrics_collection_capture);
+            let stream = if retrieve_metrics {
+                MetricsCollectingStream::new(stream, metrics_collection_capture).left_stream()
+            } else {
+                stream.right_stream()
+            };
 
-            Ok(
-                FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
-                    .map_err(map_flight_to_datafusion_error),
-            )
+            Ok(FlightRecordBatchStream::new_from_flight_data(stream)
+                .map_err(map_flight_to_datafusion_error))
         }
         .try_flatten_stream();
 

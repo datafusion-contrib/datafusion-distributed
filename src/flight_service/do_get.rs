@@ -1,6 +1,7 @@
-use crate::DistributedTaskContext;
 use crate::common::map_last_stream;
-use crate::config_extension_ext::ContextGrpcMetadata;
+use crate::config_extension_ext::{
+    ContextGrpcMetadata, set_distributed_option_extension_from_headers,
+};
 use crate::flight_service::service::ArrowFlightEndpoint;
 use crate::flight_service::session_builder::DistributedSessionBuilderContext;
 use crate::metrics::TaskMetricsCollector;
@@ -9,6 +10,7 @@ use crate::protobuf::{
     AppMetadata, DistributedCodec, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
     datafusion_error_to_tonic_status,
 };
+use crate::{DistributedConfig, DistributedTaskContext};
 use arrow_flight::FlightData;
 use arrow_flight::Ticket;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
@@ -74,11 +76,12 @@ impl ArrowFlightEndpoint {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
 
+        let headers = metadata.into_headers();
         let mut session_state = self
             .session_builder
             .build_session_state(DistributedSessionBuilderContext {
                 runtime_env: Arc::clone(&self.runtime),
-                headers: metadata.clone().into_headers(),
+                headers: headers.clone(),
             })
             .await
             .map_err(|err| datafusion_error_to_tonic_status(&err))?;
@@ -114,7 +117,11 @@ impl ArrowFlightEndpoint {
 
         // Find out which partition group we are executing
         let cfg = session_state.config_mut();
-        cfg.set_extension(Arc::new(ContextGrpcMetadata(metadata.into_headers())));
+        let d_cfg =
+            set_distributed_option_extension_from_headers::<DistributedConfig>(cfg, &headers)
+                .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+        let send_metrics = d_cfg.collect_metrics;
+        cfg.set_extension(Arc::new(ContextGrpcMetadata(headers)));
         cfg.set_extension(Arc::new(DistributedTaskContext {
             task_index: doget.target_task_index as usize,
             task_count: doget.target_task_count as usize,
@@ -171,7 +178,11 @@ impl ArrowFlightEndpoint {
         let stream = map_last_stream(stream, move |last| {
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 task_data_entries.remove(key.clone());
-                return last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el));
+                return if send_metrics {
+                    last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
+                } else {
+                    last
+                };
             }
             last
         });
@@ -345,7 +356,9 @@ mod tests {
         for (task_number, task_key) in task_keys.iter().enumerate() {
             for partition in 0..num_partitions_per_task - 1 {
                 let result = do_get(partition as u64, task_number as u64, task_key.clone()).await;
-                assert!(result.is_ok());
+                if let Err(err) = result {
+                    panic!("do_get call failed with error: {err}")
+                }
             }
         }
         // As many plans as tasks should have been received.

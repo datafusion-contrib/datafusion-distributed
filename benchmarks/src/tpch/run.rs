@@ -120,6 +120,10 @@ pub struct RunOpt {
     /// Task count scale factor for when nodes in stages change the cardinality of the data
     #[structopt(long)]
     cardinality_task_sf: Option<f64>,
+
+    /// Collects metrics across network boundaries
+    #[structopt(long)]
+    collect_metrics: bool,
 }
 
 #[async_trait]
@@ -147,7 +151,8 @@ impl DistributedSessionBuilder for RunOpt {
             )?
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
-            )?;
+            )?
+            .with_distributed_metrics_collection(self.collect_metrics)?;
 
         if self.mem_table {
             builder = builder.with_physical_optimizer_rule(Arc::new(InMemoryDataSourceRule));

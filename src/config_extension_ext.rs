@@ -19,6 +19,14 @@ pub(crate) fn set_distributed_option_extension<T: ConfigExtension + Default>(
     let mut meta = HeaderMap::new();
 
     for entry in t.entries() {
+        // assume that fields starting with "__" are private, and are not supposed to be sent
+        // over the wire. This accounts for the fact that we need to send our DistributedConfig
+        // options without setting the __private_task_estimator and __private_channel_resolver.
+        // Ideally those two fields should not even be there on the first place, but until
+        // https://github.com/apache/datafusion/pull/18739 we need to put them there.
+        if entry.key.starts_with("__") {
+            continue;
+        }
         if let Some(value) = entry.value {
             meta.insert(
                 HeaderName::from_str(&format!(

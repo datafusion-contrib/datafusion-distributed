@@ -1,13 +1,17 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
-use crate::execution_plans::common::{require_one_child, scale_partitioning};
+use crate::execution_plans::common::{
+    manually_propagate_distributed_config, require_one_child, scale_partitioning,
+};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{ChannelResolver, DistributedTaskContext, InputStageInfo, NetworkBoundary};
+use crate::{
+    ChannelResolver, DistributedConfig, DistributedTaskContext, InputStageInfo, NetworkBoundary,
+};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -325,6 +329,9 @@ impl ExecutionPlan for NetworkShuffleExec {
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
+        let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
+        let retrieve_metrics = d_cfg.collect_metrics;
+
         let input_stage = &self_ready.input_stage;
         let encoded_input_plan = input_stage.plan.encoded()?;
 
@@ -337,6 +344,8 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self_ready.properties.partitioning.partition_count() * task_context.task_index;
 
+        // TODO: this propagation should be automatic <link to issue>
+        let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
         let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
             let channel_resolver = Arc::clone(&channel_resolver);
 
@@ -370,13 +379,14 @@ impl ExecutionPlan for NetworkShuffleExec {
                     .into_inner()
                     .map_err(|err| FlightError::Tonic(Box::new(err)));
 
-                let metrics_collecting_stream =
-                    MetricsCollectingStream::new(stream, metrics_collection_capture);
+                let stream = if retrieve_metrics {
+                    MetricsCollectingStream::new(stream, metrics_collection_capture).left_stream()
+                } else {
+                    stream.right_stream()
+                };
 
-                Ok(
-                    FlightRecordBatchStream::new_from_flight_data(metrics_collecting_stream)
-                        .map_err(map_flight_to_datafusion_error),
-                )
+                Ok(FlightRecordBatchStream::new_from_flight_data(stream)
+                    .map_err(map_flight_to_datafusion_error))
             }
             .try_flatten_stream()
             .boxed()

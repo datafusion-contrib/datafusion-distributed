@@ -1,6 +1,8 @@
+use crate::DistributedConfig;
 use datafusion::common::{DataFusionError, plan_err};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
+use http::HeaderMap;
 use std::borrow::Borrow;
 use std::sync::Arc;
 
@@ -39,4 +41,17 @@ pub(super) fn scale_partitioning(
         Partitioning::Hash(hash, p) => Partitioning::Hash(hash.clone(), f(*p)),
         Partitioning::UnknownPartitioning(p) => Partitioning::UnknownPartitioning(f(*p)),
     }
+}
+
+/// Manual propagation of the [DistributedConfig] fields relevant for execution. Can be removed
+/// after https://github.com/datafusion-contrib/datafusion-distributed/issues/247 is fixed, as this will become automatic.
+pub(super) fn manually_propagate_distributed_config(
+    mut headers: HeaderMap,
+    d_cfg: &DistributedConfig,
+) -> HeaderMap {
+    headers.insert(
+        "distributed.collect_metrics",
+        d_cfg.collect_metrics.to_string().parse().unwrap(),
+    );
+    headers
 }
