@@ -44,29 +44,51 @@ pub(crate) fn set_distributed_option_extension<T: ConfigExtension + Default>(
     Ok(())
 }
 
-pub(crate) fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(
-    cfg: &mut SessionConfig,
+pub(crate) fn set_distributed_option_extension_from_headers<'a, T: ConfigExtension + Default>(
+    cfg: &'a mut SessionConfig,
     headers: &HeaderMap,
-) -> Result<(), DataFusionError> {
-    let mut result = T::default();
-    let mut found_some = false;
+) -> Result<&'a T, DataFusionError> {
+    enum MutOrOwned<'a, T> {
+        Mut(&'a mut T),
+        Owned(T),
+    }
+
+    impl<'a, T> MutOrOwned<'a, T> {
+        fn as_mut(&mut self) -> &mut T {
+            match self {
+                MutOrOwned::Mut(v) => v,
+                MutOrOwned::Owned(v) => v,
+            }
+        }
+    }
+
+    // If the config extension existed before, we want to modify instead of adding a new one from
+    // scratch. If not, we'll start from scratch with a new one.
+    let mut result = match cfg.options_mut().extensions.get_mut::<T>() {
+        Some(v) => MutOrOwned::Mut(v),
+        None => MutOrOwned::Owned(T::default()),
+    };
+
     for (k, v) in headers.iter() {
         let key = k.as_str().trim_start_matches(FLIGHT_METADATA_CONFIG_PREFIX);
         let prefix = format!("{}.", T::PREFIX);
         if key.starts_with(&prefix) {
-            found_some = true;
-            result.set(
+            result.as_mut().set(
                 key.trim_start_matches(&prefix),
                 v.to_str()
                     .map_err(|err| internal_datafusion_err!("Cannot parse header value: {err}"))?,
             )?;
         }
     }
-    if !found_some {
-        return Ok(());
+
+    // Only insert the extension if it is not already there. If this is otherwise MutOrOwned::Mut it
+    // means that the extension was already there, and we already modified it.
+    if let MutOrOwned::Owned(v) = result {
+        cfg.options_mut().extensions.insert(v);
     }
-    cfg.options_mut().extensions.insert(result);
-    Ok(())
+    cfg.options().extensions.get().ok_or_else(|| {
+        internal_datafusion_err!("ProgrammingError: a config option extension was just inserted, but it was not immediately retrievable")
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -190,8 +212,15 @@ mod tests {
             &Default::default(),
         )?;
 
-        let extension = config.options().extensions.get::<CustomExtension>();
-        assert!(extension.is_none());
+        let extension = config
+            .options()
+            .extensions
+            .get::<CustomExtension>()
+            .unwrap();
+        let default = CustomExtension::default();
+        assert_eq!(extension.foo, default.foo);
+        assert_eq!(extension.bar, default.bar);
+        assert_eq!(extension.baz, default.baz);
 
         Ok(())
     }
@@ -207,8 +236,15 @@ mod tests {
 
         set_distributed_option_extension_from_headers::<CustomExtension>(&mut config, &header_map)?;
 
-        let extension = config.options().extensions.get::<CustomExtension>();
-        assert!(extension.is_none());
+        let extension = config
+            .options()
+            .extensions
+            .get::<CustomExtension>()
+            .unwrap();
+        let default = CustomExtension::default();
+        assert_eq!(extension.foo, default.foo);
+        assert_eq!(extension.bar, default.bar);
+        assert_eq!(extension.baz, default.baz);
 
         Ok(())
     }

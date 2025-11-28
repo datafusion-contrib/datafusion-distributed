@@ -77,8 +77,10 @@ pub trait DistributedExt: Sized {
     /// method with their own extensions to be able to access them in any place in the
     /// plan.
     ///
-    /// This method also adds the provided [ConfigExtension] to the current session option
-    /// extensions, the same as calling [SessionConfig::with_option_extension].
+    /// - If there was a [ConfigExtension] of the same type already present, it's updated with an
+    ///   in-place mutation base on the headers that came over the wire.
+    /// - If there was no [ConfigExtension] set before, it will get added, as if
+    ///   [SessionConfig::with_option_extension] was being called.
     ///
     /// Example:
     ///
