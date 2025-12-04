@@ -7,7 +7,9 @@ mod tests {
     use datafusion_distributed::test_utils::{
         localhost::start_localhost_context,
         property_based::{compare_ordering, compare_result_set},
-        tpcds::{generate_tpcds_data, get_data_dir, get_test_tpcds_query, register_tables},
+        tpcds::{
+            generate_tpcds_data, get_data_dir, get_test_tpcds_query, register_tables_with_options,
+        },
     };
 
     use datafusion::arrow::array::RecordBatch;
@@ -29,11 +31,11 @@ mod tests {
         distributed_ctx.set_distributed_files_per_task(FILES_PER_TASK)?;
         distributed_ctx
             .set_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
-        register_tables(&distributed_ctx).await?;
+        register_tables_with_options(&distributed_ctx, true).await?;
 
         // Create single node context to compare results to.
         let single_node_ctx = SessionContext::new();
-        register_tables(&single_node_ctx).await?;
+        register_tables_with_options(&single_node_ctx, true).await?;
 
         Ok((distributed_ctx, single_node_ctx, worker_tasks))
     }
@@ -552,7 +554,7 @@ mod tests {
         ctx: &SessionContext,
         query_sql: &str,
     ) -> (Arc<dyn ExecutionPlan>, Result<Vec<RecordBatch>>) {
-        let df = ctx.sql(&query_sql).await.unwrap();
+        let df = ctx.sql(query_sql).await.unwrap();
         let task_ctx = ctx.task_ctx();
         let plan = df.create_physical_plan().await.unwrap();
         (plan.clone(), collect(plan, task_ctx).await) // Collect execution errors, do not unwrap.

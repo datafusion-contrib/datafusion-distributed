@@ -3,5 +3,4 @@
 /benchmarks/data/
 testdata/tpch/*
 !testdata/tpch/queries
-testdata/tpch/data/
 testdata/tpcds/data/
