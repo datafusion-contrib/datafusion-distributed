@@ -241,6 +241,8 @@ mod tests {
         if distributed {
             builder = builder
                 .with_distributed_channel_resolver(InMemoryChannelResolver::new(10))
+                .with_distributed_metrics_collection(true)
+                .unwrap()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
                 .with_distributed_task_estimator(2)
         }

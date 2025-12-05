@@ -1,4 +1,5 @@
 use crate::DistributedConfig;
+use crate::config_extension_ext::set_distributed_option_extension;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::exec_err;
@@ -17,10 +18,10 @@ pub(crate) fn set_distributed_channel_resolver(
     if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
         distributed_cfg.__private_channel_resolver = channel_resolver_ext;
     } else {
-        opts.extensions.insert(DistributedConfig {
+        set_distributed_option_extension(cfg, DistributedConfig {
             __private_channel_resolver: channel_resolver_ext,
             ..Default::default()
-        });
+        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
     }
 }
 
