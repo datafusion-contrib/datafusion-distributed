@@ -1,7 +1,9 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::{InputStageInfo, NetworkBoundary, limit_tasks_err};
-use crate::execution_plans::common::{require_one_child, scale_partitioning_props};
+use crate::execution_plans::common::{
+    require_one_child, scale_partitioning_props, spawn_select_all,
+};
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
@@ -18,7 +20,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
 use std::any::Any;
@@ -319,11 +321,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
                     .map_err(map_flight_to_datafusion_error),
             )
         }
-        .try_flatten_stream();
+        .try_flatten_stream()
+        .boxed();
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            stream,
+            spawn_select_all(vec![stream], Arc::clone(context.memory_pool())),
         )))
     }
 }
