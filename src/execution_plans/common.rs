@@ -1,4 +1,4 @@
-use arrow::array::RecordBatch;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, plan_err};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool};
