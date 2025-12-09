@@ -26,12 +26,85 @@ use std::sync::Arc;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 
+/// [ExecutionPlan] that broadcasts data from a single task to multiple tasks across the network.
+///
+/// This operator is used when a small dataset needs to be replicated to all workers in the next
+/// stage. The most common use case is hash joins with `CollectLeft` partition mode, where the
+/// small build side (left table) is collected into a single partition and then broadcast to all
+/// workers processing the large probe side (right table).
+///
+/// Unlike [NetworkShuffleExec] which redistributes data across tasks, [NetworkBroadcastExec]
+/// replicates the entire input to each task in the next stage. This allows parallel execution
+/// of operations that would otherwise be forced to run single-threaded.
+///
+/// 1 to many (broadcast)
+///
+/// ┌───────────────────────────┐  ┌───────────────────────────┐ ┌───────────────────────────┐     ■
+/// │   NetworkBroadcastExec    │  │   NetworkBroadcastExec    │ │   NetworkBroadcastExec    │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// │      (full copy)          │  │      (full copy)          │ │      (full copy)          │  Stage N+1
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     │
+///             ▲                              ▲                              ▲                    │
+///             │                              │                              │                    ■
+///             └──────────────────────────────┴──────────────────────────────┘
+///                                            │                                                   ■
+///                                ┌───────────────────────────┐                                   │
+///                                │      CoalesceExec or      │                                   │
+///                                │    HashJoinExec build     │                                Stage N
+///                                │         (task 1)          │                                   │
+///                                └───────────────────────────┘                                   │
+///                                                                                                ■
+///
+/// Broadcast join example (CollectLeft hash join)
+///
+/// Stage N+1: Hash Join (3 tasks running in parallel)
+/// ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
+/// │   HashJoinExec t1    │   │   HashJoinExec t2    │   │   HashJoinExec t3    │
+/// │  left: small (bcast) │   │  left: small (bcast) │   │  left: small (bcast) │
+/// │  right: large (p1)   │   │  right: large (p2)   │   │  right: large (p3)   │
+/// └──┬─────────────────┬─┘   └──┬─────────────────┬─┘   └──┬─────────────────┬─┘
+///    │                 │        │                 │        │                 │
+///    ▼                 │        ▼                 │        ▼                 │
+/// NetworkBroadcast     │     NetworkBroadcast     │     NetworkBroadcast     │
+/// (full copy)          │     (full copy)          │     (full copy)          │
+///    │                 │        │                 │        │                 │
+///    │                 │        │                 │        │                 │
+///    │                 ▼        │                 ▼        │                 ▼
+///    │            Large table   │            Large table   │            Large table
+///    │            partition 1   │            partition 2   │            partition 3
+///    │                 │        │                 │        │                 │
+///    └─────────────────┼────────┴─────────────────┼────────┴─────────────────┘
+///                      │                          │
+/// Stage N: Small table collected + Large table partitioned
+///                      │                          │
+///              ┌───────▼──────┐          ┌────────▼────────┐
+///              │ Small table  │          │  Large table    │
+///              │  (1 task,    │          │  (3 partitions) │
+///              │  collected)  │          └─────────────────┘
+///              └──────────────┘
+///
+/// The communication between two stages across a [NetworkBroadcastExec] has these characteristics:
+///
+/// - The input stage typically has 1 task containing the collected/small dataset
+/// - Each task in Stage N+1 receives a complete copy of the data from Stage N
+/// - This enables parallel execution while ensuring all tasks have access to the full dataset
+/// - Commonly used for broadcast joins where the build side is small enough to replicate
+///
+/// This node has two variants:
+/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
+/// 2. Ready: runs within a distributed stage and queries the input stage over the network
+///    using Arrow Flight, broadcasting the data to all tasks.
+///
+/// [NetworkShuffleExec]: crate::execution_plans::NetworkShuffleExec
 #[derive(Debug, Clone)]
 pub enum NetworkBroadcastExec {
     Pending(NetworkBroadcastPending),
     Ready(NetworkBroadcastReady),
 }
 
+/// Placeholder version of the [NetworkBroadcastExec] node. It acts as a marker for the
+/// distributed optimization step, which will replace it with the appropriate
+/// [NetworkBroadcastReady] node.
 #[derive(Debug, Clone)]
 pub struct NetworkBroadcastPending {
     properties: PlanProperties,
@@ -39,6 +112,12 @@ pub struct NetworkBroadcastPending {
     input: Arc<dyn ExecutionPlan>,
 }
 
+/// Ready version of the [NetworkBroadcastExec] node. This node is created by:
+/// - the distributed optimization step based on an original [NetworkBroadcastPending]
+/// - deserialized from a protobuf plan sent over the network.
+///
+/// This variant contains the input [Stage] information and executes by broadcasting
+/// data from the input stage to all tasks in the current stage over Arrow Flight.
 #[derive(Debug, Clone)]
 pub struct NetworkBroadcastReady {
     pub(crate) properties: PlanProperties,
