@@ -1,13 +1,13 @@
+use crate::ChannelResolver;
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::{InputStageInfo, NetworkBoundary};
-use crate::execution_plans::common::{require_one_child};
+use crate::execution_plans::common::require_one_child;
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{ChannelResolver};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -32,7 +32,7 @@ pub enum NetworkBroadcastExec {
     Ready(NetworkBroadcastReady),
 }
 
- #[derive(Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct NetworkBroadcastPending {
     properties: PlanProperties,
     input_tasks: usize,
@@ -59,7 +59,7 @@ impl NetworkBroadcastExec {
 impl NetworkBoundary for NetworkBroadcastExec {
     fn get_input_stage_info(
         &self,
-        _n_tasks: usize
+        _n_tasks: usize,
     ) -> datafusion::common::Result<InputStageInfo, DataFusionError> {
         let Self::Pending(pending) = self else {
             return plan_err!("cannot only return wrapped child if on Pending state");
@@ -214,11 +214,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
                     ticket: DoGet {
                         plan_proto: encoded_input_plan.clone(),
                         target_partition: partition as u64,
-                        stage_key: Some(StageKey::new(
-                            query_id.clone(),
-                            input_stage_num,
-                            i as u64,
-                        )),
+                        stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
                     }
