@@ -1,7 +1,7 @@
 # Introduction
 
 Distributed DataFusion is a library for bringing distributed capabilities to DataFusion.
-It provides a set of `ExecutionPlan`s, optimization rules, config extensions and some new traits
+It provides a set of execution plans, optimization rules, config extensions and some new traits
 to enable distributed execution.
 
 This user guide will walk you through the process of using the tools in this project for setting up

@@ -2,10 +2,8 @@
 DataFusion Distributed
 ========================
 
-[Add project description here]
-
-DataFusion Distributed is a distributed query execution engine built on top of
-`Apache DataFusion <https://datafusion.apache.org>`_.
+DataFusion Distributed is a library that enhances `Apache DataFusion <https://datafusion.apache.org>`_ with distributed
+capabilities.
 
 .. _toc.guide:
 .. toctree::
@@ -14,8 +12,8 @@ DataFusion Distributed is a distributed query execution engine built on top of
 
    user-guide/index
    user-guide/getting-started
-   user-guide/configuration
-   user-guide/deployment
+   user-guide/concepts
+   user-guide/how-a-distributed-plan-is-built
 
 .. _toc.contributor-guide:
 .. toctree::

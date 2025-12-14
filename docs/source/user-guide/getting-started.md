@@ -22,5 +22,5 @@ follow those for understanding better how specific features work:
 
 - [Pass your own ConfigExtension implementations across network boundaries](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/tests/custom_config_extension.rs)
 - [Provide custom protobuf codecs for your own nodes](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/tests/custom_extension_codec.rs)
-- [Provide a custom TaskEstimator for controlling the amount of parallelism](TODO)
+- Provide a custom TaskEstimator for controlling the amount of parallelism (coming soon)
 

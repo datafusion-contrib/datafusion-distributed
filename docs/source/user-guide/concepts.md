@@ -1,4 +1,4 @@
-# Getting started with distributed DataFusion
+# Concepts
 
 This library contains a set of extensions to DataFusion that allow you to run distributed queries.
 
