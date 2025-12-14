@@ -37,6 +37,7 @@ rand = "0.8.5"
 object_store = "0.12.3"
 bytes = "1.10.1"
 pin-project = "1.1.10"
+tokio-stream = "0.1.17"
 
 # integration_tests deps
 insta = { version = "1.43.1", features = ["filters"], optional = true }
@@ -44,7 +45,6 @@ tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a91
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
 parquet = { version = "57.0.0", optional = true }
 arrow = { version = "57.0.0", optional = true }
-tokio-stream = { version = "0.1.17", optional = true }
 hyper-util = { version = "0.1.16", optional = true }
 pretty_assertions = { version = "1.4", optional = true }
 
@@ -55,12 +55,12 @@ integration = [
     "tpchgen-arrow",
     "parquet",
     "arrow",
-    "tokio-stream",
     "hyper-util",
     "pretty_assertions",
 ]
 
 tpch = ["integration"]
+tpcds = ["integration"]
 
 [dev-dependencies]
 structopt = "0.3"

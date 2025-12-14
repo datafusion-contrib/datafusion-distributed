@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::common::{
-    manually_propagate_distributed_config, require_one_child, scale_partitioning,
+    manually_propagate_distributed_config, require_one_child, scale_partitioning, spawn_select_all,
 };
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
@@ -394,7 +394,7 @@ impl ExecutionPlan for NetworkShuffleExec {
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::select_all(stream),
+            spawn_select_all(stream.collect(), Arc::clone(context.memory_pool())),
         )))
     }
 }

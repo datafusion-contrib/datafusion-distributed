@@ -5,5 +5,7 @@ pub mod metrics;
 pub mod mock_exec;
 pub mod parquet;
 pub mod plans;
+pub mod property_based;
 pub mod session_context;
+pub mod tpcds;
 pub mod tpch;

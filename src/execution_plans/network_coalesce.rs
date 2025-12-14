@@ -3,6 +3,7 @@ use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::{InputStageInfo, NetworkBoundary, limit_tasks_err};
 use crate::execution_plans::common::{
     manually_propagate_distributed_config, require_one_child, scale_partitioning_props,
+    spawn_select_all,
 };
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
@@ -327,11 +328,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
             Ok(FlightRecordBatchStream::new_from_flight_data(stream)
                 .map_err(map_flight_to_datafusion_error))
         }
-        .try_flatten_stream();
+        .try_flatten_stream()
+        .boxed();
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            stream,
+            spawn_select_all(vec![stream], Arc::clone(context.memory_pool())),
         )))
     }
 }

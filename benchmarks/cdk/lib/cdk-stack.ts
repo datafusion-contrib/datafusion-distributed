@@ -7,6 +7,7 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { trinoWorkerCommands, trinoUserDataCommands } from "./trino";
 
 const ROOT = path.join(__dirname, '../../..')
 
@@ -18,7 +19,7 @@ interface CdkStackProps extends StackProps {
 }
 
 export class CdkStack extends Stack {
-  constructor (scope: Construct, id: string, props: CdkStackProps) {
+  constructor(scope: Construct, id: string, props: CdkStackProps) {
     super(scope, id, props);
 
     const { config } = props;
@@ -83,6 +84,25 @@ export class CdkStack extends Stack {
       resources: ['*'],
     }));
 
+    // Grant Glue permissions for Trino Hive metastore
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'glue:GetDatabase',
+        'glue:GetDatabases',
+        'glue:GetTable',
+        'glue:GetTables',
+        'glue:GetPartition',
+        'glue:GetPartitions',
+        'glue:CreateTable',
+        'glue:UpdateTable',
+        'glue:DeleteTable',
+        'glue:CreateDatabase',
+        'glue:UpdateDatabase',
+        'glue:DeleteDatabase',
+      ],
+      resources: ['*'],
+    }));
+
     // Grant read access to the bucket and worker binary
     bucket.grantRead(role);
     workerBinary.grantRead(role);
@@ -117,7 +137,8 @@ EOF`,
         // Enable and start the service
         'systemctl daemon-reload',
         'systemctl enable worker',
-        'systemctl start worker'
+        'systemctl start worker',
+        ...trinoUserDataCommands(i, this.region)
       );
 
       const instance = new ec2.Instance(this, `BenchmarkInstance${i}`, {
@@ -158,33 +179,47 @@ sudo journalctl -u worker.service -f -o cat
     // Downloads the latest version of the worker binary and restarts the systemd service.
     // This is done instead of the userData.addS3Download() so that the instance does not need
     // to restart every time a new worker binary is available.
-    const restartWorker = new cr.AwsCustomResource(this, 'RestartWorkerService', {
-      onUpdate: {
-        service: 'SSM',
-        action: 'sendCommand',
-        parameters: {
-          DocumentName: 'AWS-RunShellScript',
-          InstanceIds: instances.map(inst => inst.instanceId),
-          Parameters: {
-            commands: [
-              `aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker`,
-              'chmod +x /usr/local/bin/worker',
-              'systemctl restart worker',
-            ],
-          },
-        },
-        physicalResourceId: cr.PhysicalResourceId.of(`restart-${Date.now()}`),
-        ignoreErrorCodesMatching: '.*',
-      },
-      policy: cr.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          actions: ['ssm:SendCommand'],
-          resources: ['*'],
-        }),
-      ]),
-    });
+    sendCommandsUnconditionally(this, 'RestartWorkerService', instances, [
+      `aws s3 cp s3://${workerBinary.s3BucketName}/${workerBinary.s3ObjectKey} /usr/local/bin/worker`,
+      'chmod +x /usr/local/bin/worker',
+      'systemctl restart worker',
+    ])
 
-    // Ensure instances are created before restarting
-    restartWorker.node.addDependency(...instances)
+    // Then start workers (they will discover the coordinator)
+    const [coordinator, ...workers] = instances
+    sendCommandsUnconditionally(this, 'TrinoCoordinatorCommands', [coordinator], ['systemctl start trino'])
+    sendCommandsUnconditionally(this, 'TrinoWorkerCommands', workers, trinoWorkerCommands(coordinator))
   }
+}
+
+function sendCommandsUnconditionally(
+  construct: Construct,
+  name: string,
+  instances: ec2.Instance[],
+  commands: string[]
+) {
+  const cmd = new cr.AwsCustomResource(construct, name, {
+    onUpdate: {
+      service: 'SSM',
+      action: 'sendCommand',
+      parameters: {
+        DocumentName: 'AWS-RunShellScript',
+        InstanceIds: instances.map(inst => inst.instanceId),
+        Parameters: {
+          commands
+        },
+      },
+      physicalResourceId: cr.PhysicalResourceId.of(`${name}-${Date.now()}`),
+      ignoreErrorCodesMatching: '.*',
+    },
+    policy: cr.AwsCustomResourcePolicy.fromStatements([
+      new iam.PolicyStatement({
+        actions: ['ssm:SendCommand'],
+        resources: ['*'],
+      }),
+    ]),
+  });
+
+  // Ensure instances are created before restarting
+  cmd.node.addDependency(...instances)
 }
