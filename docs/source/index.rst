@@ -21,3 +21,6 @@ capabilities.
    :caption: Contributor Guide
 
    contributor-guide/index
+   contributor-guide/setup
+   contributor-guide/tests
+   contributor-guide/benchmarks
