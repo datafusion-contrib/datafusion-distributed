@@ -1,3 +1,4 @@
+use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{ChannelResolver, DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
@@ -103,10 +104,10 @@ pub(crate) fn set_distributed_task_estimator(
     } else {
         let mut estimators = CombinedTaskEstimator::default();
         estimators.user_provided.push(Arc::new(estimator));
-        opts.extensions.insert(DistributedConfig {
+        set_distributed_option_extension(cfg, DistributedConfig {
             __private_task_estimator: estimators,
             ..Default::default()
-        });
+        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
     }
 }
 

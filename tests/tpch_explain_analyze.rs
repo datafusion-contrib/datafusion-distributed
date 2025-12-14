@@ -4,7 +4,9 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::tpch;
-    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, explain_analyze};
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExt, assert_snapshot, explain_analyze,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fs;
@@ -1158,7 +1160,8 @@ mod tests {
     }
 
     async fn test_tpch_query(query_id: u8) -> Result<String, Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let (mut ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        ctx.set_distributed_metrics_collection(true)?;
         run_tpch_query(ctx, query_id).await
     }
 
