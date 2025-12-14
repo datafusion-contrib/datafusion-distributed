@@ -344,7 +344,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self_ready.properties.partitioning.partition_count() * task_context.task_index;
 
-        // TODO: this propagation should be automatic <link to issue>
+        // TODO: this propagation should be automatic https://github.com/datafusion-contrib/datafusion-distributed/issues/247
         let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
         let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
             let channel_resolver = Arc::clone(&channel_resolver);

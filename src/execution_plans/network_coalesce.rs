@@ -278,7 +278,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let target_task = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
 
-        // TODO: this propagation should be automatic <link to issue>
+        // TODO: this propagation should be automatic https://github.com/datafusion-contrib/datafusion-distributed/issues/247
         let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
         let ticket = Request::from_parts(
             MetadataMap::from_headers(context_headers),
