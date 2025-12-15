@@ -1,13 +1,14 @@
-import { CfnOutput, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import {CfnOutput, RemovalPolicy, Stack, StackProps, Tags} from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import * as cr from 'aws-cdk-lib/custom-resources';
-import { Construct } from 'constructs';
+import {Construct} from 'constructs';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import { trinoWorkerCommands, trinoUserDataCommands } from "./trino";
+import {execSync} from 'child_process';
+import {trinoWorkerCommands, trinoUserDataCommands} from "./trino";
+import {sparkMasterCommands, sparkWorkerCommands, sparkUserDataCommands} from "./spark";
 
 const ROOT = path.join(__dirname, '../../..')
 
@@ -138,7 +139,8 @@ EOF`,
         'systemctl daemon-reload',
         'systemctl enable worker',
         'systemctl start worker',
-        ...trinoUserDataCommands(i, this.region)
+        ...trinoUserDataCommands(i, this.region),
+        ...sparkUserDataCommands(i, this.region)
       );
 
       const instance = new ec2.Instance(this, `BenchmarkInstance${i}`, {
@@ -189,6 +191,11 @@ sudo journalctl -u worker.service -f -o cat
     const [coordinator, ...workers] = instances
     sendCommandsUnconditionally(this, 'TrinoCoordinatorCommands', [coordinator], ['systemctl start trino'])
     sendCommandsUnconditionally(this, 'TrinoWorkerCommands', workers, trinoWorkerCommands(coordinator))
+
+    // Start Spark master and workers
+    const [sparkMaster, ...sparkWorkers] = instances
+    sendCommandsUnconditionally(this, 'SparkMasterCommands', [sparkMaster], sparkMasterCommands())
+    sendCommandsUnconditionally(this, 'SparkWorkerCommands', sparkWorkers, sparkWorkerCommands(sparkMaster))
   }
 }
 
