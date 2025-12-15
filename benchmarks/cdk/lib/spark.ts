@@ -7,8 +7,8 @@ export function sparkUserDataCommands(instanceIndex: number, region: string): st
   const isMaster = instanceIndex === 0;
 
   return [
-    // Java 24 is already installed for Trino
-    'yum install -y java-24-amazon-corretto-headless python',
+    // Install Java 17 for Spark (Java 24 is already installed for Trino)
+    'yum install -y java-17-amazon-corretto-headless python',
 
     // Download and install Spark
     'cd /opt',
@@ -29,7 +29,7 @@ export function sparkUserDataCommands(instanceIndex: number, region: string): st
 
     // Set JAVA_HOME and SPARK_HOME
     `cat > /opt/spark/conf/spark-env.sh << 'SPARK_EOF'
-export JAVA_HOME=/usr/lib/jvm/java-24-amazon-corretto
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
 export SPARK_HOME=/opt/spark
 export SPARK_LOG_DIR=/var/spark/logs
 export SPARK_WORKER_DIR=/var/spark/work
@@ -72,7 +72,7 @@ ExecStop=/opt/spark/sbin/stop-master.sh
 Restart=on-failure
 User=root
 WorkingDirectory=/opt/spark
-Environment="JAVA_HOME=/usr/lib/jvm/java-24-amazon-corretto"
+Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
 Environment="SPARK_HOME=/opt/spark"
 
 [Install]
@@ -93,7 +93,7 @@ ExecStop=/opt/spark/sbin/stop-worker.sh
 Restart=on-failure
 User=root
 WorkingDirectory=/opt/spark
-Environment="JAVA_HOME=/usr/lib/jvm/java-24-amazon-corretto"
+Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
 Environment="SPARK_HOME=/opt/spark"
 
 [Install]
@@ -124,7 +124,7 @@ export function sparkMasterCommands() {
 export function sparkWorkerCommands(master: ec2.Instance) {
   return [
     `cat > /opt/spark/conf/spark-env.sh << SPARK_EOF
-export JAVA_HOME=/usr/lib/jvm/java-24-amazon-corretto
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
 export SPARK_HOME=/opt/spark
 export SPARK_LOG_DIR=/var/spark/logs
 export SPARK_WORKER_DIR=/var/spark/work

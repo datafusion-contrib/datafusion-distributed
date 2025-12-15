@@ -151,7 +151,8 @@ EOF`,
         machineImage: ec2.MachineImage.latestAmazonLinux2023(),
         securityGroup,
         role,
-        userData
+        userData,
+        userDataCausesReplacement: true
       });
 
       // Tag for peer discovery
