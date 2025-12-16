@@ -7,8 +7,8 @@ export function sparkUserDataCommands(instanceIndex: number, region: string): st
   const isMaster = instanceIndex === 0;
 
   return [
-    // Install Java 17 for Spark (Java 24 is already installed for Trino)
-    'yum install -y java-17-amazon-corretto-headless python',
+    // Install Java 17 for Spark
+    'yum install -y java-17-amazon-corretto-headless',
 
     // Download and install Spark
     'cd /opt',
@@ -57,6 +57,30 @@ spark.sql.adaptive.coalescePartitions.enabled true
 spark.hadoop.fs.s3a.impl org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.aws.credentials.provider com.amazonaws.auth.InstanceProfileCredentialsProvider
 SPARK_EOF`,
+
+    // Create Spark Thrift Server systemd service (only on master)
+    ...(isMaster ? [
+      `cat > /etc/systemd/system/spark-thrift.service << 'SPARK_THRIFT_EOF'
+[Unit]
+Description=Spark Thrift Server
+After=network.target spark-master.service spark-worker.service
+Requires=spark-master.service
+
+[Service]
+Type=forking
+ExecStart=/opt/spark/sbin/start-thriftserver.sh --master spark://localhost:7077 --hiveconf hive.server2.thrift.port=10000
+ExecStop=/opt/spark/sbin/stop-thriftserver.sh
+Restart=on-failure
+User=root
+WorkingDirectory=/opt/spark
+Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
+Environment="SPARK_HOME=/opt/spark"
+
+[Install]
+WantedBy=multi-user.target
+SPARK_THRIFT_EOF`,
+      'systemctl enable spark-thrift',
+    ] : []),
 
     // Create Spark Master systemd service
     isMaster
@@ -118,6 +142,8 @@ export function sparkMasterCommands() {
     'systemctl start spark-master',
     'sleep 5',  // Wait for master to start
     'systemctl start spark-worker',  // Master also runs a worker
+    'sleep 3',  // Wait for worker to register
+    'systemctl start spark-thrift',  // Start Spark Thrift Server for SQL access
   ];
 }
 
