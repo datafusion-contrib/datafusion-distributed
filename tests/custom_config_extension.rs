@@ -98,9 +98,9 @@ mod tests {
         // Wrap leaf nodes with CustomConfigExtensionRequiredExec to test config extension propagation
         let transformed = plan.transform_up(|plan| {
             if plan.children().is_empty() {
-                return Ok(Transformed::yes(Arc::new(CustomConfigExtensionRequiredExec::new(
-                    plan,
-                ))));
+                return Ok(Transformed::yes(Arc::new(
+                    CustomConfigExtensionRequiredExec::new(plan),
+                )));
             }
             Ok(Transformed::no(plan))
         })?;
