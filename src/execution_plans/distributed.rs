@@ -81,6 +81,7 @@ impl DistributedExec {
                         url: Some(urls[(start_idx + i) % urls.len()].clone()),
                     })
                     .collect::<Vec<_>>(),
+                consumer_count: stage.consumer_count,
             };
 
             Ok(Transformed::yes(plan.with_input_stage(ready_stage)?))

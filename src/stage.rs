@@ -81,6 +81,7 @@ pub struct Stage {
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
+    pub consumer_count: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,12 +159,14 @@ impl Stage {
         num: usize,
         plan: Arc<dyn ExecutionPlan>,
         n_tasks: usize,
+        consumer_count: Option<usize>,
     ) -> Self {
         Self {
             query_id,
             num,
             plan: MaybeEncodedPlan::Decoded(plan),
             tasks: vec![ExecutionTask { url: None }; n_tasks],
+            consumer_count,
         }
     }
 }

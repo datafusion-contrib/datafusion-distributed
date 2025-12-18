@@ -1,3 +1,4 @@
+use crate::execution_plans::NetworkBroadcastExec;
 use crate::{NetworkCoalesceExec, NetworkShuffleExec, Stage};
 use datafusion::common::plan_err;
 use datafusion::physical_plan::ExecutionPlan;
@@ -81,6 +82,8 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
         if let Some(node) = self.as_any().downcast_ref::<NetworkShuffleExec>() {
             Some(node)
         } else if let Some(node) = self.as_any().downcast_ref::<NetworkCoalesceExec>() {
+            Some(node)
+        } else if let Some(node) = self.as_any().downcast_ref::<NetworkBroadcastExec>() {
             Some(node)
         } else {
             None

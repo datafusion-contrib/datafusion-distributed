@@ -56,6 +56,7 @@ pub fn rewrite_distributed_plan_with_metrics(
                             stage.num,
                             plan_with_metrics,
                             stage.tasks.len(),
+                            stage.consumer_count,
                         ),
                     )?))
                 }

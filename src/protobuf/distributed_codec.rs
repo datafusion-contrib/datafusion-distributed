@@ -1,6 +1,9 @@
 use super::get_distributed_user_codecs;
 use crate::NetworkBoundary;
-use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
+use crate::execution_plans::{
+    NetworkBroadcastExec, NetworkBroadcastReady, NetworkCoalesceExec, NetworkCoalesceReady,
+    NetworkShuffleReadyExec,
+};
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
@@ -136,6 +139,30 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     parse_stage_proto(input_stage, inputs)?,
                 )))
             }
+            DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
+                schema,
+                partitioning,
+                input_stage,
+            }) => {
+                let schema: Schema = schema
+                    .as_ref()
+                    .map(|s| s.try_into())
+                    .ok_or(proto_error("NetworkBroadcastExec is missing schema"))??;
+
+                let partitioning = parse_protobuf_partitioning(
+                    partitioning.as_ref(),
+                    ctx,
+                    &schema,
+                    &DistributedCodec {},
+                )?
+                .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
+
+                Ok(Arc::new(new_network_broadcast_exec(
+                    partitioning,
+                    Arc::new(schema),
+                    parse_stage_proto(input_stage, inputs)?,
+                )))
+            }
             DistributedExecNode::PartitionIsolator(PartitionIsolatorExecProto { n_tasks }) => {
                 if inputs.len() != 1 {
                     return Err(proto_error(format!(
@@ -201,6 +228,21 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             let wrapper = DistributedExecProto {
                 node: Some(DistributedExecNode::NetworkCoalesceTasks(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<NetworkBroadcastExec>() {
+            let inner = NetworkBroadcastExecProto {
+                schema: Some(node.schema().try_into()?),
+                partitioning: Some(serialize_partitioning(
+                    node.properties().output_partitioning(),
+                    &DistributedCodec {},
+                )?),
+                input_stage: Some(encode_stage_proto(node.input_stage())?),
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::NetworkBroadcast(inner)),
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
@@ -289,6 +331,8 @@ pub enum DistributedExecNode {
     NetworkCoalesceTasks(NetworkCoalesceExecProto),
     #[prost(message, tag = "3")]
     PartitionIsolator(PartitionIsolatorExecProto),
+    #[prost(message, tag = "4")]
+    NetworkBroadcast(NetworkBroadcastExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -346,6 +390,36 @@ fn new_network_coalesce_tasks_exec(
     input_stage: Stage,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec::Ready(NetworkCoalesceReady {
+        properties: PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            partitioning,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ),
+        input_stage,
+        metrics_collection: Default::default(),
+    })
+}
+
+/// Protobuf representation of the [NetworkBroadcastExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkBroadcastExec] nodes
+/// to send them over the wire.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NetworkBroadcastExecProto {
+    #[prost(message, optional, tag = "1")]
+    schema: Option<protobuf::Schema>,
+    #[prost(message, optional, tag = "2")]
+    partitioning: Option<protobuf::Partitioning>,
+    #[prost(message, optional, tag = "3")]
+    input_stage: Option<StageProto>,
+}
+
+fn new_network_broadcast_exec(
+    partitioning: Partitioning,
+    schema: SchemaRef,
+    input_stage: Stage,
+) -> NetworkBroadcastExec {
+    NetworkBroadcastExec::Ready(NetworkBroadcastReady {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
