@@ -1,35 +1,76 @@
-#[cfg(all(feature = "integration", test))]
+#[cfg(test)]
 mod tests {
-    use arrow::util::pretty;
+    use arrow::{datatypes::DataType, util::pretty};
     use datafusion::{
-        assert_batches_eq,
         physical_plan::{collect, displayable},
         prelude::{ParquetReadOptions, SessionContext},
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, display_plan_ascii,
-        test_utils::localhost::start_localhost_context,
+        DefaultSessionBuilder, display_plan_ascii, test_utils::localhost::start_localhost_context,
     };
+
+    fn set_optimizer_settings(ctx: &SessionContext) {
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .preserve_file_partitions;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
+    }
 
     #[tokio::test]
     async fn test_join_distributed() -> Result<(), Box<dyn std::error::Error>> {
-
-        let query = "SELECT * FROM dim JOIN fact ON dim.key = fact.key ORDER BY dim.key, dim.col1, fact.col1";
+        let query = r#"
+        SELECT 
+                f.f_dkey,
+                f.timestamp,
+                f.value,
+                d.env,
+                d.service,
+                d.host
+            FROM dim d
+            INNER JOIN fact f ON d.d_dkey = f.f_dkey
+            ORDER BY f.f_dkey, f.timestamp
+        "#;
 
         // Execute the query using single node datafusion.
         let ctx = SessionContext::new();
-        ctx.register_parquet(
-            "dim",
-            "testdata/join/parquet/dim",
-            ParquetReadOptions::new(),
-        )
-        .await?;
-        ctx.register_parquet(
-            "fact",
-            "testdata/join/parquet/fact",
-            ParquetReadOptions::new(),
-        )
-        .await?;
+
+        // Register hive-style partitioning for the dim table.
+        let dim_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
+        ctx.register_parquet("dim", "testdata/join/parquet/dim", dim_options)
+            .await?;
+
+        // Register hive-style partitioning for the fact table.
+        let fact_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)]);
+        ctx.register_parquet("fact", "testdata/join/parquet/fact", fact_options)
+            .await?;
 
         let df = ctx.sql(query).await?;
 
@@ -43,35 +84,21 @@ mod tests {
 
         // Execute the query using distributed datafusion.
         let (distributed_ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        // Register hive-style partitioning for the dim table.
+        let dim_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
         distributed_ctx
-            .register_parquet(
-                "dim",
-                "testdata/join/parquet/dim",
-                ParquetReadOptions::new(),
-            )
-            .await?;
-        distributed_ctx
-            .register_parquet(
-                "fact",
-                "testdata/join/parquet/fact",
-                ParquetReadOptions::new(),
-            )
+            .register_parquet("dim", "testdata/join/parquet/dim", dim_options)
             .await?;
 
+        // Register hive-style partitioning for the fact table.
+        let fact_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)]);
         distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
+            .register_parquet("fact", "testdata/join/parquet/fact", fact_options)
+            .await?;
+
+        set_optimizer_settings(&distributed_ctx);
 
         let df = distributed_ctx.sql(query).await?;
 
@@ -89,4 +116,3 @@ mod tests {
         Ok(())
     }
 }
-

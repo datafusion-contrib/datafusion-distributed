@@ -18,31 +18,31 @@ TO "testdata/join/parquet/dim/d_dkey=D/data0.parquet"
 STORED AS PARQUET;
 
 -- Generate parquet fact files from csv files.
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=A/data0.csv")
-TO "testdata/join/parquet/fact/d_dkey=A/data0.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=A/data0.csv")
+TO "testdata/join/parquet/fact/f_dkey=A/data0.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=B/data0.csv")
-TO "testdata/join/parquet/fact/d_dkey=B/data0.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=B/data0.csv")
+TO "testdata/join/parquet/fact/f_dkey=B/data0.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=B/data1.csv")
-TO "testdata/join/parquet/fact/d_dkey=B/data1.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=B/data1.csv")
+TO "testdata/join/parquet/fact/f_dkey=B/data1.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=B/data2.csv")
-TO "testdata/join/parquet/fact/d_dkey=B/data2.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=B/data2.csv")
+TO "testdata/join/parquet/fact/f_dkey=B/data2.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=C/data0.csv")
-TO "testdata/join/parquet/fact/d_dkey=C/data0.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=C/data0.csv")
+TO "testdata/join/parquet/fact/f_dkey=C/data0.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=C/data1.csv")
-TO "testdata/join/parquet/fact/d_dkey=C/data1.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=C/data1.csv")
+TO "testdata/join/parquet/fact/f_dkey=C/data1.parquet"
 STORED AS PARQUET;
 
-COPY (SELECT * FROM "testdata/join/csv/fact/d_dkey=D/data0.csv")
-TO "testdata/join/parquet/fact/d_dkey=D/data0.parquet"
+COPY (SELECT * FROM "testdata/join/csv/fact/f_dkey=D/data0.csv")
+TO "testdata/join/parquet/fact/f_dkey=D/data0.parquet"
 STORED AS PARQUET;
 
