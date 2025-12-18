@@ -1,7 +1,5 @@
 use crate::DistributedTaskContext;
-use crate::distributed_planner::limit_tasks_err;
-use datafusion::common::{exec_err, plan_err};
-use datafusion::error::DataFusionError;
+use crate::common::require_one_child;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::{
@@ -50,62 +48,31 @@ use std::{fmt::Formatter, sync::Arc};
 /// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
 /// ```
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum PartitionIsolatorExec {
-    Pending(PartitionIsolatorPendingExec),
-    Ready(PartitionIsolatorReadyExec),
-}
-
-#[derive(Debug)]
-pub struct PartitionIsolatorPendingExec {
-    input: Arc<dyn ExecutionPlan>,
-}
-
-#[derive(Debug)]
-pub struct PartitionIsolatorReadyExec {
+pub struct PartitionIsolatorExec {
     pub(crate) input: Arc<dyn ExecutionPlan>,
     pub(crate) properties: PlanProperties,
     pub(crate) n_tasks: usize,
 }
 
 impl PartitionIsolatorExec {
-    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
-        PartitionIsolatorExec::Pending(PartitionIsolatorPendingExec { input })
-    }
-
-    pub(crate) fn ready(&self, n_tasks: usize) -> Result<Self, DataFusionError> {
-        let Self::Pending(pending) = self else {
-            return plan_err!("PartitionIsolatorExec is already ready");
-        };
-
-        let input_partitions = pending.input.properties().partitioning.partition_count();
-        if n_tasks > input_partitions {
-            return Err(limit_tasks_err(input_partitions));
-        }
+    pub fn new(input: Arc<dyn ExecutionPlan>, n_tasks: usize) -> Self {
+        let input_partitions = input.properties().partitioning.partition_count();
 
         let partition_count = Self::partition_groups(input_partitions, n_tasks)[0].len();
 
-        let properties = pending
-            .input
+        let properties = input
             .properties()
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(partition_count));
 
-        Ok(Self::Ready(PartitionIsolatorReadyExec {
-            input: pending.input.clone(),
+        Self {
+            input: input.clone(),
             properties,
             n_tasks,
-        }))
+        }
     }
 
-    pub(crate) fn new_ready(
-        input: Arc<dyn ExecutionPlan>,
-        n_tasks: usize,
-    ) -> Result<Self, DataFusionError> {
-        Self::new(input).ready(n_tasks)
-    }
-
-    pub(crate) fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
+    fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
         let q = input_partitions / n_tasks;
         let r = input_partitions % n_tasks;
 
@@ -127,27 +94,16 @@ impl PartitionIsolatorExec {
     ) -> Vec<usize> {
         Self::partition_groups(input_partitions, n_tasks)[task_i].clone()
     }
-
-    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
-        match self {
-            PartitionIsolatorExec::Pending(v) => &v.input,
-            PartitionIsolatorExec::Ready(v) => &v.input,
-        }
-    }
 }
 
 impl DisplayAs for PartitionIsolatorExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let PartitionIsolatorExec::Ready(self_ready) = self else {
-            return write!(f, "PartitionIsolatorExec");
-        };
-        let input_partitions = self.input().output_partitioning().partition_count();
-        let partition_groups =
-            PartitionIsolatorExec::partition_groups(input_partitions, self_ready.n_tasks);
+        let input_partitions = self.input.output_partitioning().partition_count();
+        let partition_groups = Self::partition_groups(input_partitions, self.n_tasks);
 
         let n: usize = partition_groups.iter().map(|v| v.len()).sum();
         let mut partitions = vec![];
-        for _ in 0..self_ready.n_tasks {
+        for _ in 0..self.n_tasks {
             partitions.push(vec!["__".to_string(); n]);
         }
 
@@ -172,33 +128,19 @@ impl ExecutionPlan for PartitionIsolatorExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        match self {
-            PartitionIsolatorExec::Pending(pending) => pending.input.properties(),
-            PartitionIsolatorExec::Ready(ready) => &ready.properties,
-        }
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![self.input()]
+        vec![&self.input]
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if children.len() != 1 {
-            return plan_err!(
-                "PartitionIsolatorExec wrong number of children, expected 1, got {}",
-                children.len()
-            );
-        }
-
-        Ok(Arc::new(match self.as_ref() {
-            PartitionIsolatorExec::Pending(_) => Self::new(children[0].clone()),
-            PartitionIsolatorExec::Ready(ready) => {
-                Self::new(children[0].clone()).ready(ready.n_tasks)?
-            }
-        }))
+        let input = require_one_child(children)?;
+        Ok(Arc::new(Self::new(input, self.n_tasks)))
     }
 
     fn execute(
@@ -206,13 +148,9 @@ impl ExecutionPlan for PartitionIsolatorExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let Self::Ready(self_ready) = self else {
-            return exec_err!("PartitionIsolatorExec is not ready");
-        };
-
         let task_context = DistributedTaskContext::from_ctx(&context);
 
-        let input_partitions = self_ready.input.output_partitioning().partition_count();
+        let input_partitions = self.input.output_partitioning().partition_count();
 
         let partition_group = Self::partition_group(
             input_partitions,
@@ -228,18 +166,14 @@ impl ExecutionPlan for PartitionIsolatorExec {
             Some(actual_partition_number) => {
                 if *actual_partition_number >= input_partitions {
                     //trace!("{} returning empty stream", ctx_name);
-                    Ok(
-                        Box::pin(EmptyRecordBatchStream::new(self_ready.input.schema()))
-                            as SendableRecordBatchStream,
-                    )
+                    Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
+                        as SendableRecordBatchStream)
                 } else {
-                    self_ready.input.execute(*actual_partition_number, context)
+                    self.input.execute(*actual_partition_number, context)
                 }
             }
-            None => Ok(
-                Box::pin(EmptyRecordBatchStream::new(self_ready.input.schema()))
-                    as SendableRecordBatchStream,
-            ),
+            None => Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
+                as SendableRecordBatchStream),
         }
     }
 }

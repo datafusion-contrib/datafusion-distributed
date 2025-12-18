@@ -324,7 +324,7 @@ impl RunOpt {
         let mut n_tasks = 0;
         physical_plan.clone().transform_down(|node| {
             if let Some(node) = node.as_network_boundary() {
-                n_tasks += node.input_stage().map(|v| v.tasks.len()).unwrap_or(0)
+                n_tasks += node.input_stage().tasks.len()
             }
             Ok(Transformed::no(node))
         })?;

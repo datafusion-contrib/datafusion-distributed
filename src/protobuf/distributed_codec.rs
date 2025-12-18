@@ -1,6 +1,6 @@
 use super::get_distributed_user_codecs;
 use crate::NetworkBoundary;
-use crate::execution_plans::{NetworkCoalesceExec, NetworkCoalesceReady, NetworkShuffleReadyExec};
+use crate::execution_plans::NetworkCoalesceExec;
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
@@ -146,10 +146,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
                 let child = inputs.first().unwrap();
 
-                Ok(Arc::new(PartitionIsolatorExec::new_ready(
+                Ok(Arc::new(PartitionIsolatorExec::new(
                     child.clone(),
                     n_tasks as usize,
-                )?))
+                )))
             }
         }
     }
@@ -159,10 +159,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
-        fn encode_stage_proto(stage: Option<&Stage>) -> Result<StageProto, DataFusionError> {
-            let stage = stage.ok_or(proto_error(
-                "Cannot encode a NetworkBoundary that has no stage assinged",
-            ))?;
+        fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
             Ok(StageProto {
                 query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
                 num: stage.num as u64,
@@ -205,13 +202,8 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.as_any().downcast_ref::<PartitionIsolatorExec>() {
-            let PartitionIsolatorExec::Ready(ready_node) = node else {
-                return Err(proto_error(
-                    "deserialized an PartitionIsolatorExec that is not ready",
-                ));
-            };
             let inner = PartitionIsolatorExecProto {
-                n_tasks: ready_node.n_tasks as u64,
+                n_tasks: node.n_tasks as u64,
             };
 
             let wrapper = DistributedExecProto {
@@ -315,7 +307,7 @@ fn new_network_hash_shuffle_exec(
     schema: SchemaRef,
     input_stage: Stage,
 ) -> NetworkShuffleExec {
-    NetworkShuffleExec::Ready(NetworkShuffleReadyExec {
+    NetworkShuffleExec {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
@@ -324,7 +316,7 @@ fn new_network_hash_shuffle_exec(
         ),
         input_stage,
         metrics_collection: Default::default(),
-    })
+    }
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -345,7 +337,7 @@ fn new_network_coalesce_tasks_exec(
     schema: SchemaRef,
     input_stage: Stage,
 ) -> NetworkCoalesceExec {
-    NetworkCoalesceExec::Ready(NetworkCoalesceReady {
+    NetworkCoalesceExec {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
@@ -354,7 +346,7 @@ fn new_network_coalesce_tasks_exec(
         ),
         input_stage,
         metrics_collection: Default::default(),
-    })
+    }
 }
 
 fn encode_tasks(tasks: &[ExecutionTask]) -> Vec<ExecutionTaskProto> {
@@ -451,8 +443,7 @@ mod tests {
             dummy_stage(),
         ));
 
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(flight.clone(), 1)?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 1));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -481,8 +472,7 @@ mod tests {
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(union.clone(), 1)?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(union.clone(), 1));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -514,8 +504,7 @@ mod tests {
             flight.clone(),
         ));
 
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(sort.clone(), 1)?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(sort.clone(), 1));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -559,8 +548,7 @@ mod tests {
             dummy_stage(),
         ));
 
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(flight.clone(), 1)?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 1));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -589,8 +577,7 @@ mod tests {
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new_ready(union.clone(), 3)?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(union.clone(), 3));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;

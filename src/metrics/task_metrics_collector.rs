@@ -41,19 +41,9 @@ impl TreeNodeRewriter for TaskMetricsCollector {
         // from child tasks.
         let metrics_collection =
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-                let NetworkShuffleExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkShuffleExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                Some(Arc::clone(&node.metrics_collection))
             } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-                let NetworkCoalesceExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkCoalesceExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                Some(Arc::clone(&node.metrics_collection))
             } else {
                 None
             };
@@ -132,7 +122,10 @@ mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
+    use crate::{
+        DistributedExt, DistributedPhysicalOptimizerRule, display_plan_ascii,
+        rewrite_distributed_plan_with_metrics,
+    };
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -281,13 +274,17 @@ mod tests {
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
             assert_eq!(
                 actual_metrics.len(),
-                count_plan_nodes(stage.plan.decoded().unwrap())
+                count_plan_nodes(stage.plan.decoded().unwrap()),
+                "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
             );
 
             // Ensure each node has at least one metric which was collected.
             for metrics_set in actual_metrics.iter() {
                 let metrics_set = metrics_set_proto_to_df(metrics_set).unwrap();
-                assert!(metrics_set.iter().count() > 0);
+                assert!(
+                    metrics_set.iter().count() > 0,
+                    "Did not found metrics for Stage {expected_stage_key:?}"
+                );
             }
         }
     }

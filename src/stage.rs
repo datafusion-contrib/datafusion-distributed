@@ -479,7 +479,7 @@ fn display_plan(
         node_index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
             isolator_partition_group = Some(PartitionIsolatorExec::partition_group(
-                node.input().output_partitioning().partition_count(),
+                node.input.output_partitioning().partition_count(),
                 task_i,
                 n_tasks,
             ));
@@ -665,7 +665,7 @@ fn display_inter_task_edges(
     while let Some(plan) = queue.pop_front() {
         index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-            if node.input_stage().is_none_or(|v| v.num != input_stage.num) {
+            if node.input_stage().num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -689,7 +689,7 @@ fn display_inter_task_edges(
             }
             continue;
         } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            if node.input_stage().is_none_or(|v| v.num != input_stage.num) {
+            if node.input_stage().num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -739,9 +739,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     let mut result = vec![];
     for child in plan.children() {
         if let Some(plan) = child.as_network_boundary() {
-            if let Some(stage) = plan.input_stage() {
-                result.push(stage);
-            }
+            result.push(plan.input_stage());
         } else {
             result.extend(find_input_stages(child.as_ref()));
         }
@@ -752,9 +750,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
 pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
     let mut result = vec![];
     if let Some(plan) = plan.as_network_boundary() {
-        if let Some(stage) = plan.input_stage() {
-            result.push(stage);
-        }
+        result.push(plan.input_stage());
     }
     for child in plan.children() {
         result.extend(find_all_stages(child));
