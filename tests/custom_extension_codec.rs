@@ -1,6 +1,7 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
+    use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
         SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
@@ -42,10 +43,16 @@ mod tests {
 
         register_parquet_tables(&ctx).await?;
         let df = ctx.sql(query).await?;
-        let mut plan = df.create_physical_plan().await?;
+        let plan = df.create_physical_plan().await?;
 
-        // Wrap the plan with CustomPassThroughExec to test custom codec
-        plan = Arc::new(CustomPassThroughExec::new(plan));
+        // Wrap leaf nodes with CustomPassThroughExec to test custom codec
+        let transformed = plan.transform_up(|plan| {
+            if plan.children().is_empty() {
+                return Ok(Transformed::yes(Arc::new(CustomPassThroughExec::new(plan))));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = transformed.data;
 
         let batches = pretty_format_batches(
             &execute_stream(plan, ctx.task_ctx())?

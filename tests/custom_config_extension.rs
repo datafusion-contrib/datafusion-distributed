@@ -1,5 +1,6 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::common::{extensions_options, internal_datafusion_err, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
@@ -50,10 +51,18 @@ mod tests {
 
         register_parquet_tables(&ctx).await?;
         let df = ctx.sql(query).await?;
-        let mut plan = df.create_physical_plan().await?;
+        let plan = df.create_physical_plan().await?;
 
-        // Wrap the plan with CustomConfigExtensionRequiredExec to test config extension propagation
-        plan = Arc::new(CustomConfigExtensionRequiredExec::new(plan));
+        // Wrap leaf nodes with CustomConfigExtensionRequiredExec to test config extension propagation
+        let transformed = plan.transform_up(|plan| {
+            if plan.children().is_empty() {
+                return Ok(Transformed::yes(Arc::new(
+                    CustomConfigExtensionRequiredExec::new(plan),
+                )));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = transformed.data;
 
         let stream = execute_stream(plan, ctx.task_ctx())?;
         // It should not fail.
@@ -84,10 +93,18 @@ mod tests {
 
         register_parquet_tables(&ctx).await?;
         let df = ctx.sql(query).await?;
-        let mut plan = df.create_physical_plan().await?;
+        let plan = df.create_physical_plan().await?;
 
-        // Wrap the plan with CustomConfigExtensionRequiredExec to test config extension propagation
-        plan = Arc::new(CustomConfigExtensionRequiredExec::new(plan));
+        // Wrap leaf nodes with CustomConfigExtensionRequiredExec to test config extension propagation
+        let transformed = plan.transform_up(|plan| {
+            if plan.children().is_empty() {
+                return Ok(Transformed::yes(Arc::new(CustomConfigExtensionRequiredExec::new(
+                    plan,
+                ))));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = transformed.data;
 
         // If the value is modified after setting it as a distributed option extension, it should
         // propagate the correct headers.
