@@ -9,39 +9,6 @@ mod tests {
         DefaultSessionBuilder, display_plan_ascii, test_utils::localhost::start_localhost_context,
     };
 
-    fn set_optimizer_settings(ctx: &SessionContext) {
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .preserve_file_partitions;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-    }
-
     #[tokio::test]
     async fn test_join_distributed() -> Result<(), Box<dyn std::error::Error>> {
         let query = r#"
@@ -114,5 +81,36 @@ mod tests {
         assert_eq!(non_distributed_result, distributed_result);
 
         Ok(())
+    }
+
+    fn set_optimizer_settings(ctx: &SessionContext) {
+        // Ensure that we always use a partitioned hash join.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
+
+        // Always preserve file partitions.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .preserve_file_partitions = 1;
+        // Set to a high value to ensure we always use the subset satisfaction optimization.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .subset_satisfaction_partition_threshold = 999;
     }
 }
