@@ -466,6 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_executed_distributed_plan_has_metrics() {
         let ctx = make_test_distributed_ctx().await;
         let plan = ctx

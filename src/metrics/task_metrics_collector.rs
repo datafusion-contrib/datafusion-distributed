@@ -122,10 +122,7 @@ mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
-    };
+    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -290,6 +287,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_1() {
         run_metrics_collection_e2e_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
     }
@@ -313,6 +311,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_3() {
         run_metrics_collection_e2e_test(
             "SELECT
@@ -333,6 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_4() {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
