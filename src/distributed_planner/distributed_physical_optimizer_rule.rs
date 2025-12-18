@@ -1,22 +1,19 @@
 use crate::common::require_one_child;
+use crate::distributed_planner::plan_annotator::{
+    AnnotatedPlan, RequiredNetworkBoundary, annotate_plan,
+};
 use crate::{
-    ChannelResolver, DistributedConfig, DistributedExec, NetworkCoalesceExec, NetworkShuffleExec,
-    TaskEstimator,
+    DistributedConfig, DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, TaskEstimator,
 };
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
-use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::ops::AddAssign;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -88,184 +85,6 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     }
 }
 
-#[derive(Debug, Clone)]
-enum TaskCountAnnotation {
-    Desired(usize),
-    Maximum(usize),
-}
-
-impl TaskCountAnnotation {
-    fn as_usize(&self) -> usize {
-        match self {
-            Self::Desired(desired) => *desired,
-            Self::Maximum(maximum) => *maximum,
-        }
-    }
-}
-
-struct AnnotatedPlan {
-    plan: Arc<dyn ExecutionPlan>,
-    children: Vec<AnnotatedPlan>,
-    // annotation fields
-    task_count: TaskCountAnnotation,
-}
-
-impl Debug for AnnotatedPlan {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fn fmt_dbg(f: &mut Formatter<'_>, plan: &AnnotatedPlan, depth: usize) -> std::fmt::Result {
-            writeln!(
-                f,
-                "{}{}: task_count={:?}",
-                " ".repeat(depth * 2),
-                plan.plan.name(),
-                plan.task_count
-            )?;
-            for child in plan.children.iter() {
-                fmt_dbg(f, child, depth + 1)?;
-            }
-            Ok(())
-        }
-
-        fmt_dbg(f, self, 0)
-    }
-}
-
-fn annotate_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<AnnotatedPlan, DataFusionError> {
-    use TaskCountAnnotation::*;
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-
-    let annotated_children = plan
-        .children()
-        .iter()
-        .map(|child| annotate_plan(Arc::clone(child), cfg))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if plan.children().is_empty() {
-        // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
-        // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
-        // this decision into account when deciding how many tasks will be actually used.
-        let estimator = &d_cfg.__private_task_estimator;
-        if let Some(estimate) = estimator.tasks_for_leaf_node(&plan, cfg) {
-            return Ok(AnnotatedPlan {
-                plan,
-                children: Vec::new(),
-                task_count: Desired(estimate.task_count),
-            });
-        } else {
-            // We could not determine how many tasks this leaf node should run on, so
-            // assume it cannot be distributed and used just 1 task.
-            return Ok(AnnotatedPlan {
-                plan,
-                children: Vec::new(),
-                task_count: Desired(1),
-            });
-        }
-    }
-
-    // The task count for this plan is decided by the biggest task count from the children; unless
-    // a child specifies a maximum task count, in that case, the maximum is respected. Some
-    // nodes can only run in one task. If there is a subplan with a single node declaring that
-    // it can only run in one task, all the rest of the nodes in the stage need to respect it.
-    let mut task_count = Desired(1);
-    let n_workers = d_cfg.__private_channel_resolver.0.get_urls()?.len().max(1);
-    for annotated_child in annotated_children.iter() {
-        task_count = match (task_count, &annotated_child.task_count) {
-            (Desired(desired), Desired(child)) => Desired(desired.max(*child).min(n_workers)),
-            (Maximum(max), Desired(_)) => Maximum(max.min(n_workers)),
-            (Desired(_), Maximum(max)) => Maximum((*max).min(n_workers)),
-            (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2).min(n_workers)),
-        }
-    }
-
-    // We cannot partition HashJoinExec nodes yet.
-    if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>() {
-        if node.mode == PartitionMode::CollectLeft {
-            task_count = Maximum(1);
-        }
-    }
-
-    // The plan does not need a NetworkBoundary, so just take the biggest task count from
-    // the children and annotate the plan with that.
-    let mut annotated_plan = AnnotatedPlan {
-        plan,
-        children: annotated_children,
-        task_count,
-    };
-    let Some(nb_req) = needs_network_boundary_below(&annotated_plan) else {
-        return Ok(annotated_plan);
-    };
-
-    // The plan needs a NetworkBoundary. At this point we have all the info we need for choosing
-    // the right size for the stage below, so what we need to do is take the calculated final
-    // task count and propagate to all the children that will eventually be part of the stage.
-    fn propagate_task_count(plan: &mut AnnotatedPlan, task_count: &TaskCountAnnotation) {
-        plan.task_count = task_count.clone();
-        if needs_network_boundary_below(plan).is_none() {
-            for child in &mut plan.children {
-                propagate_task_count(child, task_count);
-            }
-        }
-    }
-    for annotated_child in annotated_plan.children.iter_mut() {
-        propagate_task_count(annotated_child, &annotated_plan.task_count);
-    }
-
-    // If the current plan that needs a NetworkBoundary boundary below is either a
-    // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
-    // that they are going to be part of needs to run in exactly one task.
-    if nb_req.type_ == RequiredNetworkBoundaryType::Coalesce {
-        annotated_plan.task_count = Maximum(1);
-        return Ok(annotated_plan);
-    }
-
-    // From now and up in the plan, a new task count needs to be calculated for the next stage.
-    // Depending on the number of nodes that reduce/increase cardinality, the task count will be
-    // calculated based on the previous task count multiplied by a factor.
-    fn calculate_scale_factor(plan: &AnnotatedPlan, f: f64) -> f64 {
-        let mut sf = None;
-
-        if needs_network_boundary_below(plan).is_none() {
-            for plan in plan.children.iter() {
-                sf = match sf {
-                    None => Some(calculate_scale_factor(plan, f)),
-                    Some(sf) => Some(sf.max(calculate_scale_factor(plan, f))),
-                }
-            }
-        }
-
-        let sf = sf.unwrap_or(1.0);
-        match plan.plan.cardinality_effect() {
-            CardinalityEffect::LowerEqual => sf / f,
-            CardinalityEffect::GreaterEqual => sf * f,
-            _ => sf,
-        }
-    }
-
-    let sf = calculate_scale_factor(
-        annotated_plan.children.first().expect("missing child"),
-        d_cfg.cardinality_task_count_factor,
-    );
-    let task_count = annotated_plan.task_count.as_usize() as f64;
-    annotated_plan.task_count = Desired((task_count * sf).ceil() as usize);
-
-    Ok(annotated_plan)
-}
-
-#[derive(PartialEq)]
-enum RequiredNetworkBoundaryType {
-    Shuffle,
-    Coalesce,
-}
-
-struct RequiredNetworkBoundary {
-    task_count: usize,
-    input_task_count: usize,
-    type_: RequiredNetworkBoundaryType,
-}
-
 fn distribute_plan(
     annotated_plan: AnnotatedPlan,
     cfg: &ConfigOptions,
@@ -274,8 +93,9 @@ fn distribute_plan(
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
 
+    let children = annotated_plan.children;
     // This is a leaf node, so we need to scale it up with the final task count.
-    if annotated_plan.children.is_empty() {
+    if children.is_empty() {
         let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
             &annotated_plan.plan,
             annotated_plan.task_count.as_usize(),
@@ -284,39 +104,34 @@ fn distribute_plan(
         return Ok(scaled_up.unwrap_or(annotated_plan.plan));
     }
 
-    let network_boundary_requirement = needs_network_boundary_below(&annotated_plan);
-    let one_task_in_parent_and_child = annotated_plan.task_count.as_usize() == 1
-        && annotated_plan
-            .children
-            .iter()
-            .all(|v| v.task_count.as_usize() == 1);
+    let parent_task_count = annotated_plan.task_count.as_usize();
+    let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
 
-    let new_children = annotated_plan
-        .children
+    let new_children = children
         .into_iter()
         .map(|child| distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
 
     // It does not need a NetworkBoundary, so just keep recursing.
-    let Some(nb_req) = network_boundary_requirement else {
+    let Some(nb_req) = annotated_plan.required_network_boundary else {
         return annotated_plan.plan.with_new_children(new_children);
     };
 
     // It would need a network boundary, but on both sides of the boundary there is just 1 task,
     // so we are fine with not introducing any network boundary.
-    if one_task_in_parent_and_child {
+    if parent_task_count == 1 && max_child_task_count == Some(1) {
         return annotated_plan.plan.with_new_children(new_children);
     }
 
     // If the current node has a RepartitionExec below, it needs a shuffle, so put one
     // NetworkShuffleExec boundary in between the RepartitionExec and the current node.
-    if nb_req.type_ == RequiredNetworkBoundaryType::Shuffle {
+    if nb_req == RequiredNetworkBoundary::Shuffle {
         let new_child = Arc::new(NetworkShuffleExec::try_new(
             require_one_child(new_children)?,
             query_id,
             *stage_id,
-            nb_req.task_count,
-            nb_req.input_task_count,
+            parent_task_count,
+            max_child_task_count.unwrap_or(1),
         )?);
         stage_id.add_assign(1);
         return annotated_plan.plan.with_new_children(vec![new_child]);
@@ -325,13 +140,13 @@ fn distribute_plan(
     // If this is a CoalescePartitionsExec or a SortMergePreservingExec, it means that the original
     // plan is trying to merge all partitions into one. We need to go one step ahead and also merge
     // all distributed tasks into one.
-    if nb_req.type_ == RequiredNetworkBoundaryType::Coalesce {
+    if nb_req == RequiredNetworkBoundary::Coalesce {
         let new_child = Arc::new(NetworkCoalesceExec::try_new(
             require_one_child(new_children)?,
             query_id,
             *stage_id,
-            nb_req.task_count,
-            nb_req.input_task_count,
+            parent_task_count,
+            max_child_task_count.unwrap_or(1),
         )?);
         stage_id.add_assign(1);
         return annotated_plan.plan.with_new_children(vec![new_child]);
@@ -377,34 +192,6 @@ fn push_down_batch_coalescing(
     })?;
 
     Ok(transformed.data)
-}
-
-fn needs_network_boundary_below(parent: &AnnotatedPlan) -> Option<RequiredNetworkBoundary> {
-    let child = parent.children.first()?;
-
-    if let Some(r_exec) = child.plan.as_any().downcast_ref::<RepartitionExec>() {
-        if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
-            return Some(RequiredNetworkBoundary {
-                task_count: parent.task_count.as_usize(),
-                input_task_count: child.task_count.as_usize(),
-                type_: RequiredNetworkBoundaryType::Shuffle,
-            });
-        }
-    }
-    if parent.plan.as_any().is::<CoalescePartitionsExec>()
-        || parent.plan.as_any().is::<SortPreservingMergeExec>()
-    {
-        if child.children.is_empty() {
-            return None;
-        }
-        return Some(RequiredNetworkBoundary {
-            task_count: parent.task_count.as_usize(),
-            input_task_count: child.task_count.as_usize(),
-            type_: RequiredNetworkBoundaryType::Coalesce,
-        });
-    }
-
-    None
 }
 
 #[cfg(test)]

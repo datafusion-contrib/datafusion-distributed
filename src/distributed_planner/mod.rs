@@ -1,6 +1,7 @@
 mod distributed_config;
 mod distributed_physical_optimizer_rule;
 mod network_boundary;
+mod plan_annotator;
 mod task_estimator;
 
 pub use distributed_config::DistributedConfig;
