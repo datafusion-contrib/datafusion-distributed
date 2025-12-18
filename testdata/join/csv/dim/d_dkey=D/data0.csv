@@ -1,0 +1,4 @@
+env,service,host
+dev,log,host-x
+prod,trace,host-z
+
