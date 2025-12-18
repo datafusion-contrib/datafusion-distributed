@@ -32,12 +32,11 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        CoalescePartitionsExec
-          ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
-            CoalesceBatchesExec: target_batch_size=8192
-              FilterExec: table_name@2 = weather
-                RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-                  StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
+        ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
+          CoalesceBatchesExec: target_batch_size=8192
+            FilterExec: table_name@2 = weather
+              RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
+                StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
         ",
         );
 
