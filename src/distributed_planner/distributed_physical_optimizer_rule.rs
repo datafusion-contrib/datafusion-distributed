@@ -509,6 +509,7 @@ mod tests {
     use crate::{assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
+    use itertools::Itertools;
     use std::sync::Arc;
     /* shema for the "weather" table
 
@@ -879,6 +880,36 @@ mod tests {
         ");
     }
 
+    #[tokio::test]
+    #[ignore] // FIXME: fix this test
+    async fn test_limited_by_worker() {
+        let query = r#"
+        SET datafusion.execution.target_partitions=2;
+        SELECT 1 FROM weather
+        UNION ALL
+        SELECT 1 FROM flights_1m
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(2))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0]
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+          │ UnionExec
+          │   ProjectionExec: expr=[1 as Int64(1)]
+          │     PartitionIsolatorExec: t0:[p0,__] t1:[__,p0]
+          │       DataSourceExec: file_groups={2 groups: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, file_type=parquet
+          │   ProjectionExec: expr=[1 as Int64(1)]
+          │     PartitionIsolatorExec: t0:[p0] t1:[__]
+          │       DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, file_type=parquet
+          └──────────────────────────────────────────────────
+        ");
+    }
+
     async fn sql_to_explain(
         query: &str,
         f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
@@ -895,14 +926,18 @@ mod tests {
         let state = f(builder).build();
 
         let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
+        let mut queries = query.split(";").collect_vec();
+        let last_query = queries.pop().unwrap();
 
-        let mut df = None;
-        for query in query.split(";") {
-            df = Some(ctx.sql(query).await.unwrap());
+        for query in queries {
+            ctx.sql(query).await.unwrap();
         }
 
-        let physical_plan = df.unwrap().create_physical_plan().await.unwrap();
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx.sql(last_query).await.unwrap();
+
+        let physical_plan = df.create_physical_plan().await.unwrap();
         display_plan_ascii(physical_plan.as_ref(), false)
     }
 }
