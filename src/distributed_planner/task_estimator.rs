@@ -3,7 +3,7 @@ use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -168,7 +168,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
-        cfg: &ConfigOptions,
+        _cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
         if task_count == 1 {
             return Some(Arc::clone(plan));
@@ -176,11 +176,17 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of
         // partitions, but as we are going wrap it with PartitionIsolatorExec that's fine.
-        let scaled_partitions = task_count * plan.output_partitioning().partition_count();
-        let mut plan = Arc::clone(plan);
-        if let Ok(Some(repartitioned)) = plan.repartitioned(scaled_partitions, cfg) {
-            plan = repartitioned;
+        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+
+        let mut new_file_scan = file_scan.clone();
+        new_file_scan.file_groups.clear();
+        for file_group in file_scan.file_groups.clone() {
+            new_file_scan
+                .file_groups
+                .extend(file_group.split_files(task_count));
         }
+        let plan = DataSourceExec::from_data_source(new_file_scan);
         Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
     }
 }
