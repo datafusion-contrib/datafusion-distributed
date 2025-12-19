@@ -19,33 +19,22 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// Physical optimizer rule that inspects the plan, places the appropriate network
-/// boundaries and breaks it down into stages that can be executed in a distributed manner.
+/// boundaries, and breaks it down into stages that can be executed in a distributed manner.
 ///
-/// The rule has two steps:
+/// The rule has three steps:
 ///
-/// 1. Inject the appropriate distributed execution nodes in the appropriate places.
+/// 1. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
+///    many distributed tasks should be used in the stage containing them, and whether they
+///    need a network boundary below or not.
+///    For more information about this step, read [annotate_plan] docs.
 ///
-///  This is done by looking at specific nodes in the original plan and enhancing them
-///  with new additional nodes:
-///  - a [DataSourceExec] is wrapped with a [PartitionIsolatorExec] for exposing just a subset
-///    of the [DataSourceExec] partitions to the rest of the plan.
-///  - a [CoalescePartitionsExec] is followed by a [NetworkCoalesceExec] so that all tasks in the
-///    previous stage collapse into just 1 in the next stage.
-///  - a [SortPreservingMergeExec] is followed by a [NetworkCoalesceExec] for the same reasons as
-///    above
-///  - a [RepartitionExec] with a hash partition is wrapped with a [NetworkShuffleExec] for
-///    shuffling data to different tasks.
+/// 2. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
+///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
+///    assignation that the annotations required. After this, the plan is already a distributed
+///    executable plan.
 ///
-///
-/// 2. Break down the plan into stages
-///  
-///  Based on the network boundaries ([NetworkShuffleExec], [NetworkCoalesceExec], ...) placed in
-///  the plan by the first step, the plan is divided into stages and tasks are assigned to each
-///  stage.
-///
-///  This step might decide to not respect the amount of tasks each network boundary is requesting,
-///  like when a plan is not parallelizable in different tasks (e.g. a collect left [HashJoinExec])
-///  or when a [DataSourceExec] has not enough partitions to be spread across tasks.
+/// 3. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
+///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule;
 
@@ -85,6 +74,13 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     }
 }
 
+/// Takes an [AnnotatedPlan] and returns a modified [ExecutionPlan] with all the network boundaries
+/// appropriately placed. This step performs the following modifications to the original
+/// [ExecutionPlan]:
+/// - The leaf nodes are scaled up in parallelism based on the number of distributed tasks in
+///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
+/// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
+///   so new nodes like [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
 fn distribute_plan(
     annotated_plan: AnnotatedPlan,
     cfg: &ConfigOptions,
@@ -158,6 +154,9 @@ fn distribute_plan(
     )
 }
 
+/// Rearranges the [CoalesceBatchesExec] nodes in the plan so that they are placed right below
+/// the network boundaries, so that fewer but bigger record batches are sent over the wire across
+/// stages.
 fn push_down_batch_coalescing(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,

@@ -27,8 +27,8 @@ pub struct TaskEstimation {
 /// stage containing it, and if the leaf node should be replaced by some other.
 ///
 /// The distributed planner will try many [TaskEstimator]s in order until one provides an
-/// estimation for a specific leaf node. Once that's done, upper stages will get its task
-/// count calculated based on wether lower stages are reducing the cardinality of the data
+/// estimation for a specific leaf node. Once that's done, upper stages will get their task
+/// count calculated based on whether lower stages are reducing the cardinality of the data
 /// or increasing it.
 pub trait TaskEstimator {
     /// Function applied to leaf nodes that returns a [TaskEstimation] hinting how many
@@ -128,8 +128,8 @@ pub(crate) fn set_distributed_task_estimator(
 }
 
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
-/// [FileScanConfig]s data sources (e.g. Parquet or CSV files). it will read the
-/// [DistributedConfig].`files_per_task` field and assigns as many task as needed so that
+/// [FileScanConfig]s data sources (e.g., Parquet or CSV files). it will read the
+/// [DistributedConfig].`files_per_task` field and assigns as many tasks as needed so that
 /// no task handles more than the configured files.
 #[derive(Debug)]
 struct FileScanConfigTaskEstimator;

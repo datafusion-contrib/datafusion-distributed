@@ -1,5 +1,5 @@
 use crate::{DistributedConfig, TaskEstimator};
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
@@ -11,10 +11,25 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
+/// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
+/// it should run on.
 #[derive(Debug, Clone)]
 pub(super) enum TaskCountAnnotation {
+    /// The desired number of distributed tasks for this node. The final task count for the
+    /// annotated node might not be exactly this number, it is more like a hint, so depending
+    /// on the desired task count of adjacent nodes, the final task count might change.
     Desired(usize),
+    /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
+    /// value of 1, stating that this node cannot be executed in a distributed fashion.
     Maximum(usize),
+}
+
+/// Annotation attached to a single [ExecutionPlan] that determines the kind of network boundary
+/// needed just below itself.
+#[derive(Debug, PartialEq)]
+pub(super) enum RequiredNetworkBoundary {
+    Shuffle,
+    Coalesce,
 }
 
 impl TaskCountAnnotation {
@@ -26,11 +41,21 @@ impl TaskCountAnnotation {
     }
 }
 
+/// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
+/// it should run on, and whether it needs a network boundary below or not.
 pub(super) struct AnnotatedPlan {
+    /// The annotated [ExecutionPlan].
     pub(super) plan: Arc<dyn ExecutionPlan>,
+    /// The annotated children of this [ExecutionPlan]. This will always hold the same nodes as
+    /// `self.plan.children()` but annotated.
     pub(super) children: Vec<AnnotatedPlan>,
+
     // annotation fields
+    /// How many distributed tasks this plan should run on.
     pub(super) task_count: TaskCountAnnotation,
+    /// Whether this [ExecutionPlan] needs a network boundary below it or not. Even if this is set
+    /// to `Some()`, a later step can still decide to not place the network boundary under certain
+    /// situations, like if both sides of the boundary have a task count equal to 1.
     pub(super) required_network_boundary: Option<RequiredNetworkBoundary>,
 }
 
@@ -58,6 +83,68 @@ impl Debug for AnnotatedPlan {
     }
 }
 
+/// Annotates recursively an [ExecutionPlan] and its children with information about how many
+/// distributed tasks it should run on, and whether it needs a network boundary below it or not.
+///
+/// This is the first step of the distribution process, where the plan structure is still left
+/// untouched and the existing nodes are just annotated for future steps to perform the distribution.
+///
+/// The plans are annotated in a bottom-to-top manner, starting with the leaf nodes all the way
+/// to the head of the plan:
+///
+/// 1. Leaf nodes have the opportunity to provide an estimation of how many distributed tasks should
+///    be used for the whole stage that will execute them.
+///
+/// 2. If a stage contains multiple leaf nodes, and all provide a task count estimation, the
+///    biggest is taken.
+///
+/// 3. When traversing the plan in a bottom-to-top fashion, this function looks for nodes that
+///    either increase or reduce cardinality:
+///     - If there's a node that increases cardinality, the next stage will spawn more tasks than
+///       the current one.
+///     - If there's a node that reduces cardinality, the next stage will spawn fewer tasks than the
+///       current one.
+///
+/// 4. At a certain point, the function will reach a node that needs a network boundary below; in
+///    that case, the node is annotated with a [RequiredNetworkBoundary] value. At this point, all
+///    the nodes below must reach a consensus about the final task count for the stage below the
+///    network boundary.
+///
+/// 5. This process is repeated recursively until all nodes are annotated.
+///
+/// ## Example:
+///
+/// Following the process above, an annotated plan will look like this:
+///
+/// ```text
+/// ┌────────────────────┐ task_count: Maximum(1) (because we try to coalesce all partitions into 1)
+/// │ CoalescePartitions │ network_boundary: Some(Coalesce)
+/// └──────────▲─────────┘
+///            │
+/// ┌──────────┴─────────┐ task_count: Desired(3) (inherited from the child)
+/// │     Projection     │ network_boundary: None
+/// └──────────▲─────────┘
+///            │
+/// ┌──────────┴─────────┐ task_count: Desired(3) (as this node requires a network boundary below,
+/// │    Aggregation     │    and the stage below reduces the cardinality of the data because of the
+/// │       (final)      │    partial aggregation, we can choose a smaller amount of tasks)
+/// └──────────▲─────────┘ network_boundary: Some(Shuffle) (because the child is a repartition)
+///            │
+/// ┌──────────┴─────────┐ task_count: Desired(4) (inherited from the child)
+/// │    Repartition     │ network_boundary: None
+/// └──────────▲─────────┘
+///            │
+/// ┌──────────┴─────────┐ task_count: Desired(4) (inherited from the child)
+/// │    Aggregation     │ network_boundary: None
+/// │     (partial)      │
+/// └──────────▲─────────┘
+///            │
+/// ┌──────────┴─────────┐ task_count: Desired(4) (this was set by a TaskEstimator implementation)
+/// │   DataSourceExec   │ network_boundary: None
+/// └────────────────────┘
+/// ```
+///
+/// ```
 pub(super) fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
@@ -178,7 +265,9 @@ pub(super) fn annotate_plan(
     }
 
     let sf = calculate_scale_factor(
-        annotated_plan.children.first().expect("missing child"),
+        annotated_plan.children.first().ok_or_else(|| {
+            plan_datafusion_err!("missing child in a plan annotated with a network boundary")
+        })?,
         d_cfg.cardinality_task_count_factor,
     );
     let task_count = annotated_plan.task_count.as_usize() as f64;
@@ -187,13 +276,7 @@ pub(super) fn annotate_plan(
     Ok(annotated_plan)
 }
 
-#[derive(Debug, PartialEq)]
-pub(super) enum RequiredNetworkBoundary {
-    Shuffle,
-    Coalesce,
-}
-
-pub(super) fn required_network_boundary_below(
+pub fn required_network_boundary_below(
     parent: &dyn ExecutionPlan,
 ) -> Option<RequiredNetworkBoundary> {
     let children = parent.children();
