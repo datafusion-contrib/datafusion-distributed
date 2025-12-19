@@ -42,8 +42,8 @@ There are some runnable examples showcasing how to provide a localhost implement
 
 The integration tests also provide an idea about how to use the library and what can be achieved with it:
 
-- [tpch_validation_test.rs](tests/tpch_validation_test.rs): executes all TPCH queries and performs assertions over the
-  distributed plans and the results vs running the queries in single node mode with a small scale factor.
+- [tpch_validation_test.rs](tests/tpch_plans_test.rs): executes all TPCH queries and performs assertions over the
+  distributed plans.
 - [custom_config_extension.rs](tests/custom_config_extension.rs): showcases how to propagate custom DataFusion config
   extensions.
 - [custom_extension_codec.rs](tests/custom_extension_codec.rs): showcases how to propagate custom physical extension
