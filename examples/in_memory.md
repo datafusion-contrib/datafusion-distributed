@@ -1,9 +1,9 @@
 # In-memory cluster example
 
-This examples shows how queries can be run in a distributed context without making any
+This example shows how queries can be run in a distributed context without making any
 network IO for communicating between workers.
 
-This is specially useful for testing, as no servers need to be spawned in localhost ports,
+This is especially useful for testing, as no servers need to be spawned in localhost ports,
 the setup is quite easy, and the code coverage for running in this mode is the same as
 running in an actual distributed cluster.
 
@@ -19,31 +19,19 @@ git lfs checkout
 
 ### Issuing a distributed SQL query
 
+The `--show-distributed-plan` flag can be passed to render the distributed plan:
+
+```shell
+cargo run --example in_memory_cluster -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"' --show-distributed-plan
+```
+
+Not passing the flag will execute the query:
+
 ```shell
 cargo run --example in_memory_cluster -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"'
 ```
 
-Additionally, the `--explain` flag can be passed to render the distributed plan:
-
-```shell
-cargo run --example in_memory_cluster -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"' --explain 
-```
-
 ### Available tables
-
-Two tables are available in this example:
-
-- `flights_1m`: Flight data with 1m rows
-
-```
-FL_DATE [INT32]
-DEP_DELAY [INT32]
-ARR_DELAY [INT32]
-AIR_TIME [INT32]
-DISTANCE [INT32]
-DEP_TIME [FLOAT]
-ARR_TIME [FLOAT]
-```
 
 - `weather`: Small dataset of weather data
 

@@ -1,7 +1,5 @@
 #![allow(clippy::upper_case_acronyms, clippy::vec_box)]
 
-use std::borrow::Borrow;
-
 use arrow_flight::error::FlightError;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;

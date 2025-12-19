@@ -1,7 +1,7 @@
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, not_impl_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
@@ -18,10 +18,6 @@ use url::Url;
 struct Args {
     #[structopt(default_value = "8080")]
     port: u16,
-
-    // --cluster-ports 8080,8081,8082
-    #[structopt(long = "cluster-ports", use_delimiter = true)]
-    cluster_ports: Vec<u16>,
 }
 
 #[tokio::main]
@@ -29,7 +25,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
     let localhost_resolver = LocalhostChannelResolver {
-        ports: args.cluster_ports,
         cached: DashMap::new(),
     };
 
@@ -54,18 +49,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 #[derive(Clone)]
 struct LocalhostChannelResolver {
-    ports: Vec<u16>,
     cached: DashMap<Url, FlightServiceClient<BoxCloneSyncChannel>>,
 }
 
 #[async_trait]
 impl ChannelResolver for LocalhostChannelResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-        Ok(self
-            .ports
-            .iter()
-            .map(|port| Url::parse(&format!("http://localhost:{port}")).unwrap())
-            .collect())
+        not_impl_err!("Not implemented")
     }
 
     async fn get_flight_client_for_url(
