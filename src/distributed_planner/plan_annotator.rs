@@ -151,6 +151,7 @@ pub(super) fn annotate_plan(
 ) -> Result<AnnotatedPlan, DataFusionError> {
     use TaskCountAnnotation::*;
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let n_workers = d_cfg.__private_channel_resolver.0.get_urls()?.len().max(1);
 
     let annotated_children = plan
         .children()
@@ -167,7 +168,7 @@ pub(super) fn annotate_plan(
             return Ok(AnnotatedPlan {
                 plan,
                 children: Vec::new(),
-                task_count: Desired(estimate.task_count),
+                task_count: Desired(estimate.task_count.min(n_workers)),
                 required_network_boundary: None,
             });
         } else {
@@ -187,7 +188,6 @@ pub(super) fn annotate_plan(
     // nodes can only run in one task. If there is a subplan with a single node declaring that
     // it can only run in one task, all the rest of the nodes in the stage need to respect it.
     let mut task_count = Desired(1);
-    let n_workers = d_cfg.__private_channel_resolver.0.get_urls()?.len().max(1);
     for annotated_child in annotated_children.iter() {
         task_count = match (task_count, &annotated_child.task_count) {
             (Desired(desired), Desired(child)) => Desired(desired.max(*child).min(n_workers)),
@@ -276,9 +276,9 @@ pub(super) fn annotate_plan(
     Ok(annotated_plan)
 }
 
-pub fn required_network_boundary_below(
-    parent: &dyn ExecutionPlan,
-) -> Option<RequiredNetworkBoundary> {
+/// Returns if the [ExecutionPlan] requires a network boundary below it, and if it does, the kind
+/// of network boundary ([RequiredNetworkBoundary]).
+fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<RequiredNetworkBoundary> {
     let children = parent.children();
     let first_child = children.first()?;
 
