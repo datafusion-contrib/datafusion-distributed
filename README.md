@@ -4,7 +4,8 @@ Library that brings distributed execution capabilities to [Apache DataFusion](ht
 
 ## What can you do with this crate?
 
-This crate is a toolkit that extends [Apache DataFusion](https://github.com/apache/datafusion) with distributed capabilities,
+This crate is a toolkit that extends [Apache DataFusion](https://github.com/apache/datafusion) with distributed
+capabilities,
 providing a developer experience as close as possible to vanilla DataFusion while being unopinionated about the
 networking stack used for hosting the different workers involved in a query.
 
@@ -21,11 +22,13 @@ capabilities with minimal changes.
 
 # Benchmarks
 
-TODO
+![dist-df-vs-df-vs-trino.png](docs/source/_static/images/dist-df-vs-df-vs-trino.png)
 
 # Docs
 
-TODO
+The user and contributor guide can be found here:
+
+https://datafusion-contrib.github.io/datafusion-distributed
 
 ## Getting familiar with distributed DataFusion
 
