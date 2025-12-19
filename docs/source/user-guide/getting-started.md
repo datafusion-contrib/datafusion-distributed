@@ -58,12 +58,43 @@ impl ChannelResolver for LocalhostChannelResolver {
 
 > NOTE: This example is not production-ready and is meant to showcase the basic concepts of the library.
 
+This `ChannelResolver` implementation should resolve URLs of Distributed DataFusion Arrow Flight servers, and it's
+also the user of this library's responsibility to spawn a Tonic server that exposes the Arrow Flight service.
+
+A basic example of such a server is:
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let my_custom_channel_resolver = todo!();
+
+    let endpoint = ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
+        let my_custom_channel_resolver = my_custom_channel_resolver.clone();
+        async move {
+            Ok(SessionStateBuilder::new()
+                .with_runtime_env(ctx.runtime_env)
+                .with_distributed_channel_resolver(my_custom_channel_resolver)
+                .with_default_features()
+                .build())
+        }
+    })?;
+
+    Server::builder()
+        .add_service(endpoint.into_flight_server())
+        .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))
+        .await?;
+
+    Ok(())
+}
+```
+
 ## Next steps
 
 The next two sections of this guide will walk you through tailoring the library's traits to your own needs:
 
 - [Build your own ChannelResolver](channel-resolver.md)
 - [Build your own TaskEstimator](task-estimator.md)
+- [Build your own distributed DataFusion Arrow Flight endpoint](arrow-flight-endpoint.md)
 
 Here are some other resources in the codebase:
 
