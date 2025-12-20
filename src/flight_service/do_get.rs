@@ -30,7 +30,6 @@ use futures::{StreamExt, TryStreamExt};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::usize;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -168,14 +167,10 @@ impl ArrowFlightEndpoint {
                         .plan
                         .execute(doget.target_partition as usize, session_state.task_ctx())?;
                     let batches: Vec<RecordBatch> = stream.try_collect().await?;
-                    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
                     Ok::<_, DataFusionError>(Arc::new(batches))
                 })
                 .await
                 .map_err(|err| Status::internal(format!("Error executing: {err}")))?;
-
-            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-
             // Stream from cached batches - use into_iter on Vec to own the data
             let batches: Vec<RecordBatch> = batches.as_ref().clone();
             futures::stream::iter(batches.into_iter().map(Ok)).boxed()
