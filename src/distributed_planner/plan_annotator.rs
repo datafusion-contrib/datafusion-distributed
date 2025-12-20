@@ -1,4 +1,4 @@
-use crate::{DistributedConfig, TaskEstimator};
+use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
@@ -11,34 +11,12 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-/// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
-/// it should run on.
-#[derive(Debug, Clone)]
-pub(super) enum TaskCountAnnotation {
-    /// The desired number of distributed tasks for this node. The final task count for the
-    /// annotated node might not be exactly this number, it is more like a hint, so depending
-    /// on the desired task count of adjacent nodes, the final task count might change.
-    Desired(usize),
-    /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
-    /// value of 1, stating that this node cannot be executed in a distributed fashion.
-    Maximum(usize),
-}
-
 /// Annotation attached to a single [ExecutionPlan] that determines the kind of network boundary
 /// needed just below itself.
 #[derive(Debug, PartialEq)]
 pub(super) enum RequiredNetworkBoundary {
     Shuffle,
     Coalesce,
-}
-
-impl TaskCountAnnotation {
-    pub(super) fn as_usize(&self) -> usize {
-        match self {
-            Self::Desired(desired) => *desired,
-            Self::Maximum(maximum) => *maximum,
-        }
-    }
 }
 
 /// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
@@ -149,6 +127,13 @@ pub(super) fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
+    _annotate_plan(plan, cfg, true)
+}
+fn _annotate_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+    root: bool,
+) -> Result<AnnotatedPlan, DataFusionError> {
     use TaskCountAnnotation::*;
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
     let n_workers = d_cfg.__private_channel_resolver.0.get_urls()?.len().max(1);
@@ -156,7 +141,7 @@ pub(super) fn annotate_plan(
     let annotated_children = plan
         .children()
         .iter()
-        .map(|child| annotate_plan(Arc::clone(child), cfg))
+        .map(|child| _annotate_plan(Arc::clone(child), cfg, false))
         .collect::<Result<Vec<_>, _>>()?;
 
     if plan.children().is_empty() {
@@ -168,7 +153,7 @@ pub(super) fn annotate_plan(
             return Ok(AnnotatedPlan {
                 plan,
                 children: Vec::new(),
-                task_count: Desired(estimate.task_count.min(n_workers)),
+                task_count: estimate.task_count.limit(n_workers),
                 required_network_boundary: None,
             });
         } else {
@@ -177,7 +162,7 @@ pub(super) fn annotate_plan(
             return Ok(AnnotatedPlan {
                 plan,
                 children: Vec::new(),
-                task_count: Desired(1),
+                task_count: Maximum(1),
                 required_network_boundary: None,
             });
         }
@@ -190,11 +175,12 @@ pub(super) fn annotate_plan(
     let mut task_count = Desired(1);
     for annotated_child in annotated_children.iter() {
         task_count = match (task_count, &annotated_child.task_count) {
-            (Desired(desired), Desired(child)) => Desired(desired.max(*child).min(n_workers)),
-            (Maximum(max), Desired(_)) => Maximum(max.min(n_workers)),
-            (Desired(_), Maximum(max)) => Maximum((*max).min(n_workers)),
-            (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2).min(n_workers)),
-        }
+            (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
+            (Maximum(max), Desired(_)) => Maximum(max),
+            (Desired(_), Maximum(max)) => Maximum(*max),
+            (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2)),
+        };
+        task_count = task_count.limit(n_workers);
     }
 
     // We cannot distribute CollectLeft HashJoinExec nodes yet. Once
@@ -229,51 +215,64 @@ pub(super) fn annotate_plan(
             }
         }
     }
-    for annotated_child in annotated_plan.children.iter_mut() {
-        propagate_task_count(annotated_child, &annotated_plan.task_count);
-    }
 
-    // If the current plan that needs a NetworkBoundary boundary below is either a
-    // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
-    // that they are going to be part of needs to run in exactly one task.
-    if annotated_plan.required_network_boundary == Some(RequiredNetworkBoundary::Coalesce) {
-        annotated_plan.task_count = Maximum(1);
-        return Ok(annotated_plan);
-    }
+    if let Some(nb) = &annotated_plan.required_network_boundary {
+        // The plan is a network boundary, so everything below it belongs to the same stage. This
+        // means that we need to propagate the task count to all the nodes in that stage.
+        for annotated_child in annotated_plan.children.iter_mut() {
+            propagate_task_count(annotated_child, &annotated_plan.task_count);
+        }
 
-    // From now and up in the plan, a new task count needs to be calculated for the next stage.
-    // Depending on the number of nodes that reduce/increase cardinality, the task count will be
-    // calculated based on the previous task count multiplied by a factor.
-    fn calculate_scale_factor(plan: &AnnotatedPlan, f: f64) -> f64 {
-        let mut sf = None;
+        // If the current plan that needs a NetworkBoundary boundary below is either a
+        // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
+        // that they are going to be part of needs to run in exactly one task.
+        if nb == &RequiredNetworkBoundary::Coalesce {
+            annotated_plan.task_count = Maximum(1);
+            return Ok(annotated_plan);
+        }
 
-        if plan.required_network_boundary.is_none() {
-            for plan in plan.children.iter() {
-                sf = match sf {
-                    None => Some(calculate_scale_factor(plan, f)),
-                    Some(sf) => Some(sf.max(calculate_scale_factor(plan, f))),
+        // From now and up in the plan, a new task count needs to be calculated for the next stage.
+        // Depending on the number of nodes that reduce/increase cardinality, the task count will be
+        // calculated based on the previous task count multiplied by a factor.
+        fn calculate_scale_factor(plan: &AnnotatedPlan, f: f64) -> f64 {
+            let mut sf = None;
+
+            if plan.required_network_boundary.is_none() {
+                for plan in plan.children.iter() {
+                    sf = match sf {
+                        None => Some(calculate_scale_factor(plan, f)),
+                        Some(sf) => Some(sf.max(calculate_scale_factor(plan, f))),
+                    }
                 }
             }
-        }
 
-        let sf = sf.unwrap_or(1.0);
-        match plan.plan.cardinality_effect() {
-            CardinalityEffect::LowerEqual => sf / f,
-            CardinalityEffect::GreaterEqual => sf * f,
-            _ => sf,
+            let sf = sf.unwrap_or(1.0);
+            match plan.plan.cardinality_effect() {
+                CardinalityEffect::LowerEqual => sf / f,
+                CardinalityEffect::GreaterEqual => sf * f,
+                _ => sf,
+            }
         }
+        let sf = calculate_scale_factor(
+            annotated_plan.children.first().ok_or_else(|| {
+                plan_datafusion_err!("missing child in a plan annotated with a network boundary")
+            })?,
+            d_cfg.cardinality_task_count_factor,
+        );
+        let prev_task_count = annotated_plan.task_count.as_usize() as f64;
+        annotated_plan.task_count = Desired((prev_task_count * sf).ceil() as usize);
+        Ok(annotated_plan)
+    } else if root {
+        // If this is the root node, it means that we have just finished annotating nodes for the
+        // subplan belonging to the head stage, so propagate the task count to all children.
+        let task_count = annotated_plan.task_count.clone();
+        propagate_task_count(&mut annotated_plan, &task_count);
+        Ok(annotated_plan)
+    } else {
+        // If this is not the root node, and it's also not a network boundary, then we don't need
+        // to do anything else.
+        Ok(annotated_plan)
     }
-
-    let sf = calculate_scale_factor(
-        annotated_plan.children.first().ok_or_else(|| {
-            plan_datafusion_err!("missing child in a plan annotated with a network boundary")
-        })?,
-        d_cfg.cardinality_task_count_factor,
-    );
-    let task_count = annotated_plan.task_count.as_usize() as f64;
-    annotated_plan.task_count = Desired((task_count * sf).ceil() as usize);
-
-    Ok(annotated_plan)
 }
 
 /// Returns if the [ExecutionPlan] requires a network boundary below it, and if it does, the kind

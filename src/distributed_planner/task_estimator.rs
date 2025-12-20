@@ -9,6 +9,35 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+/// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
+/// it should run on.
+#[derive(Debug, Clone)]
+pub enum TaskCountAnnotation {
+    /// The desired number of distributed tasks for this node. The final task count for the
+    /// annotated node might not be exactly this number, it is more like a hint, so depending
+    /// on the desired task count of adjacent nodes, the final task count might change.
+    Desired(usize),
+    /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
+    /// value of 1, stating that this node cannot be executed in a distributed fashion.
+    Maximum(usize),
+}
+
+impl TaskCountAnnotation {
+    pub fn as_usize(&self) -> usize {
+        match self {
+            Self::Desired(desired) => *desired,
+            Self::Maximum(maximum) => *maximum,
+        }
+    }
+
+    pub(crate) fn limit(self, limit: usize) -> Self {
+        match self {
+            Self::Desired(desired) => Self::Desired(desired.min(limit)),
+            Self::Maximum(maximum) => Self::Maximum(maximum.min(limit)),
+        }
+    }
+}
+
 /// Result of running a [TaskEstimator] on a leaf node. It tells the distributed planner hints
 /// about how many tasks should be used in [Stage]s that contain leaf nodes.
 pub struct TaskEstimation {
@@ -20,7 +49,7 @@ pub struct TaskEstimation {
     ///   task_count wins.
     /// - If there are less available workers than this number, the number of available workers
     ///   is chosen.
-    pub task_count: usize,
+    pub task_count: TaskCountAnnotation,
 }
 
 /// Given a leaf node, provides an estimation about how many tasks should be used in the
@@ -56,7 +85,9 @@ impl TaskEstimator for usize {
         _: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
     ) -> Option<TaskEstimation> {
-        Some(TaskEstimation { task_count: *self })
+        Some(TaskEstimation {
+            task_count: TaskCountAnnotation::Desired(*self),
+        })
     }
 
     fn scale_up_leaf_node(
@@ -161,7 +192,9 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         // how many tasks should be used, without surpassing the number of available workers.
         let task_count = distinct_files.div_ceil(d_cfg.files_per_task);
 
-        Some(TaskEstimation { task_count })
+        Some(TaskEstimation {
+            task_count: TaskCountAnnotation::Desired(task_count),
+        })
     }
 
     fn scale_up_leaf_node(
@@ -304,7 +337,10 @@ mod tests {
                 ..Default::default()
             };
             cfg.extensions.insert(f(d_cfg));
-            self.tasks_for_leaf_node(&node, &cfg).unwrap().task_count
+            self.tasks_for_leaf_node(&node, &cfg)
+                .unwrap()
+                .task_count
+                .as_usize()
         }
     }
 

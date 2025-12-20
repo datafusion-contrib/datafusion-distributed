@@ -18,7 +18,7 @@ pub use channel_resolver_ext::{BoxCloneSyncChannel, ChannelResolver, create_flig
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
-    TaskEstimation, TaskEstimator,
+    TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,

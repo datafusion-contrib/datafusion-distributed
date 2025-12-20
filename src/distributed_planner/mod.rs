@@ -8,4 +8,4 @@ pub use distributed_config::DistributedConfig;
 pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub(crate) use task_estimator::set_distributed_task_estimator;
-pub use task_estimator::{TaskEstimation, TaskEstimator};
+pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator};
