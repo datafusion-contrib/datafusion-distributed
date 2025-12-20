@@ -81,10 +81,15 @@ impl DistributedExec {
                         url: Some(urls[(start_idx + i) % urls.len()].clone()),
                     })
                     .collect::<Vec<_>>(),
-                consumer_count: stage.consumer_count,
+                consumer_task_count: stage.consumer_task_count,
             };
 
-            Ok(Transformed::yes(plan.with_input_stage(ready_stage)?))
+            // consumer_task_count was already set during distribute_plan, so use it
+            // If not set, default to 1 for head stage case
+            let consumer_count = stage.consumer_task_count.unwrap_or(1);
+            Ok(Transformed::yes(
+                plan.with_input_stage(ready_stage, consumer_count)?,
+            ))
         })?;
         Ok(prepared.data)
     }

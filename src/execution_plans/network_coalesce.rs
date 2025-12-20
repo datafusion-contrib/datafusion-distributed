@@ -136,6 +136,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
     fn with_input_stage(
         &self,
         input_stage: Stage,
+        _consumer_task_count: usize,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         match self {
             Self::Pending(pending) => {
@@ -295,6 +296,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
                     )),
                     target_task_index: target_task as u64,
                     target_task_count: input_stage.tasks.len() as u64,
+                    consumer_count: None, // Regular coalesce, not broadcast
                 }
                 .encode_to_vec()
                 .into(),

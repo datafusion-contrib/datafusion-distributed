@@ -1,7 +1,7 @@
 use super::get_distributed_user_codecs;
 use crate::NetworkBoundary;
 use crate::execution_plans::{
-    NetworkBroadcastExec, NetworkBroadcastReady, NetworkCoalesceExec, NetworkCoalesceReady,
+    NetworkBroadcastExec, NetworkBroadcastReadyExec, NetworkCoalesceExec, NetworkCoalesceReady,
     NetworkShuffleReadyExec,
 };
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
@@ -87,6 +87,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 num: proto.num as usize,
                 plan,
                 tasks: decode_tasks(proto.tasks)?,
+                consumer_task_count: proto.consumer_task_count.map(|c| c as usize),
             })
         }
 
@@ -198,6 +199,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     MaybeEncodedPlan::Decoded(_) => Bytes::new(),
                     MaybeEncodedPlan::Encoded(proto) => proto.clone(),
                 },
+                consumer_task_count: stage.consumer_task_count.map(|c| c as u64),
             })
         }
 
@@ -307,6 +309,9 @@ pub struct StageProto {
     /// The child plan already serialized
     #[prost(bytes, tag = "4")]
     pub plan_proto: Bytes, // Apparently, with an optional keyword, we cannot put Bytes here.
+    /// Number of consumer tasks (for broadcast stages)
+    #[prost(uint64, optional, tag = "5")]
+    pub consumer_task_count: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -419,7 +424,7 @@ fn new_network_broadcast_exec(
     schema: SchemaRef,
     input_stage: Stage,
 ) -> NetworkBroadcastExec {
-    NetworkBroadcastExec::Ready(NetworkBroadcastReady {
+    NetworkBroadcastExec::Ready(NetworkBroadcastReadyExec {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
@@ -479,6 +484,7 @@ mod tests {
             num: 0,
             plan: MaybeEncodedPlan::Decoded(empty_exec()),
             tasks: vec![],
+            consumer_task_count: None,
         }
     }
 

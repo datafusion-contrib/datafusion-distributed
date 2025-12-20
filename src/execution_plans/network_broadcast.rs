@@ -1,7 +1,7 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::common::{
-    manually_propagate_distributed_config, require_one_child, scale_partitioning, spawn_select_all,
+    manually_propagate_distributed_config, require_one_child, spawn_select_all,
 };
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
@@ -9,9 +9,7 @@ use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{
-    ChannelResolver, DistributedConfig, DistributedTaskContext, InputStageInfo, NetworkBoundary,
-};
+use crate::{ChannelResolver, DistributedConfig, InputStageInfo, NetworkBoundary};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -22,7 +20,9 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use prost::Message;
@@ -44,13 +44,12 @@ pub enum NetworkBroadcastExec {
 }
 
 /// Placeholder version of the [NetworkBroadcastExec] node. It acts as a marker for the
-/// distributed optimizatkion step, which will replace it with the appropriate
+/// distributed optimization step, which will replace it with the appropriate
 /// [NetworkBroadcastReadyExec] node.
 #[derive(Debug, Clone)]
 pub struct NetworkBroadcastPendingExec {
     input: Arc<dyn ExecutionPlan>,
     input_tasks: usize,
-    output_tasks: usize,
 }
 
 /// Ready version of the [NetworkBroadcastExec] node. This node can be created in
@@ -70,12 +69,10 @@ impl NetworkBroadcastExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         input_tasks: usize,
-        output_tasks: usize,
     ) -> Result<Self, DataFusionError> {
         Ok(Self::Pending(NetworkBroadcastPendingExec {
             input,
             input_tasks,
-            output_tasks,
         }))
     }
 }
@@ -100,7 +97,6 @@ impl NetworkBoundary for NetworkBroadcastExec {
             Self::Pending(prev) => Self::Pending(NetworkBroadcastPendingExec {
                 input: Arc::clone(&prev.input),
                 input_tasks,
-                output_tasks: input_tasks,
             }),
             Self::Ready(_) => plan_err!(
                 "NetworkBroadcastExec can only re-assign input tasks if in 'Pending' state"
@@ -118,18 +114,31 @@ impl NetworkBoundary for NetworkBroadcastExec {
     fn with_input_stage(
         &self,
         input_stage: Stage,
+        consumer_task_count: usize,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         match self {
             Self::Pending(_pending) => {
                 let input_stage_plan = input_stage.plan.decoded()?;
-                let coalesced_plan =
-                    Arc::new(CoalescePartitionsExec::new(input_stage_plan.clone()));
+                // Only wrap with CoalescePartitionsExec if the input has multiple partitions
+                // and isn't already a CoalescePartitionsExec. This avoids double coalescing
+                // when the build side already has a CoalescePartitionsExec (common for CollectLeft joins).
+                let coalesced_plan = if input_stage_plan.output_partitioning().partition_count() > 1
+                    && input_stage_plan
+                        .as_any()
+                        .downcast_ref::<CoalescePartitionsExec>()
+                        .is_none()
+                {
+                    Arc::new(CoalescePartitionsExec::new(input_stage_plan.clone()))
+                        as Arc<dyn ExecutionPlan>
+                } else {
+                    input_stage_plan.clone()
+                };
                 let coalesced_stage = Stage::new(
                     input_stage.query_id,
                     input_stage.num,
                     coalesced_plan.clone(),
                     input_stage.tasks.len(),
-                    None, // TODO: pass the consumer_count here
+                    Some(consumer_task_count),
                 );
                 let ready = NetworkBroadcastReadyExec {
                     properties: coalesced_plan.properties().clone(),
@@ -255,6 +264,10 @@ impl ExecutionPlan for NetworkBroadcastExec {
                         stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
+                        consumer_count: self_ready
+                            .input_stage
+                            .consumer_task_count
+                            .map(|c| c as u64),
                     }
                     .encode_to_vec()
                     .into(),

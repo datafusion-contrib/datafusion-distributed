@@ -26,10 +26,11 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::usize;
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -51,6 +52,8 @@ pub struct DoGet {
     /// if we already have stored it
     #[prost(message, optional, tag = "5")]
     pub stage_key: Option<StageKey>,
+    #[prost(uint64, optional, tag = "6")]
+    pub consumer_count: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +67,7 @@ pub struct TaskData {
     /// complete because it's possible that the same partition was retried and this count was
     /// decremented more than once for the same partition.
     num_partitions_remaining: Arc<AtomicUsize>,
+    cached_batches: Option<Arc<tokio::sync::OnceCell<Arc<Vec<RecordBatch>>>>>,
 }
 
 impl ArrowFlightEndpoint {
@@ -95,6 +99,8 @@ impl ArrowFlightEndpoint {
         let once = self
             .task_data_entries
             .get_or_init(key.clone(), Default::default);
+        let is_broadcast = doget.consumer_count.is_some();
+        let consumer_count = doget.consumer_count.unwrap_or(0) as usize;
 
         let stage_data = once
             .get_or_try_init(|| async {
@@ -104,11 +110,22 @@ impl ArrowFlightEndpoint {
                     plan = hook(plan)
                 }
 
-                // Initialize partition count to the number of partitions in the stage
-                let total_partitions = plan.properties().partitioning.partition_count();
+                let (num_remaining, cached_batches) = if is_broadcast {
+                    // For broadcast: track consumers, prepare cache
+                    (
+                        Arc::new(AtomicUsize::new(consumer_count)),
+                        Some(Arc::new(tokio::sync::OnceCell::new())),
+                    )
+                } else {
+                    // For regular stages: track partitions, no cache
+                    let total_partitions = plan.properties().partitioning.partition_count();
+                    (Arc::new(AtomicUsize::new(total_partitions)), None)
+                };
+
                 Ok::<_, DataFusionError>(TaskData {
                     plan,
-                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+                    num_partitions_remaining: num_remaining,
+                    cached_batches,
                 })
             })
             .await
@@ -139,11 +156,37 @@ impl ArrowFlightEndpoint {
         // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
         // as executing `StageExec` performs some worker assignation that should have already been
         // done in the head stage.
-        let stream = plan
-            .execute(doget.target_partition as usize, session_state.task_ctx())
-            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-        let schema = stream.schema().clone();
+        // Get schema from the plan before creating streams - both cached and regular paths
+        // need this, and BoxStream doesn't have a schema() method
+        let schema = plan.schema();
+
+        let stream = if let Some(cache) = &stage_data.cached_batches {
+            let batches = cache
+                .get_or_try_init(|| async {
+                    let stream = stage_data
+                        .plan
+                        .execute(doget.target_partition as usize, session_state.task_ctx())?;
+                    let batches: Vec<RecordBatch> = stream.try_collect().await?;
+                    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+                    Ok::<_, DataFusionError>(Arc::new(batches))
+                })
+                .await
+                .map_err(|err| Status::internal(format!("Error executing: {err}")))?;
+
+            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+            // Stream from cached batches - use into_iter on Vec to own the data
+            let batches: Vec<RecordBatch> = batches.as_ref().clone();
+            futures::stream::iter(batches.into_iter().map(Ok)).boxed()
+        } else {
+            // Regular: execute directly
+            stage_data
+                .plan
+                .execute(doget.target_partition as usize, session_state.task_ctx())
+                .map_err(|err| Status::internal(format!("Error executing: {err}")))?
+                .boxed()
+        };
 
         // Apply garbage collection of dictionary and view arrays before sending over the network
         let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
@@ -337,6 +380,7 @@ mod tests {
                 target_task_count: num_tasks,
                 target_partition: partition,
                 stage_key: Some(stage_key),
+                consumer_count: None, // Regular (non-broadcast) stage
             };
 
             let ticket = Ticket {

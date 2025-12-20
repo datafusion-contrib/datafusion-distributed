@@ -50,14 +50,16 @@ pub fn rewrite_distributed_plan_with_metrics(
                     // For now, we are okay with trading off performance for simplicity.
                     let plan_with_metrics =
                         stage_metrics_rewriter(stage, metrics_collection.clone())?;
+                    let consumer_count = stage.consumer_task_count.unwrap_or(1);
                     Ok(Transformed::yes(network_boundary.with_input_stage(
                         Stage::new(
                             stage.query_id,
                             stage.num,
                             plan_with_metrics,
                             stage.tasks.len(),
-                            stage.consumer_count,
+                            stage.consumer_task_count,
                         ),
+                        consumer_count,
                     )?))
                 }
                 None => {
@@ -312,7 +314,7 @@ mod tests {
     }
 
     fn make_test_stage(plan: Arc<dyn ExecutionPlan>) -> Stage {
-        Stage::new(Uuid::new_v4(), 2, plan, 4)
+        Stage::new(Uuid::new_v4(), 2, plan, 4, None)
     }
 
     fn collect_metrics_from_plan(plan: &Arc<dyn ExecutionPlan>, metrics: &mut Vec<MetricsSet>) {

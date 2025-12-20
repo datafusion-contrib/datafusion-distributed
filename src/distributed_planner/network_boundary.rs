@@ -46,6 +46,7 @@ pub trait NetworkBoundary: ExecutionPlan {
     fn with_input_stage(
         &self,
         input_stage: Stage,
+        consumer_task_count: usize,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>>;
 
     /// Returns the assigned input [Stage], if any.
