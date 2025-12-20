@@ -2,8 +2,13 @@
 members = ["benchmarks"]
 
 [workspace.dependencies]
-datafusion = { version = "51.0.0", default-features = false }
-datafusion-proto = { version = "51.0.0" }
+# Using PR #19304: Hash partitioning satisfies subset
+# https://github.com/apache/datafusion/pull/19304
+# This PR includes:
+# - Hash subset satisfaction logic (eliminates unnecessary repartitions)
+# - File partitioning preservation (from PR #19124)
+datafusion = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset", default-features = false }
+datafusion-proto = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset" }
 
 [package]
 name = "datafusion-distributed"
@@ -68,7 +73,7 @@ insta = { version = "1.43.1", features = ["filters"] }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 parquet = "57.0.0"
-arrow = "57.0.0"
+arrow = "57.0.1"
 tokio-stream = "0.1.17"
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"

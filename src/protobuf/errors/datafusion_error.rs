@@ -173,6 +173,9 @@ impl DataFusionErrorProto {
                     DataFusionErrorProto::from_datafusion_error(err.as_ref()),
                 ))),
             },
+            DataFusionError::Ffi(err) => DataFusionErrorProto {
+                inner: Some(DataFusionErrorInnerProto::Plan(err.clone())),
+            },
         }
     }
 
