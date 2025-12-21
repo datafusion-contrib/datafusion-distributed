@@ -1,3 +1,4 @@
+use crate::execution_plans::NetworkBroadcastExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::execution_plans::NetworkShuffleExec;
 use crate::metrics::proto::MetricsSetProto;
@@ -51,6 +52,13 @@ impl TreeNodeRewriter for TaskMetricsCollector {
                 let NetworkCoalesceExec::Ready(ready) = node else {
                     return internal_err!(
                         "unexpected NetworkCoalesceExec::Pending during metrics collection"
+                    );
+                };
+                Some(Arc::clone(&ready.metrics_collection))
+            } else if let Some(node) = plan.as_any().downcast_ref::<NetworkBroadcastExec>() {
+                let NetworkBroadcastExec::Ready(ready) = node else {
+                    return internal_err!(
+                        "unexpected NetworkBroadcastExec::Pending during metrics collection"
                     );
                 };
                 Some(Arc::clone(&ready.metrics_collection))

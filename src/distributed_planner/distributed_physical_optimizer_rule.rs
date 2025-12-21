@@ -63,8 +63,11 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // We can only optimize plans that are not already distributed
-        match distribute_plan(apply_network_boundaries(Arc::clone(&plan), cfg)?)? {
+        let with_boundaries = apply_network_boundaries(Arc::clone(&plan), cfg)?;
+        if Arc::ptr_eq(&plan, &with_boundaries) {
+            return Ok(plan);
+        }
+        match distribute_plan(with_boundaries)? {
             None => Ok(plan),
             Some(distributed_plan) => Ok(distributed_plan),
         }
@@ -181,17 +184,17 @@ pub fn apply_network_boundaries(
     mut plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if plan.output_partitioning().partition_count() > 1 {
-        // Coalescing partitions here will allow us to put a NetworkCoalesceExec on top
-        // of the plan, executing it in parallel.
-        plan = Arc::new(CoalescePartitionsExec::new(plan))
-    }
     let distributed_cfg = DistributedConfig::from_config_options(cfg)?;
     let urls = distributed_cfg.__private_channel_resolver.0.get_urls()?;
     // If there are 1 or 0 available workers, it does not make sense to distribute the query,
     // so don't.
     if urls.len() <= 1 {
         return Ok(plan);
+    }
+    if plan.output_partitioning().partition_count() > 1 {
+        // Coalescing partitions here will allow us to put a NetworkCoalesceExec on top
+        // of the plan, executing it in parallel.
+        plan = Arc::new(CoalescePartitionsExec::new(plan))
     }
     let ctx = _apply_network_boundaries(plan, cfg, urls.len())?;
     Ok(ctx.plan)
@@ -447,10 +450,7 @@ fn _distribute_plan_inner(
 
         let stage = loop {
             let input_stage_info = dnode.as_ref().get_input_stage_info(n_tasks)?;
-            // Skip network boundary when both stages have 1 task (can communicate in memory).
-            // Exception: always keep NetworkBroadcastExec to enable caching for broadcast joins.
-            let is_broadcast = plan.as_any().downcast_ref::<NetworkBroadcastExec>().is_some();
-            if n_tasks == 1 && input_stage_info.task_count == 1 && !is_broadcast {
+            if n_tasks == 1 && input_stage_info.task_count == 1 {
                 let mut n = dnode.as_ref().rollback()?;
                 if let Some(node) = n.as_any().downcast_ref::<PartitionIsolatorExec>() {
                     // Also trim PartitionIsolatorExec out of the plan.
@@ -806,31 +806,28 @@ mod tests {
         │ CoalescePartitionsExec
         │   CoalesceBatchesExec: target_batch_size=8192
         │     HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
-        │       [Stage 6] => NetworkBroadcastExec: output_partitions=1, input_tasks=1
+        │       CoalescePartitionsExec
+        │         [Stage 5] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         │       ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
         │         AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
-        │           [Stage 7] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        │           [Stage 6] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 6 ── Tasks: t0:[p0] 
-          │ CoalescePartitionsExec
-          │   [Stage 5] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+          ┌───── Stage 5 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
+          │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
+          │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+          │     [Stage 4] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 5 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
-            │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
-            │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-            │     [Stage 4] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+            ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
+            │ CoalesceBatchesExec: target_batch_size=8192
+            │   RepartitionExec: partitioning=Hash([RainTomorrow@0], 8), input_partitions=4
+            │     AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+            │       CoalesceBatchesExec: target_batch_size=8192
+            │         FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
+            │           RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+            │             PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+            │               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
             └──────────────────────────────────────────────────
-              ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
-              │ CoalesceBatchesExec: target_batch_size=8192
-              │   RepartitionExec: partitioning=Hash([RainTomorrow@0], 8), input_partitions=4
-              │     AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-              │       CoalesceBatchesExec: target_batch_size=8192
-              │         FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
-              │           RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-              │             PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-              │               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
-              └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
+          ┌───── Stage 6 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
           │ CoalesceBatchesExec: target_batch_size=8192
           │   RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
           │     AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
