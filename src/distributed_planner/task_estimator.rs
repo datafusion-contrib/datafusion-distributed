@@ -342,9 +342,9 @@ mod tests {
             let mut cfg = ConfigOptions::default();
             let d_cfg = DistributedConfig {
                 files_per_task: 1,
-                __private_worker_resolver: WorkerResolverExtension::new(
+                __private_worker_resolver: WorkerResolverExtension(Arc::new(
                     InMemoryWorkerResolver::new(3),
-                ),
+                )),
                 ..Default::default()
             };
             cfg.extensions.insert(f(d_cfg));

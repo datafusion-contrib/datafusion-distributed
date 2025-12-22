@@ -246,7 +246,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         // get the channel manager and current stage from our context
-        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
+        let channel_resolver = get_distributed_channel_resolver(context.session_config());
 
         let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
         let retrieve_metrics = d_cfg.collect_metrics;

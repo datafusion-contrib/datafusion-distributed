@@ -7,7 +7,9 @@ use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::Shared;
 use std::io;
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tonic::body::Body;
 use tonic::codegen::BoxFuture;
 use tonic::transport::Channel;
@@ -37,8 +39,77 @@ pub trait ChannelResolver {
     async fn get_flight_client_for_url(
         &self,
         url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError>;
+}
+
+pub(crate) fn set_distributed_channel_resolver(
+    cfg: &mut SessionConfig,
+    channel_resolver: impl ChannelResolver + Send + Sync + 'static,
+) {
+    let opts = cfg.options_mut();
+    let channel_resolver = ChannelResolverExtension(Arc::new(channel_resolver));
+    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
+        distributed_cfg.__private_channel_resolver = channel_resolver;
+    } else {
+        set_distributed_option_extension(cfg, DistributedConfig {
+            __private_channel_resolver: channel_resolver,
+            ..Default::default()
+        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
+    }
+}
+
+pub(crate) fn get_distributed_channel_resolver(
+    cfg: &SessionConfig,
+) -> Arc<dyn ChannelResolver + Send + Sync> {
+    let opts = cfg.options();
+    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
+        return Arc::clone(DEFAULT_CHANNEL_RESOLVER.deref());
+    };
+    Arc::clone(&distributed_cfg.__private_channel_resolver.0)
+}
+
+pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
+    http::Request<Body>,
+    http::Response<Body>,
+    tonic::transport::Error,
+>;
+
+type ChannelCacheValue =
+    Shared<BoxFuture<FlightServiceClient<BoxCloneSyncChannel>, Arc<DataFusionError>>>;
+
+pub static DEFAULT_CHANNEL_RESOLVER: LazyLock<Arc<dyn ChannelResolver + Send + Sync>> =
+    LazyLock::new(|| {
+        Arc::new(DefaultChannelResolver {
+            cache: moka::sync::Cache::builder()
+                // Use an unrealistic max capacity, just in case there is a logic error on the
+                // user part that produces an unreasonable amount of URLs.
+                .max_capacity(64556)
+                // If a channel has not been used in 5 mins, delete it.
+                .time_to_idle(Duration::from_secs(5 * 60))
+                .build(),
+        })
+    });
+
+#[derive(Clone)]
+pub(crate) struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
+
+impl Default for ChannelResolverExtension {
+    fn default() -> Self {
+        Self(Arc::clone(&DEFAULT_CHANNEL_RESOLVER))
+    }
+}
+
+struct DefaultChannelResolver {
+    cache: moka::sync::Cache<Url, ChannelCacheValue>,
+}
+
+#[async_trait]
+impl ChannelResolver for DefaultChannelResolver {
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        let channel = CHANNEL_CACHE.get_with_by_ref(url, move || {
+        let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.clone();
             async move {
                 let endpoint = Channel::from_shared(url.to_string())
@@ -54,77 +125,12 @@ pub trait ChannelResolver {
         });
 
         channel.await.map_err(|err| {
-            CHANNEL_CACHE.invalidate(url);
+            self.cache.invalidate(url);
             DataFusionError::Shared(err)
         })
     }
 }
 
-pub(crate) fn set_distributed_channel_resolver(
-    cfg: &mut SessionConfig,
-    channel_resolver: impl ChannelResolver + Send + Sync + 'static,
-) {
-    let opts = cfg.options_mut();
-    let channel_resolver = ChannelResolverExtension::new(channel_resolver);
-    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
-        distributed_cfg.__private_channel_resolver = channel_resolver;
-    } else {
-        set_distributed_option_extension(cfg, DistributedConfig {
-            __private_channel_resolver: channel_resolver,
-            ..Default::default()
-        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
-    }
-}
-
-pub(crate) fn get_distributed_channel_resolver(
-    cfg: &SessionConfig,
-) -> Result<ChannelResolverExtension, DataFusionError> {
-    let opts = cfg.options();
-    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return Ok(ChannelResolverExtension::default());
-    };
-    Ok(distributed_cfg.__private_channel_resolver.clone())
-}
-
-pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
-    http::Request<Body>,
-    http::Response<Body>,
-    tonic::transport::Error,
->;
-
-type ChannelCacheValue =
-    Shared<BoxFuture<FlightServiceClient<BoxCloneSyncChannel>, Arc<DataFusionError>>>;
-// TODO: be smarter here, use something like a RLU cache for example
-static CHANNEL_CACHE: LazyLock<moka::sync::Cache<Url, ChannelCacheValue>> =
-    LazyLock::new(|| moka::sync::Cache::new(1000));
-
-#[derive(Clone)]
-pub(crate) struct ChannelResolverExtension {
-    inner: Arc<dyn ChannelResolver + Send + Sync>,
-}
-
-impl Default for ChannelResolverExtension {
-    fn default() -> Self {
-        struct DefaultChannelResolver;
-        impl ChannelResolver for DefaultChannelResolver {}
-        Self::new(DefaultChannelResolver)
-    }
-}
-
-impl ChannelResolverExtension {
-    pub(crate) fn new(inner: impl ChannelResolver + Send + Sync + 'static) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-
-    pub(crate) async fn get_flight_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        self.inner.get_flight_client_for_url(url).await
-    }
-}
 /// Creates a [`FlightServiceClient`] with high default message size limits.
 ///
 /// This is a convenience function that wraps [`FlightServiceClient::new`] and configures

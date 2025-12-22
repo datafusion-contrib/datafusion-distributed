@@ -16,7 +16,7 @@ pub(crate) fn set_distributed_worker_resolver(
     worker_resolver: impl WorkerResolver + Send + Sync + 'static,
 ) {
     let opts = cfg.options_mut();
-    let worker_resolver = WorkerResolverExtension::new(worker_resolver);
+    let worker_resolver = WorkerResolverExtension(Arc::new(worker_resolver));
     if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
         distributed_cfg.__private_worker_resolver = worker_resolver;
     } else {
@@ -29,26 +29,20 @@ pub(crate) fn set_distributed_worker_resolver(
 
 pub(crate) fn get_distributed_worker_resolver(
     cfg: &SessionConfig,
-) -> Result<&WorkerResolverExtension, DataFusionError> {
+) -> Result<Arc<dyn WorkerResolver + Send + Sync>, DataFusionError> {
     let opts = cfg.options();
     let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
         return exec_err!("ChannelResolver not present in the session config");
     };
-    Ok(&distributed_cfg.__private_worker_resolver)
+    Ok(Arc::clone(&distributed_cfg.__private_worker_resolver.0))
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkerResolverExtension {
-    inner: Arc<dyn WorkerResolver + Send + Sync + 'static>,
-}
+pub(crate) struct WorkerResolverExtension(
+    pub(crate) Arc<dyn WorkerResolver + Send + Sync + 'static>,
+);
 
 impl WorkerResolverExtension {
-    pub(crate) fn new(inner: impl WorkerResolver + Send + Sync + 'static) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-
     pub(crate) fn not_implemented() -> Self {
         struct NotImplementedWorkerResolver;
         impl WorkerResolver for NotImplementedWorkerResolver {
@@ -56,10 +50,6 @@ impl WorkerResolverExtension {
                 not_impl_err!("WorkerResolver::get_urls() not implemented")
             }
         }
-        Self::new(NotImplementedWorkerResolver)
-    }
-
-    pub(crate) fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-        self.inner.get_urls()
+        Self(Arc::new(NotImplementedWorkerResolver))
     }
 }
