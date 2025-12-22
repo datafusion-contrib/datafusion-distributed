@@ -1,28 +1,25 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::execute_stream;
-    use datafusion::prelude::SessionConfig;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, MappedDistributedSessionBuilderExt, assert_snapshot,
-        display_plan_ascii,
+        DistributedSessionBuilderContext, assert_snapshot, display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::error::Error;
 
     #[tokio::test]
     async fn distributed_show_columns() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(
-            3,
-            DefaultSessionBuilder.map(|mut v: SessionStateBuilder| {
-                v = v.with_config(SessionConfig::default().with_information_schema(true));
-                Ok(v.build())
-            }),
-        )
-        .await;
+        let (ctx, _guard) =
+            start_localhost_context(3, |mut ctx: DistributedSessionBuilderContext| async {
+                let cfg = ctx.builder.config().get_or_insert_default();
+                let opts = cfg.options_mut();
+                opts.catalog.information_schema = true;
+                Ok(ctx.builder.build())
+            })
+            .await;
         register_parquet_tables(&ctx).await?;
 
         let df = ctx.sql(r#"SHOW COLUMNS from weather"#).await?;

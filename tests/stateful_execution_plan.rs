@@ -3,9 +3,7 @@ mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::error::DataFusionError;
-    use datafusion::execution::{
-        SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
-    };
+    use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
     use datafusion::physical_expr::EquivalenceProperties;
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -40,9 +38,8 @@ mod tests {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
         ) -> Result<SessionState, DataFusionError> {
-            Ok(SessionStateBuilder::new()
-                .with_runtime_env(ctx.runtime_env)
-                .with_default_features()
+            Ok(ctx
+                .builder
                 .with_distributed_user_codec(PassThroughExecCodec)
                 .build())
         }

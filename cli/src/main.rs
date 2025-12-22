@@ -17,8 +17,6 @@
 
 // File mainly copied from https://github.com/apache/datafusion/blob/main/datafusion-cli/src/main.rs
 
-use arrow_flight::flight_service_client::FlightServiceClient;
-use async_trait::async_trait;
 use clap::Parser;
 use datafusion::common::config_err;
 use datafusion::config::ConfigOptions;
@@ -35,16 +33,14 @@ use datafusion_cli::{
     print_format::PrintFormat,
     print_options::{MaxRows, PrintOptions},
 };
-use datafusion_distributed::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
+use datafusion_distributed::test_utils::in_memory_channel_resolver::{
+    InMemoryChannelResolver, InMemoryWorkerResolver,
 };
-use hyper_util::rt::TokioIo;
+use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule};
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
-use tonic::transport::{Endpoint, Server};
 
 #[derive(Debug, Parser, PartialEq)]
 #[clap(author, version, about, long_about= None)]
@@ -153,7 +149,8 @@ async fn main_inner() -> Result<()> {
         .with_config(session_config)
         .with_runtime_env(runtime_env)
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-        .with_distributed_channel_resolver(InMemoryChannelResolver::new())
+        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(16))
+        .with_distributed_channel_resolver(InMemoryChannelResolver::default())
         .build();
 
     // enable dynamic file query
@@ -263,71 +260,5 @@ fn parse_command(command: &str) -> Result<String, String> {
         Ok(command.to_string())
     } else {
         Err("-c flag expects only non empty commands".to_string())
-    }
-}
-
-const DUMMY_URL: &str = "http://localhost:50051";
-
-/// [ChannelResolver] implementation that returns gRPC clients baked by an in-memory
-/// tokio duplex rather than a TCP connection.
-#[derive(Clone)]
-struct InMemoryChannelResolver {
-    channel: FlightServiceClient<BoxCloneSyncChannel>,
-}
-
-impl InMemoryChannelResolver {
-    fn new() -> Self {
-        let (client, server) = tokio::io::duplex(1024 * 1024);
-
-        let mut client = Some(client);
-        let channel = Endpoint::try_from(DUMMY_URL)
-            .expect("Invalid dummy URL for building an endpoint. This should never happen")
-            .connect_with_connector_lazy(tower::service_fn(move |_| {
-                let client = client
-                    .take()
-                    .expect("Client taken twice. This should never happen");
-                async move { Ok::<_, std::io::Error>(TokioIo::new(client)) }
-            }));
-
-        let this = Self {
-            channel: create_flight_client(BoxCloneSyncChannel::new(channel)),
-        };
-        let this_clone = this.clone();
-
-        let endpoint =
-            ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
-                let this = this.clone();
-                async move {
-                    let builder = SessionStateBuilder::new()
-                        .with_default_features()
-                        .with_distributed_channel_resolver(this)
-                        .with_runtime_env(ctx.runtime_env.clone());
-                    Ok(builder.build())
-                }
-            })
-            .unwrap();
-
-        tokio::spawn(async move {
-            Server::builder()
-                .add_service(endpoint.into_flight_server())
-                .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server)))
-                .await
-        });
-
-        this_clone
-    }
-}
-
-#[async_trait]
-impl ChannelResolver for InMemoryChannelResolver {
-    fn get_urls(&self) -> std::result::Result<Vec<url::Url>, DataFusionError> {
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 16]) // simulate 16 workers
-    }
-
-    async fn get_flight_client_for_url(
-        &self,
-        _: &url::Url,
-    ) -> std::result::Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        Ok(self.channel.clone())
     }
 }

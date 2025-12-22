@@ -1,10 +1,10 @@
-use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::distributed_planner::set_distributed_task_estimator;
+use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, TaskEstimator};
+use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -181,8 +181,60 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
-    /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
-    /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
+    /// This is what tells Distributed DataFusion the URLs of the workers available for serving queries.
+    ///
+    /// It injects a [WorkerResolver] implementation for Distributed DataFusion to resolve worker
+    /// nodes in the cluster. When running in distributed mode, setting a [WorkerResolver] is required.
+    ///
+    /// Even if this is required to be present in the [SessionContext] that first initiates and
+    /// plans the query, it's not necessary to be present in a worker's ArrowFlightEndpoint session
+    /// state builder, as no planning happens there, and the WorkerResolver::get_urls method is
+    /// only called during planning.
+    ///
+    /// Example:
+    ///
+    /// ```
+    /// # use arrow_flight::flight_service_client::FlightServiceClient;
+    /// # use async_trait::async_trait;
+    /// # use datafusion::common::DataFusionError;
+    /// # use datafusion::execution::{SessionState, SessionStateBuilder};
+    /// # use datafusion::prelude::SessionConfig;
+    /// # use url::Url;
+    /// # use std::sync::Arc;
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext};
+    ///
+    /// struct CustomWorkerResolver;
+    ///
+    /// #[async_trait]
+    /// impl WorkerResolver for CustomWorkerResolver {
+    ///     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+    ///         todo!()
+    ///     }
+    /// }
+    ///
+    /// // This tweaks the SessionState so that it can plan for distributed queries and execute them.
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_worker_resolver(CustomWorkerResolver)
+    ///     // the DistributedPhysicalOptimizerRule also needs to be passed so that query plans
+    ///     // get distributed.
+    ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    ///     .build();
+    /// ```
+    fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        self,
+        resolver: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
+    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    );
+
+    /// This is what tells Distributed DataFusion how to build an Arrow Flight client out of a worker URL.
+    ///
+    /// There's a default implementation of this that caches the Arrow Flight client instances so that there's
+    /// only one per URL, but users can decide to override that behavior in favor of their own solution.
     ///
     /// Example:
     ///
@@ -200,11 +252,8 @@ pub trait DistributedExt: Sized {
     ///
     /// #[async_trait]
     /// impl ChannelResolver for CustomChannelResolver {
-    ///     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-    ///         todo!()
-    ///     }
-    ///
     ///     async fn get_flight_client_for_url(&self, url: &Url) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ///         // Build a custom FlightServiceClient wrapped with tower layers or something similar.
     ///         todo!()
     ///     }
     /// }
@@ -221,6 +270,8 @@ pub trait DistributedExt: Sized {
     /// // part of a plan, it knows how to resolve gRPC channels from URLs for making network calls to other nodes.
     /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
     ///     Ok(SessionStateBuilder::new()
+    ///         // If you have a custom channel resolver, it should also be passed in the
+    ///         // ArrowFlightEndpoint session builder.
     ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
     /// }
@@ -393,6 +444,13 @@ impl DistributedExt for SessionConfig {
         set_distributed_user_codec_arc(self, codec)
     }
 
+    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    ) {
+        set_distributed_worker_resolver(self, resolver);
+    }
+
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
@@ -449,6 +507,10 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
@@ -494,6 +556,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -546,6 +613,11 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -596,6 +668,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]

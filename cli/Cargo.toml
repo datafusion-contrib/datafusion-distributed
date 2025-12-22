@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 datafusion = { version = "51" }
-datafusion-distributed = { path = "..", features = ["avro"] }
+datafusion-distributed = { path = "..", features = ["avro", "integration"] }
 datafusion-cli = { version = "51", default-features = false }
 tokio = { version = "1.46.1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

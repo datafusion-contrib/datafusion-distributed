@@ -1,13 +1,12 @@
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use http::HeaderMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct DistributedSessionBuilderContext {
-    pub runtime_env: Arc<RuntimeEnv>,
+    pub builder: SessionStateBuilder,
     pub headers: HeaderMap,
 }
 
@@ -49,13 +48,11 @@ pub trait DistributedSessionBuilder {
     /// #[async_trait]
     /// impl DistributedSessionBuilder for CustomSessionBuilder {
     ///     async fn build_session_state(&self, ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///         let mut builder = SessionStateBuilder::new()
-    ///             .with_runtime_env(ctx.runtime_env.clone())
-    ///             .with_default_features();
-    ///         builder.set_distributed_user_codec(CustomExecCodec);
-    ///         // Add your UDFs, optimization rules, etc...
-    ///
-    ///         Ok(builder.build())
+    ///         Ok(ctx
+    ///             .builder
+    ///             .with_distributed_user_codec(CustomExecCodec)
+    ///             // Add your UDFs, optimization rules, etc...
+    ///             .build())
     ///     }
     /// }
     /// ```
@@ -76,10 +73,7 @@ impl DistributedSessionBuilder for DefaultSessionBuilder {
         &self,
         ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
-        Ok(SessionStateBuilder::new()
-            .with_runtime_env(ctx.runtime_env.clone())
-            .with_default_features()
-            .build())
+        Ok(ctx.builder.build())
     }
 }
 

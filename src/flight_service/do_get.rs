@@ -22,6 +22,7 @@ use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -80,7 +81,9 @@ impl ArrowFlightEndpoint {
         let mut session_state = self
             .session_builder
             .build_session_state(DistributedSessionBuilderContext {
-                runtime_env: Arc::clone(&self.runtime),
+                builder: SessionStateBuilder::new()
+                    .with_default_features()
+                    .with_runtime_env(Arc::clone(&self.runtime)),
                 headers: headers.clone(),
             })
             .await

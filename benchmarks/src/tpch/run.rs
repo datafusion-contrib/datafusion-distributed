@@ -43,7 +43,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::{
-    LocalHostChannelResolver, spawn_flight_service,
+    LocalHostWorkerResolver, spawn_flight_service,
 };
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
@@ -143,7 +143,7 @@ impl DistributedSessionBuilder for RunOpt {
             .with_default_features()
             .with_config(config)
             .with_distributed_user_codec(InMemoryCacheExecCodec)
-            .with_distributed_channel_resolver(LocalHostChannelResolver::new(self.workers.clone()))
+            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
             .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_option_extension_from_headers::<WarmingUpMarker>(&ctx.headers)?
             .with_distributed_files_per_task(

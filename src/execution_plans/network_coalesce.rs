@@ -1,4 +1,3 @@
-use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::require_one_child;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::NetworkBoundary;
@@ -8,6 +7,7 @@ use crate::execution_plans::common::{
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
+use crate::networking::get_distributed_channel_resolver;
 use crate::protobuf::{StageKey, map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{ChannelResolver, DistributedConfig, DistributedTaskContext, ExecutionTask};
@@ -175,7 +175,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         // get the channel manager and current stage from our context
-        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
+        let channel_resolver = get_distributed_channel_resolver(context.session_config())?.clone();
 
         let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
         let retrieve_metrics = d_cfg.collect_metrics;

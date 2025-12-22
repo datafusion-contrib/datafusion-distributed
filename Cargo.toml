@@ -38,6 +38,7 @@ object_store = "0.12.3"
 bytes = "1.10.1"
 pin-project = "1.1.10"
 tokio-stream = "0.1.17"
+moka = { version = "0.12", features = ["sync"] }
 
 # integration_tests deps
 insta = { version = "1.43.1", features = ["filters"], optional = true }

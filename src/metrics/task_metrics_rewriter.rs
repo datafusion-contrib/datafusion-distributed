@@ -189,7 +189,9 @@ mod tests {
     use crate::metrics::rewrite_distributed_plan_with_metrics;
     use crate::metrics::task_metrics_rewriter::stage_metrics_rewriter;
     use crate::protobuf::StageKey;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::{
+        InMemoryChannelResolver, InMemoryWorkerResolver,
+    };
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::plans::count_plan_nodes;
     use crate::test_utils::session_context::register_temp_parquet_table;
@@ -233,7 +235,8 @@ mod tests {
 
         if distributed {
             builder = builder
-                .with_distributed_channel_resolver(InMemoryChannelResolver::new(10))
+                .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
+                .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))

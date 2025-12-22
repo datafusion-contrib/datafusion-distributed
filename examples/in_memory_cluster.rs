@@ -6,8 +6,8 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
     ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
-    display_plan_ascii,
+    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, WorkerResolver,
+    create_flight_client, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let state = SessionStateBuilder::new()
         .with_default_features()
+        .with_distributed_worker_resolver(InMemoryWorkerResolver)
         .with_distributed_channel_resolver(InMemoryChannelResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .with_distributed_files_per_task(1)?
@@ -91,13 +92,7 @@ impl InMemoryChannelResolver {
         let endpoint =
             ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
                 let this = this.clone();
-                async move {
-                    let builder = SessionStateBuilder::new()
-                        .with_default_features()
-                        .with_distributed_channel_resolver(this)
-                        .with_runtime_env(ctx.runtime_env.clone());
-                    Ok(builder.build())
-                }
+                async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
             })
             .unwrap();
 
@@ -114,14 +109,18 @@ impl InMemoryChannelResolver {
 
 #[async_trait]
 impl ChannelResolver for InMemoryChannelResolver {
-    fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 16]) // simulate 16 workers.
-    }
-
     async fn get_flight_client_for_url(
         &self,
         _: &url::Url,
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         Ok(self.channel.clone())
+    }
+}
+
+struct InMemoryWorkerResolver;
+
+impl WorkerResolver for InMemoryWorkerResolver {
+    fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
+        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 16]) // simulate 16 workers.
     }
 }
