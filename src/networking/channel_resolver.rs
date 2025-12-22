@@ -77,18 +77,10 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 type ChannelCacheValue =
     Shared<BoxFuture<FlightServiceClient<BoxCloneSyncChannel>, Arc<DataFusionError>>>;
 
-pub static DEFAULT_CHANNEL_RESOLVER: LazyLock<Arc<dyn ChannelResolver + Send + Sync>> =
-    LazyLock::new(|| {
-        Arc::new(DefaultChannelResolver {
-            cache: moka::sync::Cache::builder()
-                // Use an unrealistic max capacity, just in case there is a logic error on the
-                // user part that produces an unreasonable amount of URLs.
-                .max_capacity(64556)
-                // If a channel has not been used in 5 mins, delete it.
-                .time_to_idle(Duration::from_secs(5 * 60))
-                .build(),
-        })
-    });
+// The moka Cache instance needs to be global, as it needs to share the same cache for all the
+// queries, so it's declared as a private static variable.
+static DEFAULT_CHANNEL_RESOLVER: LazyLock<Arc<dyn ChannelResolver + Send + Sync>> =
+    LazyLock::new(|| Arc::new(DefaultChannelResolver::new()));
 
 #[derive(Clone)]
 pub(crate) struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
@@ -99,8 +91,27 @@ impl Default for ChannelResolverExtension {
     }
 }
 
-struct DefaultChannelResolver {
+/// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
+/// and stores the connection instance in a TTI cache.
+///
+/// Sane default over which other [ChannelResolver] can be built for better customization of the
+/// [FlightServiceClient]s.
+pub struct DefaultChannelResolver {
     cache: moka::sync::Cache<Url, ChannelCacheValue>,
+}
+
+impl DefaultChannelResolver {
+    pub fn new() -> Self {
+        Self {
+            cache: moka::sync::Cache::builder()
+                // Use an unrealistic max capacity, just in case there is a logic error on the
+                // user part that produces an unreasonable amount of URLs.
+                .max_capacity(64556)
+                // If a channel has not been used in 5 mins, delete it.
+                .time_to_idle(Duration::from_secs(5 * 60))
+                .build(),
+        }
+    }
 }
 
 #[async_trait]
