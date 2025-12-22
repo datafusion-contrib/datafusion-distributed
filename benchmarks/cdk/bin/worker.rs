@@ -73,11 +73,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let ctx = SessionContext::from(state);
 
     let arrow_flight_endpoint =
-        ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
+        ArrowFlightEndpoint::from_session_builder(move |ctx: DistributedSessionBuilderContext| {
             let s3 = s3.clone();
             let s3_url = s3_url.clone();
             async move { Ok(ctx.builder.with_object_store(&s3_url, s3).build()) }
-        })?;
+        });
     let http_server = axum::serve(
         listener,
         Router::new().route(

@@ -89,12 +89,12 @@ impl InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint =
-            ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
+        let endpoint = ArrowFlightEndpoint::from_session_builder(
+            move |ctx: DistributedSessionBuilderContext| {
                 let this = this.clone();
                 async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
-            })
-            .unwrap();
+            },
+        );
 
         tokio::spawn(async move {
             Server::builder()

@@ -280,7 +280,6 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flight_service::session_builder::DefaultSessionBuilder;
     use crate::stage::ExecutionTask;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
@@ -295,9 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
-        // Create ArrowFlightEndpoint with DefaultSessionBuilder
-        let mut endpoint =
-            ArrowFlightEndpoint::try_new(DefaultSessionBuilder).expect("Failed to create endpoint");
+        let mut endpoint = ArrowFlightEndpoint::default();
         let plans_received = Arc::new(AtomicUsize::default());
         {
             let plans_received = Arc::clone(&plans_received);
