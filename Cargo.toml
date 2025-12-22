@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmarks"]
+members = ["benchmarks", "cli"]
 
 [workspace.dependencies]
 datafusion = { version = "51.0.0", default-features = false }
@@ -49,6 +49,7 @@ hyper-util = { version = "0.1.16", optional = true }
 pretty_assertions = { version = "1.4", optional = true }
 
 [features]
+avro = ["datafusion/avro"]
 integration = [
     "insta",
     "tpchgen",
