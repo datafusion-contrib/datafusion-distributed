@@ -74,8 +74,7 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
     tonic::transport::Error,
 >;
 
-type ChannelCacheValue =
-    Shared<BoxFuture<FlightServiceClient<BoxCloneSyncChannel>, Arc<DataFusionError>>>;
+type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionError>>>;
 
 // The moka Cache instance needs to be global, as it needs to share the same cache for all the
 // queries, so it's declared as a private static variable.
@@ -114,22 +113,19 @@ impl Default for DefaultChannelResolver {
     }
 }
 
-#[async_trait]
-impl ChannelResolver for DefaultChannelResolver {
-    async fn get_flight_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+impl DefaultChannelResolver {
+    /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
+    pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
         let channel = self.cache.get_with_by_ref(url, move || {
-            let url = url.clone();
+            let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url.to_string())
+                let endpoint = Channel::from_shared(url)
                     .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
                 let channel = endpoint
                     .connect()
                     .await
                     .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
-                Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
+                Ok(BoxCloneSyncChannel::new(channel))
             }
             .boxed()
             .shared()
@@ -139,6 +135,16 @@ impl ChannelResolver for DefaultChannelResolver {
             self.cache.invalidate(url);
             DataFusionError::Shared(err)
         })
+    }
+}
+
+#[async_trait]
+impl ChannelResolver for DefaultChannelResolver {
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        self.get_channel(url).await.map(create_flight_client)
     }
 }
 
