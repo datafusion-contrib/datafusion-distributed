@@ -7,8 +7,10 @@ members = ["benchmarks"]
 # This PR includes:
 # - Hash subset satisfaction logic (eliminates unnecessary repartitions)
 # - File partitioning preservation (from PR #19124)
-datafusion = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset", default-features = false }
-datafusion-proto = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset" }
+# datafusion = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset", default-features = false }
+# datafusion-proto = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_partitioning_satisfies_subset" }
+  datafusion = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_superset_satisfies_partitioning", default-features = false }
+  datafusion-proto = { git = "https://github.com/gene-bordegaray/datafusion.git", branch = "gene.bordegaray/2025/12/hash_superset_satisfies_partitioning" }
 
 [package]
 name = "datafusion-distributed"
