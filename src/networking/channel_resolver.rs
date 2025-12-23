@@ -80,7 +80,7 @@ type ChannelCacheValue =
 // The moka Cache instance needs to be global, as it needs to share the same cache for all the
 // queries, so it's declared as a private static variable.
 static DEFAULT_CHANNEL_RESOLVER: LazyLock<Arc<dyn ChannelResolver + Send + Sync>> =
-    LazyLock::new(|| Arc::new(DefaultChannelResolver::new()));
+    LazyLock::new(|| Arc::new(DefaultChannelResolver::default()));
 
 #[derive(Clone)]
 pub(crate) struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
@@ -100,8 +100,8 @@ pub struct DefaultChannelResolver {
     cache: moka::sync::Cache<Url, ChannelCacheValue>,
 }
 
-impl DefaultChannelResolver {
-    pub fn new() -> Self {
+impl Default for DefaultChannelResolver {
+    fn default() -> Self {
         Self {
             cache: moka::sync::Cache::builder()
                 // Use an unrealistic max capacity, just in case there is a logic error on the

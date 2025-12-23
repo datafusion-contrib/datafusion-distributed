@@ -28,7 +28,10 @@ pub use flight_service::{
     MappedDistributedSessionBuilderExt,
 };
 pub use metrics::rewrite_distributed_plan_with_metrics;
-pub use networking::{BoxCloneSyncChannel, ChannelResolver, WorkerResolver, create_flight_client};
+pub use networking::{
+    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
+    create_flight_client,
+};
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
     explain_analyze,
