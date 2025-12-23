@@ -497,10 +497,10 @@ fn display_plan(
                     if i >= isolator_partition_group.as_ref().map_or(0, |v| v.len()) {
                         style = "[style=dotted, label=empty]";
                     }
-                } else if let Some(partition_group) = &isolator_partition_group {
-                    if !partition_group.contains(&i) {
-                        style = "[style=invis]";
-                    }
+                } else if let Some(partition_group) = &isolator_partition_group
+                    && !partition_group.contains(&i)
+                {
+                    style = "[style=invis]";
                 }
 
                 writeln!(
@@ -755,10 +755,10 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
 
 pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
     let mut result = vec![];
-    if let Some(plan) = plan.as_network_boundary() {
-        if let Some(stage) = plan.input_stage() {
-            result.push(stage);
-        }
+    if let Some(plan) = plan.as_network_boundary()
+        && let Some(stage) = plan.input_stage()
+    {
+        result.push(stage);
     }
     for child in plan.children() {
         result.extend(find_all_stages(child));

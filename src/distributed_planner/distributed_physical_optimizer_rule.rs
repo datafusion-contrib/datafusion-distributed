@@ -984,8 +984,7 @@ mod tests {
         // The plan should not contain NetworkBroadcastExec
         assert!(
             !plan.contains("NetworkBroadcastExec"),
-            "NetworkBroadcastExec should be rolled back with single consumer task. Plan:\n{}",
-            plan
+            "NetworkBroadcastExec should be rolled back with single consumer task. Plan:\n{plan}",
         );
         // The build side should be inlined as CoalescePartitionsExec
         assert!(
