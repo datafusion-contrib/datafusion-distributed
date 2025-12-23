@@ -360,7 +360,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                         stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
-                        consumer_count: None, // Regular shuffle, not broadcast
+                        consumer_count: None,
                     }
                     .encode_to_vec()
                     .into(),

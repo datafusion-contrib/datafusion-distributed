@@ -110,13 +110,12 @@ impl ArrowFlightEndpoint {
                 }
 
                 let (num_remaining, cached_batches) = if is_broadcast {
-                    // For broadcast: track consumers, prepare cache
                     (
                         Arc::new(AtomicUsize::new(consumer_count)),
                         Some(Arc::new(tokio::sync::OnceCell::new())),
                     )
                 } else {
-                    // For regular stages: track partitions, no cache
+                    // For regular stages track partitions and no cache
                     let total_partitions = plan.properties().partitioning.partition_count();
                     (Arc::new(AtomicUsize::new(total_partitions)), None)
                 };
@@ -155,11 +154,7 @@ impl ArrowFlightEndpoint {
         // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
         // as executing `StageExec` performs some worker assignation that should have already been
         // done in the head stage.
-
-        // Get schema from the plan before creating streams - both cached and regular paths
-        // need this, and BoxStream doesn't have a schema() method
         let schema = plan.schema();
-
         let stream = if let Some(cache) = &stage_data.cached_batches {
             let batches = cache
                 .get_or_try_init(|| async {
@@ -171,11 +166,9 @@ impl ArrowFlightEndpoint {
                 })
                 .await
                 .map_err(|err| Status::internal(format!("Error executing: {err}")))?;
-            // Stream from cached batches - use into_iter on Vec to own the data
             let batches: Vec<RecordBatch> = batches.as_ref().clone();
             futures::stream::iter(batches.into_iter().map(Ok)).boxed()
         } else {
-            // Regular: execute directly
             stage_data
                 .plan
                 .execute(doget.target_partition as usize, session_state.task_ctx())
@@ -375,7 +368,7 @@ mod tests {
                 target_task_count: num_tasks,
                 target_partition: partition,
                 stage_key: Some(stage_key),
-                consumer_count: None, // Regular (non-broadcast) stage
+                consumer_count: None,
             };
 
             let ticket = Ticket {

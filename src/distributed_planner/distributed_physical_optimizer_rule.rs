@@ -64,6 +64,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         cfg: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let with_boundaries = apply_network_boundaries(Arc::clone(&plan), cfg)?;
+        // Fast path is apply_network_boundaries does not change plan.
         if Arc::ptr_eq(&plan, &with_boundaries) {
             return Ok(plan);
         }
@@ -450,6 +451,9 @@ fn _distribute_plan_inner(
 
         let stage = loop {
             let input_stage_info = dnode.as_ref().get_input_stage_info(n_tasks)?;
+            // If the current stage has just 1 task, and the next stage is only going to have
+            // 1 task, there's no point in having a network boundary in between, they can just
+            // communicate in memory.
             if n_tasks == 1 && input_stage_info.task_count == 1 {
                 let mut n = dnode.as_ref().rollback()?;
                 if let Some(node) = n.as_any().downcast_ref::<PartitionIsolatorExec>() {
@@ -496,7 +500,7 @@ fn _distribute_plan_inner(
     Ok(stage)
 }
 
-/// Checks if a plan subtree contains NetworkShuffleExec (which can cause partition mismatch).
+/// Checks if a plan subtree contains NetworkShuffleExec.
 fn contains_shuffle_boundary(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.as_any().downcast_ref::<NetworkShuffleExec>().is_some() {
         return true;
@@ -938,6 +942,56 @@ mod tests {
           │       DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, file_type=parquet
           └──────────────────────────────────────────────────
         ");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_preserved_with_multiple_consumers() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a
+        LEFT JOIN weather b ON a."RainToday" = b."RainToday"
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+        })
+        .await;
+
+        // Verify NetworkBroadcastExec is in the plan
+        assert!(
+            plan.contains("NetworkBroadcastExec"),
+            "NetworkBroadcastExec should be preserved when there are multiple consumer tasks"
+        );
+        // Verify Stage 2 has multiple tasks
+        assert!(
+            plan.contains("Stage 2 ── Tasks: t0:[p0] t1:[p1] t2:[p2]"),
+            "Consumer stage should have 3 tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_rolled_back_single_consumer() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a
+        LEFT JOIN weather b ON a."RainToday" = b."RainToday"
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(1))
+        })
+        .await;
+
+        // With only 1 worker, broadcast should be rolled back
+        // The plan should not contain NetworkBroadcastExec
+        assert!(
+            !plan.contains("NetworkBroadcastExec"),
+            "NetworkBroadcastExec should be rolled back with single consumer task. Plan:\n{}",
+            plan
+        );
+        // The build side should be inlined as CoalescePartitionsExec
+        assert!(
+            plan.contains("HashJoinExec") && plan.contains("CoalescePartitionsExec"),
+            "Build side should be inlined with CoalescePartitionsExec"
+        );
     }
 
     async fn sql_to_explain(

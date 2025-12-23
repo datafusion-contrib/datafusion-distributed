@@ -32,6 +32,94 @@ use std::sync::Arc;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 
+/// [ExecutionPlan] implementation that broadcasts data across the network in to all tasks in a
+/// stage.
+///
+/// This operators is easiest to visualize in the context of a hash join where one table is much
+/// smaller than the other (typically a CollectLeft joinn in DataFusion plans) in a distributed system.
+/// Without this operator the join would be forced to execute on a single node. It would be much more
+/// efficient to broadcast the entire small table to each task (node) in the stage, having each task
+/// complete a the join with a partition of the large table and full small table.
+///
+/// This node allows broadcasting data from N tasks to M tasks, being N and M arbitrary non-zero
+/// positive numbers. This comes with the caveat that broadcasting with > 1 input tasks requires
+/// coalescing their partitions to a single producer task which avoids partial or duplicate data being broadcast.
+///
+/// Here are some examples of how data can be broadcast in different scenarios:
+///
+/// # 1 stage with 1 partition to M tasks
+///
+/// ```text
+/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
+/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
+/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
+/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
+///            │1│                             │1│                            │1│                  │
+///            └▲┘                             └▲┘                            └▲┘                  ■
+///             │                               │                              │
+///          Populate                         Cache                          Cache
+///           Cache                            Hit                            Hit
+///             │                               │                              │
+///             └───────────────────────────────┼──────────────────────────────┘
+///                                            ┌┴┐
+///                                            │1│                                                 ■
+///                                       ┌────┴─┴────┐                                            │
+///                                       │Batch Cache│                                            │
+///                                 ┌─────┴───────────┴──────┐                                  Stage N
+///                                 │ Arc<dyn ExecutionPlan> │                                     │
+///                                 │        (task 1)        │                                     │
+///                                 └────────────────────────┘                                     ■
+/// ```
+/// All consumer stages are fetching the same partition. The first [NetworkBroadcastExec] causes
+/// execution and populates the cache with the resulting batches. Subsequent
+/// [NetworkBroadcastExec] operators read the results from the cache preventing; this is more
+/// efficient and prevents duplicate execution of a partition.
+///
+/// # N stages to M stages
+///
+/// ```text
+/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
+/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
+/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
+/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
+///            │1│                             │1│                            │1│                  │
+///            └▲┘                             └▲┘                            └▲┘                  ■
+///             │                               │                              │
+///          Populate                         Cache                          Cache
+///           Cache                            Hit                            Hit
+///             │                               │                              │
+///             └───────────────────────────────┼──────────────────────────────┘
+///                                            ┌┴┐
+///                                            │1│
+///                                       ┌────┴─┴────┐                                            ■
+///                                       │Batch Cache│                                            │
+///                                ┌──────┴───────────┴─────┐                                      │
+///                                │ CoalescePartitionsExec │                                   Stage N
+///                                │                        │                                      │
+///                                └┬─┬─────┬──┬┬─┬─────┬──┬┘                                      │
+///                                 │1│     │P1││1│     │PN│                                       │
+///                                 └▲┘ ... └─▲┘└▲┘ ... └─▲┘                                       ■
+///                                  │        │  │        │
+///                   ┌──────────────┘    ┌───┘  └───┐    └───────────────┐
+///                   │                   │          │                    │
+///                   │                   │          │                    │
+///                  ┌┴┐       ...       ┌┴─┐       ┌┴┐       ...       ┌─┴┐                       ■
+///                  │1│                 │P1│       │1│                 │PN│                       │
+///                 ┌┴─┴─────────────────┴──┴┐     ┌┴─┴─────────────────┴──┴┐                  Stage N-1
+///                 │ Arc<dyn ExecutionPlan> │ ... │ Arc<dyn ExecutionPlan> │                      │
+///                 │        (task 1)        │     │        (task N)        │                      │
+///                 └────────────────────────┘     └────────────────────────┘                      ■
+/// ```
+/// Here there are multiple input tasks, each with multiple partitionns. In a case like this a
+/// [CoalescePartitionsExec] is inserted. You can imagine if this coalesce was not here partial or
+/// duplicate data could be broadcast. Similarly, the first [NetworkBroadcastExec] triggers
+/// execution and populates the cache while subsequent operators read results from the cache.
+///
+/// # Multiple Broadcasts in One Stage
+/// Unlike other network operators there can be multiple [NetworkBroadcastExec] operators in a
+/// single stage as they do not force a new stage to be created. If multiple small tables can fit
+/// in a worker's memory then they can all be broadcast.
+///
 /// This node has two variants.
 /// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
@@ -305,5 +393,144 @@ impl ExecutionPlan for NetworkBroadcastExec {
             self.schema(),
             spawn_select_all(stream.collect(), Arc::clone(context.memory_pool())),
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    fn create_test_plan(partition_count: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        Arc::new(EmptyExec::new(schema).with_partitions(partition_count))
+    }
+
+    #[test]
+    fn test_network_broadcast_pending_creation() {
+        let input = create_test_plan(3);
+        let broadcast = NetworkBroadcastExec::try_new(input, 1).unwrap();
+        assert!(matches!(broadcast, NetworkBroadcastExec::Pending(_)));
+        assert_eq!(broadcast.input_task_count(), 1);
+    }
+
+    #[test]
+    fn test_get_input_stage_info_pending() {
+        let input = create_test_plan(3);
+        let broadcast = NetworkBroadcastExec::try_new(Arc::clone(&input), 1).unwrap();
+
+        let info = broadcast.get_input_stage_info(4).unwrap();
+        assert_eq!(info.task_count, 1);
+        assert!(Arc::ptr_eq(&info.plan, &input));
+    }
+
+    #[test]
+    fn test_with_input_task_count_pending() {
+        let input = create_test_plan(3);
+        let broadcast = NetworkBroadcastExec::try_new(input, 1).unwrap();
+
+        // Should be able to reassign task count in Pending state
+        let new_broadcast = broadcast.with_input_task_count(4).unwrap();
+        assert_eq!(new_broadcast.input_task_count(), 4);
+    }
+
+    #[test]
+    fn test_coalesce_wrapping_multiple_partitions() {
+        let input = create_test_plan(3); // 3 partitions
+        let broadcast = NetworkBroadcastExec::try_new(input, 1).unwrap();
+        let stage = Stage::new(Uuid::new_v4(), 1, create_test_plan(3), 1, None);
+        let result = broadcast.with_input_stage(stage, 4).unwrap();
+
+        // The result should be Ready state
+        let ready = result
+            .as_any()
+            .downcast_ref::<NetworkBroadcastExec>()
+            .unwrap();
+        assert!(matches!(ready, NetworkBroadcastExec::Ready(_)));
+
+        // The stage plan should be wrapped with CoalescePartitionsExec
+        if let NetworkBroadcastExec::Ready(r) = ready {
+            let plan = r.input_stage.plan.decoded().unwrap();
+            assert!(
+                plan.as_any()
+                    .downcast_ref::<CoalescePartitionsExec>()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn test_coalesce_wrapping_single_partition() {
+        let input = create_test_plan(1); // 1 partition - no coalesce needed
+        let broadcast = NetworkBroadcastExec::try_new(input, 1).unwrap();
+        let stage = Stage::new(Uuid::new_v4(), 1, create_test_plan(1), 1, None);
+        let result = broadcast.with_input_stage(stage, 4).unwrap();
+
+        // The result should be Ready state
+        let ready = result
+            .as_any()
+            .downcast_ref::<NetworkBroadcastExec>()
+            .unwrap();
+
+        // The stage plan should not be wrapped with CoalescePartitionsExec
+        if let NetworkBroadcastExec::Ready(r) = ready {
+            let plan = r.input_stage.plan.decoded().unwrap();
+            assert!(
+                plan.as_any()
+                    .downcast_ref::<CoalescePartitionsExec>()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn test_coalesce_not_double_wrapped() {
+        // Create a plan that's already CoalescePartitionsExec
+        let inner = create_test_plan(3);
+        let coalesced = Arc::new(CoalescePartitionsExec::new(inner));
+        let broadcast = NetworkBroadcastExec::try_new(coalesced.clone(), 1).unwrap();
+        let stage = Stage::new(Uuid::new_v4(), 1, coalesced, 1, None);
+        let result = broadcast.with_input_stage(stage, 4).unwrap();
+
+        // The result should be Ready state
+        let ready = result
+            .as_any()
+            .downcast_ref::<NetworkBroadcastExec>()
+            .unwrap();
+
+        // Should not be double wrapped
+        if let NetworkBroadcastExec::Ready(r) = ready {
+            let plan = r.input_stage.plan.decoded().unwrap();
+            if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+                assert!(
+                    coalesce.children()[0]
+                        .as_any()
+                        .downcast_ref::<CoalescePartitionsExec>()
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_consumer_task_count_propagation() {
+        let input = create_test_plan(1);
+        let broadcast = NetworkBroadcastExec::try_new(input, 1).unwrap();
+        let stage = Stage::new(Uuid::new_v4(), 1, create_test_plan(1), 1, None);
+        let result = broadcast.with_input_stage(stage, 8).unwrap();
+
+        let ready = result
+            .as_any()
+            .downcast_ref::<NetworkBroadcastExec>()
+            .unwrap();
+
+        if let NetworkBroadcastExec::Ready(r) = ready {
+            assert_eq!(r.input_stage.consumer_task_count, Some(8));
+        } else {
+            panic!("Expected Ready state");
+        }
     }
 }
