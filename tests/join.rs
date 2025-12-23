@@ -1,14 +1,90 @@
 #[cfg(test)]
 mod tests {
-    use arrow::{datatypes::DataType, util::pretty};
+    use arrow::{array::RecordBatch, datatypes::DataType, util::pretty};
     use datafusion::{
         assert_batches_sorted_eq,
+        error::Result,
         physical_plan::collect,
-        prelude::{ParquetReadOptions, col},
+        prelude::{ParquetReadOptions, SessionContext, col},
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, display_plan_ascii, test_utils::localhost::start_localhost_context,
     };
+
+    fn set_configs(ctx: &SessionContext) {
+        // Preserve hive-style file partitions.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .preserve_file_partitions = 1;
+        // Read data from 4 hive-style partitions.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = 4;
+        // Ensure that we use a partitioned hash join.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold = 0;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .hash_join_single_partition_threshold_rows = 0;
+    }
+
+    async fn register_tables(ctx: &SessionContext) -> Result<()> {
+        // Register hive-style partitioning for the dim table.
+        let dim_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
+        ctx.register_parquet("dim", "testdata/join/parquet/dim", dim_options)
+            .await?;
+
+        // Register hive-style partitioning for the fact table.
+        let fact_options = ParquetReadOptions::default()
+            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)])
+            // TODO: Figure out why file sort order does not display in plan.
+            .file_sort_order(vec![vec![
+                col("f_dkey").sort(true, true),
+                col("timestamp").sort(true, true),
+            ]]);
+        ctx.register_parquet("fact", "testdata/join/parquet/fact", fact_options)
+            .await?;
+        Ok(())
+    }
+
+    async fn execute_query(
+        ctx: &SessionContext,
+        query: &'static str,
+    ) -> Result<(String, Vec<RecordBatch>)> {
+        let df = ctx.sql(query).await?;
+        let (state, logical_plan) = df.into_parts();
+        let physical_plan = state.create_physical_plan(&logical_plan).await?;
+        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
+        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{}", distributed_plan);
+
+        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
+        pretty::print_batches(&distributed_results)?;
+        Ok((distributed_plan, distributed_results))
+    }
+
+    fn validate_plan(plan: String, target_plan: &'static str) {
+        let normalized_distributed = normalize(&plan);
+        let normalized_target = normalize(&target_plan);
+        assert_eq!(
+            normalized_distributed, normalized_target,
+            "Plan mismatch!\nTarget:\n{}\nActual:\n{}",
+            normalized_target, normalized_distributed
+        );
+    }
 
     fn normalize(s: &str) -> String {
         let current_dir = std::env::current_dir().unwrap().display().to_string();
@@ -39,66 +115,10 @@ mod tests {
         // —————————————————————————————————————————————————————————————
 
         let (distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
-
-        // Preserve hive-style file partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .preserve_file_partitions = 1;
-        // Read data from 4 hive-style partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 4;
-        // Ensure that we use a partitioned hash join.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-
-        // Register hive-style partitioning for the dim table.
-        let dim_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
-        distributed_ctx
-            .register_parquet("dim", "testdata/join/parquet/dim", dim_options)
-            .await?;
-
-        // Register hive-style partitioning for the fact table.
-        let fact_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)])
-            // TODO: Figure out why file sort order does not display in plan.
-            .file_sort_order(vec![vec![
-                col("f_dkey").sort(true, true),
-                col("timestamp").sort(true, true),
-            ]]);
-        distributed_ctx
-            .register_parquet("fact", "testdata/join/parquet/fact", fact_options)
-            .await?;
-
-        let df = distributed_ctx.sql(query).await?;
-        let (state, logical_plan) = df.into_parts();
-        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
-        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{}", distributed_plan);
-
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
-        pretty::print_batches(&distributed_results)?;
+        set_configs(&distributed_ctx);
+        register_tables(&distributed_ctx).await?;
+        let (distributed_plan, distributed_results) =
+            execute_query(&distributed_ctx, query).await?;
 
         // —————————————————————————————————————————————————————————————
         // Ensure the distributed plan matches our target plan, registering
@@ -119,14 +139,7 @@ mod tests {
   │       DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
   └──────────────────────────────────────────────────
   "#;
-
-        let normalized_distributed = normalize(&distributed_plan);
-        let normalized_target = normalize(&target_plan);
-        assert_eq!(
-            normalized_distributed, normalized_target,
-            "Plan mismatch!\nTarget:\n{}\nActual:\n{}",
-            normalized_target, normalized_distributed
-        );
+        validate_plan(distributed_plan, target_plan);
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
@@ -197,66 +210,10 @@ mod tests {
         // —————————————————————————————————————————————————————————————
 
         let (distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
-
-        // Preserve hive-style file partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .preserve_file_partitions = 1;
-        // Read data from 4 hive-style partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 4;
-        // Ensure that we use a partitioned hash join.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-
-        // Register hive-style partitioning for the dim table.
-        let dim_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
-        distributed_ctx
-            .register_parquet("dim", "testdata/join/parquet/dim", dim_options)
-            .await?;
-
-        // Register hive-style partitioning for the fact table.
-        let fact_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)])
-            // TODO: Figure out why file sort order does not display in plan.
-            .file_sort_order(vec![vec![
-                col("f_dkey").sort(true, true),
-                col("timestamp").sort(true, true),
-            ]]);
-        distributed_ctx
-            .register_parquet("fact", "testdata/join/parquet/fact", fact_options)
-            .await?;
-
-        let df = distributed_ctx.sql(query).await?;
-        let (state, logical_plan) = df.into_parts();
-        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
-        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{}", distributed_plan);
-
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
-        pretty::print_batches(&distributed_results)?;
+        set_configs(&distributed_ctx);
+        register_tables(&distributed_ctx).await?;
+        let (distributed_plan, distributed_results) =
+            execute_query(&distributed_ctx, query).await?;
 
         // —————————————————————————————————————————————————————————————
         // Ensure the distributed plan matches our target plan, registering
@@ -279,14 +236,7 @@ mod tests {
   │           DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
   └──────────────────────────────────────────────────
   "#;
-
-        let normalized_distributed = normalize(&distributed_plan);
-        let normalized_target = normalize(&target_plan);
-        assert_eq!(
-            normalized_distributed, normalized_target,
-            "Plan mismatch!\nTarget:\n{}\nActual:\n{}",
-            normalized_target, normalized_distributed
-        );
+        validate_plan(distributed_plan, target_plan);
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
@@ -350,66 +300,10 @@ mod tests {
         // —————————————————————————————————————————————————————————————
 
         let (distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
-
-        // Preserve hive-style file partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .preserve_file_partitions = 1;
-        // Read data from 4 hive-style partitions.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .execution
-            .target_partitions = 4;
-        // Ensure that we use a partitioned hash join.
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold = 0;
-        distributed_ctx
-            .state_ref()
-            .write()
-            .config_mut()
-            .options_mut()
-            .optimizer
-            .hash_join_single_partition_threshold_rows = 0;
-
-        // Register hive-style partitioning for the dim table.
-        let dim_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("d_dkey".to_string(), DataType::Utf8)]);
-        distributed_ctx
-            .register_parquet("dim", "testdata/join/parquet/dim", dim_options)
-            .await?;
-
-        // Register hive-style partitioning for the fact table.
-        let fact_options = ParquetReadOptions::default()
-            .table_partition_cols(vec![("f_dkey".to_string(), DataType::Utf8)])
-            // TODO: Figure out why file sort order does not display in plan.
-            .file_sort_order(vec![vec![
-                col("f_dkey").sort(true, true),
-                col("timestamp").sort(true, true),
-            ]]);
-        distributed_ctx
-            .register_parquet("fact", "testdata/join/parquet/fact", fact_options)
-            .await?;
-
-        let df = distributed_ctx.sql(query).await?;
-        let (state, logical_plan) = df.into_parts();
-        let physical_plan = state.create_physical_plan(&logical_plan).await?;
-        let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
-        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{}", distributed_plan);
-
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
-        pretty::print_batches(&distributed_results)?;
+        set_configs(&distributed_ctx);
+        register_tables(&distributed_ctx).await?;
+        let (distributed_plan, distributed_results) =
+            execute_query(&distributed_ctx, query).await?;
 
         // —————————————————————————————————————————————————————————————
         // Ensure the distributed plan matches our target plan, registering
@@ -438,14 +332,7 @@ mod tests {
   │                 DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
   └──────────────────────────────────────────────────
   "#;
-
-        let normalized_distributed = normalize(&distributed_plan);
-        let normalized_target = normalize(&target_plan);
-        assert_eq!(
-            normalized_distributed, normalized_target,
-            "Plan mismatch!\nTarget:\n{}\nActual:\n{}",
-            normalized_target, normalized_distributed
-        );
+        validate_plan(distributed_plan, target_plan);
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
