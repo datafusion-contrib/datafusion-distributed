@@ -16,10 +16,8 @@
 // under the License.
 
 //! Shared benchmark utilities
-mod memory;
 mod options;
 mod run;
 
-pub use memory::{InMemoryCacheExecCodec, InMemoryDataSourceRule, WarmingUpMarker};
 pub use options::CommonOpt;
 pub use run::{BenchmarkRun, QueryIter};
