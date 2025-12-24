@@ -16,21 +16,19 @@
 // under the License.
 
 use datafusion::common::instant::Instant;
-use datafusion::logical_expr::select_expr::SelectExpr;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use datafusion::common::not_impl_err;
 use datafusion::error::Result;
+use datafusion::logical_expr::select_expr::SelectExpr;
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::tpch;
+use std::fs;
+use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 
 /// Convert tpch .slt files to .parquet or .csv files
 #[derive(Debug, StructOpt)]
-pub struct ConvertOpt {
+pub struct PrepareTpchOpt {
     /// Path to csv files
     #[structopt(parse(from_os_str), required = true, short = "i", long = "input")]
     input_path: PathBuf,
@@ -39,31 +37,17 @@ pub struct ConvertOpt {
     #[structopt(parse(from_os_str), required = true, short = "o", long = "output")]
     output_path: PathBuf,
 
-    /// Output file format: `csv` or `parquet`
-    #[structopt(short = "f", long = "format")]
-    file_format: String,
-
-    /// Compression to use when writing Parquet files
-    #[structopt(short = "c", long = "compression", default_value = "zstd")]
-    compression: String,
-
     /// Number of partitions to produce. By default, uses only 1 partition.
     #[structopt(short = "n", long = "partitions", default_value = "1")]
     partitions: usize,
-
-    /// Batch size when reading CSV or Parquet files
-    #[structopt(short = "s", long = "batch-size", default_value = "8192")]
-    batch_size: usize,
 
     /// Sort each table by its first column in ascending order.
     #[structopt(short = "t", long = "sort")]
     sort: bool,
 }
 
-impl ConvertOpt {
+impl PrepareTpchOpt {
     pub async fn run(self) -> Result<()> {
-        let compression = self.compression()?;
-
         let input_path = self.input_path.to_str().unwrap();
         let output_path = self.output_path.to_str().unwrap();
 
@@ -86,9 +70,7 @@ impl ConvertOpt {
                 options
             };
 
-            let config = SessionConfig::new()
-                .with_target_partitions(self.partitions)
-                .with_batch_size(self.batch_size);
+            let config = SessionConfig::new().with_target_partitions(self.partitions);
             let ctx = SessionContext::new_with_config(config);
 
             // build plan to read the TBL file
@@ -118,40 +100,16 @@ impl ConvertOpt {
             let output_path = output_path.to_str().unwrap().to_owned();
             fs::create_dir_all(&output_path)?;
             println!(
-                "Converting '{}' to {} files in directory '{}'",
-                &input_path, self.file_format, &output_path
+                "Converting '{}' to parquet files in directory '{}'",
+                &input_path, &output_path
             );
-            match self.file_format.as_str() {
-                "csv" => ctx.write_csv(csv, output_path).await?,
-                "parquet" => {
-                    let props = WriterProperties::builder()
-                        .set_compression(compression)
-                        .build();
-                    ctx.write_parquet(csv, output_path, Some(props)).await?
-                }
-                other => {
-                    return not_impl_err!("Invalid output format: {other}");
-                }
-            }
+            let props = WriterProperties::builder()
+                .set_compression(Compression::ZSTD(Default::default()))
+                .build();
+            ctx.write_parquet(csv, output_path, Some(props)).await?;
             println!("Conversion completed in {} ms", start.elapsed().as_millis());
         }
 
         Ok(())
-    }
-
-    /// return the compression method to use when writing parquet
-    fn compression(&self) -> Result<Compression> {
-        Ok(match self.compression.as_str() {
-            "none" => Compression::UNCOMPRESSED,
-            "snappy" => Compression::SNAPPY,
-            "brotli" => Compression::BROTLI(Default::default()),
-            "gzip" => Compression::GZIP(Default::default()),
-            "lz4" => Compression::LZ4,
-            "lz0" => Compression::LZO,
-            "zstd" => Compression::ZSTD(Default::default()),
-            other => {
-                return not_impl_err!("Invalid compression format: {other}");
-            }
-        })
     }
 }
