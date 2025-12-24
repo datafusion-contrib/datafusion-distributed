@@ -9,7 +9,7 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-distributed = { path = "..", features = ["integration"] }
 tokio = { version = "1.46.1", features = ["full"] }
-parquet = { version = "57.0.0" }
+parquet = { version = "57.1.0" }
 structopt = { version = "0.3.26" }
 log = "0.4.27"
 serde = "1.0.219"
@@ -21,7 +21,7 @@ futures = "0.3.31"
 dashmap = "6.1.0"
 prost = "0.14.0"
 url = "2.5.4"
-arrow-flight = "57.0.0"
+arrow-flight = "57.1.0"
 tonic = { version = "0.14.1", features = ["transport"] }
 axum = "0.7"
 object_store = { version = "0.12.4", features = ["aws"] }
