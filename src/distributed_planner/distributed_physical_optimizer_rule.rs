@@ -203,7 +203,7 @@ mod tests {
     use datafusion::prelude::{SessionConfig, SessionContext};
     use itertools::Itertools;
     use std::sync::Arc;
-    /* shema for the "weather" table
+    /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
      MaxTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
