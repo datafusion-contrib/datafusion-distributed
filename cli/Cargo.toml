@@ -12,7 +12,7 @@ clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 dirs = "6"
 arrow-flight = "57.1.0"
-tonic = { version = "0.14.1", features = ["transport"] }
+tonic = { version = "0.13", features = ["transport"] }
 tower = "0.5.2"
 hyper-util = "0.1.16"
 tokio-stream = "0.1.17"

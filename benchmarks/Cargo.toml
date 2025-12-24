@@ -19,10 +19,10 @@ async-trait = "0.1.88"
 chrono = "0.4.41"
 futures = "0.3.31"
 dashmap = "6.1.0"
-prost = "0.14.0"
+prost = "0.13"
 url = "2.5.4"
 arrow-flight = "57.1.0"
-tonic = { version = "0.14.1", features = ["transport"] }
+tonic = { version = "0.13", features = ["transport"] }
 axum = "0.7"
 object_store = { version = "0.12.4", features = ["aws"] }
 aws-config = "1"
