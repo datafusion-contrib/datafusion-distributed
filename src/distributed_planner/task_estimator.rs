@@ -22,6 +22,12 @@ pub enum TaskCountAnnotation {
     Maximum(usize),
 }
 
+impl From<TaskCountAnnotation> for usize {
+    fn from(annotation: TaskCountAnnotation) -> Self {
+        annotation.as_usize()
+    }
+}
+
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
         match self {
@@ -62,6 +68,11 @@ pub struct TaskEstimation {
 pub trait TaskEstimator {
     /// Function applied to leaf nodes that returns a [TaskEstimation] hinting how many
     /// tasks should be used in the [Stage] containing that leaf node.
+    ///
+    /// All the [TaskEstimator] registered in the session will be applied to the leaf node
+    /// until one returns an estimation. If no estimation is return from any of the
+    /// [TaskEstimator]s, then `Maximum(1)` is returned, hinting the distributed planner to not
+    /// distribute the stage containing that node.
     fn tasks_for_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
