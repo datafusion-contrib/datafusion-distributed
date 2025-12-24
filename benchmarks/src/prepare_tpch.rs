@@ -26,10 +26,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 
-/// Convert tpch .slt files to .parquet or .csv files
+/// Prepare TPCH parquet files for benchmarks
 #[derive(Debug, StructOpt)]
 pub struct PrepareTpchOpt {
-    /// Path to csv files
+    /// Path to unprepared files
     #[structopt(parse(from_os_str), required = true, short = "i", long = "input")]
     input_path: PathBuf,
 

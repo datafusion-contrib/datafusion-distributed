@@ -2,7 +2,7 @@
 name = "datafusion-distributed-benchmarks"
 version = "0.1.0"
 edition = "2024"
-default-run = "main"
+default-run = "dfbench"
 
 [dependencies]
 datafusion = { workspace = true }
@@ -29,7 +29,7 @@ aws-config = "1"
 aws-sdk-ec2 = "1"
 
 [[bin]]
-name = "main"
+name = "dfbench"
 path = "src/main.rs"
 
 [[bin]]

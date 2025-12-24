@@ -1,4 +1,5 @@
 //! DataFusion Distributed benchmark runner
+mod prepare_tpcds;
 mod prepare_tpch;
 mod run;
 
@@ -10,6 +11,7 @@ use structopt::StructOpt;
 enum Options {
     Run(run::RunOpt),
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
+    PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
 }
 
 // Main benchmark runner entrypoint
@@ -19,6 +21,10 @@ pub fn main() -> Result<()> {
     match Options::from_args() {
         Options::Run(opt) => opt.run(),
         Options::PrepareTpch(opt) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async { opt.run().await })
+        }
+        Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })
         }
