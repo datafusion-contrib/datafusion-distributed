@@ -28,6 +28,14 @@ extensions_options! {
         /// batches over the wire.
         /// If set to 0, batch coalescing is disabled on network shuffle operations.
         pub shuffle_batch_size: usize, default = 8192
+        /// When encountering a UNION operation, isolate its children depending on the task context.
+        /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
+        /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
+        /// 1/3, 2/3, and 3/3 respectively, Execute:
+        /// - The first child in the first task with a DistributedTaskContext of 1/1
+        /// - The second child in the second task with a DistributedTaskContext of 1/1
+        /// - The third child in the third task with a DistributedTaskContext of 1/1
+        pub children_isolator_unions: bool, default = true
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
