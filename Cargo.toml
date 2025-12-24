@@ -19,8 +19,8 @@ datafusion = { workspace = true, features = [
     "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
-arrow-flight = "57.0.0"
-arrow-select = "57.0.0"
+arrow-flight = "57.1.0"
+arrow-select = "57.1.0"
 async-trait = "0.1.88"
 tokio = { version = "1.46.1", features = ["full"] }
 tonic = { version = "0.14.1", features = ["transport"] }
@@ -43,8 +43,8 @@ tokio-stream = "0.1.17"
 insta = { version = "1.43.1", features = ["filters"], optional = true }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
-parquet = { version = "57.0.0", optional = true }
-arrow = { version = "57.0.0", optional = true }
+parquet = { version = "57.1.0", optional = true }
+arrow = { version = "57.1.0", optional = true }
 hyper-util = { version = "0.1.16", optional = true }
 pretty_assertions = { version = "1.4", optional = true }
 
@@ -68,8 +68,8 @@ structopt = "0.3"
 insta = { version = "1.43.1", features = ["filters"] }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
-parquet = "57.0.0"
-arrow = "57.0.0"
+parquet = "57.1.0"
+arrow = "57.1.0"
 tokio-stream = "0.1.17"
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
