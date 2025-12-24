@@ -5,10 +5,12 @@ use datafusion::{
     catalog::{MemTable, TableProvider},
 };
 
-use std::fs;
-
 use arrow::record_batch::RecordBatch;
+use datafusion::common::not_impl_datafusion_err;
+use datafusion::error::DataFusionError;
 use parquet::{arrow::arrow_writer::ArrowWriter, file::properties::WriterProperties};
+use std::fs;
+use std::path::Path;
 use tpchgen::generators::{
     CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
     PartSuppGenerator, RegionGenerator, SupplierGenerator,
@@ -18,14 +20,19 @@ use tpchgen_arrow::{
     SupplierArrow,
 };
 
-pub fn tpch_query_from_dir(queries_dir: &std::path::Path, num: u8) -> String {
+pub fn get_test_tpch_query(num: u8) -> Result<String, DataFusionError> {
+    let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpch/queries");
     let query_path = queries_dir.join(format!("q{num}.sql"));
     fs::read_to_string(query_path)
-        .unwrap_or_else(|_| panic!("Failed to read TPCH query file: q{num}.sql"))
-        .trim()
-        .to_string()
+        .map(|v| v.trim().to_string())
+        .map_err(|_| not_impl_datafusion_err!("Failed to read TPCH query file: q{num}.sql"))
 }
+
 pub const NUM_QUERIES: u8 = 22; // number of queries in the TPCH benchmark numbered from 1 to 22
+
+pub const TPCH_TABLES: &[&str] = &[
+    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
+];
 
 pub fn tpch_table(name: &str) -> Arc<dyn TableProvider> {
     let schema = Arc::new(get_tpch_table_schema(name));

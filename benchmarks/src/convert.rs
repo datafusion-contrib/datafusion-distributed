@@ -20,13 +20,12 @@ use datafusion::logical_expr::select_expr::SelectExpr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::TPCH_TABLES;
-use super::get_tbl_tpch_table_schema;
 use datafusion::common::not_impl_err;
 use datafusion::error::Result;
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::*;
+use datafusion_distributed::test_utils::tpch;
 use structopt::StructOpt;
 
 /// Convert tpch .slt files to .parquet or .csv files
@@ -69,9 +68,9 @@ impl ConvertOpt {
         let output_path = self.output_path.to_str().unwrap();
 
         let output_root_path = Path::new(output_path);
-        for table in TPCH_TABLES {
+        for table in tpch::TPCH_TABLES {
             let start = Instant::now();
-            let schema = get_tbl_tpch_table_schema(table);
+            let schema = tpch::get_tpch_table_schema(table);
             let key_column_name = schema.fields()[0].name();
 
             let input_path = format!("{input_path}/{table}.tbl");

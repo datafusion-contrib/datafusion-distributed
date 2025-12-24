@@ -1000,7 +1000,7 @@ mod tests {
     // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(ctx: SessionContext, query_id: u8) -> Result<String, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
-        let sql = get_test_tpch_query(query_id);
+        let sql = tpch::get_test_tpch_query(query_id)?;
         ctx.state_ref()
             .write()
             .config_mut()
@@ -1042,11 +1042,6 @@ mod tests {
         };
 
         Ok(display_plan_ascii(plan.as_ref(), false))
-    }
-
-    pub fn get_test_tpch_query(num: u8) -> String {
-        let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpch/queries");
-        tpch::tpch_query_from_dir(&queries_dir, num)
     }
 
     // OnceCell to ensure TPCH tables are generated only once for tests
