@@ -1,6 +1,6 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
+use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::execution_plans::common::require_one_child;
 use crate::protobuf::DistributedCodec;
 use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
@@ -62,12 +62,7 @@ impl DistributedExec {
             let mut rng = rand::thread_rng();
             let start_idx = rng.gen_range(0..urls.len());
 
-            let Some(stage) = plan.input_stage() else {
-                return exec_err!(
-                    "NetworkBoundary '{}' has not been assigned a stage",
-                    plan.name()
-                );
-            };
+            let stage = plan.input_stage();
 
             let ready_stage = Stage {
                 query_id: stage.query_id,

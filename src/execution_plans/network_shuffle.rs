@@ -1,7 +1,8 @@
 use crate::channel_resolver_ext::get_distributed_channel_resolver;
+use crate::common::require_one_child;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::common::{
-    manually_propagate_distributed_config, require_one_child, scale_partitioning, spawn_select_all,
+    manually_propagate_distributed_config, scale_partitioning, spawn_select_all,
 };
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
@@ -10,7 +11,7 @@ use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
 use crate::{
-    ChannelResolver, DistributedConfig, DistributedTaskContext, InputStageInfo, NetworkBoundary,
+    ChannelResolver, DistributedConfig, DistributedTaskContext, ExecutionTask, NetworkBoundary,
 };
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -18,7 +19,7 @@ use arrow_flight::error::FlightError;
 use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{exec_err, internal_datafusion_err, plan_err};
+use datafusion::common::{internal_datafusion_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
@@ -35,6 +36,7 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
+use uuid::Uuid;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -117,27 +119,7 @@ use tonic::metadata::MetadataMap;
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
 ///    using Arrow Flight.
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
-pub enum NetworkShuffleExec {
-    Pending(NetworkShufflePendingExec),
-    Ready(NetworkShuffleReadyExec),
-}
-
-/// Placeholder version of the [NetworkShuffleExec] node. It acts as a marker for the
-/// distributed optimization step, which will replace it with the appropriate
-/// [NetworkShuffleReadyExec] node.
-#[derive(Debug, Clone)]
-pub struct NetworkShufflePendingExec {
-    input: Arc<dyn ExecutionPlan>,
-    input_tasks: usize,
-}
-
-/// Ready version of the [NetworkShuffleExec] node. This node can be created in
-/// just two ways:
-/// - by the distributed optimization step based on an original [NetworkShufflePendingExec]
-/// - deserialized from a protobuf plan sent over the network.
-#[derive(Debug, Clone)]
-pub struct NetworkShuffleReadyExec {
+pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: PlanProperties,
     pub(crate) input_stage: Stage,
@@ -159,31 +141,22 @@ impl NetworkShuffleExec {
     /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        input_tasks: usize,
+        query_id: Uuid,
+        num: usize,
+        task_count: usize,
+        input_task_count: usize,
     ) -> Result<Self, DataFusionError> {
         if !matches!(input.output_partitioning(), Partitioning::Hash(_, _)) {
             return plan_err!("NetworkShuffleExec input must be hash partitioned");
         }
-        Ok(Self::Pending(NetworkShufflePendingExec {
-            input,
-            input_tasks,
-        }))
-    }
-}
 
-impl NetworkBoundary for NetworkShuffleExec {
-    fn get_input_stage_info(&self, n_tasks: usize) -> Result<InputStageInfo, DataFusionError> {
-        let Self::Pending(pending) = self else {
-            return plan_err!("cannot only return wrapped child if on Pending state");
-        };
-
-        let transformed = Arc::clone(&pending.input).transform_down(|plan| {
+        let transformed = Arc::clone(&input).transform_down(|plan| {
             if let Some(r_exe) = plan.as_any().downcast_ref::<RepartitionExec>() {
                 // Scale the input RepartitionExec to account for all the tasks to which it will
                 // need to fan data out.
                 let scaled = Arc::new(RepartitionExec::try_new(
                     require_one_child(r_exe.children())?,
-                    scale_partitioning(r_exe.partitioning(), |p| p * n_tasks),
+                    scale_partitioning(r_exe.partitioning(), |p| p * task_count),
                 )?);
                 Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
             } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
@@ -198,72 +171,39 @@ impl NetworkBoundary for NetworkShuffleExec {
             }
         })?;
 
-        Ok(InputStageInfo {
-            plan: transformed.data,
-            task_count: pending.input_tasks,
+        Ok(Self {
+            input_stage: Stage {
+                query_id,
+                num,
+                plan: MaybeEncodedPlan::Decoded(transformed.data),
+                tasks: vec![ExecutionTask { url: None }; input_task_count],
+            },
+            properties: input.properties().clone(),
+            metrics_collection: Default::default(),
         })
     }
+}
 
-    fn with_input_task_count(
-        &self,
-        input_tasks: usize,
-    ) -> Result<Arc<dyn NetworkBoundary>, DataFusionError> {
-        Ok(Arc::new(match self {
-            Self::Pending(prev) => Self::Pending(NetworkShufflePendingExec {
-                input: Arc::clone(&prev.input),
-                input_tasks,
-            }),
-            Self::Ready(_) => plan_err!(
-                "NetworkShuffleExec can only re-assign input tasks if in 'Pending' state"
-            )?,
-        }))
-    }
-
-    fn input_task_count(&self) -> usize {
-        match self {
-            Self::Pending(v) => v.input_tasks,
-            Self::Ready(v) => v.input_stage.tasks.len(),
-        }
+impl NetworkBoundary for NetworkShuffleExec {
+    fn input_stage(&self) -> &Stage {
+        &self.input_stage
     }
 
     fn with_input_stage(
         &self,
         input_stage: Stage,
-    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        match self {
-            Self::Pending(pending) => {
-                let ready = NetworkShuffleReadyExec {
-                    properties: pending.input.properties().clone(),
-                    input_stage,
-                    metrics_collection: Default::default(),
-                };
-                Ok(Arc::new(Self::Ready(ready)))
-            }
-            Self::Ready(ready) => {
-                let mut ready = ready.clone();
-                ready.input_stage = input_stage;
-                Ok(Arc::new(Self::Ready(ready)))
-            }
-        }
-    }
-
-    fn input_stage(&self) -> Option<&Stage> {
-        match self {
-            Self::Pending(_) => None,
-            Self::Ready(v) => Some(&v.input_stage),
-        }
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let mut self_clone = self.clone();
+        self_clone.input_stage = input_stage;
+        Ok(Arc::new(self_clone))
     }
 }
 
 impl DisplayAs for NetworkShuffleExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let Self::Ready(self_ready) = self else {
-            return write!(f, "NetworkShuffleExec: Pending");
-        };
-
-        let input_tasks = self_ready.input_stage.tasks.len();
-        let partitions = self_ready.properties.partitioning.partition_count();
-        let stage = self_ready.input_stage.num;
+        let input_tasks = self.input_stage.tasks.len();
+        let partitions = self.properties.partitioning.partition_count();
+        let stage = self.input_stage.num;
         write!(
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
@@ -281,19 +221,13 @@ impl ExecutionPlan for NetworkShuffleExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        match self {
-            NetworkShuffleExec::Pending(v) => v.input.properties(),
-            NetworkShuffleExec::Ready(v) => &v.properties,
-        }
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match self {
-            NetworkShuffleExec::Pending(v) => vec![&v.input],
-            NetworkShuffleExec::Ready(v) => match &v.input_stage.plan {
-                MaybeEncodedPlan::Decoded(v) => vec![v],
-                MaybeEncodedPlan::Encoded(_) => vec![],
-            },
+        match &self.input_stage.plan {
+            MaybeEncodedPlan::Decoded(v) => vec![v],
+            MaybeEncodedPlan::Encoded(_) => vec![],
         }
     }
 
@@ -301,18 +235,9 @@ impl ExecutionPlan for NetworkShuffleExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        match self.as_ref() {
-            Self::Pending(v) => {
-                let mut v = v.clone();
-                v.input = require_one_child(children)?;
-                Ok(Arc::new(Self::Pending(v)))
-            }
-            Self::Ready(v) => {
-                let mut v = v.clone();
-                v.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
-                Ok(Arc::new(Self::Ready(v)))
-            }
-        }
+        let mut self_clone = self.as_ref().clone();
+        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+        Ok(Arc::new(self_clone))
     }
 
     fn execute(
@@ -320,19 +245,13 @@ impl ExecutionPlan for NetworkShuffleExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        let NetworkShuffleExec::Ready(self_ready) = self else {
-            return exec_err!(
-                "NetworkShuffleExec is not ready, was the distributed optimization step performed?"
-            );
-        };
-
         // get the channel manager and current stage from our context
         let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
 
         let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
         let retrieve_metrics = d_cfg.collect_metrics;
 
-        let input_stage = &self_ready.input_stage;
+        let input_stage = &self.input_stage;
         let encoded_input_plan = input_stage.plan.encoded()?;
 
         let input_stage_tasks = input_stage.tasks.to_vec();
@@ -342,7 +261,7 @@ impl ExecutionPlan for NetworkShuffleExec {
 
         let context_headers = ContextGrpcMetadata::headers_from_ctx(&context);
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self_ready.properties.partitioning.partition_count() * task_context.task_index;
+        let off = self.properties.partitioning.partition_count() * task_context.task_index;
 
         // TODO: this propagation should be automatic https://github.com/datafusion-contrib/datafusion-distributed/issues/247
         let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
@@ -365,7 +284,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 },
             );
 
-            let metrics_collection_capture = self_ready.metrics_collection.clone();
+            let metrics_collection_capture = self.metrics_collection.clone();
             async move {
                 let url = task.url.ok_or(internal_datafusion_err!(
                     "NetworkShuffleExec: task is unassigned, cannot proceed"

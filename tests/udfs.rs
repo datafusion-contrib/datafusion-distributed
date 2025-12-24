@@ -68,12 +68,12 @@ mod tests {
         assert_snapshot!(physical_distributed_str,
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+        │ RepartitionExec: partitioning=Hash([test_udf(1)], 1), input_partitions=1
+        │   [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
-          │ CoalesceBatchesExec: target_batch_size=8192
-          │   RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │     EmptyExec
+          │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
+          │   EmptyExec
           └──────────────────────────────────────────────────
         ",
         );

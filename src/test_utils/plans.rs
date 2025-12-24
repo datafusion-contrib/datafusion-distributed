@@ -67,9 +67,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     let mut result = vec![];
     for child in plan.children() {
         if let Some(plan) = child.as_network_boundary() {
-            if let Some(stage) = plan.input_stage() {
-                result.push(stage);
-            }
+            result.push(plan.input_stage());
         } else {
             result.extend(find_input_stages(child.as_ref()));
         }

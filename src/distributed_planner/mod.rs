@@ -1,14 +1,11 @@
 mod distributed_config;
 mod distributed_physical_optimizer_rule;
-mod distributed_plan_error;
 mod network_boundary;
+mod plan_annotator;
 mod task_estimator;
 
 pub use distributed_config::DistributedConfig;
-pub use distributed_physical_optimizer_rule::{
-    DistributedPhysicalOptimizerRule, apply_network_boundaries, distribute_plan,
-};
-pub use distributed_plan_error::{DistributedPlanError, limit_tasks_err, non_distributable_err};
-pub use network_boundary::{InputStageInfo, NetworkBoundary, NetworkBoundaryExt};
+pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
+pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub(crate) use task_estimator::set_distributed_task_estimator;
-pub use task_estimator::{TaskEstimation, TaskEstimator};
+pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator};

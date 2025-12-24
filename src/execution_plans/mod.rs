@@ -7,6 +7,6 @@ mod partition_isolator;
 
 pub use distributed::DistributedExec;
 pub(crate) use metrics::MetricsWrapperExec;
-pub use network_coalesce::{NetworkCoalesceExec, NetworkCoalesceReady};
-pub use network_shuffle::{NetworkShuffleExec, NetworkShuffleReadyExec};
+pub use network_coalesce::NetworkCoalesceExec;
+pub use network_shuffle::NetworkShuffleExec;
 pub use partition_isolator::PartitionIsolatorExec;

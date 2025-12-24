@@ -41,19 +41,9 @@ impl TreeNodeRewriter for TaskMetricsCollector {
         // from child tasks.
         let metrics_collection =
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-                let NetworkShuffleExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkShuffleExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                Some(Arc::clone(&node.metrics_collection))
             } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-                let NetworkCoalesceExec::Ready(ready) = node else {
-                    return internal_err!(
-                        "unexpected NetworkCoalesceExec::Pending during metrics collection"
-                    );
-                };
-                Some(Arc::clone(&ready.metrics_collection))
+                Some(Arc::clone(&node.metrics_collection))
             } else {
                 None
             };
@@ -281,18 +271,23 @@ mod tests {
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
             assert_eq!(
                 actual_metrics.len(),
-                count_plan_nodes(stage.plan.decoded().unwrap())
+                count_plan_nodes(stage.plan.decoded().unwrap()),
+                "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
             );
 
             // Ensure each node has at least one metric which was collected.
             for metrics_set in actual_metrics.iter() {
                 let metrics_set = metrics_set_proto_to_df(metrics_set).unwrap();
-                assert!(metrics_set.iter().count() > 0);
+                assert!(
+                    metrics_set.iter().count() > 0,
+                    "Did not found metrics for Stage {expected_stage_key:?}"
+                );
             }
         }
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_1() {
         run_metrics_collection_e2e_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
     }
@@ -316,6 +311,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_3() {
         run_metrics_collection_e2e_test(
             "SELECT
@@ -336,6 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_4() {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }

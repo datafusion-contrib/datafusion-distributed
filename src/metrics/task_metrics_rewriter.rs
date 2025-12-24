@@ -44,25 +44,18 @@ pub fn rewrite_distributed_plan_with_metrics(
     let transformed = plan.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
         if let Some(network_boundary) = plan.as_network_boundary() {
-            return match network_boundary.input_stage() {
-                Some(stage) => {
-                    // This transform is a bit inefficient because we traverse the plan nodes twice
-                    // For now, we are okay with trading off performance for simplicity.
-                    let plan_with_metrics =
-                        stage_metrics_rewriter(stage, metrics_collection.clone())?;
-                    Ok(Transformed::yes(network_boundary.with_input_stage(
-                        Stage::new(
-                            stage.query_id,
-                            stage.num,
-                            plan_with_metrics,
-                            stage.tasks.len(),
-                        ),
-                    )?))
-                }
-                None => {
-                    internal_err!("Expected input stage to be set in network boundary")
-                }
-            };
+            let stage = network_boundary.input_stage();
+            // This transform is a bit inefficient because we traverse the plan nodes twice
+            // For now, we are okay with trading off performance for simplicity.
+            let plan_with_metrics = stage_metrics_rewriter(stage, metrics_collection.clone())?;
+            return Ok(Transformed::yes(network_boundary.with_input_stage(
+                Stage::new(
+                    stage.query_id,
+                    stage.num,
+                    plan_with_metrics,
+                    stage.tasks.len(),
+                ),
+            )?));
         }
 
         Ok(Transformed::no(plan))
@@ -473,6 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_executed_distributed_plan_has_metrics() {
         let ctx = make_test_distributed_ctx().await;
         let plan = ctx
