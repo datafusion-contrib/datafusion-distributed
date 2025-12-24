@@ -10,9 +10,7 @@ use crate::networking::get_distributed_channel_resolver;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{
-    ChannelResolver, DistributedConfig, DistributedTaskContext, ExecutionTask, NetworkBoundary,
-};
+use crate::{DistributedConfig, DistributedTaskContext, ExecutionTask, NetworkBoundary};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
