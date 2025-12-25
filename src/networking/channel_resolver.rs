@@ -13,6 +13,7 @@ use std::time::Duration;
 use tonic::body::Body;
 use tonic::codegen::BoxFuture;
 use tonic::transport::Channel;
+use tower::ServiceExt;
 use url::Url;
 
 /// Allows users to customize the way Arrow Flight clients are created. A common use case is to
@@ -121,8 +122,12 @@ impl DefaultChannelResolver {
             async move {
                 let endpoint = Channel::from_shared(url)
                     .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
-                let channel = endpoint
+                let mut channel = endpoint
                     .connect()
+                    .await
+                    .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
+                channel
+                    .ready()
                     .await
                     .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
                 Ok(BoxCloneSyncChannel::new(channel))

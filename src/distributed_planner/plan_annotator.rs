@@ -303,9 +303,7 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::in_memory_channel_resolver::{
-        InMemoryChannelResolver, InMemoryWorkerResolver,
-    };
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{DistributedExt, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
@@ -528,7 +526,6 @@ mod tests {
             .with_default_features()
             .with_config(config)
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-            .with_distributed_channel_resolver(InMemoryChannelResolver::default())
             .build();
 
         let ctx = SessionContext::new_with_state(state);
