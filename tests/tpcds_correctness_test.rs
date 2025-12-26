@@ -577,6 +577,8 @@ mod tests {
         let display = display_plan_ascii(d_plan.as_ref(), false);
         println!("Query {query_id}:\n{display}");
 
+        // The comparison functions can be computationally expensive, so we spawn them in tokio
+        // blocking tasks so that they do not block the tokio runtime.
         let compare_result_set = {
             let d_results = d_results.clone();
             let s_results = s_results.clone();

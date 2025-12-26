@@ -62,8 +62,6 @@ async fn download_benchmarks(dest_path: PathBuf) -> Result<(), Box<dyn std::erro
     let mut file = fs::File::create(&dest_path)?;
     file.write_all(&bytes)?;
 
-    println!("Downloaded to {}", dest_path.display());
-
     Ok(())
 }
 
@@ -80,21 +78,19 @@ fn unzip_benchmarks(
     let mut archive = zip::ZipArchive::new(file)?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let file_name = file.name();
+        let mut zip_file = archive.by_index(i)?;
+        let file_name = zip_file.name();
         if !(file_name.contains("tpcds") && file_name.ends_with(".parquet")) {
             continue;
         }
-        let outpath = extract_to.join(file.mangled_name().file_name().unwrap());
+        let outpath = extract_to.join(zip_file.mangled_name().file_name().unwrap());
 
         if let Some(parent) = outpath.parent() {
             fs::create_dir_all(parent)?;
         }
         let mut outfile = fs::File::create(&outpath)?;
-        std::io::copy(&mut file, &mut outfile)?;
+        std::io::copy(&mut zip_file, &mut outfile)?;
     }
-
-    println!("Extracted to {}", extract_to.display());
 
     Ok(())
 }
