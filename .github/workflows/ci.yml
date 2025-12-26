@@ -52,18 +52,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
       - uses: ./.github/actions/setup
-      - name: Install DuckDB CLI
-        run: |
-          curl https://install.duckdb.org | sh
-          mkdir -p $HOME/.local/bin
-          mv /home/runner/.duckdb/cli/latest/duckdb $HOME/.local/bin/
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-      - name: Run TPC-DS test
-        id: test
-        run: cargo test --features tpcds --test tpcds_test
+      - uses: actions/cache@v4
+        with:
+          path: testdata/tpcds/main.zip
+          key: "main.zip"
+      - run: cargo test --features tpcds --test 'tpcds_*'
 
   format-check:
     runs-on: ubuntu-latest

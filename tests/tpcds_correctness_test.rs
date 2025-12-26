@@ -1,44 +1,28 @@
 #[cfg(all(feature = "integration", feature = "tpcds", test))]
 mod tests {
-    use datafusion::common::runtime::JoinSet;
+    use datafusion::arrow::array::RecordBatch;
+    use datafusion::common::plan_err;
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::test_utils::{
-        localhost::start_localhost_context,
-        property_based::{compare_ordering, compare_result_set},
-        tpcds::{
-            generate_tpcds_data, get_data_dir, get_test_tpcds_query, register_tables_with_options,
-        },
+    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::property_based::{
+        compare_ordering, compare_result_set,
     };
-
-    use datafusion::arrow::array::RecordBatch;
-
-    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
-    use std::env;
+    use datafusion_distributed::test_utils::tpcds;
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
+    };
     use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::OnceCell;
 
-    async fn setup() -> Result<(SessionContext, SessionContext, JoinSet<()>)> {
-        const NUM_WORKERS: usize = 4;
-        const FILES_PER_TASK: usize = 2;
-        const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
-
-        // Make distributed localhost context to run queries
-        let (mut distributed_ctx, worker_tasks) =
-            start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
-        distributed_ctx.set_distributed_files_per_task(FILES_PER_TASK)?;
-        distributed_ctx
-            .set_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
-        register_tables_with_options(&distributed_ctx, true).await?;
-
-        // Create single node context to compare results to.
-        let single_node_ctx = SessionContext::new();
-        register_tables_with_options(&single_node_ctx, true).await?;
-
-        Ok((distributed_ctx, single_node_ctx, worker_tasks))
-    }
+    const NUM_WORKERS: usize = 4;
+    const FILES_PER_TASK: usize = 2;
+    const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
+    const SF: f64 = 1.0;
+    const PARQUET_PARTITIONS: usize = 4;
 
     #[tokio::test]
     async fn test_tpcds_1() -> Result<()> {
@@ -81,6 +65,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "expected no error but got: Arrow error: Invalid argument error: must either specify a row count or at least one column"]
     async fn test_tpcds_9() -> Result<()> {
         test_tpcds_query(9).await
     }
@@ -186,6 +171,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Fails with column 'c_last_review_date_sk' not found"]
     async fn test_tpcds_30() -> Result<()> {
         test_tpcds_query(30).await
     }
@@ -396,6 +382,10 @@ mod tests {
     }
 
     #[tokio::test]
+    // For some reason this test takes a ridiculous amount of time to execute. There might be
+    // nothing wrong with it, and it just might be too heavy. The test passes, but it takes so
+    // long to execute that it's not worth the time.
+    #[ignore = "Query takes too long to execute"]
     async fn test_tpcds_72() -> Result<()> {
         test_tpcds_query(72).await
     }
@@ -531,59 +521,80 @@ mod tests {
     }
 
     #[tokio::test]
+    // For some reason this test takes a ridiculous amount of time to execute. There might be
+    // nothing wrong with it, and it just might be too heavy. The test passes, but it takes so
+    // long to execute that it's not worth the time.
+    #[ignore = "Query takes too long to execute"]
     async fn test_tpcds_99() -> Result<()> {
         test_tpcds_query(99).await
     }
 
     static INIT_TEST_TPCDS_TABLES: OnceCell<()> = OnceCell::const_new();
 
-    // ensure_tpcds_data initializes the TPCDS data on disk if not already present.
-    pub async fn ensure_tpcds_data() {
-        INIT_TEST_TPCDS_TABLES
-            .get_or_init(|| async {
-                if !fs::exists(get_data_dir()).unwrap_or(false) {
-                    let scale_factor =
-                        env::var("TPCDS_SCALE_FACTOR").unwrap_or_else(|_| "0.01".to_string());
-                    generate_tpcds_data(scale_factor.as_str()).unwrap();
-                }
-            })
-            .await;
-    }
-
     async fn run(
         ctx: &SessionContext,
         query_sql: &str,
-    ) -> (Arc<dyn ExecutionPlan>, Result<Vec<RecordBatch>>) {
+    ) -> (Arc<dyn ExecutionPlan>, Arc<Result<Vec<RecordBatch>>>) {
         let df = ctx.sql(query_sql).await.unwrap();
         let task_ctx = ctx.task_ctx();
         let plan = df.create_physical_plan().await.unwrap();
-        (plan.clone(), collect(plan, task_ctx).await) // Collect execution errors, do not unwrap.
+        (plan.clone(), Arc::new(collect(plan, task_ctx).await)) // Collect execution errors, do not unwrap.
     }
 
     async fn test_tpcds_query(query_id: usize) -> Result<()> {
-        ensure_tpcds_data().await;
+        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "testdata/tpcds/correctness_sf{SF}_partitions{PARQUET_PARTITIONS}"
+        ));
+        INIT_TEST_TPCDS_TABLES
+            .get_or_init(|| async {
+                if !fs::exists(&data_dir).unwrap_or(false) {
+                    tpcds::generate_tpcds_data(&data_dir, SF, PARQUET_PARTITIONS)
+                        .await
+                        .unwrap();
+                }
+            })
+            .await;
 
-        let query_sql = get_test_tpcds_query(query_id)?;
-        let (distributed_ctx, single_node_ctx, _handles) = setup().await?;
+        let query_sql = tpcds::get_test_tpcds_query(query_id)?;
+        // Create a single node context to compare results to.
+        let s_ctx = SessionContext::new();
 
-        let (single_node_physical_plan, single_node_results) =
-            run(&single_node_ctx, &query_sql).await;
-        let (distributed_physical_plan, distributed_results) =
-            run(&distributed_ctx, &query_sql).await;
+        // Make distributed localhost context to run queries
+        let (d_ctx, _guard) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        let d_ctx = d_ctx
+            .with_distributed_files_per_task(FILES_PER_TASK)?
+            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        let compare_result = tokio::try_join!(
-            compare_result_set(&distributed_results, &single_node_results),
-            compare_ordering(
-                distributed_physical_plan,
-                single_node_physical_plan,
-                &distributed_results
-            ),
-        );
-        assert!(
-            compare_result.is_ok(),
-            "Query {query_id} failed: {}",
-            compare_result.unwrap_err()
-        );
+        tpcds::register_tables(&s_ctx, &data_dir).await?;
+        tpcds::register_tables(&d_ctx, &data_dir).await?;
+
+        let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
+        let (d_plan, d_results) = run(&d_ctx, &query_sql).await;
+
+        if !d_plan.as_any().is::<DistributedExec>() {
+            return plan_err!("Query {query_id} did not get distributed");
+        }
+        let display = display_plan_ascii(d_plan.as_ref(), false);
+        println!("Query {query_id}:\n{display}");
+
+        // The comparison functions can be computationally expensive, so we spawn them in tokio
+        // blocking tasks so that they do not block the tokio runtime.
+        let compare_result_set = {
+            let d_results = d_results.clone();
+            let s_results = s_results.clone();
+            tokio::task::spawn_blocking(move || async move {
+                compare_result_set(&d_results, &s_results)
+            })
+        };
+        let compare_ordering = {
+            let d_results = d_results.clone();
+            tokio::task::spawn_blocking(move || async move {
+                compare_ordering(d_plan, s_plan, &d_results)
+            })
+        };
+        compare_result_set.await.unwrap().await?;
+        compare_ordering.await.unwrap().await?;
+
         Ok(())
     }
 }

@@ -1,35 +1,24 @@
-use datafusion::{
-    arrow::{
-        array::{Array, ArrayRef, DictionaryArray, StringArray, StringViewArray},
-        datatypes::{DataType, Field, Schema, UInt16Type},
-        record_batch::RecordBatch,
-    },
-    common::{internal_datafusion_err, internal_err},
-    error::Result,
-    execution::context::SessionContext,
-    prelude::ParquetReadOptions,
-};
-use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use arrow::datatypes::{DataType, Field};
+use datafusion::common::{internal_datafusion_err, internal_err};
+use datafusion::error::DataFusionError;
+use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::expressions::{CastColumnExpr, Column};
+use datafusion::physical_expr::projection::ProjectionExpr;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub fn get_data_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds/data")
-}
-
-pub fn get_queries_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds/queries")
-}
-
-pub fn get_tpcds_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds")
-}
+const URL: &str = "https://github.com/apache/datafusion-benchmarks/archive/refs/heads/main.zip";
 
 /// Load a single TPC-DS query by ID (1-99).
-pub fn get_test_tpcds_query(id: usize) -> Result<String> {
-    let queries_dir = get_queries_dir();
+pub fn get_test_tpcds_query(id: usize) -> Result<String, DataFusionError> {
+    let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds/queries");
 
     if !queries_dir.exists() {
         return internal_err!(
@@ -46,7 +35,7 @@ pub fn get_test_tpcds_query(id: usize) -> Result<String> {
 
     let query_sql = fs::read_to_string(&query_file)
         .map_err(|e| {
-            internal_datafusion_err!("Failed to read query file {}: {}", query_file.display(), e)
+            internal_datafusion_err!("Failed to read query file {}: {e}", query_file.display())
         })?
         .trim()
         .to_string();
@@ -54,251 +43,210 @@ pub fn get_test_tpcds_query(id: usize) -> Result<String> {
     Ok(query_sql)
 }
 
-pub const TPCDS_TABLES: &[&str] = &[
-    "call_center",
-    "catalog_page",
-    "catalog_returns",
-    "catalog_sales",
-    "customer",
-    "customer_address",
-    "customer_demographics",
-    "date_dim",
-    "household_demographics",
-    "income_band",
-    "inventory",
-    "item",
-    "promotion",
-    "reason",
-    "ship_mode",
-    "store",
-    "store_returns",
-    "store_sales",
-    "time_dim",
-    "warehouse",
-    "web_page",
-    "web_returns",
-    "web_sales",
-    "web_site",
-];
-
-/// Tables that should have dictionary encoding applied for testing
-const DICT_ENCODING_TABLES: &[&str] = &["item", "customer", "store"];
-
-/// Force dictionary encoding for specific string columns in a table for extra test coverage.
-fn force_dictionary_encoding_for_table(
-    table_name: &str,
-    batch: RecordBatch,
-) -> Result<RecordBatch> {
-    let dict_columns = match table_name {
-        "item" => vec!["i_brand", "i_category", "i_class", "i_color", "i_size"],
-        "customer" => vec!["c_salutation"],
-        "store" => vec!["s_state", "s_country"],
-        _ => vec![], // No dictionary encoding for other tables
-    };
-
-    if dict_columns.is_empty() {
-        return Ok(batch);
+/// Downloads the datafusion-benchmarks repository as a zip file
+async fn download_benchmarks(dest_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if dest_path.exists() {
+        return Ok(());
     }
 
-    let schema = batch.schema();
-    let mut new_fields = Vec::new();
-    let mut new_columns = Vec::new();
+    // Create directory if it doesn't exist
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
-    for (i, field) in schema.fields().iter().enumerate() {
-        let column = batch.column(i);
+    // Download the file
+    let response = reqwest::get(URL).await?;
+    let bytes = response.bytes().await?;
 
-        // Check if this column should be dictionary-encoded
-        if dict_columns.contains(&field.name().as_str())
-            && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
-        {
-            // Convert to dictionary encoding
-            let string_data =
-                if let Some(string_array) = column.as_any().downcast_ref::<StringArray>() {
-                    string_array.iter().collect::<Vec<_>>()
-                } else if let Some(view_array) = column.as_any().downcast_ref::<StringViewArray>() {
-                    view_array.iter().collect::<Vec<_>>()
-                } else {
-                    return internal_err!("Expected string array for column {}", field.name());
-                };
+    // Write to file
+    let mut file = fs::File::create(&dest_path)?;
+    file.write_all(&bytes)?;
 
-            let dict_array: DictionaryArray<UInt16Type> = string_data.into_iter().collect();
-            let dict_field = Field::new(
-                field.name(),
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                field.is_nullable(),
-            );
+    Ok(())
+}
 
-            new_fields.push(dict_field);
-            new_columns.push(Arc::new(dict_array) as ArrayRef);
-        } else {
-            new_fields.push((**field).clone());
-            new_columns.push(column.clone());
+/// Unzips the downloaded benchmarks zip file
+fn unzip_benchmarks(
+    zip_path: PathBuf,
+    extract_to: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if extract_to.exists() {
+        return Ok(());
+    }
+
+    let file = fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut zip_file = archive.by_index(i)?;
+        let file_name = zip_file.name();
+        if !(file_name.contains("tpcds") && file_name.ends_with(".parquet")) {
+            continue;
         }
+        let outpath = extract_to.join(zip_file.mangled_name().file_name().unwrap());
+
+        if let Some(parent) = outpath.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut outfile = fs::File::create(&outpath)?;
+        std::io::copy(&mut zip_file, &mut outfile)?;
     }
 
-    let new_schema = Arc::new(Schema::new(new_fields));
-    RecordBatch::try_new(new_schema, new_columns).map_err(|e| internal_datafusion_err!("{}", e))
+    Ok(())
 }
 
-pub async fn register_tpcds_table(
-    ctx: &SessionContext,
-    table_name: &str,
-    data_dir: Option<&Path>,
-) -> Result<()> {
-    register_tpcds_table_with_options(ctx, table_name, data_dir, false).await
-}
+async fn repartition_parquet_file(
+    file_path: PathBuf,
+    dest_path: PathBuf,
+    partitions: usize,
+    use_dict_encoding: bool,
+) -> Result<(), DataFusionError> {
+    if !file_path.exists() {
+        return internal_err!("Path {} does not exist", file_path.display());
+    }
+    let file_name = file_path.file_name().unwrap().to_str().unwrap();
+    if !file_name.ends_with(".parquet") {
+        return internal_err!("Path {} is not parquet", file_path.display());
+    }
+    let table_name = file_name.trim_end_matches(".parquet");
 
-pub async fn register_tpcds_table_with_options(
-    ctx: &SessionContext,
-    table_name: &str,
-    data_dir: Option<&Path>,
-    dict_encode_items_table: bool,
-) -> Result<()> {
-    let default_data_dir = get_data_dir();
-    let data_path = data_dir.unwrap_or(&default_data_dir);
-
-    // Apply dictionary encoding if requested and materialize to disk
-    if dict_encode_items_table && DICT_ENCODING_TABLES.contains(&table_name) {
-        let table_dir_path = data_path.join(table_name);
-        if table_dir_path.is_dir() {
-            let dict_table_path = data_path.join(format!("{table_name}_dict"));
-
-            // Check if dictionary encoded version already exists
-            if dict_table_path.exists() {
-                // Use the existing dictionary encoded version
-                ctx.register_parquet(
-                    table_name,
-                    &dict_table_path.to_string_lossy(),
-                    ParquetReadOptions::default(),
-                )
-                .await?;
-                return Ok(());
-            }
-
-            // Register temporarily to read the original data
-            let temp_table_name = format!("temp_{table_name}");
-            ctx.register_parquet(
-                &temp_table_name,
-                &table_dir_path.to_string_lossy(),
-                ParquetReadOptions::default(),
-            )
-            .await?;
-
-            // Read data and apply dictionary encoding
-            let df = ctx.table(&temp_table_name).await?;
-            let batches = df.collect().await?;
-
-            let mut dict_batches = Vec::new();
-            for batch in batches {
-                dict_batches.push(force_dictionary_encoding_for_table(table_name, batch)?);
-            }
-
-            // Write dictionary-encoded data to disk
-            if !dict_batches.is_empty() {
-                fs::create_dir_all(&dict_table_path)?;
-                let dict_file_path = dict_table_path.join("data.parquet");
-                let file = fs::File::create(&dict_file_path)?;
-                let props = WriterProperties::builder().build();
-                let mut writer = ArrowWriter::try_new(file, dict_batches[0].schema(), Some(props))?;
-
-                for batch in &dict_batches {
-                    writer.write(batch)?;
-                }
-                writer.close()?;
-
-                // Register the dictionary encoded table
-                ctx.register_parquet(
-                    table_name,
-                    &dict_table_path.to_string_lossy(),
-                    ParquetReadOptions::default(),
-                )
-                .await?;
-            }
-
-            // Deregister the temporary table
-            ctx.deregister_table(&temp_table_name)?;
+    if let Ok(dir) = fs::read_dir(&dest_path) {
+        if dir.count() >= 1 {
             return Ok(());
         }
     }
 
-    // Use normal parquet registration for all tables
-    let table_file_path = data_path.join(format!("{table_name}.parquet"));
-    if table_file_path.is_file() {
-        ctx.register_parquet(
-            table_name,
-            &table_file_path.to_string_lossy(),
-            ParquetReadOptions::default(),
-        )
+    let ctx = SessionContext::new();
+    ctx.sql("SET datafusion.execution.target_partitions=1")
         .await?;
-        return Ok(());
-    }
 
-    // Check if this is a directory with multiple parquet files
-    let table_dir_path = data_path.join(table_name);
-    if table_dir_path.is_dir() {
-        ctx.register_parquet(
-            table_name,
-            &table_dir_path.to_string_lossy(),
-            ParquetReadOptions::default(),
-        )
-        .await?;
-        return Ok(());
-    }
-
-    internal_err!(
-        "TPCDS table not found: {} (looked for both file and directory)",
-        table_name
+    ctx.register_parquet(
+        table_name,
+        &file_path.to_str().unwrap(),
+        ParquetReadOptions::default(),
     )
+    .await?;
+
+    let table = ctx.table(table_name).await?;
+    let mut plan = table.create_physical_plan().await?;
+    if use_dict_encoding && table_name == "item" {
+        let cols = ["i_brand", "i_category", "i_class", "i_color", "i_size"];
+        plan = project_cols_as_dict(plan, &cols)?;
+    } else if use_dict_encoding && table_name == "customer" {
+        let cols = ["c_salutation"];
+        plan = project_cols_as_dict(plan, &cols)?;
+    } else if use_dict_encoding && table_name == "store" {
+        let cols = ["s_state", "s_country"];
+        plan = project_cols_as_dict(plan, &cols)?;
+    }
+
+    let plan = RepartitionExec::try_new(plan, Partitioning::RoundRobinBatch(partitions))?;
+    ctx.write_parquet(
+        Arc::new(plan),
+        dest_path.to_str().unwrap(),
+        Some(
+            WriterProperties::builder()
+                .set_dictionary_enabled(true)
+                .build(),
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
-pub async fn register_tables(ctx: &SessionContext) -> Result<Vec<String>> {
-    register_tables_with_options(ctx, false).await
+fn project_cols_as_dict(
+    plan: Arc<dyn ExecutionPlan>,
+    cols: &[&str],
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let project = ProjectionExec::try_new(
+        plan.schema()
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| ProjectionExpr {
+                expr: if cols.contains(&f.name().as_str()) {
+                    Arc::new(CastColumnExpr::new(
+                        Arc::new(Column::new(f.name(), i)),
+                        f.clone(),
+                        Arc::new(Field::new(
+                            f.name(),
+                            DataType::Dictionary(
+                                Box::new(DataType::UInt16),
+                                Box::new(DataType::Utf8),
+                            ),
+                            f.is_nullable(),
+                        )),
+                        None,
+                    ))
+                } else {
+                    Arc::new(Column::new(f.name(), i))
+                },
+                alias: f.name().to_string(),
+            }),
+        plan,
+    )?;
+    Ok(Arc::new(project))
 }
 
-pub async fn register_tables_with_options(
+pub async fn prepare_tables(
+    data_path: PathBuf,
+    dest_path: PathBuf,
+    partitions: usize,
+) -> datafusion::common::Result<()> {
+    for entry in fs::read_dir(data_path)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_str().unwrap();
+        if !file_name.ends_with(".parquet") {
+            continue;
+        }
+        let table_name = file_name.trim_end_matches(".parquet");
+        // Apply dictionary encoding if requested and materialize to disk
+        /// Tables that should have dictionary encoding applied for testing
+        const DICT_ENCODING_TABLES: &[&str] = &["item", "customer", "store"];
+
+        repartition_parquet_file(
+            entry.path(),
+            dest_path.join(table_name),
+            partitions,
+            DICT_ENCODING_TABLES.contains(&table_name),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn generate_tpcds_data(
+    dir: &Path,
+    sf: f64,
+    partitions: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if sf != 1.0 {
+        Err("Only scale factor 1.0 is supported for TPC-DS")?;
+    }
+    let base_path = dir.parent().unwrap();
+    download_benchmarks(base_path.join("main.zip")).await?;
+    unzip_benchmarks(base_path.join("main.zip"), base_path.join("downloaded"))?;
+    prepare_tables(base_path.join("downloaded"), dir.to_path_buf(), partitions).await?;
+    Ok(())
+}
+
+pub async fn register_tables(
     ctx: &SessionContext,
-    dict_encode_items_table: bool,
-) -> Result<Vec<String>> {
-    let mut registered_tables = Vec::new();
-
-    for &table_name in TPCDS_TABLES {
-        register_tpcds_table_with_options(ctx, table_name, None, dict_encode_items_table).await?;
-        registered_tables.push(table_name.to_string());
+    data_path: &Path,
+) -> Result<(), DataFusionError> {
+    for entry in fs::read_dir(data_path)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            let table_name = path.file_name().unwrap().to_str().unwrap();
+            ctx.register_parquet(
+                table_name,
+                path.to_str().unwrap(),
+                ParquetReadOptions::default(),
+            )
+            .await?;
+        }
     }
-
-    Ok(registered_tables)
-}
-
-/// Generate TPC-DS data using the generation script
-pub fn generate_tpcds_data(scale_factor: &str) -> Result<()> {
-    let tpcds_dir = get_tpcds_dir();
-    let generate_script = tpcds_dir.join("generate.sh");
-
-    if !generate_script.exists() {
-        return internal_err!(
-            "TPC-DS generation script not found: {}",
-            generate_script.display()
-        );
-    }
-
-    let output = Command::new("bash")
-        .arg(&generate_script)
-        .arg(scale_factor)
-        .current_dir(&tpcds_dir)
-        .output()
-        .map_err(|e| {
-            internal_datafusion_err!("Failed to execute TPC-DS generation script: {}", e)
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return internal_err!(
-            "TPC-DS generation failed:\nstdout: {}\nstderr: {}",
-            stdout,
-            stderr
-        );
-    }
-
     Ok(())
 }
