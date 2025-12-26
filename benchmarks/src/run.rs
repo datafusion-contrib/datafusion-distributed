@@ -89,6 +89,10 @@ pub struct RunOpt {
     #[structopt(long)]
     cardinality_task_sf: Option<f64>,
 
+    /// Use children isolator UNIONs for distributing UNION operations.
+    #[structopt(long)]
+    children_isolator_unions: bool,
+
     /// Collects metrics across network boundaries
     #[structopt(long)]
     collect_metrics: bool,
@@ -201,6 +205,7 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
         let ctx = SessionContext::new_with_state(state);

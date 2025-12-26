@@ -418,6 +418,35 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_metrics_collection] but with an in-place mutation.
     fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+
+    /// Enables children isolator unions for distributing UNION operations across as many tasks as
+    /// the sum of all the tasks required for each child.
+    ///
+    /// For example, if there is a UNION with 3 children, requiring one task each, it will result
+    /// in a plan with 3 tasks where each task runs one child:
+    ///
+    /// ```text
+    /// ┌─────────────────────────────┐┌─────────────────────────────┐┌─────────────────────────────┐
+    /// │           Task 1            ││           Task 2            ││           Task 3            │
+    /// │┌───────────────────────────┐││┌───────────────────────────┐││┌───────────────────────────┐│
+    /// ││ ChildrenIsolatorUnionExec ││││ ChildrenIsolatorUnionExec ││││ ChildrenIsolatorUnionExec ││
+    /// │└───▲─────────▲─────────▲───┘││└───▲─────────▲─────────▲───┘││└───▲─────────▲─────────▲───┘│
+    /// │    │                        ││              │              ││                        │    │
+    /// │┌───┴───┐ ┌  ─│ ─   ┌  ─│ ─  ││┌  ─│ ─   ┌───┴───┐ ┌  ─│ ─  ││┌  ─│ ─   ┌  ─│ ─   ┌───┴───┐│
+    /// ││Child 1│  Child 2│  Child 3│││ Child 1│ │Child 2│  Child 3│││ Child 1│  Child 2│ │Child 3││
+    /// │└───────┘ └  ─  ─   └  ─  ─  ││└  ─  ─   └───────┘ └  ─  ─  ││└  ─  ─   └  ─  ─   └───────┘│
+    /// └─────────────────────────────┘└─────────────────────────────┘└─────────────────────────────┘
+    /// ```
+    fn with_distributed_children_isolator_unions(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_children_isolator_unions] but with an in-place mutation.
+    fn set_distributed_children_isolator_unions(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -489,6 +518,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_children_isolator_unions(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.children_isolator_unions = enabled;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -530,6 +568,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -586,6 +628,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -642,6 +689,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -698,6 +750,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
