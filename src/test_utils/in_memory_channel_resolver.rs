@@ -1,6 +1,7 @@
 use crate::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedSessionBuilderContext, WorkerResolver, create_flight_client,
+    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder,
+    DistributedExt, DistributedSessionBuilder, MappedDistributedSessionBuilderExt, WorkerResolver,
+    create_flight_client,
 };
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
@@ -17,8 +18,13 @@ pub struct InMemoryChannelResolver {
     channel: FlightServiceClient<BoxCloneSyncChannel>,
 }
 
-impl Default for InMemoryChannelResolver {
-    fn default() -> Self {
+impl InMemoryChannelResolver {
+    /// Build an [InMemoryChannelResolver] with a custom [DistributedSessionBuilder].
+    /// This allows you to inject your own DataFusion extensions in the in-memory worker
+    /// spawned by this method.
+    pub fn from_session_builder(
+        builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+    ) -> Self {
         let (client, server) = tokio::io::duplex(1024 * 1024);
 
         let mut client = Some(client);
@@ -36,12 +42,10 @@ impl Default for InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint = ArrowFlightEndpoint::from_session_builder(
-            move |ctx: DistributedSessionBuilderContext| {
-                let this = this.clone();
-                async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
-            },
-        );
+        let endpoint = ArrowFlightEndpoint::from_session_builder(builder.map(move |builder| {
+            let this = this.clone();
+            Ok(builder.with_distributed_channel_resolver(this).build())
+        }));
 
         tokio::spawn(async move {
             Server::builder()
@@ -51,6 +55,12 @@ impl Default for InMemoryChannelResolver {
         });
 
         this_clone
+    }
+}
+
+impl Default for InMemoryChannelResolver {
+    fn default() -> Self {
+        Self::from_session_builder(DefaultSessionBuilder)
     }
 }
 
