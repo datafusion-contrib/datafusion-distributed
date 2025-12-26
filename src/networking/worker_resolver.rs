@@ -62,3 +62,9 @@ impl WorkerResolverExtension {
         Self(Arc::new(NotImplementedWorkerResolver))
     }
 }
+
+impl WorkerResolver for Arc<dyn WorkerResolver + Send + Sync> {
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.as_ref().get_urls()
+    }
+}

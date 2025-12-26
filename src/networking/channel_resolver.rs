@@ -173,6 +173,16 @@ impl ChannelResolver for DefaultChannelResolver {
     }
 }
 
+#[async_trait]
+impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
+    async fn get_flight_client_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        self.as_ref().get_flight_client_for_url(url).await
+    }
+}
+
 /// Creates a [`FlightServiceClient`] with high default message size limits.
 ///
 /// This is a convenience function that wraps [`FlightServiceClient::new`] and configures
