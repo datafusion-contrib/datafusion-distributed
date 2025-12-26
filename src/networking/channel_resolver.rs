@@ -3,11 +3,11 @@ use crate::config_extension_ext::set_distributed_option_extension;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
+use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::Shared;
 use std::io;
-use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
@@ -48,7 +48,7 @@ pub(crate) fn set_distributed_channel_resolver(
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
 ) {
     let opts = cfg.options_mut();
-    let channel_resolver = ChannelResolverExtension(Arc::new(channel_resolver));
+    let channel_resolver = ChannelResolverExtension(Some(Arc::new(channel_resolver)));
     if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
         distributed_cfg.__private_channel_resolver = channel_resolver;
     } else {
@@ -59,14 +59,32 @@ pub(crate) fn set_distributed_channel_resolver(
     }
 }
 
+// Unlike TaskContext, a DataFusion RuntimeEnv does not allow to introduce user-defined extensions.
+// For the default implementation of the ChannelResolvers, we cannot inject one DefaultChannelResolver
+// per TaskContext, as this holds reference to Tonic channels that must outlive a single TaskContext.
+//
+// The Tonic channels need to be established and reused under a whole RuntimeEnv scope, not a single
+// TaskContext, which forces us to put the default implementation in a static global variable that
+// stores and reuses tonic channels per RuntimeEnv's pointer address.
+static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
+    moka::sync::Cache<
+        /* Arc<RuntimeEnv> pointer address */ usize,
+        /* ChannelResolver that reuses built channels */ Arc<DefaultChannelResolver>,
+    >,
+> = LazyLock::new(|| moka::sync::Cache::builder().max_capacity(256).build());
+
 pub(crate) fn get_distributed_channel_resolver(
-    cfg: &SessionConfig,
+    task_ctx: &TaskContext,
 ) -> Arc<dyn ChannelResolver + Send + Sync> {
-    let opts = cfg.options();
-    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return Arc::clone(DEFAULT_CHANNEL_RESOLVER.deref());
-    };
-    Arc::clone(&distributed_cfg.__private_channel_resolver.0)
+    let opts = task_ctx.session_config().options();
+    if let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() {
+        if let Some(cr) = &distributed_cfg.__private_channel_resolver.0 {
+            return Arc::clone(cr);
+        }
+    }
+    let runtime_addr = Arc::as_ptr(&task_ctx.runtime_env()) as usize;
+    DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME
+        .get_with(runtime_addr, || Arc::new(DefaultChannelResolver::default()))
 }
 
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
@@ -77,39 +95,31 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 
 type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionError>>>;
 
-// The moka Cache instance needs to be global, as it needs to share the same cache for all the
-// queries, so it's declared as a private static variable.
-static DEFAULT_CHANNEL_RESOLVER: LazyLock<Arc<dyn ChannelResolver + Send + Sync>> =
-    LazyLock::new(|| Arc::new(DefaultChannelResolver::default()));
-
-#[derive(Clone)]
-pub(crate) struct ChannelResolverExtension(Arc<dyn ChannelResolver + Send + Sync>);
-
-impl Default for ChannelResolverExtension {
-    fn default() -> Self {
-        Self(Arc::clone(&DEFAULT_CHANNEL_RESOLVER))
-    }
-}
+#[derive(Clone, Default)]
+pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send + Sync>>);
 
 /// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
 /// and stores the connection instance in a TTI cache.
 ///
 /// Sane default over which other [ChannelResolver] can be built for better customization of the
 /// [FlightServiceClient]s.
+#[derive(Clone)]
 pub struct DefaultChannelResolver {
-    cache: moka::sync::Cache<Url, ChannelCacheValue>,
+    cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
 }
 
 impl Default for DefaultChannelResolver {
     fn default() -> Self {
         Self {
-            cache: moka::sync::Cache::builder()
-                // Use an unrealistic max capacity, just in case there is a logic error on the
-                // user part that produces an unreasonable amount of URLs.
-                .max_capacity(64556)
-                // If a channel has not been used in 5 mins, delete it.
-                .time_to_idle(Duration::from_secs(5 * 60))
-                .build(),
+            cache: Arc::new(
+                moka::sync::Cache::builder()
+                    // Use an unrealistic max capacity, just in case there is a logic error on the
+                    // user part that produces an unreasonable amount of URLs.
+                    .max_capacity(64556)
+                    // If a channel has not been used in 5 mins, delete it.
+                    .time_to_idle(Duration::from_secs(5 * 60))
+                    .build(),
+            ),
         }
     }
 }
