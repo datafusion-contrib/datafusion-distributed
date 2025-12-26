@@ -58,8 +58,8 @@ use tonic::transport::Server;
 #[structopt(verbatim_doc_comment)]
 pub struct RunOpt {
     /// Query number. If not specified, runs all queries
-    #[structopt(short, long)]
-    pub query: Option<usize>,
+    #[structopt(short, long, use_delimiter = true)]
+    pub query: Vec<usize>,
 
     /// Path to data files
     #[structopt(parse(from_os_str), short = "p", long = "path")]
@@ -222,7 +222,7 @@ impl RunOpt {
         let dataset = Dataset::infer_from_data_path(path.clone())?;
 
         for (id, sql) in dataset.queries()? {
-            if self.query.is_some_and(|v| v != id) {
+            if !self.query.is_empty() && !self.query.contains(&id) {
                 continue;
             }
             let query_id = format!("{dataset:?} {id}");
