@@ -15,9 +15,10 @@ how to contribute changes to the library yourself.
 
    user-guide/index
    user-guide/getting-started
-   user-guide/task-estimator
-   user-guide/channel-resolver
+   user-guide/worker-resolver
    user-guide/arrow-flight-endpoint
+   user-guide/channel-resolver
+   user-guide/task-estimator
    user-guide/concepts
    user-guide/how-a-distributed-plan-is-built
 
