@@ -2,12 +2,11 @@ use crate::DistributedConfig;
 use crate::config_extension_ext::set_distributed_option_extension;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, config_datafusion_err, exec_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::Shared;
-use std::io;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
@@ -130,16 +129,27 @@ impl DefaultChannelResolver {
         let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url)
-                    .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
-                let mut channel = endpoint
-                    .connect()
-                    .await
-                    .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
-                channel
-                    .ready()
-                    .await
-                    .map_err(|err| DataFusionError::IoError(io::Error::other(err.to_string())))?;
+                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
+                    config_datafusion_err!(
+                        "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
+                    )
+                })?;
+                let mut channel = endpoint.connect().await.map_err(|err| {
+                    DataFusionError::Context(
+                        format!("{err:?}"),
+                        Box::new(exec_datafusion_err!(
+                            "Error connecting to Distributed DataFusion worker on '{url}': {err}"
+                        )),
+                    )
+                })?;
+                channel.ready().await.map_err(|err| {
+                    DataFusionError::Context(
+                        format!("{err:?}"),
+                        Box::new(exec_datafusion_err!(
+                            "Error waiting for Distributed DataFusion channel to be ready on '{url}': {err}"
+                        )),
+                    )
+                })?;
                 Ok(BoxCloneSyncChannel::new(channel))
             }
             .boxed()
