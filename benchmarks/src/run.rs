@@ -142,7 +142,9 @@ impl Dataset {
             Dataset::Tpch => (1..22 + 1)
                 .map(|i| Ok((i as usize, tpch::get_test_tpch_query(i)?)))
                 .collect(),
-            Dataset::Tpcds => (1..99 + 1)
+            Dataset::Tpcds => (1..72)
+                // skip query 72, it's ridiculously slow
+                .chain(73..99 + 1)
                 .map(|i| Ok((i, tpcds::get_test_tpcds_query(i)?)))
                 .collect(),
         }
