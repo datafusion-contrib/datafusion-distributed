@@ -138,6 +138,7 @@ fn _annotate_plan(
 ) -> Result<AnnotatedPlan, DataFusionError> {
     use TaskCountAnnotation::*;
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let estimator = &d_cfg.__private_task_estimator;
     let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
     let annotated_children = plan
@@ -150,8 +151,7 @@ fn _annotate_plan(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        let estimator = &d_cfg.__private_task_estimator;
-        if let Some(estimate) = estimator.tasks_for_leaf_node(&plan, cfg) {
+        if let Some(estimate) = estimator.task_estimation(&plan, cfg) {
             return Ok(AnnotatedPlan {
                 plan,
                 children: Vec::new(),
@@ -170,7 +170,9 @@ fn _annotate_plan(
         }
     }
 
-    let mut task_count = Desired(1);
+    let mut task_count = estimator
+        .task_estimation(&plan, cfg)
+        .map_or(Desired(1), |v| v.task_count);
     if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
         // with a bunch of children, the user might want to increase parallelism and increase the
@@ -341,11 +343,11 @@ mod tests {
     use super::*;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{DistributedExt, assert_snapshot};
+    use crate::{DistributedExt, TaskEstimation, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use itertools::Itertools;
-
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -584,16 +586,116 @@ mod tests {
         ")
     }
 
+    #[tokio::test]
+    async fn test_intermediate_task_estimator() {
+        let query = r#"
+        SELECT DISTINCT "RainToday" FROM weather
+        "#;
+        let annotated = sql_to_annotated_with_estimator(query, |_: &RepartitionExec| {
+            Some(TaskEstimation::maximum(1))
+        })
+        .await;
+        assert_snapshot!(annotated, @r"
+        AggregateExec: task_count=Desired(1)
+          CoalesceBatchesExec: task_count=Desired(1), required_network_boundary=Shuffle
+            RepartitionExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                AggregateExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_union_all_limited_by_intermediate_estimator() {
+        let query = r#"
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        "#;
+        let annotated = sql_to_annotated_with_estimator(query, |_: &FilterExec| {
+            Some(TaskEstimation::maximum(1))
+        })
+        .await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(2)
+          CoalesceBatchesExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
+            CoalesceBatchesExec: task_count=Maximum(1)
+              FilterExec: task_count=Maximum(1)
+                RepartitionExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+        ")
+    }
+
+    #[allow(clippy::type_complexity)]
+    struct CallbackEstimator {
+        f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
+    }
+
+    impl CallbackEstimator {
+        fn new<T: ExecutionPlan + 'static>(
+            f: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
+        ) -> Self {
+            let f = Arc::new(move |plan: &dyn ExecutionPlan| -> Option<TaskEstimation> {
+                if let Some(plan) = plan.as_any().downcast_ref::<T>() {
+                    f(plan)
+                } else {
+                    None
+                }
+            });
+            Self { f }
+        }
+    }
+
+    impl TaskEstimator for CallbackEstimator {
+        fn task_estimation(
+            &self,
+            plan: &Arc<dyn ExecutionPlan>,
+            _: &ConfigOptions,
+        ) -> Option<TaskEstimation> {
+            (self.f)(plan.as_ref())
+        }
+
+        fn scale_up_leaf_node(
+            &self,
+            _: &Arc<dyn ExecutionPlan>,
+            _: usize,
+            _: &ConfigOptions,
+        ) -> Option<Arc<dyn ExecutionPlan>> {
+            None
+        }
+    }
+
     async fn sql_to_annotated(query: &str) -> String {
+        sql_to_annotated_with_options(query, move |b| b).await
+    }
+
+    async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
+        query: &str,
+        estimator: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
+    ) -> String {
+        sql_to_annotated_with_options(query, move |b| {
+            b.with_distributed_task_estimator(CallbackEstimator::new(estimator))
+        })
+        .await
+    }
+
+    async fn sql_to_annotated_with_options(
+        query: &str,
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
+    ) -> String {
         let config = SessionConfig::new()
             .with_target_partitions(4)
             .with_information_schema(true);
 
-        let state = SessionStateBuilder::new()
+        let state = f(SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-            .build();
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+        .build();
 
         let ctx = SessionContext::new_with_state(state);
         let mut queries = query.split(";").collect_vec();
