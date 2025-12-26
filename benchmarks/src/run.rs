@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion::DATAFUSION_VERSION;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -25,27 +24,26 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{exec_err, not_impl_err};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
-use datafusion_distributed::test_utils::localhost::{
-    LocalHostWorkerResolver, spawn_flight_service,
-};
+use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::{tpcds, tpch};
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilder,
-    DistributedSessionBuilderContext, NetworkBoundaryExt,
+    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
 };
 use log::info;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use structopt::StructOpt;
 use tokio::net::TcpListener;
+use tonic::codegen::tokio_stream;
+use tonic::transport::Server;
 
 /// Run the tpch benchmark.
 ///
@@ -151,32 +149,6 @@ impl Dataset {
     }
 }
 
-#[async_trait]
-impl DistributedSessionBuilder for RunOpt {
-    async fn build_session_state(
-        &self,
-        _ctx: DistributedSessionBuilderContext,
-    ) -> Result<SessionState, DataFusionError> {
-        let rt_builder = RuntimeEnvBuilder::new();
-        let config = self.config()?.with_target_partitions(self.partitions());
-        let builder = SessionStateBuilder::new()
-            .with_runtime_env(rt_builder.build_arc()?)
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .with_distributed_files_per_task(
-                self.files_per_task.unwrap_or(get_available_parallelism()),
-            )?
-            .with_distributed_cardinality_effect_task_scale_factor(
-                self.cardinality_task_sf.unwrap_or(1.0),
-            )?
-            .with_distributed_metrics_collection(self.collect_metrics)?;
-
-        Ok(builder.build())
-    }
-}
-
 impl RunOpt {
     fn config(&self) -> Result<SessionConfig> {
         SessionConfig::from_env().map(|mut config| {
@@ -200,7 +172,13 @@ impl RunOpt {
             rt.block_on(async move {
                 let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
                 println!("Listening on {}...", listener.local_addr().unwrap());
-                spawn_flight_service(self, listener).await
+                let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+                Ok::<_, Box<dyn Error + Send + Sync>>(
+                    Server::builder()
+                        .add_service(ArrowFlightEndpoint::default().into_flight_server())
+                        .serve_with_incoming(incoming)
+                        .await?,
+                )
             })?;
         } else {
             rt.block_on(self.run_local())?;
@@ -209,7 +187,20 @@ impl RunOpt {
     }
 
     async fn run_local(mut self) -> Result<()> {
-        let state = self.build_session_state(Default::default()).await?;
+        let config = self.config()?.with_target_partitions(self.partitions());
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_files_per_task(
+                self.files_per_task.unwrap_or(get_available_parallelism()),
+            )?
+            .with_distributed_cardinality_effect_task_scale_factor(
+                self.cardinality_task_sf.unwrap_or(1.0),
+            )?
+            .with_distributed_metrics_collection(self.collect_metrics)?
+            .build();
         let ctx = SessionContext::new_with_state(state);
         let path = self.get_path()?;
         self.register_tables(&ctx, path.clone()).await?;
