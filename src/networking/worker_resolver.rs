@@ -7,7 +7,16 @@ use url::Url;
 
 /// Resolves a list of worker URLs in the cluster available for executing parts of the plan.
 pub trait WorkerResolver {
-    /// Gets all available worker URLs. Used during task assignment.
+    /// Gets all available worker URLs in the cluster. Note how this method is not async, which
+    /// means that any async operation involved in discovering worker URLs must happen on a
+    /// background thread and be retrieved by this method synchronously.
+    ///
+    /// This method will be called in several places during distributed planning:
+    /// - During task count assignation for the different stages, for determining the size of
+    ///   the cluster and limiting the amount of tasks per stage to Vec<Url>.length().
+    /// - Right before execution, for lazily assigning worker URLs to the different tasks in the
+    ///   plan. This is done as close to execution in order to have fresh worker URLs as updated
+    ///   as possible.
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError>;
 }
 
