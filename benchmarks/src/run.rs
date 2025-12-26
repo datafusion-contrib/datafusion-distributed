@@ -29,7 +29,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
-use datafusion_distributed::test_utils::{tpcds, tpch};
+use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
 use datafusion_distributed::{
     ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
 };
@@ -115,26 +115,27 @@ pub struct RunOpt {
 enum Dataset {
     Tpch,
     Tpcds,
+    Clickbench,
 }
 
 impl Dataset {
     fn infer_from_data_path(path: PathBuf) -> Result<Self, DataFusionError> {
-        if path
-            .iter()
-            .any(|v| v.to_str().is_some_and(|v| v.contains("tpch")))
-        {
-            return Ok(Self::Tpch);
+        fn path_contains(path: &Path, substr: &str) -> bool {
+            path.iter()
+                .any(|v| v.to_str().is_some_and(|v| v.contains(substr)))
         }
-        if path
-            .iter()
-            .any(|v| v.to_str().is_some_and(|v| v.contains("tpcds")))
-        {
-            return Ok(Self::Tpcds);
+        if path_contains(&path, "tpch") {
+            Ok(Self::Tpch)
+        } else if path_contains(&path, "tpcds") {
+            Ok(Self::Tpcds)
+        } else if path_contains(&path, "clickbench") {
+            Ok(Self::Clickbench)
+        } else {
+            not_impl_err!(
+                "Cannot infer benchmark dataset from path {}",
+                path.display()
+            )
         }
-        not_impl_err!(
-            "Cannot infer benchmark dataset from path {}",
-            path.display()
-        )
     }
 
     fn queries(&self) -> Result<Vec<(usize, String)>, DataFusionError> {
@@ -144,6 +145,9 @@ impl Dataset {
                 .collect(),
             Dataset::Tpcds => (1..99 + 1)
                 .map(|i| Ok((i, tpcds::get_test_tpcds_query(i)?)))
+                .collect(),
+            Dataset::Clickbench => (0..42 + 1)
+                .map(|i| Ok((i, clickbench::get_test_clickbench_query(i)?)))
                 .collect(),
         }
     }
