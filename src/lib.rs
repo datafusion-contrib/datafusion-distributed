@@ -20,7 +20,8 @@ pub use distributed_planner::{
     TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
-    DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
+    DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
+    PartitionIsolatorExec,
 };
 pub use flight_service::{
     ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,

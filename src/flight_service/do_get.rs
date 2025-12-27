@@ -52,9 +52,15 @@ pub struct DoGet {
     /// if we already have stored it
     #[prost(message, optional, tag = "5")]
     pub stage_key: Option<StageKey>,
+    /// For broadcast stages, the number of consumer tasks that will fetch this data
+    #[prost(uint64, optional, tag = "6")]
+    pub consumer_task_count: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+use futures::StreamExt;
+use tokio::sync::OnceCell;
+
+#[derive(Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
@@ -64,7 +70,11 @@ pub struct TaskData {
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
     /// complete because it's possible that the same partition was retried and this count was
     /// decremented more than once for the same partition.
+    /// For broadcast stages, this is initialized to consumer_task_count instead.
     num_partitions_remaining: Arc<AtomicUsize>,
+    /// Cached batches for broadcast stages. When present, the plan is executed once and
+    /// results are cached for all subsequent consumers.
+    cached_batches: Option<Arc<OnceCell<Arc<Vec<RecordBatch>>>>>,
 }
 
 impl ArrowFlightEndpoint {
@@ -94,10 +104,13 @@ impl ArrowFlightEndpoint {
 
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
         // so here we either retrieve the existing one or create a new one if it does not exist.
-        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = doget.stage_key.clone().ok_or_else(missing("stage_key"))?;
         let once = self
             .task_data_entries
             .get_or_init(key.clone(), Default::default);
+
+        let consumer_task_count = doget.consumer_task_count;
+        let is_broadcast = consumer_task_count.is_some();
 
         let stage_data = once
             .get_or_try_init(|| async {
@@ -107,15 +120,25 @@ impl ArrowFlightEndpoint {
                     plan = hook(plan)
                 }
 
-                // Initialize partition count to the number of partitions in the stage
-                let total_partitions = plan.properties().partitioning.partition_count();
+                let (num_remaining, cached_batches) = if is_broadcast {
+                    (
+                        Arc::new(AtomicUsize::new(consumer_task_count.unwrap_or(1) as usize)),
+                        Some(Arc::new(OnceCell::new())),
+                    )
+                } else {
+                    let total_partitions = plan.properties().partitioning.partition_count();
+                    (Arc::new(AtomicUsize::new(total_partitions)), None)
+                };
+
                 Ok::<_, DataFusionError>(TaskData {
                     plan,
-                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+                    num_partitions_remaining: num_remaining,
+                    cached_batches,
                 })
             })
             .await
             .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
+
         let plan = Arc::clone(&stage_data.plan);
 
         // Find out which partition group we are executing
@@ -139,14 +162,27 @@ impl ArrowFlightEndpoint {
             )));
         }
 
-        // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
-        // as executing `StageExec` performs some worker assignation that should have already been
-        // done in the head stage.
-        let stream = plan
-            .execute(doget.target_partition as usize, session_state.task_ctx())
-            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
+        let stream = if let Some(cache) = &stage_data.cached_batches {
+            let task_ctx = session_state.task_ctx();
+            let plan_ref = Arc::clone(&stage_data.plan);
 
-        let schema = stream.schema().clone();
+            let batches = cache
+                .get_or_try_init(|| async move {
+                    let stream = plan_ref.execute(target_partition, task_ctx)?;
+                    let batches: Vec<RecordBatch> = stream.try_collect().await?;
+                    Ok::<_, DataFusionError>(Arc::new(batches))
+                })
+                .await
+                .map_err(|err| Status::internal(format!("Error executing broadcast: {err}")))?;
+
+            futures::stream::iter(batches.as_ref().clone().into_iter().map(Ok)).boxed()
+        } else {
+            plan.execute(target_partition, session_state.task_ctx())
+                .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?
+                .boxed()
+        };
+
+        let schema = plan.schema();
 
         // Apply garbage collection of dictionary and view arrays before sending over the network
         let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
@@ -337,6 +373,7 @@ mod tests {
                 target_task_count: num_tasks,
                 target_partition: partition,
                 stage_key: Some(stage_key),
+                consumer_task_count: None,
             };
 
             let ticket = Ticket {

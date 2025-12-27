@@ -175,6 +175,7 @@ impl NetworkShuffleExec {
                 num,
                 plan: MaybeEncodedPlan::Decoded(transformed.data),
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
+                consumer_task_count: None,
             },
             properties: input.properties().clone(),
             metrics_collection: Default::default(),
@@ -276,6 +277,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                         stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
+                        consumer_task_count: None,
                     }
                     .encode_to_vec()
                     .into(),

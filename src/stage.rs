@@ -81,6 +81,8 @@ pub struct Stage {
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
+    /// For broadcast stages, the number of consumer tasks that will fetch this data.
+    pub(crate) consumer_task_count: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,12 +160,14 @@ impl Stage {
         num: usize,
         plan: Arc<dyn ExecutionPlan>,
         n_tasks: usize,
+        consumer_task_count: Option<usize>,
     ) -> Self {
         Self {
             query_id,
             num,
             plan: MaybeEncodedPlan::Decoded(plan),
             tasks: vec![ExecutionTask { url: None }; n_tasks],
+            consumer_task_count,
         }
     }
 }
@@ -359,6 +363,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             num: max_num + 1,
             plan: MaybeEncodedPlan::Decoded(plan.clone()),
             tasks: vec![ExecutionTask { url: None }],
+            consumer_task_count: None,
         };
         all_stages.insert(0, &head_stage);
 

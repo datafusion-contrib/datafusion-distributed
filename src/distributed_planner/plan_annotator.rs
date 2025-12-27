@@ -17,6 +17,7 @@ use std::sync::Arc;
 pub(super) enum RequiredNetworkBoundary {
     Shuffle,
     Coalesce,
+    Broadcast,
 }
 
 /// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
@@ -183,15 +184,6 @@ fn _annotate_plan(
         task_count = task_count.limit(n_workers);
     }
 
-    // We cannot distribute CollectLeft HashJoinExec nodes yet. Once
-    // https://github.com/datafusion-contrib/datafusion-distributed/pull/229 lands,
-    // we can remove this check.
-    if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>() {
-        if node.mode == PartitionMode::CollectLeft {
-            task_count = Maximum(1);
-        }
-    }
-
     // The plan does not need a NetworkBoundary, so just take the biggest task count from
     // the children and annotate the plan with that.
     let mut annotated_plan = AnnotatedPlan {
@@ -228,6 +220,11 @@ fn _annotate_plan(
         // that they are going to be part of needs to run in exactly one task.
         if nb == &RequiredNetworkBoundary::Coalesce {
             annotated_plan.task_count = Maximum(1);
+            return Ok(annotated_plan);
+        }
+
+        // For Broadcast, distribute_plan handles build/probe sides separately with different task counts.
+        if nb == &RequiredNetworkBoundary::Broadcast {
             return Ok(annotated_plan);
         }
 
@@ -295,6 +292,12 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
             return None;
         }
         return Some(RequiredNetworkBoundary::Coalesce);
+    }
+
+    if let Some(hash_join) = parent.as_any().downcast_ref::<HashJoinExec>() {
+        if hash_join.partition_mode() == &PartitionMode::CollectLeft {
+            return Some(RequiredNetworkBoundary::Broadcast);
+        }
     }
 
     None
@@ -372,11 +375,11 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
-            DataSourceExec: task_count=Maximum(1)
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3), required_network_boundary=Broadcast
+            CoalescePartitionsExec: task_count=Desired(3)
+              DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -408,7 +411,7 @@ mod tests {
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1), required_network_boundary=Broadcast
             CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -438,11 +441,11 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
-            DataSourceExec: task_count=Maximum(1)
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3), required_network_boundary=Broadcast
+            CoalescePartitionsExec: task_count=Desired(3)
+              DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
         ")
     }
 

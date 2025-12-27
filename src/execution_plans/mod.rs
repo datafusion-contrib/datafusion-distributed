@@ -1,12 +1,14 @@
 mod common;
 mod distributed;
 mod metrics;
+mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
 mod partition_isolator;
 
 pub use distributed::DistributedExec;
 pub(crate) use metrics::MetricsWrapperExec;
+pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
 pub use network_shuffle::NetworkShuffleExec;
 pub use partition_isolator::PartitionIsolatorExec;
