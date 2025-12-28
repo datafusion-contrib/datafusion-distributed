@@ -109,19 +109,27 @@ fn distribute_plan(
         set_task_count_until_boundary(&mut probe, parent_task_count);
 
         let build_side = distribute_plan(build, cfg, query_id, stage_id)?;
-        let broadcast = Arc::new(NetworkBroadcastExec::try_new(
-            build_side,
-            query_id,
-            *stage_id,
-            parent_task_count,
-            1,
-        )?);
+
+        // If there's only one consumer task, use Coalesce instead of Broadcast.
+        let build_child: Arc<dyn ExecutionPlan> = if parent_task_count == 1 {
+            Arc::new(NetworkCoalesceExec::try_new(
+                build_side, query_id, *stage_id, 1, 1,
+            )?)
+        } else {
+            Arc::new(NetworkBroadcastExec::try_new(
+                build_side,
+                query_id,
+                *stage_id,
+                parent_task_count,
+                1,
+            )?)
+        };
         stage_id.add_assign(1);
 
         let probe_side = distribute_plan(probe, cfg, query_id, stage_id)?;
         return annotated_plan
             .plan
-            .with_new_children(vec![broadcast, probe_side]);
+            .with_new_children(vec![build_child, probe_side]);
     }
 
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
