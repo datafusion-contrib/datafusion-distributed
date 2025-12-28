@@ -34,6 +34,11 @@ use url::Url;
 pub trait ChannelResolver {
     /// For a given URL, get an Arrow Flight client for communicating to it.
     ///
+    /// *WARNING*: This method is called for every Arrow Flight gRPC request, so to not create
+    /// one client connection for each request, users are required to reuse generated clients.
+    /// It's recommended to relly on [DefaultChannelResolver] either by delegating method calls
+    /// to it or by copying the implementation.
+    ///
     /// Consider using [`create_flight_client`] to create the client with appropriate
     /// default message size limits.
     async fn get_flight_client_for_url(
