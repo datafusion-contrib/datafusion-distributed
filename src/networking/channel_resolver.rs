@@ -11,7 +11,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
 use tonic::codegen::BoxFuture;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tonic::transport::Channel;
+#[cfg(feature = "tls")]
+use tonic::transport::ClientTlsConfig;
 use tower::ServiceExt;
 use url::Url;
 
@@ -110,6 +112,8 @@ pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
+    #[cfg(feature = "tls")]
+    tls_config: Option<ClientTlsConfig>,
 }
 
 impl Default for DefaultChannelResolver {
@@ -124,21 +128,52 @@ impl Default for DefaultChannelResolver {
                     .time_to_idle(Duration::from_secs(5 * 60))
                     .build(),
             ),
+            #[cfg(feature = "tls")]
+            tls_config: None,
         }
     }
 }
 
 impl DefaultChannelResolver {
+    /// Configures custom TLS settings for HTTPS connections.
+    ///
+    /// This allows you to specify CA certificates, client identities, and other TLS options.
+    /// Useful for testing with self-signed certificates or custom certificate authorities.
+    #[cfg(feature = "tls")]
+    pub fn with_tls_config(mut self, tls_config: ClientTlsConfig) -> Self {
+        self.tls_config = Some(tls_config);
+        self
+    }
+
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+        #[cfg(feature = "tls")]
+        let tls_config = self.tls_config.clone();
+
         let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
+                #[allow(unused_mut)]
+                let mut endpoint = Channel::from_shared(url.clone()).map_err(|err| {
                     config_datafusion_err!(
                         "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
                     )
                 })?;
+
+                // Automatically apply TLS configuration for HTTPS URLs
+                #[cfg(feature = "tls")]
+                if url.starts_with("https://") {
+                    let config = tls_config.unwrap_or_else(|| {
+                        // Use system root certificates by default for production HTTPS
+                        ClientTlsConfig::new().with_enabled_roots()
+                    });
+                    endpoint = endpoint.tls_config(config).map_err(|err| {
+                        config_datafusion_err!(
+                            "Failed to configure TLS for URL '{url}': {err}"
+                        )
+                    })?;
+                }
+
                 let mut channel = endpoint.connect().await.map_err(|err| {
                     DataFusionError::Context(
                         format!("{err:?}"),
@@ -235,7 +270,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
     #[cfg(feature = "tls")]
-    use tonic::transport::{Identity, ServerTlsConfig};
+    use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
     #[tokio::test]
     async fn fails_establishing_connection() -> Result<(), Box<dyn Error>> {
@@ -258,8 +293,32 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "tls")]
     async fn can_establish_connection_https() -> Result<(), Box<dyn Error>> {
-        let (url, _guard, ca_cert_pem) = spawn_https_localhost_worker().await?;
+        // Using Grafana's public gRPC demo server for testing HTTPS with valid certificates.
+        // This verifies that our TLS configuration works with real-world endpoints using
+        // system root certificates.
+        const URL: &str = "https://grpc-quickpizza.grafana.com:443";
+
         let channel_resolver = DefaultChannelResolver::default();
+
+        channel_resolver
+            .get_channel(&Url::parse(URL).unwrap())
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tls")]
+    async fn can_establish_connection_https_custom_config() -> Result<(), Box<dyn Error>> {
+        let (url, _guard, ca_cert_pem) = spawn_https_localhost_worker().await?;
+
+        // Configure TLS with the self-signed CA certificate
+        let ca_cert = Certificate::from_pem(&ca_cert_pem);
+        let tls_config = ClientTlsConfig::new()
+            .ca_certificate(ca_cert)
+            .domain_name("localhost");
+
+        let channel_resolver = DefaultChannelResolver::default().with_tls_config(tls_config);
+
         channel_resolver.get_channel(&url).await?;
         Ok(())
     }
