@@ -33,6 +33,89 @@ use tonic::Request;
 use tonic::metadata::MetadataMap;
 use uuid::Uuid;
 
+/// [ExecutionPlan] implementation that broadcasts data across the network in to all tasks in a
+/// stage.
+///
+/// This operators is easiest to visualize in the context of a hash join where one table is much
+/// smaller than the other (typically a CollectLeft joinn in DataFusion plans) in a distributed system.
+/// Without this operator the join would be forced to execute on a single node. It would be much more
+/// efficient to broadcast the entire small table to each task (node) in the stage, having each task
+/// complete a the join with a partition of the large table and full small table.
+///
+/// This node allows broadcasting data from N tasks to M tasks, being N and M arbitrary non-zero
+/// positive numbers. This comes with the caveat that broadcasting with > 1 input tasks requires
+/// coalescing their partitions to a single producer task which avoids partial or duplicate data being broadcast.
+///
+/// Here are some examples of how data can be broadcast in different scenarios:
+///
+/// # 1 stage with 1 partition to M tasks
+///
+/// ```text
+/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
+/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
+/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
+/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
+///            │1│                             │1│                            │1│                  │
+///            └▲┘                             └▲┘                            └▲┘                  ■
+///             │                               │                              │
+///          Populate                         Cache                          Cache
+///           Cache                            Hit                            Hit
+///             │                               │                              │
+///             └───────────────────────────────┼──────────────────────────────┘
+///                                            ┌┴┐
+///                                            │1│                                                 ■
+///                                       ┌────┴─┴────┐                                            │
+///                                       │Batch Cache│                                            │
+///                                 ┌─────┴───────────┴──────┐                                  Stage N
+///                                 │ Arc<dyn ExecutionPlan> │                                     │
+///                                 │        (task 1)        │                                     │
+///                                 └────────────────────────┘                                     ■
+/// ```
+/// All consumer stages are fetching the same partition. The first [NetworkBroadcastExec] causes
+/// execution and populates the cache with the resulting batches. Subsequent
+/// [NetworkBroadcastExec] operators read the results from the cache preventing; this is more
+/// efficient and prevents duplicate execution of a partition.
+///
+/// # N stages to M stages
+///
+/// ```text
+/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
+/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
+/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
+/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
+///            │1│                             │1│                            │1│                  │
+///            └▲┘                             └▲┘                            └▲┘                  ■
+///             │                               │                              │
+///          Populate                         Cache                          Cache
+///           Cache                            Hit                            Hit
+///             │                               │                              │
+///             └───────────────────────────────┼──────────────────────────────┘
+///                                            ┌┴┐
+///                                            │1│
+///                                       ┌────┴─┴────┐                                            ■
+///                                       │Batch Cache│                                            │
+///                                ┌──────┴───────────┴─────┐                                      │
+///                                │ CoalescePartitionsExec │                                   Stage N
+///                                │                        │                                      │
+///                                └┬─┬─────┬──┬┬─┬─────┬──┬┘                                      │
+///                                 │1│     │P1││1│     │PN│                                       │
+///                                 └▲┘ ... └─▲┘└▲┘ ... └─▲┘                                       ■
+///                                  │        │  │        │
+///                   ┌──────────────┘    ┌───┘  └───┐    └───────────────┐
+///                   │                   │          │                    │
+///                   │                   │          │                    │
+///                  ┌┴┐       ...       ┌┴─┐       ┌┴┐       ...       ┌─┴┐                       ■
+///                  │1│                 │P1│       │1│                 │PN│                       │
+///                 ┌┴─┴─────────────────┴──┴┐     ┌┴─┴─────────────────┴──┴┐                  Stage N-1
+///                 │ Arc<dyn ExecutionPlan> │ ... │ Arc<dyn ExecutionPlan> │                      │
+///                 │        (task 1)        │     │        (task N)        │                      │
+///                 └────────────────────────┘     └────────────────────────┘                      ■
+/// ```
+/// Here there are multiple input tasks, each with multiple partitionns. In a case like this a
+/// [CoalescePartitionsExec] is inserted. You can imagine if this coalesce was not here partial or
+/// duplicate data could be broadcast. Similarly, the first [NetworkBroadcastExec] triggers
+/// execution and populates the cache while subsequent operators read results from the cache.
+///
 /// Broadcasts the build side of a CollectLeft hash join to all consumer tasks.
 ///
 /// The input is coalesced to a single partition, executed once on a single task,

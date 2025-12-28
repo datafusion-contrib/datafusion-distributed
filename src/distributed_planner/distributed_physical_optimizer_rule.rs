@@ -100,7 +100,7 @@ fn distribute_plan(
         return Ok(scaled_up.unwrap_or(annotated_plan.plan));
     }
 
-    // Broadcast requires different task counts for build (1) vs probe (parent_task_count)
+    // Broadcast requires different task counts for build vs probe.
     if annotated_plan.required_network_boundary == Some(RequiredNetworkBoundary::Broadcast) {
         let mut build = children.remove(0);
         let mut probe = children.remove(0);
@@ -130,15 +130,20 @@ fn distribute_plan(
         .map(|child| distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
 
+    // It does not need a NetworkBoundary, so just keep recursing.
     let Some(nb_req) = annotated_plan.required_network_boundary else {
         return annotated_plan.plan.with_new_children(new_children);
     };
 
+    // It would need a network boundary, but on both sides of the boundary there is just 1 task,
+    // so we are fine with not introducing any network boundary.
     if parent_task_count == 1 && max_child_task_count == Some(1) {
         return annotated_plan.plan.with_new_children(new_children);
     }
 
     match nb_req {
+        // If the current node has a RepartitionExec below, it needs a shuffle, so put one
+        // NetworkShuffleExec boundary in between the RepartitionExec and the current node.
         RequiredNetworkBoundary::Shuffle => {
             let new_child = Arc::new(NetworkShuffleExec::try_new(
                 require_one_child(new_children)?,
@@ -150,6 +155,9 @@ fn distribute_plan(
             stage_id.add_assign(1);
             annotated_plan.plan.with_new_children(vec![new_child])
         }
+        // If this is a CoalescePartitionsExec or a SortMergePreservingExec, it means that the original
+        // plan is trying to merge all partitions into one. We need to go one step ahead and also merge
+        // all distributed tasks into one.
         RequiredNetworkBoundary::Coalesce => {
             let new_child = Arc::new(NetworkCoalesceExec::try_new(
                 require_one_child(new_children)?,

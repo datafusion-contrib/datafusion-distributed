@@ -72,7 +72,7 @@ pub struct TaskData {
     /// decremented more than once for the same partition.
     /// For broadcast stages, this is initialized to consumer_task_count instead.
     num_partitions_remaining: Arc<AtomicUsize>,
-    /// Cached batches for broadcast stages. When present, the plan is executed once and
+    /// Cached batches for broadcast stages. The plan is executed once and
     /// results are cached for all subsequent consumers.
     cached_batches: Option<Arc<OnceCell<Arc<Vec<RecordBatch>>>>>,
 }
