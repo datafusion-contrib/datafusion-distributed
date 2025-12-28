@@ -105,7 +105,7 @@ fn distribute_plan(
         let mut build = children.remove(0);
         let mut probe = children.remove(0);
 
-        set_task_count_recursive(&mut build, 1);
+        set_task_count_until_boundary(&mut build, 1);
         set_task_count_until_boundary(&mut probe, parent_task_count);
 
         let build_side = distribute_plan(build, cfg, query_id, stage_id)?;
@@ -162,13 +162,6 @@ fn distribute_plan(
             annotated_plan.plan.with_new_children(vec![new_child])
         }
         RequiredNetworkBoundary::Broadcast => unreachable!("handled above"),
-    }
-}
-
-fn set_task_count_recursive(plan: &mut AnnotatedPlan, task_count: usize) {
-    plan.task_count = TaskCountAnnotation::Maximum(task_count);
-    for child in &mut plan.children {
-        set_task_count_recursive(child, task_count);
     }
 }
 
