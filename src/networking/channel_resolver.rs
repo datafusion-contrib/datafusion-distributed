@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
 use tonic::codegen::BoxFuture;
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tower::ServiceExt;
 use url::Url;
 
@@ -227,13 +227,15 @@ pub fn create_flight_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DefaultSessionBuilder;
-    use crate::test_utils::localhost::spawn_flight_service;
+    use crate::ArrowFlightEndpoint;
     use datafusion::common::assert_contains;
     use datafusion::common::runtime::SpawnedTask;
     use std::error::Error;
     use std::time::Instant;
     use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    #[cfg(feature = "tls")]
+    use tonic::transport::{Identity, ServerTlsConfig};
 
     #[tokio::test]
     async fn fails_establishing_connection() -> Result<(), Box<dyn Error>> {
@@ -248,6 +250,15 @@ mod tests {
     #[tokio::test]
     async fn can_establish_connection() -> Result<(), Box<dyn Error>> {
         let (url, _guard) = spawn_http_localhost_worker().await?;
+        let channel_resolver = DefaultChannelResolver::default();
+        channel_resolver.get_channel(&url).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tls")]
+    async fn can_establish_connection_https() -> Result<(), Box<dyn Error>> {
+        let (url, _guard, ca_cert_pem) = spawn_https_localhost_worker().await?;
         let channel_resolver = DefaultChannelResolver::default();
         channel_resolver.get_channel(&url).await?;
         Ok(())
@@ -272,18 +283,46 @@ mod tests {
 
     async fn spawn_http_localhost_worker() -> Result<(Url, SpawnedTask<()>), Box<dyn Error>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let incoming = TcpListenerStream::new(listener);
 
-        let port = listener
-            .local_addr()
-            .expect("Failed to get local address")
-            .port();
+        let router = tonic::transport::Server::builder()
+            .add_service(ArrowFlightEndpoint::default().into_flight_server());
 
         let task = SpawnedTask::spawn(async {
-            if let Err(err) = spawn_flight_service(DefaultSessionBuilder, listener).await {
-                panic!("{err}")
+            if let Err(err) = router.serve_with_incoming(incoming).await {
+                panic!("HTTPS server error: {err}")
             }
         });
 
         Ok((Url::parse(&format!("http://127.0.0.1:{port}"))?, task))
+    }
+
+    #[cfg(feature = "tls")]
+    async fn spawn_https_localhost_worker() -> Result<(Url, SpawnedTask<()>, String), Box<dyn Error>>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let incoming = TcpListenerStream::new(listener);
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+
+        let identity = Identity::from_pem(&cert_pem, &key_pem);
+        let tls_config = ServerTlsConfig::new().identity(identity);
+
+        let router = tonic::transport::Server::builder()
+            .tls_config(tls_config)?
+            .add_service(ArrowFlightEndpoint::default().into_flight_server());
+
+        let task = SpawnedTask::spawn(async move {
+            if let Err(err) = router.serve_with_incoming(incoming).await {
+                panic!("HTTPS server error: {err}")
+            }
+        });
+
+        let url = Url::parse(&format!("https://localhost:{port}"))?;
+        Ok((url, task, cert_pem))
     }
 }
