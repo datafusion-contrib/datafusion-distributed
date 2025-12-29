@@ -133,7 +133,7 @@ impl MaybeEncodedPlan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DistributedTaskContext {
     pub task_index: usize,
     pub task_count: usize,

@@ -58,8 +58,8 @@ use tonic::transport::Server;
 #[structopt(verbatim_doc_comment)]
 pub struct RunOpt {
     /// Query number. If not specified, runs all queries
-    #[structopt(short, long)]
-    pub query: Option<usize>,
+    #[structopt(short, long, use_delimiter = true)]
+    pub query: Vec<usize>,
 
     /// Path to data files
     #[structopt(parse(from_os_str), short = "p", long = "path")]
@@ -88,6 +88,10 @@ pub struct RunOpt {
     /// Task count scale factor for when nodes in stages change the cardinality of the data
     #[structopt(long)]
     cardinality_task_sf: Option<f64>,
+
+    /// Use children isolator UNIONs for distributing UNION operations.
+    #[structopt(long)]
+    children_isolator_unions: bool,
 
     /// Collects metrics across network boundaries
     #[structopt(long)]
@@ -143,7 +147,9 @@ impl Dataset {
             Dataset::Tpch => (1..22 + 1)
                 .map(|i| Ok((i as usize, tpch::get_test_tpch_query(i)?)))
                 .collect(),
-            Dataset::Tpcds => (1..99 + 1)
+            Dataset::Tpcds => (1..72)
+                // skip query 72, it's ridiculously slow
+                .chain(73..99 + 1)
                 .map(|i| Ok((i, tpcds::get_test_tpcds_query(i)?)))
                 .collect(),
             Dataset::Clickbench => (0..42 + 1)
@@ -203,6 +209,7 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
         let ctx = SessionContext::new_with_state(state);
@@ -219,7 +226,7 @@ impl RunOpt {
         let dataset = Dataset::infer_from_data_path(path.clone())?;
 
         for (id, sql) in dataset.queries()? {
-            if self.query.is_some_and(|v| v != id) {
+            if !self.query.is_empty() && !self.query.contains(&id) {
                 continue;
             }
             let query_id = format!("{dataset:?} {id}");

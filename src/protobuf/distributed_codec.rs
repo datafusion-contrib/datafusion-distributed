@@ -1,7 +1,7 @@
 use super::get_distributed_user_codecs;
-use crate::NetworkBoundary;
-use crate::execution_plans::NetworkCoalesceExec;
+use crate::execution_plans::{ChildrenIsolatorUnionExec, NetworkCoalesceExec};
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
+use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -11,6 +11,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
@@ -18,6 +19,7 @@ use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{ComposedPhysicalExtensionCodec, PhysicalExtensionCodec};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
+use itertools::Itertools;
 use prost::Message;
 use std::sync::Arc;
 use url::Url;
@@ -151,6 +153,42 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     n_tasks as usize,
                 )))
             }
+            DistributedExecNode::ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto {
+                partition_count,
+                task_idx_map,
+            }) => {
+                // Building a UnionExec just to get the properties out of it is not the most
+                // efficient thing to do. However, it's the easiest way of getting the properties
+                // for the ChildrenIsolatorUnionExec without copy-pasting in this project
+                // all the machinery that builds them for UnionExec.
+                let mut properties = UnionExec::try_new(inputs.to_vec())?.properties().clone();
+                properties.partitioning =
+                    Partitioning::UnknownPartitioning(partition_count as usize);
+
+                Ok(Arc::new(ChildrenIsolatorUnionExec {
+                    properties,
+                    metrics: Default::default(),
+                    children: inputs.to_vec(),
+                    task_idx_map: task_idx_map
+                        .iter()
+                        .map(|entry| {
+                            entry
+                                .child_ctx
+                                .iter()
+                                .map(|child_ctx| {
+                                    (
+                                        child_ctx.child_idx as usize,
+                                        DistributedTaskContext {
+                                            task_index: child_ctx.task_idx as usize,
+                                            task_count: child_ctx.task_count as usize,
+                                        },
+                                    )
+                                })
+                                .collect_vec()
+                        })
+                        .collect(),
+                }))
+            }
         }
     }
 
@@ -208,6 +246,30 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             let wrapper = DistributedExecProto {
                 node: Some(DistributedExecNode::PartitionIsolator(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+            let inner = ChildrenIsolatorUnionExecProto {
+                partition_count: node.properties().output_partitioning().partition_count() as u64,
+                task_idx_map: node
+                    .task_idx_map
+                    .iter()
+                    .map(|v| TaskIdxMapEntryProto {
+                        child_ctx: v
+                            .iter()
+                            .map(|(child_idx, task_ctx)| ChildIdxWithTaskContextProto {
+                                child_idx: *child_idx as u64,
+                                task_idx: task_ctx.task_index as u64,
+                                task_count: task_ctx.task_count as u64,
+                            })
+                            .collect_vec(),
+                    })
+                    .collect_vec(),
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::ChildrenIsolatorUnion(inner)),
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
@@ -281,6 +343,8 @@ pub enum DistributedExecNode {
     NetworkCoalesceTasks(NetworkCoalesceExecProto),
     #[prost(message, tag = "3")]
     PartitionIsolator(PartitionIsolatorExecProto),
+    #[prost(message, tag = "4")]
+    ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -300,6 +364,30 @@ pub struct NetworkShuffleExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChildrenIsolatorUnionExecProto {
+    #[prost(uint64, tag = "1")]
+    partition_count: u64,
+    #[prost(message, repeated, tag = "2")]
+    task_idx_map: Vec<TaskIdxMapEntryProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskIdxMapEntryProto {
+    #[prost(message, repeated, tag = "1")]
+    child_ctx: Vec<ChildIdxWithTaskContextProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChildIdxWithTaskContextProto {
+    #[prost(uint64, tag = "1")]
+    child_idx: u64,
+    #[prost(uint64, tag = "2")]
+    task_idx: u64,
+    #[prost(uint64, tag = "3")]
+    task_count: u64,
 }
 
 fn new_network_hash_shuffle_exec(
@@ -583,6 +671,39 @@ mod tests {
         codec.try_encode(plan.clone(), &mut buf)?;
 
         let decoded = codec.try_decode(&buf, &[union], &ctx)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_children_isolator_union() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("h");
+        let left = Arc::new(new_network_hash_shuffle_exec(
+            Partitioning::RoundRobinBatch(2),
+            schema.clone(),
+            dummy_stage(),
+        )) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(new_network_hash_shuffle_exec(
+            Partitioning::RoundRobinBatch(2),
+            schema.clone(),
+            dummy_stage(),
+        )) as Arc<dyn ExecutionPlan>;
+
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
+                vec![left.clone(), right.clone()],
+                vec![2, 2],
+                4,
+            )?);
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[left, right], &ctx)?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())

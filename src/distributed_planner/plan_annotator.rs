@@ -1,3 +1,4 @@
+use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
@@ -8,6 +9,7 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::UnionExec;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -168,29 +170,39 @@ fn _annotate_plan(
         }
     }
 
-    // The task count for this plan is decided by the biggest task count from the children; unless
-    // a child specifies a maximum task count, in that case, the maximum is respected. Some
-    // nodes can only run in one task. If there is a subplan with a single node declaring that
-    // it can only run in one task, all the rest of the nodes in the stage need to respect it.
     let mut task_count = Desired(1);
-    for annotated_child in annotated_children.iter() {
-        task_count = match (task_count, &annotated_child.task_count) {
-            (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
-            (Maximum(max), Desired(_)) => Maximum(max),
-            (Desired(_), Maximum(max)) => Maximum(*max),
-            (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2)),
-        };
-        task_count = task_count.limit(n_workers);
-    }
-
-    // We cannot distribute CollectLeft HashJoinExec nodes yet. Once
-    // https://github.com/datafusion-contrib/datafusion-distributed/pull/229 lands,
-    // we can remove this check.
-    if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>() {
-        if node.mode == PartitionMode::CollectLeft {
-            task_count = Maximum(1);
+    if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
+        // Unions have the chance to decide how many tasks they should run on. If there's a union
+        // with a bunch of children, the user might want to increase parallelism and increase the
+        // task count for the stage running that.
+        let mut count = 0;
+        for annotated_child in annotated_children.iter() {
+            count += annotated_child.task_count.as_usize();
+        }
+        task_count = Desired(count);
+    } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
+        && node.mode == PartitionMode::CollectLeft
+    {
+        // We cannot distribute CollectLeft HashJoinExec nodes yet. Once
+        // https://github.com/datafusion-contrib/datafusion-distributed/pull/229 lands,
+        // we can remove this check.
+        task_count = Maximum(1);
+    } else {
+        // The task count for this plan is decided by the biggest task count from the children; unless
+        // a child specifies a maximum task count, in that case, the maximum is respected. Some
+        // nodes can only run in one task. If there is a subplan with a single node declaring that
+        // it can only run in one task, all the rest of the nodes in the stage need to respect it.
+        for annotated_child in annotated_children.iter() {
+            task_count = match (task_count, &annotated_child.task_count) {
+                (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
+                (Maximum(max), Desired(_)) => Maximum(max),
+                (Desired(_), Maximum(max)) => Maximum(*max),
+                (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2)),
+            };
         }
     }
+
+    task_count = task_count.limit(n_workers);
 
     // The plan does not need a NetworkBoundary, so just take the biggest task count from
     // the children and annotate the plan with that.
@@ -200,27 +212,51 @@ fn _annotate_plan(
         task_count,
         plan,
     };
-    if !(root || annotated_plan.required_network_boundary.is_some()) {
-        return Ok(annotated_plan);
-    };
 
     // The plan needs a NetworkBoundary. At this point we have all the info we need for choosing
     // the right size for the stage below, so what we need to do is take the calculated final
     // task count and propagate to all the children that will eventually be part of the stage.
-    fn propagate_task_count(plan: &mut AnnotatedPlan, task_count: &TaskCountAnnotation) {
+    fn propagate_task_count(
+        plan: &mut AnnotatedPlan,
+        task_count: &TaskCountAnnotation,
+        d_cfg: &DistributedConfig,
+    ) -> Result<(), DataFusionError> {
         plan.task_count = task_count.clone();
-        if plan.required_network_boundary.is_none() {
+        if plan.required_network_boundary.is_some() {
+            // nothing to propagate here, all the nodes below the network boundary were already
+            // assigned a task count, we do not want to overwrite it.
+        } else if d_cfg.children_isolator_unions && plan.plan.as_any().is::<UnionExec>() {
+            // Propagating through ChildrenIsolatorUnionExec is not that easy, each child will
+            // be executed in its own task, and therefore, they will act as if they were in executing
+            // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
+            // determine which children to run and which to exclude depending on the task index in
+            // which it's running.
+            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
+                plan.children.iter().map(|v| v.plan.clone()),
+                plan.children.iter().map(|v| v.task_count.as_usize()),
+                task_count.as_usize(),
+            )?;
+            for children_and_tasks in c_i_union.task_idx_map.iter() {
+                for (child_i, task_ctx) in children_and_tasks {
+                    if let Some(child) = plan.children.get_mut(*child_i) {
+                        propagate_task_count(child, &Maximum(task_ctx.task_count), d_cfg)?
+                    };
+                }
+            }
+            plan.plan = Arc::new(c_i_union);
+        } else {
             for child in &mut plan.children {
-                propagate_task_count(child, task_count);
+                propagate_task_count(child, task_count, d_cfg)?;
             }
         }
+        Ok(())
     }
 
     if let Some(nb) = &annotated_plan.required_network_boundary {
         // The plan is a network boundary, so everything below it belongs to the same stage. This
         // means that we need to propagate the task count to all the nodes in that stage.
         for annotated_child in annotated_plan.children.iter_mut() {
-            propagate_task_count(annotated_child, &annotated_plan.task_count);
+            propagate_task_count(annotated_child, &annotated_plan.task_count, d_cfg)?;
         }
 
         // If the current plan that needs a NetworkBoundary boundary below is either a
@@ -266,7 +302,7 @@ fn _annotate_plan(
         // If this is the root node, it means that we have just finished annotating nodes for the
         // subplan belonging to the head stage, so propagate the task count to all children.
         let task_count = annotated_plan.task_count.clone();
-        propagate_task_count(&mut annotated_plan, &task_count);
+        propagate_task_count(&mut annotated_plan, &task_count, d_cfg)?;
         Ok(annotated_plan)
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
@@ -471,16 +507,16 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        UnionExec: task_count=Desired(3)
-          CoalesceBatchesExec: task_count=Desired(3)
-            FilterExec: task_count=Desired(3)
-              RepartitionExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
-          ProjectionExec: task_count=Desired(3)
-            CoalesceBatchesExec: task_count=Desired(3)
-              FilterExec: task_count=Desired(3)
-                RepartitionExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+        ChildrenIsolatorUnionExec: task_count=Desired(4)
+          CoalesceBatchesExec: task_count=Maximum(2)
+            FilterExec: task_count=Maximum(2)
+              RepartitionExec: task_count=Maximum(2)
+                DataSourceExec: task_count=Maximum(2)
+          ProjectionExec: task_count=Maximum(2)
+            CoalesceBatchesExec: task_count=Maximum(2)
+              FilterExec: task_count=Maximum(2)
+                RepartitionExec: task_count=Maximum(2)
+                  DataSourceExec: task_count=Maximum(2)
         ")
     }
 
@@ -514,6 +550,37 @@ mod tests {
               CoalesceBatchesExec: task_count=Desired(3), required_network_boundary=Shuffle
                 RepartitionExec: task_count=Desired(3)
                   DataSourceExec: task_count=Desired(3)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_children_isolator_union() {
+        let query = r#"
+        SET distributed.children_isolator_unions = true;
+        SET distributed.files_per_task = 1;
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        UNION ALL
+        SELECT "Rainfall" FROM weather WHERE "RainTomorrow" = 'yes'
+        "#;
+        let annotated = sql_to_annotated(query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(4)
+          CoalesceBatchesExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
+            CoalesceBatchesExec: task_count=Maximum(1)
+              FilterExec: task_count=Maximum(1)
+                RepartitionExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(2)
+            CoalesceBatchesExec: task_count=Maximum(2)
+              FilterExec: task_count=Maximum(2)
+                RepartitionExec: task_count=Maximum(2)
+                  DataSourceExec: task_count=Maximum(2)
         ")
     }
 
