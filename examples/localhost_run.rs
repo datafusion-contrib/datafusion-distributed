@@ -32,7 +32,7 @@ struct Args {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
-    let localhost_resolver = LocalhostChannelResolver {
+    let localhost_resolver = LocalhostWorkerResolver {
         ports: args.cluster_ports,
     };
 
@@ -62,12 +62,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 #[derive(Clone)]
-struct LocalhostChannelResolver {
+struct LocalhostWorkerResolver {
     ports: Vec<u16>,
 }
 
 #[async_trait]
-impl WorkerResolver for LocalhostChannelResolver {
+impl WorkerResolver for LocalhostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         Ok(self
             .ports
