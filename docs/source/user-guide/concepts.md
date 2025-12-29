@@ -41,13 +41,17 @@ you are in, you might want to return a different set of data.
 For example, if you are on the task with index 0 of a 3-task stage, you might want to return only the first 1/3 of the
 data. If you are on the task with index 2, you might want to return the last 1/3 of the data, and so on.
 
-## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/channel_resolver_ext.rs)
+## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/worker_resolver.rs)
 
-Establishes the number of workers available in the distributed DataFusion cluster, their URLs, and how to connect
-to them.
+Establishes the number of workers available in the distributed DataFusion cluster by returning their URLs.
 
-Each organization does networking differently, so this extension allows you to plug in a custom networking
-implementation that caters to your organization's needs.
+Different organizations have different needs regarding networking. Some might be using Kubernetes, some other might
+be using a cloud provider solution, and this trait allows adapting Distributed DataFusion to the different scenarios.
+
+## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/channel_resolver.rs)
+
+Optional extension trait that allows to customize how connections are established to workers. Given one of the
+URLs returned by the `WorkerResolver`, it builds an Arrow Flight client ready for serving queries.
 
 ## [NetworkBoundary](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/network_boundary.rs)
 
