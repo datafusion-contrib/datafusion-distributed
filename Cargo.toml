@@ -67,6 +67,7 @@ integration = [
 
 tpch = ["integration"]
 tpcds = ["integration"]
+clickbench = ["integration"]
 
 [dev-dependencies]
 structopt = "0.3"

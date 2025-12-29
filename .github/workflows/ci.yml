@@ -59,6 +59,17 @@ jobs:
           key: "main.zip"
       - run: cargo test --features tpcds --test 'tpcds_*'
 
+  clickbench-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/cache@v4
+        with:
+          path: testdata/clickbench/
+          key: "data"
+      - run: cargo test --features clickbench --test 'clickbench_*'
+
   format-check:
     runs-on: ubuntu-latest
     steps:
