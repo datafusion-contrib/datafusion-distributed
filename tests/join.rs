@@ -1,14 +1,18 @@
 #[cfg(test)]
 mod tests {
-    use arrow::{array::RecordBatch, datatypes::DataType, util::pretty};
+    use arrow::{
+        array::RecordBatch,
+        datatypes::DataType,
+        util::pretty::{self, pretty_format_batches},
+    };
     use datafusion::{
-        assert_batches_sorted_eq,
         error::Result,
         physical_plan::collect,
         prelude::{ParquetReadOptions, SessionContext, col},
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, display_plan_ascii, test_utils::localhost::start_localhost_context,
+        DefaultSessionBuilder, assert_snapshot, display_plan_ascii,
+        test_utils::localhost::start_localhost_context,
     };
 
     fn set_configs(ctx: &SessionContext) {
@@ -76,24 +80,6 @@ mod tests {
         Ok((distributed_plan, distributed_results))
     }
 
-    fn validate_plan(plan: String, target_plan: &'static str) {
-        let normalized_distributed = normalize(&plan);
-        let normalized_target = normalize(&target_plan);
-        assert_eq!(
-            normalized_distributed, normalized_target,
-            "Plan mismatch!\nTarget:\n{}\nActual:\n{}",
-            normalized_target, normalized_distributed
-        );
-    }
-
-    fn normalize(s: &str) -> String {
-        let current_dir = std::env::current_dir().unwrap().display().to_string();
-        let dir_without_slash = current_dir.trim_start_matches('/');
-        s.replace(&format!("{}/", current_dir), "")
-            .replace(&format!("{}/", dir_without_slash), "")
-            .replace(" ", "")
-    }
-
     #[tokio::test]
     async fn test_join_hive() -> Result<(), Box<dyn std::error::Error>> {
         let query = r#"
@@ -107,6 +93,7 @@ mod tests {
             FROM dim d
             INNER JOIN fact f ON d.d_dkey = f.f_dkey
             WHERE d.service = 'log'
+            ORDER BY f_dkey, timestamp
         "#;
 
         // —————————————————————————————————————————————————————————————
@@ -125,59 +112,62 @@ mod tests {
         // hive-style partitioning and avoiding data-shuffling repartitions.
         // —————————————————————————————————————————————————————————————
 
-        let target_plan = r#"┌───── DistributedExec ── Tasks: t0:[p0] 
-│ CoalescePartitionsExec
-│   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
-└──────────────────────────────────────────────────
-  ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
-  │ ProjectionExec: expr=[f_dkey@5 as f_dkey, timestamp@3 as timestamp, value@4 as value, env@0 as env, service@1 as service, host@2 as host]
-  │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[env@0, service@1, host@2, timestamp@4, value@5, f_dkey@6]
-  │     FilterExec: service@1 = log
-  │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-  │         DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/dim/d_dkey=A/data0.parquet], [testdata/join/parquet/dim/d_dkey=B/data0.parquet], [testdata/join/parquet/dim/d_dkey=C/data0.parquet], [testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-  │     PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-  │       DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
-  └──────────────────────────────────────────────────
-  "#;
-        validate_plan(distributed_plan, target_plan);
+        assert_snapshot!(&distributed_plan,
+        @"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
+          │ SortExec: expr=[f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[f_dkey@5 as f_dkey, timestamp@3 as timestamp, value@4 as value, env@0 as env, service@1 as service, host@2 as host]
+          │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[env@0, service@1, host@2, timestamp@4, value@5, f_dkey@6]
+          │       FilterExec: service@1 = log
+          │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │           DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │         DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data2.parquet, /testdata/join/parquet/fact/f_dkey=B/data0.parquet, /testdata/join/parquet/fact/f_dkey=B/data1.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet, /testdata/join/parquet/fact/f_dkey=C/data1.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
+          └──────────────────────────────────────────────────
+        ");
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
         // —————————————————————————————————————————————————————————————
 
-        let expected = vec![
-            "+--------+---------------------+-------+------+---------+--------+",
-            "| f_dkey | timestamp           | value | env  | service | host   |",
-            "+--------+---------------------+-------+------+---------+--------+",
-            "| A      | 2023-01-01T09:00:00 | 95.5  | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:00:10 | 102.3 | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:00:20 | 98.7  | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:12:20 | 105.1 | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:12:30 | 100.0 | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:12:40 | 150.0 | dev  | log     | host-y |",
-            "| A      | 2023-01-01T09:12:50 | 120.8 | dev  | log     | host-y |",
-            "| B      | 2023-01-01T11:00:00 | 72.8  | prod | log     | host-x |",
-            "| B      | 2023-01-01T11:00:10 | 79.4  | prod | log     | host-x |",
-            "| B      | 2023-01-01T11:00:20 | 76.1  | prod | log     | host-x |",
-            "| B      | 2023-01-01T11:00:30 | 83.7  | prod | log     | host-x |",
-            "| B      | 2023-01-01T11:12:30 | 77.2  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:00:00 | 75.2  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:00:10 | 82.4  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:00:20 | 78.9  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:00:30 | 85.6  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:12:30 | 80.0  | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:12:40 | 120.0 | prod | log     | host-x |",
-            "| B      | 2023-01-01T09:12:50 | 92.3  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:00:00 | 88.5  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:00:10 | 91.2  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:00:20 | 87.3  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:00:30 | 94.1  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:12:30 | 89.5  | prod | log     | host-x |",
-            "| B      | 2023-01-01T10:12:40 | 95.8  | prod | log     | host-x |",
-            "+--------+---------------------+-------+------+---------+--------+",
-        ];
+        let pretty_results = pretty_format_batches(&distributed_results)?;
+        assert_snapshot!(pretty_results,
+        @"
+        +--------+---------------------+-------+------+---------+--------+
+        | f_dkey | timestamp           | value | env  | service | host   |
+        +--------+---------------------+-------+------+---------+--------+
+        | A      | 2023-01-01T09:00:00 | 95.5  | dev  | log     | host-y |
+        | A      | 2023-01-01T09:00:10 | 102.3 | dev  | log     | host-y |
+        | A      | 2023-01-01T09:00:20 | 98.7  | dev  | log     | host-y |
+        | A      | 2023-01-01T09:12:20 | 105.1 | dev  | log     | host-y |
+        | A      | 2023-01-01T09:12:30 | 100.0 | dev  | log     | host-y |
+        | A      | 2023-01-01T09:12:40 | 150.0 | dev  | log     | host-y |
+        | A      | 2023-01-01T09:12:50 | 120.8 | dev  | log     | host-y |
+        | B      | 2023-01-01T09:00:00 | 75.2  | prod | log     | host-x |
+        | B      | 2023-01-01T09:00:10 | 82.4  | prod | log     | host-x |
+        | B      | 2023-01-01T09:00:20 | 78.9  | prod | log     | host-x |
+        | B      | 2023-01-01T09:00:30 | 85.6  | prod | log     | host-x |
+        | B      | 2023-01-01T09:12:30 | 80.0  | prod | log     | host-x |
+        | B      | 2023-01-01T09:12:40 | 120.0 | prod | log     | host-x |
+        | B      | 2023-01-01T09:12:50 | 92.3  | prod | log     | host-x |
+        | B      | 2023-01-01T10:00:00 | 88.5  | prod | log     | host-x |
+        | B      | 2023-01-01T10:00:10 | 91.2  | prod | log     | host-x |
+        | B      | 2023-01-01T10:00:20 | 87.3  | prod | log     | host-x |
+        | B      | 2023-01-01T10:00:30 | 94.1  | prod | log     | host-x |
+        | B      | 2023-01-01T10:12:30 | 89.5  | prod | log     | host-x |
+        | B      | 2023-01-01T10:12:40 | 95.8  | prod | log     | host-x |
+        | B      | 2023-01-01T11:00:00 | 72.8  | prod | log     | host-x |
+        | B      | 2023-01-01T11:00:10 | 79.4  | prod | log     | host-x |
+        | B      | 2023-01-01T11:00:20 | 76.1  | prod | log     | host-x |
+        | B      | 2023-01-01T11:00:30 | 83.7  | prod | log     | host-x |
+        | B      | 2023-01-01T11:12:30 | 77.2  | prod | log     | host-x |
+        +--------+---------------------+-------+------+---------+--------+
+        ");
 
-        assert_batches_sorted_eq!(expected, &distributed_results);
         Ok(())
     }
 
@@ -202,6 +192,7 @@ mod tests {
                 WHERE service = 'log'
                 ) AS j
             GROUP BY f_dkey, time_bin, env
+            ORDER BY f_dkey, time_bin
         "#;
 
         // —————————————————————————————————————————————————————————————
@@ -220,48 +211,49 @@ mod tests {
         // hive-style partitioning and avoiding data-shuffling repartitions.
         // —————————————————————————————————————————————————————————————
 
-        let target_plan = r#"┌───── DistributedExec ── Tasks: t0:[p0]
-│ CoalescePartitionsExec
-│   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
-└──────────────────────────────────────────────────
-  ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
-  │ ProjectionExec: expr=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
-  │   AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
-  │     ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
-  │       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
-  │         FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
-  │           PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
-  │             DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/dim/d_dkey=A/data0.parquet], [testdata/join/parquet/dim/d_dkey=B/data0.parquet], [testdata/join/parquet/dim/d_dkey=C/data0.parquet], [testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-  │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
-  │           DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
-  └──────────────────────────────────────────────────
-  "#;
-        validate_plan(distributed_plan, target_plan);
+        assert_snapshot!(&distributed_plan, @r#"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
+          │ SortExec: expr=[f_dkey@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
+          │     AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
+          │       ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
+          │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
+          │           FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
+          │             PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │               DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │           PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │             DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data2.parquet, /testdata/join/parquet/fact/f_dkey=B/data0.parquet, /testdata/join/parquet/fact/f_dkey=B/data1.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet, /testdata/join/parquet/fact/f_dkey=C/data1.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
+          └──────────────────────────────────────────────────
+        "#);
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
         // —————————————————————————————————————————————————————————————
 
-        let expected = vec![
-            "+--------+---------------------+------+---------------+",
-            "| f_dkey | time_bin            | env  | max_bin_value |",
-            "+--------+---------------------+------+---------------+",
-            "| A      | 2023-01-01T09:00:00 | dev  | 102.3         |",
-            "| A      | 2023-01-01T09:12:00 | dev  | 105.1         |",
-            "| A      | 2023-01-01T09:12:30 | dev  | 150.0         |",
-            "| B      | 2023-01-01T11:00:00 | prod | 79.4          |",
-            "| B      | 2023-01-01T11:00:30 | prod | 83.7          |",
-            "| B      | 2023-01-01T11:12:30 | prod | 77.2          |",
-            "| B      | 2023-01-01T09:00:00 | prod | 82.4          |",
-            "| B      | 2023-01-01T09:00:30 | prod | 85.6          |",
-            "| B      | 2023-01-01T09:12:30 | prod | 120.0         |",
-            "| B      | 2023-01-01T10:00:00 | prod | 91.2          |",
-            "| B      | 2023-01-01T10:00:30 | prod | 94.1          |",
-            "| B      | 2023-01-01T10:12:30 | prod | 95.8          |",
-            "+--------+---------------------+------+---------------+",
-        ];
+        let pretty_results = pretty_format_batches(&distributed_results)?;
+        assert_snapshot!(pretty_results, @"
+        +--------+---------------------+------+---------------+
+        | f_dkey | time_bin            | env  | max_bin_value |
+        +--------+---------------------+------+---------------+
+        | A      | 2023-01-01T09:00:00 | dev  | 102.3         |
+        | A      | 2023-01-01T09:12:00 | dev  | 105.1         |
+        | A      | 2023-01-01T09:12:30 | dev  | 150.0         |
+        | B      | 2023-01-01T09:00:00 | prod | 82.4          |
+        | B      | 2023-01-01T09:00:30 | prod | 85.6          |
+        | B      | 2023-01-01T09:12:30 | prod | 120.0         |
+        | B      | 2023-01-01T10:00:00 | prod | 91.2          |
+        | B      | 2023-01-01T10:00:30 | prod | 94.1          |
+        | B      | 2023-01-01T10:12:30 | prod | 95.8          |
+        | B      | 2023-01-01T11:00:00 | prod | 79.4          |
+        | B      | 2023-01-01T11:00:30 | prod | 83.7          |
+        | B      | 2023-01-01T11:12:30 | prod | 77.2          |
+        +--------+---------------------+------+---------------+
+        ");
 
-        assert_batches_sorted_eq!(expected, &distributed_results);
         Ok(())
     }
 
@@ -310,54 +302,54 @@ mod tests {
         // hive-style partitioning and avoiding data-shuffling repartitions.
         // —————————————————————————————————————————————————————————————
 
-        let target_plan = r#"┌───── DistributedExec ── Tasks: t0:[p0] 
-│ SortPreservingMergeExec: [env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
-│   SortExec: expr=[env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
-│     ProjectionExec: expr=[env@0 as env, time_bin@1 as time_bin, avg(a.max_bin_value)@2 as avg_max_value]
-│       AggregateExec: mode=FinalPartitioned, gby=[env@0 as env, time_bin@1 as time_bin], aggr=[avg(a.max_bin_value)]
-│         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
-└──────────────────────────────────────────────────
-  ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
-  │ CoalesceBatchesExec: target_batch_size=8192
-  │   RepartitionExec: partitioning=Hash([env@0, time_bin@1], 4), input_partitions=2
-  │     AggregateExec: mode=Partial, gby=[env@1 as env, time_bin@0 as time_bin], aggr=[avg(a.max_bin_value)]
-  │       ProjectionExec: expr=[date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
-  │         AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
-  │           ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
-  │             HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
-  │               FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
-  │                 PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-  │                   DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/dim/d_dkey=A/data0.parquet], [testdata/join/parquet/dim/d_dkey=B/data0.parquet], [testdata/join/parquet/dim/d_dkey=C/data0.parquet], [testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-  │               PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
-  │                 DataSourceExec: file_groups={4 groups: [[testdata/join/parquet/fact/f_dkey=A/data0.parquet], [testdata/join/parquet/fact/f_dkey=B/data2.parquet, testdata/join/parquet/fact/f_dkey=B/data0.parquet, testdata/join/parquet/fact/f_dkey=B/data1.parquet], [testdata/join/parquet/fact/f_dkey=C/data0.parquet, testdata/join/parquet/fact/f_dkey=C/data1.parquet], [testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
-  └──────────────────────────────────────────────────
-  "#;
-        validate_plan(distributed_plan, target_plan);
+        assert_snapshot!(&distributed_plan, @r#"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ SortPreservingMergeExec: [env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
+        │   SortExec: expr=[env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
+        │     ProjectionExec: expr=[env@0 as env, time_bin@1 as time_bin, avg(a.max_bin_value)@2 as avg_max_value]
+        │       AggregateExec: mode=FinalPartitioned, gby=[env@0 as env, time_bin@1 as time_bin], aggr=[avg(a.max_bin_value)]
+        │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
+          │ CoalesceBatchesExec: target_batch_size=8192
+          │   RepartitionExec: partitioning=Hash([env@0, time_bin@1], 4), input_partitions=2
+          │     AggregateExec: mode=Partial, gby=[env@1 as env, time_bin@0 as time_bin], aggr=[avg(a.max_bin_value)]
+          │       ProjectionExec: expr=[date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
+          │         AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
+          │           ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
+          │             HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
+          │               FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
+          │                 PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │                   DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
+          │               PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │                 DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data2.parquet, /testdata/join/parquet/fact/f_dkey=B/data0.parquet, /testdata/join/parquet/fact/f_dkey=B/data1.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet, /testdata/join/parquet/fact/f_dkey=C/data1.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
+          └──────────────────────────────────────────────────
+        "#);
 
         // —————————————————————————————————————————————————————————————
         // Ensure distributed results are correct.
         // —————————————————————————————————————————————————————————————
 
-        let expected = vec![
-            "+------+---------------------+---------------+",
-            "| env  | time_bin            | avg_max_value |",
-            "+------+---------------------+---------------+",
-            "| dev  | 2023-01-01T09:00:00 | 102.3         |",
-            "| dev  | 2023-01-01T09:12:00 | 105.1         |",
-            "| dev  | 2023-01-01T09:12:30 | 150.0         |",
-            "| prod | 2023-01-01T09:00:00 | 82.4          |",
-            "| prod | 2023-01-01T09:00:30 | 85.6          |",
-            "| prod | 2023-01-01T09:12:30 | 120.0         |",
-            "| prod | 2023-01-01T10:00:00 | 91.2          |",
-            "| prod | 2023-01-01T10:00:30 | 94.1          |",
-            "| prod | 2023-01-01T10:12:30 | 95.8          |",
-            "| prod | 2023-01-01T11:00:00 | 79.4          |",
-            "| prod | 2023-01-01T11:00:30 | 83.7          |",
-            "| prod | 2023-01-01T11:12:30 | 77.2          |",
-            "+------+---------------------+---------------+",
-        ];
+        let pretty_results = pretty_format_batches(&distributed_results)?;
+        assert_snapshot!(pretty_results, @"
+        +------+---------------------+---------------+
+        | env  | time_bin            | avg_max_value |
+        +------+---------------------+---------------+
+        | dev  | 2023-01-01T09:00:00 | 102.3         |
+        | dev  | 2023-01-01T09:12:00 | 105.1         |
+        | dev  | 2023-01-01T09:12:30 | 150.0         |
+        | prod | 2023-01-01T09:00:00 | 82.4          |
+        | prod | 2023-01-01T09:00:30 | 85.6          |
+        | prod | 2023-01-01T09:12:30 | 120.0         |
+        | prod | 2023-01-01T10:00:00 | 91.2          |
+        | prod | 2023-01-01T10:00:30 | 94.1          |
+        | prod | 2023-01-01T10:12:30 | 95.8          |
+        | prod | 2023-01-01T11:00:00 | 79.4          |
+        | prod | 2023-01-01T11:00:30 | 83.7          |
+        | prod | 2023-01-01T11:12:30 | 77.2          |
+        +------+---------------------+---------------+
+        ");
 
-        assert_batches_sorted_eq!(expected, &distributed_results);
         Ok(())
     }
 }
