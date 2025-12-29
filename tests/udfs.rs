@@ -4,7 +4,7 @@ mod tests {
     use arrow::util::pretty::pretty_format_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::{SessionState, SessionStateBuilder};
+    use datafusion::execution::SessionState;
     use datafusion::logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     };
@@ -29,9 +29,8 @@ mod tests {
         async fn build_state(
             ctx: DistributedSessionBuilderContext,
         ) -> Result<SessionState, DataFusionError> {
-            Ok(SessionStateBuilder::new()
-                .with_runtime_env(ctx.runtime_env)
-                .with_default_features()
+            Ok(ctx
+                .builder
                 .with_scalar_functions(vec![udf()])
                 .with_distributed_task_estimator(2)
                 .build())

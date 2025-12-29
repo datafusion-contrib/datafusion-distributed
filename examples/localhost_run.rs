@@ -1,19 +1,15 @@
 use arrow::util::pretty::pretty_format_batches;
-use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
-use dashmap::{DashMap, Entry};
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule,
-    display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use std::error::Error;
 use std::sync::Arc;
 use structopt::StructOpt;
-use tonic::transport::Channel;
 use url::Url;
 
 #[derive(StructOpt)]
@@ -36,14 +32,13 @@ struct Args {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
-    let localhost_resolver = LocalhostChannelResolver {
+    let localhost_resolver = LocalhostWorkerResolver {
         ports: args.cluster_ports,
-        cached: DashMap::new(),
     };
 
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_distributed_channel_resolver(localhost_resolver)
+        .with_distributed_worker_resolver(localhost_resolver)
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .with_distributed_files_per_task(1)?
         .build();
@@ -67,35 +62,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 #[derive(Clone)]
-struct LocalhostChannelResolver {
+struct LocalhostWorkerResolver {
     ports: Vec<u16>,
-    cached: DashMap<Url, FlightServiceClient<BoxCloneSyncChannel>>,
 }
 
 #[async_trait]
-impl ChannelResolver for LocalhostChannelResolver {
+impl WorkerResolver for LocalhostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         Ok(self
             .ports
             .iter()
             .map(|port| Url::parse(&format!("http://localhost:{port}")).unwrap())
             .collect())
-    }
-
-    async fn get_flight_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        match self.cached.entry(url.clone()) {
-            Entry::Occupied(v) => Ok(v.get().clone()),
-            Entry::Vacant(v) => {
-                let channel = Channel::from_shared(url.to_string())
-                    .unwrap()
-                    .connect_lazy();
-                let channel = FlightServiceClient::new(BoxCloneSyncChannel::new(channel));
-                v.insert(channel.clone());
-                Ok(channel)
-            }
-        }
     }
 }

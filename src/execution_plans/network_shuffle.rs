@@ -1,4 +1,3 @@
-use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::require_one_child;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::execution_plans::common::{
@@ -7,12 +6,11 @@ use crate::execution_plans::common::{
 use crate::flight_service::DoGet;
 use crate::metrics::MetricsCollectingStream;
 use crate::metrics::proto::MetricsSetProto;
+use crate::networking::get_distributed_channel_resolver;
 use crate::protobuf::StageKey;
 use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use crate::{
-    ChannelResolver, DistributedConfig, DistributedTaskContext, ExecutionTask, NetworkBoundary,
-};
+use crate::{DistributedConfig, DistributedTaskContext, ExecutionTask, NetworkBoundary};
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -246,7 +244,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         // get the channel manager and current stage from our context
-        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
+        let channel_resolver = get_distributed_channel_resolver(context.as_ref());
 
         let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
         let retrieve_metrics = d_cfg.collect_metrics;
@@ -266,7 +264,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         // TODO: this propagation should be automatic https://github.com/datafusion-contrib/datafusion-distributed/issues/247
         let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
         let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
-            let channel_resolver = Arc::clone(&channel_resolver);
+            let channel_resolver = channel_resolver.clone();
 
             let ticket = Request::from_parts(
                 MetadataMap::from_headers(context_headers.clone()),

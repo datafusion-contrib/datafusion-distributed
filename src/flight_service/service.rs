@@ -1,3 +1,4 @@
+use crate::DefaultSessionBuilder;
 use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::DistributedSessionBuilder;
 use crate::flight_service::do_get::TaskData;
@@ -8,7 +9,6 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use async_trait::async_trait;
-use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::BoxStream;
@@ -31,18 +31,30 @@ pub struct ArrowFlightEndpoint {
     pub(super) max_message_size: Option<usize>,
 }
 
-impl ArrowFlightEndpoint {
-    pub fn try_new(
-        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
-    ) -> Result<Self, DataFusionError> {
-        let ttl_map = TTLMap::try_new(TTLMapConfig::default())?;
-        Ok(Self {
+impl Default for ArrowFlightEndpoint {
+    fn default() -> Self {
+        let ttl_map = TTLMap::try_new(TTLMapConfig::default())
+            .expect("Instantiating a TTLMap with default params should never fail");
+        Self {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(ttl_map),
-            session_builder: Arc::new(session_builder),
+            session_builder: Arc::new(DefaultSessionBuilder),
             hooks: ArrowFlightEndpointHooks::default(),
             max_message_size: Some(usize::MAX),
-        })
+        }
+    }
+}
+
+impl ArrowFlightEndpoint {
+    /// Builds an [ArrowFlightEndpoint] with a custom [DistributedSessionBuilder]. Use this
+    /// method whenever you need to add custom stuff to the `SessionContext` that executes the query.
+    pub fn from_session_builder(
+        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            session_builder: Arc::new(session_builder),
+            ..Default::default()
+        }
     }
 
     /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.

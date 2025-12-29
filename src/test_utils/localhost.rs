@@ -1,20 +1,17 @@
 use crate::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
-    MappedDistributedSessionBuilderExt, create_flight_client,
+    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule,
+    DistributedSessionBuilder, DistributedSessionBuilderContext, WorkerResolver,
 };
-use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionContext;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tonic::transport::{Channel, Server};
+use tonic::transport::Server;
 use url::Url;
 
 /// Create workers and context on localhost with a fixed number of target partitions.
@@ -50,14 +47,6 @@ where
         })
         .collect();
 
-    let channel_resolver = LocalHostChannelResolver::new(ports.clone());
-    let session_builder = session_builder.map(move |builder: SessionStateBuilder| {
-        let channel_resolver = channel_resolver.clone();
-        Ok(builder
-            .with_distributed_channel_resolver(channel_resolver)
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .build())
-    });
     let mut join_set = JoinSet::new();
     for listener in listeners {
         let session_builder = session_builder.clone();
@@ -69,9 +58,13 @@ where
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 
+    let worker_resolver = LocalHostWorkerResolver::new(ports);
     let mut state = session_builder
         .build_session_state(DistributedSessionBuilderContext {
-            runtime_env: Arc::new(RuntimeEnv::default()),
+            builder: SessionStateBuilder::new()
+                .with_default_features()
+                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_worker_resolver(worker_resolver),
             headers: Default::default(),
         })
         .await
@@ -82,11 +75,11 @@ where
 }
 
 #[derive(Clone)]
-pub struct LocalHostChannelResolver {
+pub struct LocalHostWorkerResolver {
     ports: Vec<u16>,
 }
 
-impl LocalHostChannelResolver {
+impl LocalHostWorkerResolver {
     pub fn new<N: TryInto<u16>, I: IntoIterator<Item = N>>(ports: I) -> Self
     where
         N::Error: std::fmt::Debug,
@@ -98,7 +91,7 @@ impl LocalHostChannelResolver {
 }
 
 #[async_trait]
-impl ChannelResolver for LocalHostChannelResolver {
+impl WorkerResolver for LocalHostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         self.ports
             .iter()
@@ -106,21 +99,13 @@ impl ChannelResolver for LocalHostChannelResolver {
             .map(|url| Url::parse(&url).map_err(external_err))
             .collect::<Result<Vec<Url>, _>>()
     }
-    async fn get_flight_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        let endpoint = Channel::from_shared(url.to_string()).map_err(external_err)?;
-        let channel = endpoint.connect().await.map_err(external_err)?;
-        Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
-    }
 }
 
 pub async fn spawn_flight_service(
     session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let endpoint = ArrowFlightEndpoint::try_new(session_builder)?;
+    let endpoint = ArrowFlightEndpoint::from_session_builder(session_builder);
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 

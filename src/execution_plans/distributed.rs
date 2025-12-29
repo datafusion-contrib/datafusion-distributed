@@ -1,6 +1,6 @@
-use crate::channel_resolver_ext::get_distributed_channel_resolver;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundaryExt;
+use crate::networking::get_distributed_worker_resolver;
 use crate::protobuf::DistributedCodec;
 use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
@@ -132,10 +132,10 @@ impl ExecutionPlan for DistributedExec {
             );
         }
 
-        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
+        let worker_resolver = get_distributed_worker_resolver(context.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(context.session_config());
 
-        let prepared = self.prepare_plan(&channel_resolver.get_urls()?, &codec)?;
+        let prepared = self.prepare_plan(&worker_resolver.get_urls()?, &codec)?;
         {
             let mut guard = self
                 .prepared_plan

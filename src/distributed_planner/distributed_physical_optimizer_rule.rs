@@ -195,7 +195,7 @@ fn push_down_batch_coalescing(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
     use crate::{assert_snapshot, display_plan_ascii};
@@ -235,7 +235,7 @@ mod tests {
         SELECT * FROM weather
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
@@ -247,7 +247,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -279,7 +279,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(2))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -311,7 +311,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(0))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(0))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -334,7 +334,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
                 .with_distributed_cardinality_effect_task_scale_factor(3.0)
                 .unwrap()
         })
@@ -365,7 +365,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
                 .with_distributed_files_per_task(3)
                 .unwrap()
         })
@@ -390,7 +390,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -422,7 +422,7 @@ mod tests {
         SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -460,7 +460,7 @@ mod tests {
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -508,7 +508,7 @@ mod tests {
         SELECT * FROM weather ORDER BY "MinTemp" DESC
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -530,7 +530,7 @@ mod tests {
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -559,7 +559,7 @@ mod tests {
         SHOW COLUMNS from weather
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(3))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
         assert_snapshot!(plan, @r"
@@ -581,7 +581,7 @@ mod tests {
         SELECT 1 FROM flights_1m
         "#;
         let plan = sql_to_explain(query, |b| {
-            b.with_distributed_channel_resolver(InMemoryChannelResolver::new(2))
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2))
         })
         .await;
         assert_snapshot!(plan, @r"

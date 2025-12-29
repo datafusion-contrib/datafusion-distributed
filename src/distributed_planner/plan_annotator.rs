@@ -136,7 +136,7 @@ fn _annotate_plan(
 ) -> Result<AnnotatedPlan, DataFusionError> {
     use TaskCountAnnotation::*;
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
-    let n_workers = d_cfg.__private_channel_resolver.0.get_urls()?.len().max(1);
+    let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
     let annotated_children = plan
         .children()
@@ -303,7 +303,7 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{DistributedExt, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
@@ -525,7 +525,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_channel_resolver(InMemoryChannelResolver::new(4))
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
             .build();
 
         let ctx = SessionContext::new_with_state(state);

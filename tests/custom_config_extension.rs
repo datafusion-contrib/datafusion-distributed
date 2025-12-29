@@ -26,9 +26,8 @@ mod tests {
     async fn build_state(
         ctx: DistributedSessionBuilderContext,
     ) -> Result<SessionState, DataFusionError> {
-        Ok(SessionStateBuilder::new()
-            .with_runtime_env(ctx.runtime_env)
-            .with_default_features()
+        Ok(ctx
+            .builder
             .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
             .with_distributed_user_codec(CustomConfigExtensionRequiredExecCodec)
             .build())

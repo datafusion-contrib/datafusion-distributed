@@ -291,8 +291,8 @@ impl TaskEstimator for CombinedTaskEstimator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_resolver_ext::ChannelResolverExtension;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::networking::WorkerResolverExtension;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::prelude::SessionContext;
@@ -342,8 +342,8 @@ mod tests {
             let mut cfg = ConfigOptions::default();
             let d_cfg = DistributedConfig {
                 files_per_task: 1,
-                __private_channel_resolver: ChannelResolverExtension(Arc::new(
-                    InMemoryChannelResolver::new(3),
+                __private_worker_resolver: WorkerResolverExtension(Arc::new(
+                    InMemoryWorkerResolver::new(3),
                 )),
                 ..Default::default()
             };

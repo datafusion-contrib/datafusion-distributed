@@ -22,6 +22,7 @@ use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -80,7 +81,9 @@ impl ArrowFlightEndpoint {
         let mut session_state = self
             .session_builder
             .build_session_state(DistributedSessionBuilderContext {
-                runtime_env: Arc::clone(&self.runtime),
+                builder: SessionStateBuilder::new()
+                    .with_default_features()
+                    .with_runtime_env(Arc::clone(&self.runtime)),
                 headers: headers.clone(),
             })
             .await
@@ -277,7 +280,6 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flight_service::session_builder::DefaultSessionBuilder;
     use crate::stage::ExecutionTask;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow_flight::Ticket;
@@ -292,9 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
-        // Create ArrowFlightEndpoint with DefaultSessionBuilder
-        let mut endpoint =
-            ArrowFlightEndpoint::try_new(DefaultSessionBuilder).expect("Failed to create endpoint");
+        let mut endpoint = ArrowFlightEndpoint::default();
         let plans_received = Arc::new(AtomicUsize::default());
         {
             let plans_received = Arc::clone(&plans_received);
