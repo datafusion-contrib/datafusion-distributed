@@ -9,7 +9,8 @@ your own distributed DataFusion cluster.
 
 - [Concepts](concepts.md)
 - [Getting Started](getting-started.md)
+- [Building a WorkerResolver](worker-resolver.md)
+- [Building an Arrow Flight endpoint](arrow-flight-endpoint.md)
 - [Building a ChannelResolver](channel-resolver.md)
 - [Building a TaskEstimator](task-estimator.md)
-- [Building an Arrow Flight endpoint](arrow-flight-endpoint.md)
 - [How a distributed plan is built](how-a-distributed-plan-is-built.md)
