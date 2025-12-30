@@ -1,6 +1,6 @@
 use crate::{
-    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule,
-    DistributedSessionBuilder, DistributedSessionBuilderContext, WorkerResolver,
+    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerQueryContext, WorkerResolver,
+    WorkerSessionBuilder,
 };
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -26,7 +26,7 @@ pub async fn start_localhost_context<B>(
     session_builder: B,
 ) -> (SessionContext, JoinSet<()>)
 where
-    B: DistributedSessionBuilder + Send + Sync + 'static,
+    B: WorkerSessionBuilder + Send + Sync + 'static,
     B: Clone,
 {
     let listeners = futures::future::try_join_all(
@@ -60,7 +60,7 @@ where
 
     let worker_resolver = LocalHostWorkerResolver::new(ports);
     let mut state = session_builder
-        .build_session_state(DistributedSessionBuilderContext {
+        .build_session_state(WorkerQueryContext {
             builder: SessionStateBuilder::new()
                 .with_default_features()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
@@ -102,10 +102,10 @@ impl WorkerResolver for LocalHostWorkerResolver {
 }
 
 pub async fn spawn_flight_service(
-    session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+    session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let endpoint = ArrowFlightEndpoint::from_session_builder(session_builder);
+    let endpoint = Worker::from_session_builder(session_builder);
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 

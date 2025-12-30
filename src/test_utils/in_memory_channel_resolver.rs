@@ -1,6 +1,6 @@
 use crate::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder,
-    DistributedExt, DistributedSessionBuilder, MappedDistributedSessionBuilderExt, WorkerResolver,
+    BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
+    MappedWorkerSessionBuilderExt, Worker, WorkerResolver, WorkerSessionBuilder,
     create_flight_client,
 };
 use arrow_flight::flight_service_client::FlightServiceClient;
@@ -19,11 +19,11 @@ pub struct InMemoryChannelResolver {
 }
 
 impl InMemoryChannelResolver {
-    /// Build an [InMemoryChannelResolver] with a custom [DistributedSessionBuilder].
+    /// Build an [InMemoryChannelResolver] with a custom [WorkerSessionBuilder].
     /// This allows you to inject your own DataFusion extensions in the in-memory worker
     /// spawned by this method.
     pub fn from_session_builder(
-        builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+        builder: impl WorkerSessionBuilder + Send + Sync + 'static,
     ) -> Self {
         let (client, server) = tokio::io::duplex(1024 * 1024);
 
@@ -42,7 +42,7 @@ impl InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint = ArrowFlightEndpoint::from_session_builder(builder.map(move |builder| {
+        let endpoint = Worker::from_session_builder(builder.map(move |builder| {
             let this = this.clone();
             Ok(builder.with_distributed_channel_resolver(this).build())
         }));

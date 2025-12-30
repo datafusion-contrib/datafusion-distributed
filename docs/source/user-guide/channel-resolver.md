@@ -13,7 +13,7 @@ points:
 
 - You will need to provide your own implementation in two places:
     - in the `SessionContext` that handles your queries.
-    - while instantiating the `ArrowFlightEndpoint` with the `from_session_builder()` constructor.
+    - while instantiating the `Worker` with the `from_session_builder()` constructor.
 - If you decide to build it from scratch, make sure that Arrow Flight clients are reused across
   request rather than always building new ones.
 - You can use this library's `DefaultChannelResolver` as a backbone for your own implementation.
@@ -44,10 +44,10 @@ async fn main() {
         .with_distributed_channel_resolver(channel_resolver.clone())
         .build();
 
-    let endpoint = ArrowFlightEndpoint::from_session_builder(|ctx: DistributedSessionBuilderContext| {
+    // ... and here for each query the Worker handles.
+    let endpoint = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
         let channel_resolver = channel_resolver.clone();
         async move {
-            // ... and here for each query that ArrowFlightEndpoint handles.
             Ok(ctx.builder.with_distributed_channel_resolver(channel_resolver).build())
         }
     });

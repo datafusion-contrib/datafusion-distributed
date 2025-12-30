@@ -16,8 +16,8 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
-        assert_snapshot, display_plan_ascii,
+        DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
+        display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -26,9 +26,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_udf_in_partitioning_field() -> Result<(), Box<dyn Error>> {
-        async fn build_state(
-            ctx: DistributedSessionBuilderContext,
-        ) -> Result<SessionState, DataFusionError> {
+        async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
             Ok(ctx
                 .builder
                 .with_scalar_functions(vec![udf()])

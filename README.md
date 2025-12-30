@@ -35,10 +35,10 @@ https://datafusion-contrib.github.io/datafusion-distributed
 There are some runnable examples showcasing how to provide a localhost implementation for Distributed DataFusion in
 [examples/](examples):
 
-- [localhost_worker.rs](examples/localhost_worker.rs): code that spawns an Arrow Flight Endpoint listening for physical
+- [localhost_worker.rs](examples/localhost_worker.rs): code that spawns a Worker listening for physical
   plans over the network.
-- [localhost_run.rs](examples/localhost_run.rs): code that distributes a query across the spawned Arrow Flight Endpoints
-  and executes it.
+- [localhost_run.rs](examples/localhost_run.rs): code that distributes a query across the spawned Workers and executes
+  it.
 
 The integration tests also provide an idea about how to use the library and what can be achieved with it:
 
