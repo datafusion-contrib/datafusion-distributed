@@ -119,5 +119,5 @@ Several arguments can be passed for running the benchmarks against different sca
 for example:
 
 ```shell
-npm run datafusion-bench  -- --sf 10 --files-per-task 4 --query 7
+npm run datafusion-bench -- --datset tpch_sf10 --files-per-task 4 --query 7
 ```

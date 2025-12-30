@@ -1,7 +1,7 @@
 import path from "path";
 import {Command} from "commander";
 import {z} from 'zod';
-import {BenchmarkRunner, ROOT, runBenchmark} from "./@bench-common";
+import {BenchmarkRunner, ROOT, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward a worker with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
@@ -10,7 +10,7 @@ async function main() {
     const program = new Command();
 
     program
-        .option('--sf <number>', 'Scale factor', '1')
+        .option('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--files-per-task <number>', 'Files per task', '4')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
@@ -21,12 +21,12 @@ async function main() {
 
     const options = program.opts();
 
-    const sf = parseInt(options.sf);
+    const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
-    const specificQuery = options.query ? parseInt(options.query) : undefined;
+    const queries = options.query ? [parseInt(options.query)] : [];
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
 
     const runner = new DataFusionRunner({
@@ -36,12 +36,13 @@ async function main() {
         collectMetrics
     });
 
-    const outputPath = path.join(ROOT, "benchmarks", "data", `tpch_sf${sf}`, "remote-results.json");
+    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
+    const outputPath = path.join(datasetPath, "remote-results.json")
 
     await runBenchmark(runner, {
-        sf,
+        dataset,
         iterations,
-        specificQuery,
+        queries,
         outputPath,
     });
 }
@@ -75,7 +76,7 @@ class DataFusionRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return {rowCount: response.count};
+        return { rowCount: response.count };
     }
 
     private async query(sql: string): Promise<QueryResponse> {
@@ -93,22 +94,13 @@ class DataFusionRunner implements BenchmarkRunner {
         return QueryResponse.parse(unparsed);
     }
 
-    async createTables(sf: number): Promise<void> {
+    async createTables(tables: TableSpec[]): Promise<void> {
         let stmt = '';
-        for (const tbl of [
-            "lineitem",
-            "orders",
-            "part",
-            "partsupp",
-            "customer",
-            "nation",
-            "region",
-            "supplier",
-        ]) {
+        for (const table of tables) {
             // language=SQL format=false
             stmt += `
-    DROP TABLE IF EXISTS ${tbl};
-    CREATE EXTERNAL TABLE IF NOT EXISTS ${tbl} STORED AS PARQUET LOCATION 's3://datafusion-distributed-benchmarks/tpch_sf${sf}/${tbl}/';
+    DROP TABLE IF EXISTS ${table.name};
+    CREATE EXTERNAL TABLE IF NOT EXISTS ${table.name} STORED AS PARQUET LOCATION '${table.s3Path}';
  `;
         }
         await this.query(stmt);
