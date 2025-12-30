@@ -40,15 +40,16 @@ impl ChannelResolver for LocalhostChannelResolver {
 
 > NOTE: This example is not production-ready and is meant to showcase the basic concepts of the library.
 
-This `WorkerResolver` implementation should resolve URLs of Distributed DataFusion Arrow Flight servers, and it's
-also the user of this library's responsibility to spawn a Tonic server that exposes the Arrow Flight service.
+This `WorkerResolver` implementation should resolve URLs of Distributed DataFusion workers, and it's
+also the user of this library's responsibility to spawn a Tonic server that exposes the worker as an Arrow Flight
+service using Tonic.
 
 A basic example of such a server is:
 
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let endpoint = ArrowFlightEndpoint::default();
+    let endpoint = Worker::default();
 
     Server::builder()
         .add_service(endpoint.into_flight_server())
@@ -66,7 +67,7 @@ The next two sections of this guide will walk you through tailoring the library'
 - [Build your own WorkerResolver](worker-resolver.md)
 - [Build your own ChannelResolver](channel-resolver.md)
 - [Build your own TaskEstimator](task-estimator.md)
-- [Build your own distributed DataFusion Arrow Flight endpoint](arrow-flight-endpoint.md)
+- [Build your own distributed DataFusion Worker](worker.md)
 
 Here are some other resources in the codebase:
 

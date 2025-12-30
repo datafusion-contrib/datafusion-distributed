@@ -9,8 +9,8 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule,
-    DistributedSessionBuilderContext, WorkerResolver, display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerQueryContext, WorkerResolver,
+    display_plan_ascii,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -72,12 +72,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build();
     let ctx = SessionContext::from(state);
 
-    let arrow_flight_endpoint =
-        ArrowFlightEndpoint::from_session_builder(move |ctx: DistributedSessionBuilderContext| {
-            let s3 = s3.clone();
-            let s3_url = s3_url.clone();
-            async move { Ok(ctx.builder.with_object_store(&s3_url, s3).build()) }
-        });
+    let arrow_flight_endpoint = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+        let s3 = s3.clone();
+        let s3_url = s3_url.clone();
+        async move { Ok(ctx.builder.with_object_store(&s3_url, s3).build()) }
+    });
     let http_server = axum::serve(
         listener,
         Router::new().route(

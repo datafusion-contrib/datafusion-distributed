@@ -14,7 +14,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DistributedExt, DistributedSessionBuilderContext, assert_snapshot, display_plan_ascii,
+        DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -27,17 +27,15 @@ mod tests {
     use tokio_stream::StreamExt;
     use tokio_stream::wrappers::ReceiverStream;
 
-    // This test proves that execution nodes do not get early dropped in the ArrowFlightEndpoint
-    // when all the partitions start being consumed.
+    // This test proves that execution nodes do not get early dropped in the Worker when all the
+    // partitions start being consumed.
     //
     // It uses a StatefulPassThroughExec custom node whose execution depends on it not being dropped.
     // The node spawns a background task that collects data from its child DataSourceExec.
-    // If ArrowFlightEndpoint drops the node before the stream ends, this test will fail.
+    // If the Worker drops the node before the stream ends, this test will fail.
     #[tokio::test]
     async fn stateful_execution_plan() -> Result<(), Box<dyn std::error::Error>> {
-        async fn build_state(
-            ctx: DistributedSessionBuilderContext,
-        ) -> Result<SessionState, DataFusionError> {
+        async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
             Ok(ctx
                 .builder
                 .with_distributed_user_codec(PassThroughExecCodec)

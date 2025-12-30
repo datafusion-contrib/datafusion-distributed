@@ -31,7 +31,7 @@ use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
 use datafusion_distributed::{
-    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
+    DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, Worker,
 };
 use log::info;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -185,7 +185,7 @@ impl RunOpt {
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
                 Ok::<_, Box<dyn Error + Send + Sync>>(
                     Server::builder()
-                        .add_service(ArrowFlightEndpoint::default().into_flight_server())
+                        .add_service(Worker::default().into_flight_server())
                         .serve_with_incoming(incoming)
                         .await?,
                 )

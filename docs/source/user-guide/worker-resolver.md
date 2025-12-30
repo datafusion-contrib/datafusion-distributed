@@ -30,13 +30,13 @@ async fn main() {
 }
 ```
 
-> NOTE: It's not necessary to pass this to the Arrow Flight endpoint session builder.
+> NOTE: It's not necessary to pass this to the Worker session builder.
 
 ## Static WorkerResolver
 
 This is the simplest thing you can do, although it will not fit some common use cases. An example of this can be
-seen
-in [localhost_worker.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/fad9fa222d65b7d2ddae92fbc20082b5c434e4ff/examples/localhost_run.rs)
+seen in the
+[localhost_worker.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/fad9fa222d65b7d2ddae92fbc20082b5c434e4ff/examples/localhost_run.rs)
 example:
 
 ```rust
@@ -65,8 +65,8 @@ provider for hosting your Distributed DataFusion workers.
 It's up to you to decide how the URLs should be resolved. One important implementation note is:
 
 - Retrieving the worker URLs needs to be synchronous (as planning is synchronous), and therefore, you'll likely
-  need to spawn a background tasks that periodically refreshes the list of available URLs.
+  need to spawn background tasks that periodically refresh the list of available URLs.
 
 A good example can be found
 in https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/cdk/bin/worker.rs,
-where a cluster of AWS EC2 machines are discovered identified by tags with the AWS Rust SDK.
+where a cluster of AWS EC2 machines is discovered identified by tags with the AWS Rust SDK.

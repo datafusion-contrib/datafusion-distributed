@@ -32,7 +32,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::config::ConfigExtension;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// extensions_options! {
     ///     pub struct CustomExtension {
@@ -53,10 +53,11 @@ pub trait DistributedExt: Sized {
     ///     .with_distributed_option_extension(my_custom_extension).unwrap()
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
-    ///     Ok(SessionStateBuilder::new()
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
     /// }
@@ -78,7 +79,7 @@ pub trait DistributedExt: Sized {
     /// plan.
     ///
     /// - If there was a [ConfigExtension] of the same type already present, it's updated with an
-    ///   in-place mutation base on the headers that came over the wire.
+    ///   in-place mutation based on the headers that came over the wire.
     /// - If there was no [ConfigExtension] set before, it will get added, as if
     ///   [SessionConfig::with_option_extension] was being called.
     ///
@@ -90,7 +91,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::config::ConfigExtension;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// extensions_options! {
     ///     pub struct CustomExtension {
@@ -111,10 +112,11 @@ pub trait DistributedExt: Sized {
     ///     .with_distributed_option_extension(my_custom_extension).unwrap()
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
-    ///     Ok(SessionStateBuilder::new()
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
     /// }
@@ -143,7 +145,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::prelude::SessionConfig;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -162,8 +164,8 @@ pub trait DistributedExt: Sized {
     ///     .with_distributed_user_codec(CustomExecCodec)
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // encode/decode CustomExec nodes.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_user_codec(CustomExecCodec)
@@ -187,9 +189,8 @@ pub trait DistributedExt: Sized {
     /// nodes in the cluster. When running in distributed mode, setting a [WorkerResolver] is required.
     ///
     /// Even if this is required to be present in the [SessionContext] that first initiates and
-    /// plans the query, it's not necessary to be present in a worker's ArrowFlightEndpoint session
-    /// state builder, as no planning happens there, and the WorkerResolver::get_urls method is
-    /// only called during planning.
+    /// plans the query, it's not necessary to be present in a Worker's session state builder,
+    /// as no planning happens there.
     ///
     /// Example:
     ///
@@ -201,7 +202,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
     ///
     /// struct CustomWorkerResolver;
     ///
@@ -233,7 +234,7 @@ pub trait DistributedExt: Sized {
 
     /// This is what tells Distributed DataFusion how to build an Arrow Flight client out of a worker URL.
     ///
-    /// There's a default implementation of this that caches the Arrow Flight client instances so that there's
+    /// There's a default implementation that caches the Arrow Flight client instances so that there's
     /// only one per URL, but users can decide to override that behavior in favor of their own solution.
     ///
     /// Example:
@@ -246,7 +247,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
     ///
     /// struct CustomChannelResolver;
     ///
@@ -266,12 +267,13 @@ pub trait DistributedExt: Sized {
     ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
     ///     .build();
     ///
-    /// // This function can be provided to an ArrowFlightEndpoint so that, upon receiving a distributed
+    /// // This function can be provided to a Worker so that, upon receiving a distributed
     /// // part of a plan, it knows how to resolve gRPC channels from URLs for making network calls to other nodes.
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     Ok(SessionStateBuilder::new()
-    ///         // If you have a custom channel resolver, it should also be passed in the
-    ///         // ArrowFlightEndpoint session builder.
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // If you have a custom channel resolver, it should also be passed in the
+    ///     // Worker session builder.
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
     /// }
@@ -287,12 +289,12 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// Adds a distributed task count estimator. Estimators are executed on leaf nodes
-    /// sequentially until one returns an estimation on the amount of tasks that should be
-    /// used for the stage containing the leaf node.
+    /// Adds a distributed task count estimator. [TaskEstimator]s are executed on each node
+    /// sequentially until one returns an estimation on the number of tasks that should be
+    /// used for the stage containing that node.
     ///
-    /// The first one that returns something for a leaf node is the one that decides how many
-    /// tasks are used.
+    /// Many nodes might decide to provide an estimation, so a reconciliation between all of them
+    /// is performed internally during planning.
     ///
     /// ```text
     ///     ┌───────────────────────┐
@@ -311,8 +313,8 @@ pub trait DistributedExt: Sized {
     ///     ┌───────────────────────┐    │
     /// │   │      FilterExec       │
     ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐       TaskEstimator estimates tasks in
-    ///     │       SomeExec        │◀───┼──  stages containing leaf nodes
+    /// │   ┌───────────────────────┐       a TaskEstimator estimates the amount of tasks
+    ///     │       SomeExec        │◀───┼──  based on how much data will be pulled.
     /// │   └───────────────────────┘
     ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
     /// ```

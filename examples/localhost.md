@@ -16,7 +16,7 @@ git lfs checkout
 
 ### Spawning the workers
 
-In two different terminals spawn two ArrowFlightEndpoints
+In two different terminals spawn two workers
 
 ```shell
 cargo run --example localhost_worker -- 8080
@@ -26,7 +26,7 @@ cargo run --example localhost_worker -- 8080
 cargo run --example localhost_worker -- 8081
 ```
 
-The positional numeric argument is the port in which each Arrow Flight endpoint will listen to.
+The positional numeric argument is the port in which each worker will listen to.
 
 ### Issuing a distributed SQL query
 

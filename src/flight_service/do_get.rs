@@ -2,8 +2,8 @@ use crate::common::map_last_stream;
 use crate::config_extension_ext::{
     ContextGrpcMetadata, set_distributed_option_extension_from_headers,
 };
-use crate::flight_service::service::ArrowFlightEndpoint;
-use crate::flight_service::session_builder::DistributedSessionBuilderContext;
+use crate::flight_service::session_builder::WorkerQueryContext;
+use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
@@ -67,11 +67,11 @@ pub struct TaskData {
     num_partitions_remaining: Arc<AtomicUsize>,
 }
 
-impl ArrowFlightEndpoint {
+impl Worker {
     pub(super) async fn get(
         &self,
         request: Request<Ticket>,
-    ) -> Result<Response<<ArrowFlightEndpoint as FlightService>::DoGetStream>, Status> {
+    ) -> Result<Response<<Worker as FlightService>::DoGetStream>, Status> {
         let (metadata, _ext, body) = request.into_parts();
         let doget = DoGet::decode(body.ticket).map_err(|err| {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
@@ -80,7 +80,7 @@ impl ArrowFlightEndpoint {
         let headers = metadata.into_headers();
         let mut session_state = self
             .session_builder
-            .build_session_state(DistributedSessionBuilderContext {
+            .build_session_state(WorkerQueryContext {
                 builder: SessionStateBuilder::new()
                     .with_default_features()
                     .with_runtime_env(Arc::clone(&self.runtime)),
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
-        let mut endpoint = ArrowFlightEndpoint::default();
+        let mut endpoint = Worker::default();
         let plans_received = Arc::new(AtomicUsize::default());
         {
             let plans_received = Arc::clone(&plans_received);
