@@ -1,58 +1,28 @@
 # Getting Started
 
+The easiest way to think about this library is like vanilla DataFusion, with the exception that some nodes
+happen to execute their children in remote machines getting data back through the Arrow Flight protocol.
+
+This library aims to provide an experience as close as possible to vanilla DataFusion.
+
+## How to use Distributed DataFusion
+
 Rather than being opinionated about your setup and how you serve queries to users,
 Distributed DataFusion allows you to plug in your own networking stack and spawn your own gRPC servers that act as
 workers in the cluster.
 
 This project heavily relies on the [Tonic](https://github.com/hyperium/tonic) ecosystem for the networking layer.
 Users of this library are responsible for building their own Tonic server, adding the Arrow Flight distributed
-DataFusion service to it and spawning it on a port so that it can be reached by other workers in the cluster.
-
-For a basic setup, all you need to do is to enrich your DataFusion `SessionStateBuilder` with the tools this project
-ships:
-
-```rs
- let state = SessionStateBuilder::new()
-+    .with_distributed_worker_resolver(my_custom_worker_resolver)
-+    .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-     .build();
-```
-
-And the `my_custom_worker_resolver` variable should be an implementation of
-the [WorkerResolverResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/worker_resolver.rs)
-trait, which tells Distributed DataFusion how to connect to other workers in the cluster.
-
-A very basic example of such an implementation that resolves workers in the localhost machine is:
-
-```rust
-#[derive(Clone)]
-struct LocalhostWorkerResolver {
-    ports: Vec<u16>,
-}
-
-#[async_trait]
-impl ChannelResolver for LocalhostChannelResolver {
-    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-        Ok(self.ports.iter().map(|port| Url::parse(&format!("http://localhost:{port}")).unwrap()).collect())
-    }
-}
-```
-
-> NOTE: This example is not production-ready and is meant to showcase the basic concepts of the library.
-
-This `WorkerResolver` implementation should resolve URLs of Distributed DataFusion workers, and it's
-also the user of this library's responsibility to spawn a Tonic server that exposes the worker as an Arrow Flight
-service using Tonic.
-
-A basic example of such a server is:
+DataFusion service to it and spawning it on a port so that it can be reached by other workers in the cluster. A very
+basic example of this would be:
 
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let endpoint = Worker::default();
+    let worker = Worker::default();
 
     Server::builder()
-        .add_service(endpoint.into_flight_server())
+        .add_service(worker.into_flight_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))
         .await?;
 
@@ -60,29 +30,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
+Distributed DataFusion needs to know how to reach other workers, so users are expected to implement the `WorkerResolver`
+trait for this. Here is a simple example of what this would look like with localhost workers:
+
+```rust
+#[derive(Clone)]
+struct LocalhostWorkerResolver {
+    ports: Vec<u16>,
+}
+
+impl ChannelResolver for LocalhostWorkerResolver {
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        Ok(self
+            .ports
+            .iter()
+            .map(|port| Url::parse(&format!("http://localhost:{port}")).unwrap())
+            .collect())
+    }
+}
+```
+
+The `WorkerResolver` implementation, along with the `DistributedPhysicalOptimizerRule`, needs to be provided in
+DataFusion's `SessionStateBuilder` so that it's available during the planning step of distributed queries:
+
+```rs
+let localhost_worker_resolver = LocalhostWorkerResolver {
+    ports: vec![8000, 8001, 8002]
+}
+
+let state = SessionStateBuilder::new()
+    .with_distributed_worker_resolver(localhost_worker_resolver)
+    .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    .build();
+
+let ctx = SessionContext::from(state);
+```
+
+This will leave a DataFusion `SessionContext` ready for executing distributed queries.
+
+> NOTE: This example is not production-ready and is meant to showcase the basic concepts of the library.
+
 ## Next steps
 
-The next two sections of this guide will walk you through tailoring the library's traits to your own needs:
+Depending on your needs, your setup can get more complicated, for example:
 
-- [Build your own WorkerResolver](worker-resolver.md)
-- [Build your own ChannelResolver](channel-resolver.md)
-- [Build your own TaskEstimator](task-estimator.md)
-- [Build your own distributed DataFusion Worker](worker.md)
+- You may want to resolve worker URLs dynamically using the Kubernetes API.
+- You may want to wrap the Arrow Flight clients that connect workers with an observability layer.
+- You may want to be able to execute your own custom ExecutionPlans in a distributed manner.
+- etc...
 
-Here are some other resources in the codebase:
+To learn how to do all that, it's recommended to:
 
-- [In-memory cluster example](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/in_memory.md)
-- [Localhost cluster example](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/localhost.md)
-
-A more advanced example can be found in the benchmarks that use a cluster of distributed DataFusion workers
-deployed on AWS EC2 machines:
-
-- [AWS EC2 based cluster example](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/cdk/bin/worker.rs)
-
-Each feature in the project is showcased and tested in its own isolated integration test, so it's recommended to
-review those for a better understanding of how specific features work:
-
-- [Pass your own ConfigExtension implementations across network boundaries](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/tests/custom_config_extension.rs)
-- [Provide custom protobuf codecs for your own nodes](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/tests/custom_extension_codec.rs)
-- Provide a custom TaskEstimator for controlling the amount of parallelism (coming soon)
+- [Continue reading this guide](worker.md)
+- [Look at examples in the project](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/examples)
+- [Look at the integration tests for finer grained examples](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/tests)
 

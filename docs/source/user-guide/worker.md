@@ -94,5 +94,4 @@ async fn main() {
 }
 ```
 
-The `into_flight_server()` method wraps the endpoint in a `FlightServiceServer` with high message size limits (
-`usize::MAX`) to avoid chunking overhead for internal communication.
+The `into_flight_server()` method builds a `FlightServiceServer` ready to be added as a Tonic service.

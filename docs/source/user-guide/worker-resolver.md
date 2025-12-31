@@ -30,7 +30,8 @@ async fn main() {
 }
 ```
 
-> NOTE: It's not necessary to pass this to the Worker session builder.
+> NOTE: It's not necessary to pass a WorkerResolver to the Worker session builder, it's just necessary on the
+> SessionState that initiates and plans the query.
 
 ## Static WorkerResolver
 
@@ -68,5 +69,5 @@ It's up to you to decide how the URLs should be resolved. One important implemen
   need to spawn background tasks that periodically refresh the list of available URLs.
 
 A good example can be found
-in https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/cdk/bin/worker.rs,
+in [benchmarks/cdk/bin/worker.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/cdk/bin/worker.rs),
 where a cluster of AWS EC2 machines is discovered identified by tags with the AWS Rust SDK.
