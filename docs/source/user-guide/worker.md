@@ -1,7 +1,7 @@
 # Spawn a Worker
 
-A `Worker` is a gRPC server that implements the Arrow Flight protocol for distributed query execution.
-Worker nodes run these endpoints to receive execution plans, execute them, and stream results back.
+The `Worker` is a gRPC server implementing the Arrow Flight protocol for distributed query execution. Worker nodes
+run these endpoints to receive execution plans, execute them, and stream results back.
 
 ## Overview
 
@@ -14,7 +14,7 @@ The `Worker` is the core worker component in Distributed DataFusion. It:
 
 ## Launching the Arrow Flight server
 
-The `Default` implementation of the `Worker` should satisfy most basic use cases
+The default `Worker` implementation satisfies most basic use cases:
 
 ```rust
 use datafusion_distributed::Worker;
@@ -31,8 +31,7 @@ async fn main() {
 }
 ```
 
-If you are using DataFusion, though, it's very likely that you have your own custom UDFs, execution nodes, config
-options, etc...
+However, most DataFusion deployments include custom UDFs, execution nodes, or configuration options.
 
 You'll need to tell the `Worker` how to build your DataFusion sessions:
 
@@ -56,7 +55,7 @@ async fn main() {
 }
 ```
 
-### WorkerSessionBuilder
+## WorkerSessionBuilder
 
 The `WorkerSessionBuilder` is a closure or type that implements:
 
@@ -73,7 +72,8 @@ pub trait WorkerSessionBuilder {
 It receives a `WorkerQueryContext` containing:
 
 - `SessionStateBuilder`: A pre-populated session state builder in which you can inject your custom stuff
-- `headers`: HTTP headers from the incoming request (useful for passing metadata)
+- `headers`: HTTP headers from the incoming request (useful for passing metadata like authentication tokens or
+  configuration)
 
 ## Serving the Endpoint
 

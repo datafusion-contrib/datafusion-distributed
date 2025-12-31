@@ -1,12 +1,12 @@
 # Building a ChannelResolver
 
-This trait is optional, there's a sane default already in place that should work for most simple cases.
+This trait is optional—a sensible default implementation exists that handles most use cases.
 
-A `ChannelResolver` tells Distributed DataFusion how to build an Arrow Flight client baked by a
-[Tonic](https://github.com/hyperium/tonic) channel given a worker URL.
+The `ChannelResolver` trait controls how Distributed DataFusion builds Arrow Flight clients backed by
+[Tonic](https://github.com/hyperium/tonic) channels for worker URLs.
 
-There's a default implementation that simply connects to the given URL, builds the Arrow Flight client instance,
-and caches it so that it gets reused upon reaching the URL again.
+The default implementation connects to each URL, builds an Arrow Flight client, and caches it for reuse on
+subsequent requests to the same URL.
 
 ## Providing your own ChannelResolver
 
@@ -15,10 +15,9 @@ For providing your own implementation, you'll need to take into account the foll
 - You will need to provide your own implementation in two places:
     - in the `SessionContext` that first initiates and plans your queries.
     - while instantiating the `Worker` with the `from_session_builder()` constructor.
-- If you decide to build it from scratch, make sure that Arrow Flight clients are reused across
-  request rather than always building new ones.
-- You can use this library's `DefaultChannelResolver` as a backbone for your own implementation.
-  If you do that, gRPC channel reuse will be automatically managed for you.
+- If building from scratch, ensure Arrow Flight clients are reused across requests rather than recreated each time.
+- You can extend `DefaultChannelResolver` as a foundation for custom implementations. This automatically handles
+  gRPC channel reuse.
 
 ```rust
 #[derive(Clone)]
@@ -37,9 +36,8 @@ impl ChannelResolver for CustomChannelResolver {
 }
 
 async fn main() {
-    // Make sure you build just one for the whole lifetime of your application, 
-    // as it needs to be able to reuse Arrow Flight client instances across 
-    // different queries.
+    // Build a single instance for your application's lifetime
+    // to enable Arrow Flight client reuse across queries.
     let channel_resolver = CustomChannelResolver;
 
     let state = SessionStateBuilder::new()

@@ -1,15 +1,14 @@
 # Getting Started
 
-The easiest way to think about this library is like vanilla DataFusion, with the exception that some nodes
-happen to execute their children in remote machines getting data back through the Arrow Flight protocol.
+Think of this library as vanilla DataFusion, except that certain nodes execute their children on remote
+machines and retrieve data via the Arrow Flight protocol.
 
 This library aims to provide an experience as close as possible to vanilla DataFusion.
 
 ## How to use Distributed DataFusion
 
-Rather than being opinionated about your setup and how you serve queries to users,
-Distributed DataFusion allows you to plug in your own networking stack and spawn your own gRPC servers that act as
-workers in the cluster.
+Rather than imposing constraints on your infrastructure or query serving patterns, Distributed DataFusion
+allows you to plug in your own networking stack and spawn your own gRPC servers that act as workers in the cluster.
 
 This project heavily relies on the [Tonic](https://github.com/hyperium/tonic) ecosystem for the networking layer.
 Users of this library are responsible for building their own Tonic server, adding the Arrow Flight distributed
@@ -30,8 +29,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-Distributed DataFusion needs to know how to reach other workers, so users are expected to implement the `WorkerResolver`
-trait for this. Here is a simple example of what this would look like with localhost workers:
+Distributed DataFusion requires knowledge of worker locations. Implement the `WorkerResolver` trait to provide
+this information. Here is a simple example of what this would look like with localhost workers:
 
 ```rust
 #[derive(Clone)]
@@ -39,7 +38,7 @@ struct LocalhostWorkerResolver {
     ports: Vec<u16>,
 }
 
-impl ChannelResolver for LocalhostWorkerResolver {
+impl WorkerResolver for LocalhostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         Ok(self
             .ports
@@ -50,8 +49,8 @@ impl ChannelResolver for LocalhostWorkerResolver {
 }
 ```
 
-The `WorkerResolver` implementation, along with the `DistributedPhysicalOptimizerRule`, needs to be provided in
-DataFusion's `SessionStateBuilder` so that it's available during the planning step of distributed queries:
+Register both the `WorkerResolver` implementation and the `DistributedPhysicalOptimizerRule` in DataFusion's
+`SessionStateBuilder` to enable distributed query planning:
 
 ```rs
 let localhost_worker_resolver = LocalhostWorkerResolver {

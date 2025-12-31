@@ -1,17 +1,17 @@
 # Concepts
 
-This library is a collection of DataFusion extensions that allows running distributed queries. You can think of
+This library is a collection of DataFusion extensions that enable distributed query execution. You can think of
 it as normal DataFusion, with the addition that some nodes are capable of streaming data over the network using
 Arrow Flight instead of through in-memory communication.
 
-These are some terms you should be familiar with before getting started:
+Key terminology:
 
 - `Stage`: a portion of the plan separated by a network boundary from other parts of the plan. A plan contains
-  one or more stages.
+  one or more stages, each separated by network boundaries.
 - `Task`: a unit of work in a stage that executes the inner plan in parallel to other tasks within the stage. Each task
   in a stage is executed by a different worker.
 - `Network Boundary`: a node in the plan that streams data from a network interface rather than directly from its
-  children.
+  children nodes.
 - `Worker`: a physical machine listening to serialized execution plans over an Arrow Flight interface. A task is
   executed by exactly one worker, but one worker executes many tasks concurrently.
 
@@ -25,11 +25,11 @@ Some other more tangible concepts are the structs and traits exposed publicly, t
 
 ## [DistributedPhysicalOptimizerRule](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/distributed_physical_optimizer_rule.rs)
 
-This is a physical optimizer rule that converts a single-node DataFusion query into a distributed query. It reads
+A physical optimizer rule that transforms single-node DataFusion query plans into distributed query plans. It reads
 a fully formed physical plan and injects the appropriate nodes to execute the query in a distributed fashion.
 
-It builds the distributed plan from bottom to top, and based on the present nodes in the original plan,
-it will inject network boundaries in the appropriate places.
+It builds the distributed plan from bottom to top, injecting network boundaries at appropriate locations based on
+the nodes present in the original plan.
 
 ## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/flight_service/worker.rs)
 
@@ -40,10 +40,10 @@ Users are expected to build these and spawn them in ports so that the network bo
 
 ## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/worker_resolver.rs)
 
-Establishes the number of workers available in the distributed DataFusion cluster by returning their URLs.
+Determines the available workers in the distributed DataFusion cluster by returning their URLs.
 
-Different organizations have different needs regarding networking. Some might be using Kubernetes, some other might
-be using a cloud provider solution, and this trait allows adapting Distributed DataFusion to the different scenarios.
+Different organizations have different networking requirements—from Kubernetes deployments to cloud provider
+solutions. This trait allows Distributed DataFusion to adapt to various scenarios.
 
 ## [TaskEstimator](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/task_estimator.rs)
 
