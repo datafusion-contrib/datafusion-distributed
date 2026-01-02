@@ -25,4 +25,6 @@ present in DataFusion's `TaskContext` to determine which subset of data this tas
 
 There's an example of how to do that in the `examples/` folder:
 
-- TODO: link to example
+- [custom_execution_plan.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/custom_execution_plan.rs) -
+  A complete example showing how to implement a custom execution plan (`numbers(start, end)` table function)
+  that works with distributed DataFusion, including a custom codec and TaskEstimator.
