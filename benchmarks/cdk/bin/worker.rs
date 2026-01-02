@@ -6,11 +6,11 @@ use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerQueryContext, WorkerResolver,
-    display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver, display_plan_ascii,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -64,19 +64,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .with_bucket_name(s3_url.host().unwrap().to_string())
             .build()?,
     );
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    runtime_env.register_object_store(&s3_url, s3);
+
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_object_store(&s3_url, Arc::clone(&s3) as _)
+        .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .build();
     let ctx = SessionContext::from(state);
 
-    let arrow_flight_endpoint = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
-        let s3 = s3.clone();
-        let s3_url = s3_url.clone();
-        async move { Ok(ctx.builder.with_object_store(&s3_url, s3).build()) }
-    });
+    let worker = Worker::default().with_runtime_env(runtime_env);
     let http_server = axum::serve(
         listener,
         Router::new().route(
@@ -137,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     );
     let grpc_server = Server::builder()
-        .add_service(arrow_flight_endpoint.into_flight_server())
+        .add_service(worker.into_flight_server())
         .serve(WORKER_ADDR.parse()?);
 
     info!("Started listener HTTP server in {LISTENER_ADDR}");
