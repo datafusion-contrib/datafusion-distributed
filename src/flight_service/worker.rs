@@ -57,6 +57,13 @@ impl Worker {
         }
     }
 
+    /// Sets a [RuntimeEnv] to be used in all the queries this [Worker] will handle during
+    /// its lifetime.
+    pub fn with_runtime_env(mut self, runtime_env: Arc<RuntimeEnv>) -> Self {
+        self.runtime = runtime_env;
+        self
+    }
+
     /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.
     ///
     /// The callback takes the plan and returns another plan that must be either the same,
