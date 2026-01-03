@@ -153,6 +153,12 @@ impl ExecutionPlan for BroadcastExec {
         let input = Arc::clone(&self.input);
         let schema = self.schema();
 
+        // TODO: Stream batches as they're produced instead of collect-then-emit. Currently we
+        // wait for all batches before consumers receive any. Streaming would allow overlapping
+        // production with network transfer.
+        //
+        // Challenges: late subscribers must replay from buffer since tokio::sync::broadcast drops old messages,
+        // need proper error propagation to all consumers and backpressure handling.
         let stream = futures::stream::once(async move {
             let batches = cache
                 .get_or_try_init(|| async {
