@@ -223,11 +223,6 @@ fn _annotate_plan(
             return Ok(annotated_plan);
         }
 
-        // For Broadcast, distribute_plan handles build/probe sides separately with different task counts.
-        if nb == &RequiredNetworkBoundary::Broadcast {
-            return Ok(annotated_plan);
-        }
-
         // From now and up in the plan, a new task count needs to be calculated for the next stage.
         // Depending on the number of nodes that reduce/increase cardinality, the task count will be
         // calculated based on the previous task count multiplied by a factor.
@@ -410,8 +405,8 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1), required_network_boundary=Broadcast
+        CoalesceBatchesExec: task_count=Desired(1)
+          HashJoinExec: task_count=Desired(1), required_network_boundary=Broadcast
             CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)

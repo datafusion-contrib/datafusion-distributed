@@ -54,7 +54,6 @@ pub fn rewrite_distributed_plan_with_metrics(
                     stage.num,
                     plan_with_metrics,
                     stage.tasks.len(),
-                    stage.consumer_task_count,
                 ),
             )?));
         }
@@ -308,7 +307,7 @@ mod tests {
     }
 
     fn make_test_stage(plan: Arc<dyn ExecutionPlan>) -> Stage {
-        Stage::new(Uuid::new_v4(), 2, plan, 4, None)
+        Stage::new(Uuid::new_v4(), 2, plan, 4)
     }
 
     fn collect_metrics_from_plan(plan: &Arc<dyn ExecutionPlan>, metrics: &mut Vec<MetricsSet>) {

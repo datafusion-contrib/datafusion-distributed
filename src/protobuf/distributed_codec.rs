@@ -1,6 +1,6 @@
 use super::get_distributed_user_codecs;
 use crate::NetworkBoundary;
-use crate::execution_plans::{NetworkBroadcastExec, NetworkCoalesceExec};
+use crate::execution_plans::{BroadcastExec, NetworkBroadcastExec, NetworkCoalesceExec};
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
@@ -84,7 +84,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 num: proto.num as usize,
                 plan,
                 tasks: decode_tasks(proto.tasks)?,
-                consumer_task_count: proto.consumer_task_count.map(|c| c as usize),
             })
         }
 
@@ -176,6 +175,22 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     parse_stage_proto(input_stage, inputs)?,
                 )))
             }
+            DistributedExecNode::Broadcast(BroadcastExecProto {
+                consumer_task_count,
+            }) => {
+                if inputs.len() != 1 {
+                    return Err(proto_error(format!(
+                        "BroadcastExec expects exactly one child, got {}",
+                        inputs.len()
+                    )));
+                }
+
+                let child = inputs.first().unwrap();
+                Ok(Arc::new(BroadcastExec::new(
+                    child.clone(),
+                    consumer_task_count as usize,
+                )))
+            }
         }
     }
 
@@ -193,7 +208,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     MaybeEncodedPlan::Decoded(_) => Bytes::new(),
                     MaybeEncodedPlan::Encoded(proto) => proto.clone(),
                 },
-                consumer_task_count: stage.consumer_task_count.map(|c| c as u64),
             })
         }
 
@@ -252,6 +266,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<BroadcastExec>() {
+            let inner = BroadcastExecProto {
+                consumer_task_count: node.consumer_task_count() as u64,
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::Broadcast(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
@@ -298,9 +322,6 @@ pub struct StageProto {
     /// The child plan already serialized
     #[prost(bytes, tag = "4")]
     pub plan_proto: Bytes, // Apparently, with an optional keyword, we cannot put Bytes here.
-    /// For broadcast stages, the number of consumer tasks
-    #[prost(uint64, optional, tag = "5")]
-    pub consumer_task_count: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -327,6 +348,8 @@ pub enum DistributedExecNode {
     PartitionIsolator(PartitionIsolatorExecProto),
     #[prost(message, tag = "4")]
     NetworkBroadcast(NetworkBroadcastExecProto),
+    #[prost(message, tag = "5")]
+    Broadcast(BroadcastExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -405,6 +428,12 @@ pub struct NetworkBroadcastExecProto {
     input_stage: Option<StageProto>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BroadcastExecProto {
+    #[prost(uint64, tag = "1")]
+    pub consumer_task_count: u64,
+}
+
 fn new_network_broadcast_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
@@ -470,7 +499,6 @@ mod tests {
             num: 0,
             plan: MaybeEncodedPlan::Decoded(empty_exec()),
             tasks: vec![],
-            consumer_task_count: None,
         }
     }
 

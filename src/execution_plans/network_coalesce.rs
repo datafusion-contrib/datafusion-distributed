@@ -107,7 +107,6 @@ impl NetworkCoalesceExec {
                 num,
                 plan: MaybeEncodedPlan::Decoded(input),
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
-                consumer_task_count: None,
             },
             metrics_collection: Default::default(),
         })
@@ -212,7 +211,6 @@ impl ExecutionPlan for NetworkCoalesceExec {
                     )),
                     target_task_index: target_task as u64,
                     target_task_count: input_stage.tasks.len() as u64,
-                    consumer_task_count: None,
                 }
                 .encode_to_vec()
                 .into(),

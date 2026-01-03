@@ -20,7 +20,7 @@ pub use distributed_planner::{
     TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
-    DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
+    BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
     PartitionIsolatorExec,
 };
 pub use flight_service::{

@@ -1,4 +1,5 @@
 use crate::DistributedConfig;
+use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::NetworkBoundary;
@@ -18,10 +19,9 @@ use dashmap::DashMap;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
@@ -33,93 +33,105 @@ use tonic::Request;
 use tonic::metadata::MetadataMap;
 use uuid::Uuid;
 
-/// [ExecutionPlan] implementation that broadcasts data across the network in to all tasks in a
-/// stage.
+/// Network boundary for broadcasting data to all consumer tasks.
 ///
-/// This operators is easiest to visualize in the context of a hash join where one table is much
-/// smaller than the other (typically a CollectLeft joinn in DataFusion plans) in a distributed system.
-/// Without this operator the join would be forced to execute on a single node. It would be much more
-/// efficient to broadcast the entire small table to each task (node) in the stage, having each task
-/// complete a the join with a partition of the large table and full small table.
+/// This operator works with [BroadcastExec] which scales up partitions so each
+/// consumer task fetches a unique set of partition numbers. Each partition request
+/// is sent to all stage tasks because PartitionIsolatorExec maps the same logical
+/// partition to different actual data on each task.
 ///
-/// This node allows broadcasting data from N tasks to M tasks, being N and M arbitrary non-zero
-/// positive numbers. This comes with the caveat that broadcasting with > 1 input tasks requires
-/// coalescing their partitions to a single producer task which avoids partial or duplicate data being broadcast.
+/// Here are some examples of how [NetworkBroadcastExec] distributes data:
 ///
-/// Here are some examples of how data can be broadcast in different scenarios:
-///
-/// # 1 stage with 1 partition to M tasks
+/// # 1 to many
 ///
 /// ```text
-/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
-/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
-/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
-/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
-///            │1│                             │1│                            │1│                  │
-///            └▲┘                             └▲┘                            └▲┘                  ■
-///             │                               │                              │
-///          Populate                         Cache                          Cache
-///           Cache                            Hit                            Hit
-///             │                               │                              │
-///             └───────────────────────────────┼──────────────────────────────┘
-///                                            ┌┴┐
-///                                            │1│                                                 ■
-///                                       ┌────┴─┴────┐                                            │
-///                                       │Batch Cache│                                            │
-///                                 ┌─────┴───────────┴──────┐                                  Stage N
-///                                 │ Arc<dyn ExecutionPlan> │                                     │
-///                                 │        (task 1)        │                                     │
-///                                 └────────────────────────┘                                     ■
+/// ┌────────────────────────┐                        ┌────────────────────────┐           ■
+/// │  NetworkBroadcastExec  │                        │  NetworkBroadcastExec  │           │
+/// │        (task 1)        │           ...          │        (task M)        │           │
+/// │                        │                        │                        │        Stage N
+/// │    Populates Caches    │                        │       Cache Hits       │           │
+/// └────────┬─┬┬─┬┬─┬───────┘                        └────────┬─┬┬─┬┬─┬───────┘           │
+///          │1││2││3│                                         │1││2││3│                   │
+///          └▲┘└▲┘└▲┘                                         └▲┘└▲┘└▲┘                   ■
+///           │  │  │                                           │  │  │
+///           │  │  │                                           │  │  │
+///           │  │  │                                           │  │  │
+///           │  │  └─────────────┐          ┌──────────────────┘  │  │
+///           │  └─────────────┐  │          │     ┌───────────────┘  │
+///           └─────────────┐  │  │          │     │    ┌─────────────┘
+///                         │  │  │          │     │    │
+///                        ┌┴┐┌┴┐┌┴┐  ... ┌──┴─┐┌──┴─┐┌─┴┐
+///                        │1││2││3│      │NM-2││NM-1││NM│                                 ■
+///                       ┌┴─┴┴─┴┴─┴──────┴────┴┴────┴┴──┴┐                                │
+///                       │         BroadcastExec         │                                │
+///                       │       ┌───────────────┐       │                            Stage N-1
+///                       │       │  Batch Cache  │       │                                │
+///                       │       │  ┌─┐ ┌─┐ ┌─┐  │       │                                │
+///                       │       │  │1│ │2│ │3│  │       │                                │
+///                       │       │  └─┘ └─┘ └─┘  │       │                                │
+///                       │       └───────────────┘       │                                │
+///                       └──────────┬─┬─┬─┬─┬─┬──────────┘                                │
+///                                  │1│ │2│ │3│                                           │
+///                                  └▲┘ └▲┘ └▲┘                                           ■
+///                                   │   │   │
+///                                   │   │   │
+///                                   │   │   │
+///                                  ┌┴┐ ┌┴┐ ┌┴┐                                           ■
+///                                  │1│ │2│ │3│                                           │
+///                           ┌──────┴─┴─┴─┴─┴─┴──────┐                                Stage N-2
+///                           │Arc<dyn ExecutionPlan> │                                    │
+///                           │       (task 1)        │                                    │
+///                           └───────────────────────┘                                    ■
 /// ```
-/// All consumer stages are fetching the same partition. The first [NetworkBroadcastExec] causes
-/// execution and populates the cache with the resulting batches. Subsequent
-/// [NetworkBroadcastExec] operators read the results from the cache preventing; this is more
-/// efficient and prevents duplicate execution of a partition.
 ///
-/// # N stages to M stages
+/// # Many to many
 ///
 /// ```text
-/// ┌────────────────────────┐     ┌────────────────────────┐     ┌────────────────────────┐       ■
-/// │  NetworkBroadcastExec  │     │  NetworkBroadcastExec  │ ... │  NetworkBroadcastExec  │       │
-/// │        (task 1)        │     │        (task 2)        │     │        (task M)        │   Stage N+1
-/// └──────────┬─┬───────────┘     └───────────┬─┬──────────┘     └───────────┬─┬──────────┘       │
-///            │1│                             │1│                            │1│                  │
-///            └▲┘                             └▲┘                            └▲┘                  ■
-///             │                               │                              │
-///          Populate                         Cache                          Cache
-///           Cache                            Hit                            Hit
-///             │                               │                              │
-///             └───────────────────────────────┼──────────────────────────────┘
-///                                            ┌┴┐
-///                                            │1│
-///                                       ┌────┴─┴────┐                                            ■
-///                                       │Batch Cache│                                            │
-///                                ┌──────┴───────────┴─────┐                                      │
-///                                │ CoalescePartitionsExec │                                   Stage N
-///                                │                        │                                      │
-///                                └┬─┬─────┬──┬┬─┬─────┬──┬┘                                      │
-///                                 │1│     │P1││1│     │PN│                                       │
-///                                 └▲┘ ... └─▲┘└▲┘ ... └─▲┘                                       ■
-///                                  │        │  │        │
-///                   ┌──────────────┘    ┌───┘  └───┐    └───────────────┐
-///                   │                   │          │                    │
-///                   │                   │          │                    │
-///                  ┌┴┐       ...       ┌┴─┐       ┌┴┐       ...       ┌─┴┐                       ■
-///                  │1│                 │P1│       │1│                 │PN│                       │
-///                 ┌┴─┴─────────────────┴──┴┐     ┌┴─┴─────────────────┴──┴┐                  Stage N-1
-///                 │ Arc<dyn ExecutionPlan> │ ... │ Arc<dyn ExecutionPlan> │                      │
-///                 │        (task 1)        │     │        (task N)        │                      │
-///                 └────────────────────────┘     └────────────────────────┘                      ■
+///    ┌────────────────────────┐                        ┌────────────────────────┐         ■
+///    │  NetworkBroadcastExec  │                        │  NetworkBroadcastExec  │         │
+///    │        (task 1)        │                        │        (task M)        │         │
+///    │                        │           ...          │                        │      Stage N
+///    │    Populates Caches    │                        │       Cache Hits       │         │
+///    └────────┬─┬┬─┬┬─┬───────┘                        └────────┬─┬┬─┬┬─┬───────┘         │
+///             │1││2││3│                                         │1││2││3│                 │
+///             └▲┘└▲┘└▲┘                                         └▲┘└▲┘└▲┘                 ■
+///              │  │  │                                           │  │  │
+///   ┌──────────┴──┼──┼────────────────────────────────┐          │  │  │
+///   │  ┌──────────┴──┼────────────────────────────────┼──┐       │  │  │
+///   │  │  ┌──────────┴────────────────────────────────┼──┼──┐    │  │  │
+///   │  │  │                                           │  │  │    │  │  │
+///   │  │  │          ┌────────────────────────────────┼──┼──┼────┴──┼─┐│
+///   │  │  │          │     ┌──────────────────────────┼──┼──┼───────┴─┼┼─────┐
+///   │  │  │          │     │    ┌─────────────────────┼──┼──┼─────────┼┴─────┼────┐
+///   │  │  │          │     │    │                     │  │  │         │      │    │
+///  ┌┴┐┌┴┐┌┴┐  ... ┌──┴─┐┌──┴─┐┌─┴┐                   ┌┴┐┌┴┐┌┴┐  ... ┌─┴──┐┌──┴─┐┌─┴┐      ■
+///  │1││2││3│      │3M-2││3M-1││3M│                   │1││2││3│      │3M-2││3M-1││3M│      │
+/// ┌┴─┴┴─┴┴─┴──────┴────┴┴────┴┴──┴┐                 ┌┴─┴┴─┴┴─┴──────┴────┴┴────┴┴──┴┐     │
+/// │         BroadcastExec         │                 │         BroadcastExec         │     │
+/// │       ┌───────────────┐       │                 │       ┌───────────────┐       │     │
+/// │       │  Batch Cache  │       │                 │       │  Batch Cache  │       │     │
+/// │       │  ┌─┐ ┌─┐ ┌─┐  │       │       ...       │       │  ┌─┐ ┌─┐ ┌─┐  │       │ Stage N-1
+/// │       │  │1│ │2│ │3│  │       │                 │       │  │1│ │2│ │3│  │       │     │
+/// │       │  └─┘ └─┘ └─┘  │       │                 │       │  └─┘ └─┘ └─┘  │       │     │
+/// │       └───────────────┘       │                 │       └───────────────┘       │     │
+/// └──────────┬─┬─┬─┬─┬─┬──────────┘                 └──────────┬─┬─┬─┬─┬─┬──────────┘     │
+///            │1│ │2│ │3│                                       │1│ │2│ │3│                │
+///            └▲┘ └▲┘ └▲┘                                       └▲┘ └▲┘ └▲┘                ■
+///             │   │   │                                         │   │   │
+///             │   │   │                                         │   │   │
+///             │   │   │                                         │   │   │
+///            ┌┴┐ ┌┴┐ ┌┴┐                                       ┌┴┐ ┌┴┐ ┌┴┐                ■
+///            │1│ │2│ │3│                                       │1│ │2│ │3│                │
+///     ┌──────┴─┴─┴─┴─┴─┴──────┐                         ┌──────┴─┴─┴─┴─┴─┴──────┐     Stage N-2
+///     │Arc<dyn ExecutionPlan> │           ...           │Arc<dyn ExecutionPlan> │         │
+///     │       (task 1)        │                         │       (task N)        │         │
+///     └───────────────────────┘                         └───────────────────────┘         ■
 /// ```
-/// Here there are multiple input tasks, each with multiple partitionns. In a case like this a
-/// [CoalescePartitionsExec] is inserted. You can imagine if this coalesce was not here partial or
-/// duplicate data could be broadcast. Similarly, the first [NetworkBroadcastExec] triggers
-/// execution and populates the cache while subsequent operators read results from the cache.
 ///
-/// Broadcasts the build side of a CollectLeft hash join to all consumer tasks.
-///
-/// The input is coalesced to a single partition, executed once on a single task,
-/// and the results are cached and sent to all consumer tasks.
+/// Notice in this diagram that each [NetworkBroadcastExec] sends a request to fetch data from each
+/// [BroadcastExec] in the stage below per partition. This is because each [BroadcastExec] has its
+/// own cache which contains partial results for the partition. It is the [NetworkBroadcastExec]'s
+/// job to merge these partial partitions to then broadcast complete data to the consumers.
 #[derive(Debug, Clone)]
 pub struct NetworkBroadcastExec {
     pub(crate) properties: PlanProperties,
@@ -132,30 +144,23 @@ impl NetworkBroadcastExec {
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
         num: usize,
-        consumer_task_count: usize,
         input_task_count: usize,
     ) -> Result<Self, DataFusionError> {
-        let coalesced = if input.output_partitioning().partition_count() > 1
-            && input
-                .as_any()
-                .downcast_ref::<CoalescePartitionsExec>()
-                .is_none()
-        {
-            Arc::new(CoalescePartitionsExec::new(input)) as Arc<dyn ExecutionPlan>
-        } else {
-            input
-        };
-
-        let input_stage = Stage::new(
-            query_id,
-            num,
-            coalesced.clone(),
-            input_task_count,
-            Some(consumer_task_count),
-        );
+        let total_partitions = input.properties().partitioning.partition_count();
+        let input_partition_count =
+            if let Some(broadcast) = input.as_any().downcast_ref::<super::BroadcastExec>() {
+                broadcast.input_partition_count()
+            } else {
+                total_partitions
+            };
+        let input_stage = Stage::new(query_id, num, input.clone(), input_task_count);
+        let properties = input
+            .properties()
+            .clone()
+            .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
 
         Ok(Self {
-            properties: coalesced.properties().clone(),
+            properties,
             input_stage,
             metrics_collection: Default::default(),
         })
@@ -180,16 +185,17 @@ impl NetworkBoundary for NetworkBroadcastExec {
 impl DisplayAs for NetworkBroadcastExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         let input_tasks = self.input_stage.tasks.len();
-        let partitions = self.properties.partitioning.partition_count();
         let stage = self.input_stage.num;
-        let consumer_count = self
+        let consumer_partitions = self.properties.partitioning.partition_count();
+        let stage_partitions = self
             .input_stage
-            .consumer_task_count
-            .map(|c| format!(", consumer_tasks={c}"))
-            .unwrap_or_default();
+            .plan
+            .decoded()
+            .map(|p| p.properties().partitioning.partition_count())
+            .unwrap_or(0);
         write!(
             f,
-            "[Stage {stage}] => NetworkBroadcastExec: output_partitions={partitions}, input_tasks={input_tasks}{consumer_count}",
+            "[Stage {stage}] => NetworkBroadcastExec: partitions_per_consumer={consumer_partitions}, stage_partitions={stage_partitions}, input_tasks={input_tasks}",
         )
     }
 }
@@ -231,9 +237,12 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let task_context = DistributedTaskContext::from_ctx(&context);
+        let task_index = task_context.task_index;
+
         let channel_resolver = get_distributed_channel_resolver(context.as_ref());
         let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
         let retrieve_metrics = d_cfg.collect_metrics;
@@ -244,7 +253,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
         let input_task_count = input_stage_tasks.len();
         let input_stage_num = input_stage.num as u64;
         let query_id = Bytes::from(input_stage.query_id.as_bytes().to_vec());
-        let consumer_task_count = input_stage.consumer_task_count.map(|c| c as u64);
+        let input_partition_count = self.properties.partitioning.partition_count();
+        let stage_partition = task_index * input_partition_count + partition;
 
         let context_headers = ContextGrpcMetadata::headers_from_ctx(&context);
         let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
@@ -260,11 +270,10 @@ impl ExecutionPlan for NetworkBroadcastExec {
                 Ticket {
                     ticket: DoGet {
                         plan_proto: encoded_input_plan.clone(),
-                        target_partition: 0,
+                        target_partition: stage_partition as u64,
                         stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
                         target_task_index: i as u64,
                         target_task_count: input_task_count as u64,
-                        consumer_task_count,
                     }
                     .encode_to_vec()
                     .into(),

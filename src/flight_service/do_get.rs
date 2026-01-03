@@ -19,7 +19,6 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use bytes::Bytes;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
-
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -27,7 +26,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,29 +50,21 @@ pub struct DoGet {
     /// if we already have stored it
     #[prost(message, optional, tag = "5")]
     pub stage_key: Option<StageKey>,
-    /// For broadcast stages, the number of consumer tasks that will fetch this data
-    #[prost(uint64, optional, tag = "6")]
-    pub consumer_task_count: Option<u64>,
 }
 
-use futures::StreamExt;
-use tokio::sync::OnceCell;
+use futures::TryStreamExt;
 
 #[derive(Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
     pub(super) plan: Arc<dyn ExecutionPlan>,
-    /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
-    /// only tasks in the partition group). This is decremented for each request to the endpoint
-    /// for this task. Once this count is zero, the task is likely complete. The task may not be
-    /// complete because it's possible that the same partition was retried and this count was
-    /// decremented more than once for the same partition.
-    /// For broadcast stages, this is initialized to consumer_task_count instead.
+    /// `num_partitions_remaining` is initialized to the total number of partitions in the task.
+    /// This is decremented for each request to the endpoint for this task. Once this count is
+    /// zero, the task is likely complete. The task may not be complete because it's possible
+    /// that the same partition was retried and this count was decremented more than once for
+    /// the same partition.
     num_partitions_remaining: Arc<AtomicUsize>,
-    /// Cached batches for broadcast stages. The plan is executed once and
-    /// results are cached for all subsequent consumers.
-    cached_batches: Option<Arc<OnceCell<Arc<Vec<RecordBatch>>>>>,
 }
 
 impl ArrowFlightEndpoint {
@@ -109,9 +99,6 @@ impl ArrowFlightEndpoint {
             .task_data_entries
             .get_or_init(key.clone(), Default::default);
 
-        let consumer_task_count = doget.consumer_task_count;
-        let is_broadcast = consumer_task_count.is_some();
-
         let stage_data = once
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
@@ -120,20 +107,10 @@ impl ArrowFlightEndpoint {
                     plan = hook(plan)
                 }
 
-                let (num_remaining, cached_batches) = if is_broadcast {
-                    (
-                        Arc::new(AtomicUsize::new(consumer_task_count.unwrap_or(1) as usize)),
-                        Some(Arc::new(OnceCell::new())),
-                    )
-                } else {
-                    let total_partitions = plan.properties().partitioning.partition_count();
-                    (Arc::new(AtomicUsize::new(total_partitions)), None)
-                };
-
+                let total_partitions = plan.properties().partitioning.partition_count();
                 Ok::<_, DataFusionError>(TaskData {
                     plan,
-                    num_partitions_remaining: num_remaining,
-                    cached_batches,
+                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 })
             })
             .await
@@ -162,25 +139,9 @@ impl ArrowFlightEndpoint {
             )));
         }
 
-        let stream = if let Some(cache) = &stage_data.cached_batches {
-            let task_ctx = session_state.task_ctx();
-            let plan_ref = Arc::clone(&stage_data.plan);
-
-            let batches = cache
-                .get_or_try_init(|| async move {
-                    let stream = plan_ref.execute(target_partition, task_ctx)?;
-                    let batches: Vec<RecordBatch> = stream.try_collect().await?;
-                    Ok::<_, DataFusionError>(Arc::new(batches))
-                })
-                .await
-                .map_err(|err| Status::internal(format!("Error executing broadcast: {err}")))?;
-
-            futures::stream::iter(batches.as_ref().clone().into_iter().map(Ok)).boxed()
-        } else {
-            plan.execute(target_partition, session_state.task_ctx())
-                .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?
-                .boxed()
-        };
+        let stream = plan
+            .execute(target_partition, session_state.task_ctx())
+            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
         let schema = plan.schema();
 
@@ -373,7 +334,6 @@ mod tests {
                 target_task_count: num_tasks,
                 target_partition: partition,
                 stage_key: Some(stage_key),
-                consumer_task_count: None,
             };
 
             let ticket = Ticket {
