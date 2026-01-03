@@ -2,8 +2,8 @@ use crate::common::map_last_stream;
 use crate::config_extension_ext::{
     ContextGrpcMetadata, set_distributed_option_extension_from_headers,
 };
-use crate::flight_service::service::ArrowFlightEndpoint;
-use crate::flight_service::session_builder::DistributedSessionBuilderContext;
+use crate::flight_service::session_builder::WorkerQueryContext;
+use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
@@ -19,6 +19,7 @@ use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use bytes::Bytes;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
+
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -26,6 +27,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,26 +54,24 @@ pub struct DoGet {
     pub stage_key: Option<StageKey>,
 }
 
-use futures::TryStreamExt;
-
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
     pub(super) plan: Arc<dyn ExecutionPlan>,
-    /// `num_partitions_remaining` is initialized to the total number of partitions in the task.
-    /// This is decremented for each request to the endpoint for this task. Once this count is
-    /// zero, the task is likely complete. The task may not be complete because it's possible
-    /// that the same partition was retried and this count was decremented more than once for
-    /// the same partition.
+    /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
+    /// only tasks in the partition group). This is decremented for each request to the endpoint
+    /// for this task. Once this count is zero, the task is likely complete. The task may not be
+    /// complete because it's possible that the same partition was retried and this count was
+    /// decremented more than once for the same partition.
     num_partitions_remaining: Arc<AtomicUsize>,
 }
 
-impl ArrowFlightEndpoint {
+impl Worker {
     pub(super) async fn get(
         &self,
         request: Request<Ticket>,
-    ) -> Result<Response<<ArrowFlightEndpoint as FlightService>::DoGetStream>, Status> {
+    ) -> Result<Response<<Worker as FlightService>::DoGetStream>, Status> {
         let (metadata, _ext, body) = request.into_parts();
         let doget = DoGet::decode(body.ticket).map_err(|err| {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
@@ -80,7 +80,7 @@ impl ArrowFlightEndpoint {
         let headers = metadata.into_headers();
         let mut session_state = self
             .session_builder
-            .build_session_state(DistributedSessionBuilderContext {
+            .build_session_state(WorkerQueryContext {
                 builder: SessionStateBuilder::new()
                     .with_default_features()
                     .with_runtime_env(Arc::clone(&self.runtime)),
@@ -94,7 +94,7 @@ impl ArrowFlightEndpoint {
 
         // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
         // so here we either retrieve the existing one or create a new one if it does not exist.
-        let key = doget.stage_key.clone().ok_or_else(missing("stage_key"))?;
+        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let once = self
             .task_data_entries
             .get_or_init(key.clone(), Default::default);
@@ -107,6 +107,7 @@ impl ArrowFlightEndpoint {
                     plan = hook(plan)
                 }
 
+                // Initialize partition count to the number of partitions in the stage
                 let total_partitions = plan.properties().partitioning.partition_count();
                 Ok::<_, DataFusionError>(TaskData {
                     plan,
@@ -115,7 +116,6 @@ impl ArrowFlightEndpoint {
             })
             .await
             .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
-
         let plan = Arc::clone(&stage_data.plan);
 
         // Find out which partition group we are executing
@@ -139,11 +139,14 @@ impl ArrowFlightEndpoint {
             )));
         }
 
+        // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
+        // as executing `StageExec` performs some worker assignation that should have already been
+        // done in the head stage.
         let stream = plan
-            .execute(target_partition, session_state.task_ctx())
+            .execute(doget.target_partition as usize, session_state.task_ctx())
             .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-        let schema = plan.schema();
+        let schema = stream.schema().clone();
 
         // Apply garbage collection of dictionary and view arrays before sending over the network
         let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
@@ -291,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_data_partition_counting() {
-        let mut endpoint = ArrowFlightEndpoint::default();
+        let mut endpoint = Worker::default();
         let plans_received = Arc::new(AtomicUsize::default());
         {
             let plans_received = Arc::clone(&plans_received);

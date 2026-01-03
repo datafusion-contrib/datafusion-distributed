@@ -15,7 +15,7 @@ mod tests {
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
+    use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -23,9 +23,7 @@ mod tests {
     use std::fmt::Formatter;
     use std::sync::Arc;
 
-    async fn build_state(
-        ctx: DistributedSessionBuilderContext,
-    ) -> Result<SessionState, DataFusionError> {
+    async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
         Ok(ctx
             .builder
             .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?

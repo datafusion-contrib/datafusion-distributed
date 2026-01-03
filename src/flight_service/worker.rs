@@ -1,6 +1,6 @@
 use crate::DefaultSessionBuilder;
 use crate::common::ttl_map::{TTLMap, TTLMapConfig};
-use crate::flight_service::DistributedSessionBuilder;
+use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
@@ -18,20 +18,20 @@ use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
 #[derive(Default)]
-pub(super) struct ArrowFlightEndpointHooks {
+pub(super) struct WorkerHooks {
     pub(super) on_plan:
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
-pub struct ArrowFlightEndpoint {
+pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
-    pub(super) session_builder: Arc<dyn DistributedSessionBuilder + Send + Sync>,
-    pub(super) hooks: ArrowFlightEndpointHooks,
+    pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
+    pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
 }
 
-impl Default for ArrowFlightEndpoint {
+impl Default for Worker {
     fn default() -> Self {
         let ttl_map = TTLMap::try_new(TTLMapConfig::default())
             .expect("Instantiating a TTLMap with default params should never fail");
@@ -39,22 +39,29 @@ impl Default for ArrowFlightEndpoint {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(ttl_map),
             session_builder: Arc::new(DefaultSessionBuilder),
-            hooks: ArrowFlightEndpointHooks::default(),
+            hooks: WorkerHooks::default(),
             max_message_size: Some(usize::MAX),
         }
     }
 }
 
-impl ArrowFlightEndpoint {
-    /// Builds an [ArrowFlightEndpoint] with a custom [DistributedSessionBuilder]. Use this
+impl Worker {
+    /// Builds a [Worker] with a custom [WorkerSessionBuilder]. Use this
     /// method whenever you need to add custom stuff to the `SessionContext` that executes the query.
     pub fn from_session_builder(
-        session_builder: impl DistributedSessionBuilder + Send + Sync + 'static,
+        session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
     ) -> Self {
         Self {
             session_builder: Arc::new(session_builder),
             ..Default::default()
         }
+    }
+
+    /// Sets a [RuntimeEnv] to be used in all the queries this [Worker] will handle during
+    /// its lifetime.
+    pub fn with_runtime_env(mut self, runtime_env: Arc<RuntimeEnv>) -> Self {
+        self.runtime = runtime_env;
+        self
     }
 
     /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.
@@ -84,7 +91,7 @@ impl ArrowFlightEndpoint {
         self
     }
 
-    /// Converts this endpoint into a [`FlightServiceServer`] with high default message size limits.
+    /// Converts this [Worker] into a [`FlightServiceServer`] with high default message size limits.
     ///
     /// This is a convenience method that wraps the endpoint in a [`FlightServiceServer`] and
     /// configures it with `max_decoding_message_size(usize::MAX)` and
@@ -95,11 +102,21 @@ impl ArrowFlightEndpoint {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let endpoint = ArrowFlightEndpoint::try_new(session_builder)?;
-    /// let server = endpoint.into_flight_server();
-    /// // Can chain additional tonic methods if needed
-    /// // let server = server.some_other_tonic_method(...);
+    /// ```
+    /// # use datafusion_distributed::Worker;
+    /// # use tonic::transport::Server;
+    /// # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// # async fn f() {
+    ///
+    /// let worker = Worker::default();
+    /// let server = worker.into_flight_server();
+    ///
+    /// Server::builder()
+    ///     .add_service(Worker::default().into_flight_server())
+    ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
+    ///     .await;
+    ///
+    /// # }
     /// ```
     pub fn into_flight_server(self) -> FlightServiceServer<Self> {
         FlightServiceServer::new(self)
@@ -109,7 +126,7 @@ impl ArrowFlightEndpoint {
 }
 
 #[async_trait]
-impl FlightService for ArrowFlightEndpoint {
+impl FlightService for Worker {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
 
     async fn handshake(

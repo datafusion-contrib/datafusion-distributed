@@ -1,10 +1,10 @@
 mod do_get;
-mod service;
 mod session_builder;
+mod worker;
 pub(crate) use do_get::DoGet;
 
-pub use service::ArrowFlightEndpoint;
 pub use session_builder::{
-    DefaultSessionBuilder, DistributedSessionBuilder, DistributedSessionBuilderContext,
-    MappedDistributedSessionBuilder, MappedDistributedSessionBuilderExt,
+    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,
+    WorkerQueryContext, WorkerSessionBuilder,
 };
+pub use worker::Worker;

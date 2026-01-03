@@ -1,4 +1,5 @@
 //! DataFusion Distributed benchmark runner
+mod prepare_clickbench;
 mod prepare_tpcds;
 mod prepare_tpch;
 mod run;
@@ -12,6 +13,7 @@ enum Options {
     Run(run::RunOpt),
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
+    PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
 
 // Main benchmark runner entrypoint
@@ -25,6 +27,10 @@ pub fn main() -> Result<()> {
             rt.block_on(async { opt.run().await })
         }
         Options::PrepareTpcds(opt) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async { opt.run().await })
+        }
+        Options::PrepareClickbench(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })
         }

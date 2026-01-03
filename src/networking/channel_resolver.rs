@@ -34,6 +34,11 @@ use url::Url;
 pub trait ChannelResolver {
     /// For a given URL, get an Arrow Flight client for communicating to it.
     ///
+    /// *WARNING*: This method is called for every Arrow Flight gRPC request, so to not create
+    /// one client connection for each request, users are required to reuse generated clients.
+    /// It's recommended to rely on [DefaultChannelResolver] either by delegating method calls
+    /// to it or by copying the implementation.
+    ///
     /// Consider using [`create_flight_client`] to create the client with appropriate
     /// default message size limits.
     async fn get_flight_client_for_url(
@@ -217,4 +222,68 @@ pub fn create_flight_client(
     FlightServiceClient::new(channel)
         .max_decoding_message_size(usize::MAX)
         .max_encoding_message_size(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DefaultSessionBuilder;
+    use crate::test_utils::localhost::spawn_flight_service;
+    use datafusion::common::assert_contains;
+    use datafusion::common::runtime::SpawnedTask;
+    use std::error::Error;
+    use std::time::Instant;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn fails_establishing_connection() -> Result<(), Box<dyn Error>> {
+        let (url, _guard) = spawn_http_localhost_worker().await?;
+        drop(_guard);
+        let channel_resolver = DefaultChannelResolver::default();
+        let err = channel_resolver.get_channel(&url).await.unwrap_err();
+        assert_contains!(err.to_string(), "tcp connect error");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_establish_connection() -> Result<(), Box<dyn Error>> {
+        let (url, _guard) = spawn_http_localhost_worker().await?;
+        let channel_resolver = DefaultChannelResolver::default();
+        channel_resolver.get_channel(&url).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_resolve_is_cached() -> Result<(), Box<dyn Error>> {
+        let (url, _guard) = spawn_http_localhost_worker().await?;
+        let channel_resolver = DefaultChannelResolver::default();
+
+        let start = Instant::now();
+        channel_resolver.get_channel(&url).await?;
+        let first_call = start.elapsed();
+
+        let start = Instant::now();
+        channel_resolver.get_channel(&url).await?;
+        let second_call = start.elapsed();
+
+        assert!(first_call > second_call);
+        Ok(())
+    }
+
+    async fn spawn_http_localhost_worker() -> Result<(Url, SpawnedTask<()>), Box<dyn Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+
+        let port = listener
+            .local_addr()
+            .expect("Failed to get local address")
+            .port();
+
+        let task = SpawnedTask::spawn(async {
+            if let Err(err) = spawn_flight_service(DefaultSessionBuilder, listener).await {
+                panic!("{err}")
+            }
+        });
+
+        Ok((Url::parse(&format!("http://127.0.0.1:{port}"))?, task))
+    }
 }

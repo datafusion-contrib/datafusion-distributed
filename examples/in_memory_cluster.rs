@@ -5,9 +5,8 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, WorkerResolver,
-    create_flight_client, display_plan_ascii,
+    BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, Worker,
+    WorkerQueryContext, WorkerResolver, create_flight_client, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -89,12 +88,10 @@ impl InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint = ArrowFlightEndpoint::from_session_builder(
-            move |ctx: DistributedSessionBuilderContext| {
-                let this = this.clone();
-                async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
-            },
-        );
+        let endpoint = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+            let this = this.clone();
+            async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
+        });
 
         tokio::spawn(async move {
             Server::builder()

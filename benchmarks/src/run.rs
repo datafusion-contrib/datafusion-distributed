@@ -29,9 +29,9 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
-use datafusion_distributed::test_utils::{tpcds, tpch};
+use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
 use datafusion_distributed::{
-    ArrowFlightEndpoint, DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt,
+    DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, Worker,
 };
 use log::info;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -58,8 +58,8 @@ use tonic::transport::Server;
 #[structopt(verbatim_doc_comment)]
 pub struct RunOpt {
     /// Query number. If not specified, runs all queries
-    #[structopt(short, long)]
-    pub query: Option<usize>,
+    #[structopt(short, long, use_delimiter = true)]
+    pub query: Vec<usize>,
 
     /// Path to data files
     #[structopt(parse(from_os_str), short = "p", long = "path")]
@@ -89,6 +89,10 @@ pub struct RunOpt {
     #[structopt(long)]
     cardinality_task_sf: Option<f64>,
 
+    /// Use children isolator UNIONs for distributing UNION operations.
+    #[structopt(long)]
+    children_isolator_unions: bool,
+
     /// Collects metrics across network boundaries
     #[structopt(long)]
     collect_metrics: bool,
@@ -115,26 +119,27 @@ pub struct RunOpt {
 enum Dataset {
     Tpch,
     Tpcds,
+    Clickbench,
 }
 
 impl Dataset {
     fn infer_from_data_path(path: PathBuf) -> Result<Self, DataFusionError> {
-        if path
-            .iter()
-            .any(|v| v.to_str().is_some_and(|v| v.contains("tpch")))
-        {
-            return Ok(Self::Tpch);
+        fn path_contains(path: &Path, substr: &str) -> bool {
+            path.iter()
+                .any(|v| v.to_str().is_some_and(|v| v.contains(substr)))
         }
-        if path
-            .iter()
-            .any(|v| v.to_str().is_some_and(|v| v.contains("tpcds")))
-        {
-            return Ok(Self::Tpcds);
+        if path_contains(&path, "tpch") {
+            Ok(Self::Tpch)
+        } else if path_contains(&path, "tpcds") {
+            Ok(Self::Tpcds)
+        } else if path_contains(&path, "clickbench") {
+            Ok(Self::Clickbench)
+        } else {
+            not_impl_err!(
+                "Cannot infer benchmark dataset from path {}",
+                path.display()
+            )
         }
-        not_impl_err!(
-            "Cannot infer benchmark dataset from path {}",
-            path.display()
-        )
     }
 
     fn queries(&self) -> Result<Vec<(usize, String)>, DataFusionError> {
@@ -142,8 +147,13 @@ impl Dataset {
             Dataset::Tpch => (1..22 + 1)
                 .map(|i| Ok((i as usize, tpch::get_test_tpch_query(i)?)))
                 .collect(),
-            Dataset::Tpcds => (1..99 + 1)
+            Dataset::Tpcds => (1..72)
+                // skip query 72, it's ridiculously slow
+                .chain(73..99 + 1)
                 .map(|i| Ok((i, tpcds::get_test_tpcds_query(i)?)))
+                .collect(),
+            Dataset::Clickbench => (0..42 + 1)
+                .map(|i| Ok((i, clickbench::get_test_clickbench_query(i)?)))
                 .collect(),
         }
     }
@@ -175,7 +185,7 @@ impl RunOpt {
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
                 Ok::<_, Box<dyn Error + Send + Sync>>(
                     Server::builder()
-                        .add_service(ArrowFlightEndpoint::default().into_flight_server())
+                        .add_service(Worker::default().into_flight_server())
                         .serve_with_incoming(incoming)
                         .await?,
                 )
@@ -199,6 +209,7 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
         let ctx = SessionContext::new_with_state(state);
@@ -215,7 +226,7 @@ impl RunOpt {
         let dataset = Dataset::infer_from_data_path(path.clone())?;
 
         for (id, sql) in dataset.queries()? {
-            if self.query.is_some_and(|v| v != id) {
+            if !self.query.is_empty() && !self.query.contains(&id) {
                 continue;
             }
             let query_id = format!("{dataset:?} {id}");

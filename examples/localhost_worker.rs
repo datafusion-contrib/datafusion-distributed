@@ -1,4 +1,4 @@
-use datafusion_distributed::ArrowFlightEndpoint;
+use datafusion_distributed::Worker;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use structopt::StructOpt;
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
     Server::builder()
-        .add_service(ArrowFlightEndpoint::default().into_flight_server())
+        .add_service(Worker::default().into_flight_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port))
         .await?;
 

@@ -1,3 +1,4 @@
+use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
@@ -8,6 +9,7 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::UnionExec;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -137,6 +139,7 @@ fn _annotate_plan(
 ) -> Result<AnnotatedPlan, DataFusionError> {
     use TaskCountAnnotation::*;
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let estimator = &d_cfg.__private_task_estimator;
     let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
     let annotated_children = plan
@@ -149,8 +152,7 @@ fn _annotate_plan(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        let estimator = &d_cfg.__private_task_estimator;
-        if let Some(estimate) = estimator.tasks_for_leaf_node(&plan, cfg) {
+        if let Some(estimate) = estimator.task_estimation(&plan, cfg) {
             return Ok(AnnotatedPlan {
                 plan,
                 children: Vec::new(),
@@ -169,20 +171,34 @@ fn _annotate_plan(
         }
     }
 
-    // The task count for this plan is decided by the biggest task count from the children; unless
-    // a child specifies a maximum task count, in that case, the maximum is respected. Some
-    // nodes can only run in one task. If there is a subplan with a single node declaring that
-    // it can only run in one task, all the rest of the nodes in the stage need to respect it.
-    let mut task_count = Desired(1);
-    for annotated_child in annotated_children.iter() {
-        task_count = match (task_count, &annotated_child.task_count) {
-            (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
-            (Maximum(max), Desired(_)) => Maximum(max),
-            (Desired(_), Maximum(max)) => Maximum(*max),
-            (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2)),
-        };
-        task_count = task_count.limit(n_workers);
+    let mut task_count = estimator
+        .task_estimation(&plan, cfg)
+        .map_or(Desired(1), |v| v.task_count);
+    if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
+        // Unions have the chance to decide how many tasks they should run on. If there's a union
+        // with a bunch of children, the user might want to increase parallelism and increase the
+        // task count for the stage running that.
+        let mut count = 0;
+        for annotated_child in annotated_children.iter() {
+            count += annotated_child.task_count.as_usize();
+        }
+        task_count = Desired(count);
+    } else {
+        // The task count for this plan is decided by the biggest task count from the children; unless
+        // a child specifies a maximum task count, in that case, the maximum is respected. Some
+        // nodes can only run in one task. If there is a subplan with a single node declaring that
+        // it can only run in one task, all the rest of the nodes in the stage need to respect it.
+        for annotated_child in annotated_children.iter() {
+            task_count = match (task_count, &annotated_child.task_count) {
+                (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
+                (Maximum(max), Desired(_)) => Maximum(max),
+                (Desired(_), Maximum(max)) => Maximum(*max),
+                (Maximum(max_1), Maximum(max_2)) => Maximum(max_1.min(*max_2)),
+            };
+        }
     }
+
+    task_count = task_count.limit(n_workers);
 
     // The plan does not need a NetworkBoundary, so just take the biggest task count from
     // the children and annotate the plan with that.
@@ -192,27 +208,51 @@ fn _annotate_plan(
         task_count,
         plan,
     };
-    if !(root || annotated_plan.required_network_boundary.is_some()) {
-        return Ok(annotated_plan);
-    };
 
     // The plan needs a NetworkBoundary. At this point we have all the info we need for choosing
     // the right size for the stage below, so what we need to do is take the calculated final
     // task count and propagate to all the children that will eventually be part of the stage.
-    fn propagate_task_count(plan: &mut AnnotatedPlan, task_count: &TaskCountAnnotation) {
+    fn propagate_task_count(
+        plan: &mut AnnotatedPlan,
+        task_count: &TaskCountAnnotation,
+        d_cfg: &DistributedConfig,
+    ) -> Result<(), DataFusionError> {
         plan.task_count = task_count.clone();
-        if plan.required_network_boundary.is_none() {
+        if plan.required_network_boundary.is_some() {
+            // nothing to propagate here, all the nodes below the network boundary were already
+            // assigned a task count, we do not want to overwrite it.
+        } else if d_cfg.children_isolator_unions && plan.plan.as_any().is::<UnionExec>() {
+            // Propagating through ChildrenIsolatorUnionExec is not that easy, each child will
+            // be executed in its own task, and therefore, they will act as if they were in executing
+            // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
+            // determine which children to run and which to exclude depending on the task index in
+            // which it's running.
+            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
+                plan.children.iter().map(|v| v.plan.clone()),
+                plan.children.iter().map(|v| v.task_count.as_usize()),
+                task_count.as_usize(),
+            )?;
+            for children_and_tasks in c_i_union.task_idx_map.iter() {
+                for (child_i, task_ctx) in children_and_tasks {
+                    if let Some(child) = plan.children.get_mut(*child_i) {
+                        propagate_task_count(child, &Maximum(task_ctx.task_count), d_cfg)?
+                    };
+                }
+            }
+            plan.plan = Arc::new(c_i_union);
+        } else {
             for child in &mut plan.children {
-                propagate_task_count(child, task_count);
+                propagate_task_count(child, task_count, d_cfg)?;
             }
         }
+        Ok(())
     }
 
     if let Some(nb) = &annotated_plan.required_network_boundary {
         // The plan is a network boundary, so everything below it belongs to the same stage. This
         // means that we need to propagate the task count to all the nodes in that stage.
         for annotated_child in annotated_plan.children.iter_mut() {
-            propagate_task_count(annotated_child, &annotated_plan.task_count);
+            propagate_task_count(annotated_child, &annotated_plan.task_count, d_cfg)?;
         }
 
         // If the current plan that needs a NetworkBoundary boundary below is either a
@@ -258,7 +298,7 @@ fn _annotate_plan(
         // If this is the root node, it means that we have just finished annotating nodes for the
         // subplan belonging to the head stage, so propagate the task count to all children.
         let task_count = annotated_plan.task_count.clone();
-        propagate_task_count(&mut annotated_plan, &task_count);
+        propagate_task_count(&mut annotated_plan, &task_count, d_cfg)?;
         Ok(annotated_plan)
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
@@ -303,11 +343,11 @@ mod tests {
     use super::*;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{DistributedExt, assert_snapshot};
+    use crate::{DistributedExt, TaskEstimation, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use itertools::Itertools;
-
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -469,16 +509,16 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        UnionExec: task_count=Desired(3)
-          CoalesceBatchesExec: task_count=Desired(3)
-            FilterExec: task_count=Desired(3)
-              RepartitionExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
-          ProjectionExec: task_count=Desired(3)
-            CoalesceBatchesExec: task_count=Desired(3)
-              FilterExec: task_count=Desired(3)
-                RepartitionExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+        ChildrenIsolatorUnionExec: task_count=Desired(4)
+          CoalesceBatchesExec: task_count=Maximum(2)
+            FilterExec: task_count=Maximum(2)
+              RepartitionExec: task_count=Maximum(2)
+                DataSourceExec: task_count=Maximum(2)
+          ProjectionExec: task_count=Maximum(2)
+            CoalesceBatchesExec: task_count=Maximum(2)
+              FilterExec: task_count=Maximum(2)
+                RepartitionExec: task_count=Maximum(2)
+                  DataSourceExec: task_count=Maximum(2)
         ")
     }
 
@@ -515,16 +555,147 @@ mod tests {
         ")
     }
 
+    #[tokio::test]
+    async fn test_children_isolator_union() {
+        let query = r#"
+        SET distributed.children_isolator_unions = true;
+        SET distributed.files_per_task = 1;
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        UNION ALL
+        SELECT "Rainfall" FROM weather WHERE "RainTomorrow" = 'yes'
+        "#;
+        let annotated = sql_to_annotated(query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(4)
+          CoalesceBatchesExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
+            CoalesceBatchesExec: task_count=Maximum(1)
+              FilterExec: task_count=Maximum(1)
+                RepartitionExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(2)
+            CoalesceBatchesExec: task_count=Maximum(2)
+              FilterExec: task_count=Maximum(2)
+                RepartitionExec: task_count=Maximum(2)
+                  DataSourceExec: task_count=Maximum(2)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_intermediate_task_estimator() {
+        let query = r#"
+        SELECT DISTINCT "RainToday" FROM weather
+        "#;
+        let annotated = sql_to_annotated_with_estimator(query, |_: &RepartitionExec| {
+            Some(TaskEstimation::maximum(1))
+        })
+        .await;
+        assert_snapshot!(annotated, @r"
+        AggregateExec: task_count=Desired(1)
+          CoalesceBatchesExec: task_count=Desired(1), required_network_boundary=Shuffle
+            RepartitionExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                AggregateExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_union_all_limited_by_intermediate_estimator() {
+        let query = r#"
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        "#;
+        let annotated = sql_to_annotated_with_estimator(query, |_: &FilterExec| {
+            Some(TaskEstimation::maximum(1))
+        })
+        .await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(2)
+          CoalesceBatchesExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
+            CoalesceBatchesExec: task_count=Maximum(1)
+              FilterExec: task_count=Maximum(1)
+                RepartitionExec: task_count=Maximum(1)
+                  DataSourceExec: task_count=Maximum(1)
+        ")
+    }
+
+    #[allow(clippy::type_complexity)]
+    struct CallbackEstimator {
+        f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
+    }
+
+    impl CallbackEstimator {
+        fn new<T: ExecutionPlan + 'static>(
+            f: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
+        ) -> Self {
+            let f = Arc::new(move |plan: &dyn ExecutionPlan| -> Option<TaskEstimation> {
+                if let Some(plan) = plan.as_any().downcast_ref::<T>() {
+                    f(plan)
+                } else {
+                    None
+                }
+            });
+            Self { f }
+        }
+    }
+
+    impl TaskEstimator for CallbackEstimator {
+        fn task_estimation(
+            &self,
+            plan: &Arc<dyn ExecutionPlan>,
+            _: &ConfigOptions,
+        ) -> Option<TaskEstimation> {
+            (self.f)(plan.as_ref())
+        }
+
+        fn scale_up_leaf_node(
+            &self,
+            _: &Arc<dyn ExecutionPlan>,
+            _: usize,
+            _: &ConfigOptions,
+        ) -> Option<Arc<dyn ExecutionPlan>> {
+            None
+        }
+    }
+
     async fn sql_to_annotated(query: &str) -> String {
+        sql_to_annotated_with_options(query, move |b| b).await
+    }
+
+    async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
+        query: &str,
+        estimator: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
+    ) -> String {
+        sql_to_annotated_with_options(query, move |b| {
+            b.with_distributed_task_estimator(CallbackEstimator::new(estimator))
+        })
+        .await
+    }
+
+    async fn sql_to_annotated_with_options(
+        query: &str,
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
+    ) -> String {
         let config = SessionConfig::new()
             .with_target_partitions(4)
             .with_information_schema(true);
 
-        let state = SessionStateBuilder::new()
+        let state = f(SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-            .build();
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+        .build();
 
         let ctx = SessionContext::new_with_state(state);
         let mut queries = query.split(";").collect_vec();

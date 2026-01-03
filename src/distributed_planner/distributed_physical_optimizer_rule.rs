@@ -674,6 +674,165 @@ mod tests {
         ");
     }
 
+    #[tokio::test]
+    async fn test_unioning_2_tables() {
+        let query = r#"
+        set distributed.children_isolator_unions=true;
+        SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
+        UNION ALL
+        SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(6))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=6
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11] t3:[p12..p15] t4:[p16..p19] t5:[p20..p23] 
+          │ DistributedUnionExec: t0:[c0(0/3)] t1:[c0(1/3)] t2:[c0(2/3)] t3:[c1(0/3)] t4:[c1(1/3)] t5:[c1(2/3)]
+          │   CoalesceBatchesExec: target_batch_size=8192
+          │     FilterExec: MinTemp@0 > 10
+          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          │         PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          │           PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_unioning_2_tables_limited_workers() {
+        let query = r#"
+        set distributed.children_isolator_unions=true;
+        SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
+        UNION ALL
+        SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11] 
+          │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+          │   CoalesceBatchesExec: target_batch_size=8192
+          │     FilterExec: MinTemp@0 > 10
+          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │           PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_unioning_3_tables() {
+        let query = r#"
+        set distributed.children_isolator_unions=true;
+        SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
+        UNION ALL
+        SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
+        UNION ALL
+        SELECT "Temp9am", "RainToday" FROM weather WHERE "Temp9am" > 15.0
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11] 
+          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │   CoalesceBatchesExec: target_batch_size=8192
+          │     FilterExec: MinTemp@0 > 10
+          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │   ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: Temp9am@0 > 15
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_unioning_5_tables() {
+        let query = r#"
+        set distributed.children_isolator_unions=true;
+        SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
+        UNION ALL
+        SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
+        UNION ALL
+        SELECT "Temp9am", "RainToday" FROM weather WHERE "Temp9am" > 15.0
+        UNION ALL
+        SELECT "Temp3pm", "RainToday" FROM weather WHERE "Temp3pm" < 25.0
+        UNION ALL
+        SELECT "Rainfall", "RainToday" FROM weather WHERE "Rainfall" > 5.0
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] 
+          │ DistributedUnionExec: t0:[c0, c1] t1:[c2, c3] t2:[c4]
+          │   CoalesceBatchesExec: target_batch_size=8192
+          │     FilterExec: MinTemp@0 > 10
+          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: MaxTemp@0 < 30
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │   ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: Temp9am@0 > 15
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          │   ProjectionExec: expr=[Temp3pm@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: Temp3pm@0 < 25
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp3pm, RainToday], file_type=parquet, predicate=Temp3pm@0 < 25, pruning_predicate=Temp3pm_null_count@1 != row_count@2 AND Temp3pm_min@0 < 25, required_guarantees=[]
+          │   ProjectionExec: expr=[Rainfall@0 as MinTemp, RainToday@1 as RainToday]
+          │     CoalesceBatchesExec: target_batch_size=8192
+          │       FilterExec: Rainfall@0 > 5
+          │         RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=Rainfall@0 > 5, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 5, required_guarantees=[]
+          └──────────────────────────────────────────────────
+        ");
+    }
+
     async fn sql_to_explain(
         query: &str,
         f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,

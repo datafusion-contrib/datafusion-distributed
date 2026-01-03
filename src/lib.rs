@@ -24,9 +24,8 @@ pub use execution_plans::{
     PartitionIsolatorExec,
 };
 pub use flight_service::{
-    ArrowFlightEndpoint, DefaultSessionBuilder, DistributedSessionBuilder,
-    DistributedSessionBuilderContext, MappedDistributedSessionBuilder,
-    MappedDistributedSessionBuilderExt,
+    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, Worker,
+    WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use networking::{
