@@ -1,3 +1,4 @@
+use crate::common::require_one_child;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
@@ -136,13 +137,8 @@ impl ExecutionPlan for BroadcastExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if children.len() != 1 {
-            return Err(datafusion::error::DataFusionError::Internal(
-                "BroadcastExec requires exactly one child".to_string(),
-            ));
-        }
         Ok(Arc::new(Self::new(
-            children.into_iter().next().unwrap(),
+            require_one_child(children)?,
             self.consumer_task_count,
         )))
     }

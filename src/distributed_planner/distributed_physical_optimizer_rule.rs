@@ -3,7 +3,7 @@ use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, RequiredNetworkBoundary, annotate_plan,
 };
 use crate::{
-    BroadcastExec, DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec, TaskCountAnnotation, TaskEstimator,
 };
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -80,7 +80,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 /// - The leaf nodes are scaled up in parallelism based on the number of distributed tasks in
 ///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
 /// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
-///   so new nodes like [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
+///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
 fn distribute_plan(
     annotated_plan: AnnotatedPlan,
     cfg: &ConfigOptions,
@@ -100,66 +100,33 @@ fn distribute_plan(
         return Ok(scaled_up.unwrap_or(annotated_plan.plan));
     }
 
-    // Broadcast requires different task counts for build vs probe.
-    if annotated_plan.required_network_boundary == Some(RequiredNetworkBoundary::Broadcast) {
-        let mut build = children.remove(0);
-        let mut probe = children.remove(0);
-
-        set_task_count_until_boundary(&mut probe, parent_task_count);
-
-        // If there's only one consumer task, use Coalesce instead of Broadcast.
-        let build_child: Arc<dyn ExecutionPlan> = if parent_task_count == 1 {
-            set_task_count_until_boundary(&mut build, 1);
-            let build_side = distribute_plan(build, cfg, query_id, stage_id)?;
-            Arc::new(NetworkCoalesceExec::try_new(
-                build_side, query_id, *stage_id, 1, 1,
-            )?)
-        } else {
-            // Remove CoalescePartitionsExec since want multiple partitions flowing through
-            // BroadcastExec. Coalescing happens on consumer side.
-            let build_without_coalesce = unwrap_coalesce_partitions(build);
-            let build_task_count = build_without_coalesce.task_count.as_usize();
-            let build_side = distribute_plan(build_without_coalesce, cfg, query_id, stage_id)?;
-            let broadcast_exec = Arc::new(BroadcastExec::new(build_side, parent_task_count));
-
-            let network_broadcast = Arc::new(NetworkBroadcastExec::try_new(
-                broadcast_exec,
-                query_id,
-                *stage_id,
-                build_task_count,
-            )?);
-            // Add CoalescePartitionsExec above the network boundary on consumer side.
-            Arc::new(CoalescePartitionsExec::new(network_broadcast))
-        };
-        stage_id.add_assign(1);
-
-        let probe_side = distribute_plan(probe, cfg, query_id, stage_id)?;
-        return annotated_plan
-            .plan
-            .with_new_children(vec![build_child, probe_side]);
-    }
-
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
-    let new_children = children
-        .into_iter()
-        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
-        .collect::<Result<Vec<_>, _>>()?;
 
-    // It does not need a NetworkBoundary, so just keep recursing.
-    let Some(nb_req) = annotated_plan.required_network_boundary else {
-        return annotated_plan.plan.with_new_children(new_children);
-    };
-
-    // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-    // so we are fine with not introducing any network boundary.
-    if parent_task_count == 1 && max_child_task_count == Some(1) {
+    // Skip network boundary if both parent and all children have 1 task (1→1 optimization).
+    // TODO: Investigate enabling 1→1 collapse for Broadcast. Currently excluded because the
+    // stage boundary ensures build-side materialization for CollectLeft joins. Without it,
+    // queries like TPC-DS Q99 show 26x slowdown (build side may be re-evaluated). Possible
+    // solution: add explicit caching/materialization for build sides without network boundary.
+    if matches!(
+        annotated_plan.required_network_boundary,
+        Some(RequiredNetworkBoundary::Shuffle) | Some(RequiredNetworkBoundary::Coalesce)
+    ) && parent_task_count == 1
+        && max_child_task_count == Some(1)
+    {
+        let new_children = distribute_children(children, cfg, query_id, stage_id)?;
         return annotated_plan.plan.with_new_children(new_children);
     }
 
-    match nb_req {
+    match annotated_plan.required_network_boundary {
+        // No network boundary needed, just recurse on children.
+        None => {
+            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
+            annotated_plan.plan.with_new_children(new_children)
+        }
         // If the current node has a RepartitionExec below, it needs a shuffle, so put one
         // NetworkShuffleExec boundary in between the RepartitionExec and the current node.
-        RequiredNetworkBoundary::Shuffle => {
+        Some(RequiredNetworkBoundary::Shuffle) => {
+            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
             let new_child = Arc::new(NetworkShuffleExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
@@ -173,7 +140,8 @@ fn distribute_plan(
         // If this is a CoalescePartitionsExec or a SortMergePreservingExec, it means that the original
         // plan is trying to merge all partitions into one. We need to go one step ahead and also merge
         // all distributed tasks into one.
-        RequiredNetworkBoundary::Coalesce => {
+        Some(RequiredNetworkBoundary::Coalesce) => {
+            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
             let new_child = Arc::new(NetworkCoalesceExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
@@ -184,8 +152,57 @@ fn distribute_plan(
             stage_id.add_assign(1);
             annotated_plan.plan.with_new_children(vec![new_child])
         }
-        RequiredNetworkBoundary::Broadcast => unreachable!("handled above"),
+        // If this is a CollectLeft HashJoinExec, it means that the single-node planner noticed the
+        // build side table is small enough to use a hash-table. To reduce network calls,
+        // distribute the smaller table to each consuming tasks local memory to run the join on
+        // multiple workers.
+        Some(RequiredNetworkBoundary::Broadcast) => {
+            let mut build = children.remove(0);
+            let mut probe = children.remove(0);
+
+            set_task_count_until_boundary(&mut probe, parent_task_count);
+
+            // If there's only one consumer task, use Coalesce instead of Broadcast.
+            let build_child: Arc<dyn ExecutionPlan> = if parent_task_count == 1 {
+                set_task_count_until_boundary(&mut build, 1);
+                let build_side = distribute_plan(build, cfg, query_id, stage_id)?;
+                Arc::new(NetworkCoalesceExec::try_new(
+                    build_side, query_id, *stage_id, 1, 1,
+                )?)
+            } else {
+                // Remove CoalescePartitionsExec since we want multiple partitions flowing
+                // through BroadcastExec. Coalescing happens on consumer side.
+                let build_without_coalesce = unwrap_coalesce_partitions(build);
+                let build_task_count = build_without_coalesce.task_count.as_usize();
+                let build_side = distribute_plan(build_without_coalesce, cfg, query_id, stage_id)?;
+                NetworkBroadcastExec::try_new(
+                    build_side,
+                    query_id,
+                    *stage_id,
+                    build_task_count,
+                    parent_task_count,
+                )?
+            };
+            stage_id.add_assign(1);
+
+            let probe_side = distribute_plan(probe, cfg, query_id, stage_id)?;
+            annotated_plan
+                .plan
+                .with_new_children(vec![build_child, probe_side])
+        }
     }
+}
+
+fn distribute_children(
+    children: Vec<AnnotatedPlan>,
+    cfg: &ConfigOptions,
+    query_id: Uuid,
+    stage_id: &mut usize,
+) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
+    children
+        .into_iter()
+        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn set_task_count_until_boundary(plan: &mut AnnotatedPlan, task_count: usize) {

@@ -140,7 +140,31 @@ pub struct NetworkBroadcastExec {
 }
 
 impl NetworkBroadcastExec {
+    /// Creates a broadcast network boundary with all necessary wrappers.
+    ///
+    /// The [BroadcastExec] executes and caches batches to be read by consumers via a [NetworkBroadcastExec].
+    /// The [CoalescePartitionsExec] merges all broadcast partitions on the consumer side.
     pub fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        query_id: Uuid,
+        stage_num: usize,
+        input_task_count: usize,
+        consumer_task_count: usize,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+
+        let broadcast_exec = Arc::new(super::BroadcastExec::new(input, consumer_task_count));
+        let network_broadcast = Arc::new(Self::new_inner(
+            broadcast_exec,
+            query_id,
+            stage_num,
+            input_task_count,
+        )?);
+        Ok(Arc::new(CoalescePartitionsExec::new(network_broadcast)))
+    }
+
+    /// Internal constructor that creates just the [NetworkBroadcastExec] without wrappers.
+    fn new_inner(
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
         num: usize,
