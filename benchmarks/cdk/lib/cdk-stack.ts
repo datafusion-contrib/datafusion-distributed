@@ -6,6 +6,7 @@ import {Construct} from 'constructs';
 import {DATAFUSION_DISTRIBUTED_ENGINE} from "./datafusion-distributed";
 import {BALLISTA_ENGINE} from "./ballista";
 import {TRINO_ENGINE} from "./trino";
+import {SPARK_ENGINE} from "./spark";
 import path from "path";
 import * as cr from "aws-cdk-lib/custom-resources";
 
@@ -17,7 +18,8 @@ if (USER_DATA_CAUSES_REPLACEMENT) {
 const ENGINES = [
     DATAFUSION_DISTRIBUTED_ENGINE,
     BALLISTA_ENGINE,
-    TRINO_ENGINE
+    TRINO_ENGINE,
+    SPARK_ENGINE
 ]
 
 export const ROOT = path.join(__dirname, '../../..')
