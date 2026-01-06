@@ -2,7 +2,7 @@
 
 The `TaskEstimator` trait controls how many distributed tasks the planner allocates to each stage of the query plan.
 
-The number of tasks is assigned to the different stages in a bottom-to-top fashion. You can refer to the
+The number of tasks is assigned to the different stages in a bottom-up fashion. You can refer to the
 [Plan Annotation docs](https://github.com/datafusion-contrib/datafusion-distributed/blob/75b4e73e9052c6596b9d1744ce2bdfa6cbc010d3/src/distributed_planner/plan_annotator.rs)
 for an explanation on how this works. A `TaskEstimator` is what hints this process how many tasks should be
 used.

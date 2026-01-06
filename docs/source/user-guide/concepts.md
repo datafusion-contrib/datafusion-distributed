@@ -9,7 +9,8 @@ Key terminology:
 - `Stage`: a portion of the plan separated by a network boundary from other parts of the plan. A plan contains
   one or more stages, each separated by network boundaries.
 - `Task`: a unit of work in a stage that executes the inner plan in parallel to other tasks within the stage. Each task
-  in a stage is executed by a different worker.
+  in a stage executes a structurally identical plan in different worker, passing a `task_index` as a contextual value
+  for making choices about what data should be returned.
 - `Network Boundary`: a node in the plan that streams data from a network interface rather than directly from its
   children nodes.
 - `Worker`: a physical machine listening to serialized execution plans over an Arrow Flight interface. A task is
@@ -40,7 +41,7 @@ Users are expected to build these and spawn them in ports so that the network bo
 
 ## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/worker_resolver.rs)
 
-Determines the available workers in the distributed DataFusion cluster by returning their URLs.
+Determines the available workers in the Distributed DataFusion cluster by returning their URLs.
 
 Different organizations have different networking requirements—from Kubernetes deployments to cloud provider
 solutions. This trait allows Distributed DataFusion to adapt to various scenarios.

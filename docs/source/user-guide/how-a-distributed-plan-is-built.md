@@ -33,7 +33,10 @@ A default implementation exists for file-based `DataSourceExec` nodes. However, 
 customized to represent any data source, users with custom implementations should also provide a corresponding
 `TaskEstimator`.
 
-In the case above, a `TaskEstimator` decided to use four tasks for the leaf node.
+In the case above, a `TaskEstimator` decided to use four tasks for the leaf node. Note that even if we are distributing
+the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
+partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a 
+task is a split of data processed by an entire machine within a cluster.
 
 After that, we can continue reconstructing the plan:
 
