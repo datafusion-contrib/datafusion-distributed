@@ -13,13 +13,12 @@ how to contribute changes to the library yourself.
    :maxdepth: 2
    :caption: User Guide
 
-   user-guide/index
+   user-guide/concepts
    user-guide/getting-started
+   user-guide/worker
    user-guide/worker-resolver
-   user-guide/arrow-flight-endpoint
    user-guide/channel-resolver
    user-guide/task-estimator
-   user-guide/concepts
    user-guide/how-a-distributed-plan-is-built
 
 .. _toc.contributor-guide:
