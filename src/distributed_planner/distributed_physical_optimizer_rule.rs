@@ -177,7 +177,7 @@ fn distribute_plan(
                 let build_without_coalesce = unwrap_coalesce_partitions(build);
                 let build_task_count = build_without_coalesce.task_count.as_usize();
                 let build_side = distribute_plan(build_without_coalesce, cfg, query_id, stage_id)?;
-                NetworkBroadcastExec::try_new(
+                NetworkBroadcastExec::with_broadcast_stack(
                     build_side,
                     query_id,
                     *stage_id,
