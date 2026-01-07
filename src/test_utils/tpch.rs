@@ -20,12 +20,12 @@ use tpchgen_arrow::{
     SupplierArrow,
 };
 
-pub fn get_test_tpch_query(num: u8) -> Result<String, DataFusionError> {
+pub fn get_tpch_query(id: &str) -> Result<String, DataFusionError> {
     let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpch/queries");
-    let query_path = queries_dir.join(format!("q{num}.sql"));
+    let query_path = queries_dir.join(format!("{id}.sql"));
     fs::read_to_string(query_path)
         .map(|v| v.trim().to_string())
-        .map_err(|_| not_impl_datafusion_err!("Failed to read TPCH query file: q{num}.sql"))
+        .map_err(|_| not_impl_datafusion_err!("Failed to read TPCH query file: {id}.sql"))
 }
 
 pub const NUM_QUERIES: u8 = 22; // number of queries in the TPCH benchmark numbered from 1 to 22
