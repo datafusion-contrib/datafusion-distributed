@@ -12,6 +12,8 @@ use std::time::Duration;
 use tonic::body::Body;
 use tonic::codegen::BoxFuture;
 use tonic::transport::Channel;
+#[cfg(feature = "tls")]
+use tonic::transport::ClientTlsConfig;
 use tower::ServiceExt;
 use url::Url;
 
@@ -110,6 +112,8 @@ pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
+    #[cfg(feature = "tls")]
+    tls_config: Option<ClientTlsConfig>,
 }
 
 impl Default for DefaultChannelResolver {
@@ -124,21 +128,52 @@ impl Default for DefaultChannelResolver {
                     .time_to_idle(Duration::from_secs(5 * 60))
                     .build(),
             ),
+            #[cfg(feature = "tls")]
+            tls_config: None,
         }
     }
 }
 
 impl DefaultChannelResolver {
+    /// Configures custom TLS settings for HTTPS connections.
+    ///
+    /// This allows you to specify CA certificates, client identities, and other TLS options.
+    /// Useful for testing with self-signed certificates or custom certificate authorities.
+    #[cfg(feature = "tls")]
+    pub fn with_tls_config(mut self, tls_config: ClientTlsConfig) -> Self {
+        self.tls_config = Some(tls_config);
+        self
+    }
+
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+        #[cfg(feature = "tls")]
+        let tls_config = self.tls_config.clone();
+
         let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
+                #[allow(unused_mut)]
+                let mut endpoint = Channel::from_shared(url.clone()).map_err(|err| {
                     config_datafusion_err!(
                         "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
                     )
                 })?;
+
+                // Automatically apply TLS configuration for HTTPS URLs
+                #[cfg(feature = "tls")]
+                if url.starts_with("https://") {
+                    let config = tls_config.unwrap_or_else(|| {
+                        // Use system root certificates by default for production HTTPS
+                        ClientTlsConfig::new().with_enabled_roots()
+                    });
+                    endpoint = endpoint.tls_config(config).map_err(|err| {
+                        config_datafusion_err!(
+                            "Failed to configure TLS for URL '{url}': {err}"
+                        )
+                    })?;
+                }
+
                 let mut channel = endpoint.connect().await.map_err(|err| {
                     DataFusionError::Context(
                         format!("{err:?}"),
@@ -227,13 +262,15 @@ pub fn create_flight_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DefaultSessionBuilder;
-    use crate::test_utils::localhost::spawn_flight_service;
+    use crate::ArrowFlightEndpoint;
     use datafusion::common::assert_contains;
     use datafusion::common::runtime::SpawnedTask;
     use std::error::Error;
     use std::time::Instant;
     use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    #[cfg(feature = "tls")]
+    use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
     #[tokio::test]
     async fn fails_establishing_connection() -> Result<(), Box<dyn Error>> {
@@ -249,6 +286,39 @@ mod tests {
     async fn can_establish_connection() -> Result<(), Box<dyn Error>> {
         let (url, _guard) = spawn_http_localhost_worker().await?;
         let channel_resolver = DefaultChannelResolver::default();
+        channel_resolver.get_channel(&url).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tls")]
+    async fn can_establish_connection_https() -> Result<(), Box<dyn Error>> {
+        // Using Grafana's public gRPC demo server for testing HTTPS with valid certificates.
+        // This verifies that our TLS configuration works with real-world endpoints using
+        // system root certificates.
+        const URL: &str = "https://grpc-quickpizza.grafana.com:443";
+
+        let channel_resolver = DefaultChannelResolver::default();
+
+        channel_resolver
+            .get_channel(&Url::parse(URL).unwrap())
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tls")]
+    async fn can_establish_connection_https_custom_config() -> Result<(), Box<dyn Error>> {
+        let (url, _guard, ca_cert_pem) = spawn_https_localhost_worker().await?;
+
+        // Configure TLS with the self-signed CA certificate
+        let ca_cert = Certificate::from_pem(&ca_cert_pem);
+        let tls_config = ClientTlsConfig::new()
+            .ca_certificate(ca_cert)
+            .domain_name("localhost");
+
+        let channel_resolver = DefaultChannelResolver::default().with_tls_config(tls_config);
+
         channel_resolver.get_channel(&url).await?;
         Ok(())
     }
@@ -272,18 +342,46 @@ mod tests {
 
     async fn spawn_http_localhost_worker() -> Result<(Url, SpawnedTask<()>), Box<dyn Error>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let incoming = TcpListenerStream::new(listener);
 
-        let port = listener
-            .local_addr()
-            .expect("Failed to get local address")
-            .port();
+        let router = tonic::transport::Server::builder()
+            .add_service(ArrowFlightEndpoint::default().into_flight_server());
 
         let task = SpawnedTask::spawn(async {
-            if let Err(err) = spawn_flight_service(DefaultSessionBuilder, listener).await {
-                panic!("{err}")
+            if let Err(err) = router.serve_with_incoming(incoming).await {
+                panic!("HTTPS server error: {err}")
             }
         });
 
         Ok((Url::parse(&format!("http://127.0.0.1:{port}"))?, task))
+    }
+
+    #[cfg(feature = "tls")]
+    async fn spawn_https_localhost_worker() -> Result<(Url, SpawnedTask<()>, String), Box<dyn Error>>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let incoming = TcpListenerStream::new(listener);
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+
+        let identity = Identity::from_pem(&cert_pem, &key_pem);
+        let tls_config = ServerTlsConfig::new().identity(identity);
+
+        let router = tonic::transport::Server::builder()
+            .tls_config(tls_config)?
+            .add_service(ArrowFlightEndpoint::default().into_flight_server());
+
+        let task = SpawnedTask::spawn(async move {
+            if let Err(err) = router.serve_with_incoming(incoming).await {
+                panic!("HTTPS server error: {err}")
+            }
+        });
+
+        let url = Url::parse(&format!("https://localhost:{port}"))?;
+        Ok((url, task, cert_pem))
     }
 }
