@@ -15,7 +15,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(1).await?;
+        let plan = test_tpch_query("q1").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST, l_linestatus@1 ASC NULLS LAST]
@@ -43,7 +43,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_2() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(2).await?;
+        let plan = test_tpch_query("q2").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST]
@@ -119,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_3() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(3).await?;
+        let plan = test_tpch_query("q3").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@1 DESC, o_orderdate@2 ASC NULLS LAST]
@@ -155,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_4() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(4).await?;
+        let plan = test_tpch_query("q4").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [o_orderpriority@0 ASC NULLS LAST]
@@ -185,7 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_5() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(5).await?;
+        let plan = test_tpch_query("q5").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@1 DESC]
@@ -238,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_6() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(6).await?;
+        let plan = test_tpch_query("q6").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[sum(lineitem.l_extendedprice * lineitem.l_discount)@0 as revenue]
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_7() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(7).await?;
+        let plan = test_tpch_query("q7").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST]
@@ -321,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_8() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(8).await?;
+        let plan = test_tpch_query("q8").await?;
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [o_year@0 ASC NULLS LAST]
@@ -390,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_9() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(9).await?;
+        let plan = test_tpch_query("q9").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [nation@0 ASC NULLS LAST, o_year@1 DESC]
@@ -457,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_10() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(10).await?;
+        let plan = test_tpch_query("q10").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@2 DESC]
@@ -497,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_11() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(11).await?;
+        let plan = test_tpch_query("q11").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [value@1 DESC]
@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_12() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(12).await?;
+        let plan = test_tpch_query("q12").await?;
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
@@ -593,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_13() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(13).await?;
+        let plan = test_tpch_query("q13").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [custdist@1 DESC, c_count@0 DESC]
@@ -627,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_14() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(14).await?;
+        let plan = test_tpch_query("q14").await?;
         assert_snapshot!(plan, @r#"
         ProjectionExec: expr=[100 * CAST(sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END)@0 AS Float64) / CAST(sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 AS Float64) as promo_revenue]
           AggregateExec: mode=Final, gby=[], aggr=[sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END), sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
@@ -647,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_15() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(15).await?;
+        let plan = test_tpch_query("q15").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_suppkey@0 ASC NULLS LAST]
@@ -695,7 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_16() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(16).await?;
+        let plan = test_tpch_query("q16").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [supplier_cnt@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST]
@@ -738,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_17() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(17).await?;
+        let plan = test_tpch_query("q17").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
@@ -777,7 +777,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_18() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(18).await?;
+        let plan = test_tpch_query("q18").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [o_totalprice@4 DESC, o_orderdate@3 ASC NULLS LAST]
@@ -819,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_19() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(19).await?;
+        let plan = test_tpch_query("q19").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@0 as revenue]
@@ -846,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_20() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(20).await?;
+        let plan = test_tpch_query("q20").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_name@0 ASC NULLS LAST]
@@ -898,7 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_21() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(21).await?;
+        let plan = test_tpch_query("q21").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [numwait@1 DESC, s_name@0 ASC NULLS LAST]
@@ -952,7 +952,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_22() -> Result<(), Box<dyn Error>> {
-        let plan = test_tpch_query(22).await?;
+        let plan = test_tpch_query("q22").await?;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [cntrycode@0 ASC NULLS LAST]
@@ -991,16 +991,16 @@ mod tests {
         Ok(())
     }
 
-    async fn test_tpch_query(query_id: u8) -> Result<String, Box<dyn Error>> {
+    async fn test_tpch_query(query_id: &str) -> Result<String, Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
         run_tpch_query(ctx, query_id).await
     }
 
     // test_non_distributed_consistency runs each TPC-H query twice - once in a distributed manner
     // and once in a non-distributed manner. For each query, it asserts that the results are identical.
-    async fn run_tpch_query(ctx: SessionContext, query_id: u8) -> Result<String, Box<dyn Error>> {
+    async fn run_tpch_query(ctx: SessionContext, query_id: &str) -> Result<String, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
-        let sql = tpch::get_test_tpch_query(query_id)?;
+        let sql = tpch::get_tpch_query(query_id)?;
         ctx.state_ref()
             .write()
             .config_mut()
@@ -1024,7 +1024,7 @@ mod tests {
         // Query 15 has three queries in it, one creating the view, the second
         // executing, which we want to capture the output of, and the third
         // tearing down the view
-        let plan = if query_id == 15 {
+        let plan = if query_id == "q15" {
             let queries: Vec<&str> = sql
                 .split(';')
                 .map(str::trim)

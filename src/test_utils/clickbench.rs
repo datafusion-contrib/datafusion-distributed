@@ -10,7 +10,7 @@ const URL: &str =
     "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_{}.parquet";
 
 /// Load a single ClickBench query by ID (0-42).
-pub fn get_test_clickbench_query(id: usize) -> Result<String, DataFusionError> {
+pub fn get_clickbench_query(id: &str) -> Result<String, DataFusionError> {
     let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/clickbench/queries");
 
     if !queries_dir.exists() {
@@ -20,7 +20,7 @@ pub fn get_test_clickbench_query(id: usize) -> Result<String, DataFusionError> {
         );
     }
 
-    let query_file = queries_dir.join(format!("q{id}.sql"));
+    let query_file = queries_dir.join(format!("{id}.sql"));
 
     if !query_file.exists() {
         return internal_err!("Query file not found: {}", query_file.display());

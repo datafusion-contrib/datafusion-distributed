@@ -17,7 +17,7 @@ use std::sync::Arc;
 const URL: &str = "https://github.com/apache/datafusion-benchmarks/archive/refs/heads/main.zip";
 
 /// Load a single TPC-DS query by ID (1-99).
-pub fn get_test_tpcds_query(id: usize) -> Result<String, DataFusionError> {
+pub fn get_tpcds_query(id: &str) -> Result<String, DataFusionError> {
     let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds/queries");
 
     if !queries_dir.exists() {
@@ -27,7 +27,7 @@ pub fn get_test_tpcds_query(id: usize) -> Result<String, DataFusionError> {
         );
     }
 
-    let query_file = queries_dir.join(format!("q{id}.sql"));
+    let query_file = queries_dir.join(format!("{id}.sql"));
 
     if !query_file.exists() {
         return internal_err!("Query file not found: {}", query_file.display());

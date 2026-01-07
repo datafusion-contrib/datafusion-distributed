@@ -18,52 +18,52 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(1)?).await
+        test_tpch_query(tpch::get_tpch_query("q1")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_2() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(2)?).await
+        test_tpch_query(tpch::get_tpch_query("q2")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_3() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(3)?).await
+        test_tpch_query(tpch::get_tpch_query("q3")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_4() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(4)?).await
+        test_tpch_query(tpch::get_tpch_query("q4")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_5() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(5)?).await
+        test_tpch_query(tpch::get_tpch_query("q5")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_6() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(6)?).await
+        test_tpch_query(tpch::get_tpch_query("q6")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_7() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(7)?).await
+        test_tpch_query(tpch::get_tpch_query("q7")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_8() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(8)?).await
+        test_tpch_query(tpch::get_tpch_query("q8")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_9() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(9)?).await
+        test_tpch_query(tpch::get_tpch_query("q9")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_10() -> Result<(), Box<dyn Error>> {
-        let sql = tpch::get_test_tpch_query(10)?;
+        let sql = tpch::get_tpch_query("q10")?;
         // There is a chance that this query returns non-deterministic results if two entries
         // happen to have the exact same revenue. With small scales, this never happens, but with
         // bigger scales, this is very likely to happen.
@@ -74,62 +74,62 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpch_11() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(11)?).await
+        test_tpch_query(tpch::get_tpch_query("q11")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_12() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(12)?).await
+        test_tpch_query(tpch::get_tpch_query("q12")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_13() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(13)?).await
+        test_tpch_query(tpch::get_tpch_query("q13")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_14() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(14)?).await
+        test_tpch_query(tpch::get_tpch_query("q14")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_15() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(15)?).await
+        test_tpch_query(tpch::get_tpch_query("q15")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_16() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(16)?).await
+        test_tpch_query(tpch::get_tpch_query("q16")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_17() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(17)?).await
+        test_tpch_query(tpch::get_tpch_query("q17")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_18() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(18)?).await
+        test_tpch_query(tpch::get_tpch_query("q18")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_19() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(19)?).await
+        test_tpch_query(tpch::get_tpch_query("q19")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_20() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(20)?).await
+        test_tpch_query(tpch::get_tpch_query("q20")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_21() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(21)?).await
+        test_tpch_query(tpch::get_tpch_query("q21")?).await
     }
 
     #[tokio::test]
     async fn test_tpch_22() -> Result<(), Box<dyn Error>> {
-        test_tpch_query(tpch::get_test_tpch_query(22)?).await
+        test_tpch_query(tpch::get_tpch_query("q22")?).await
     }
 
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
