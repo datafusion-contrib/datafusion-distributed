@@ -487,10 +487,10 @@ fn display_plan(
                     if i >= isolator_partition_group.as_ref().map_or(0, |v| v.len()) {
                         style = "[style=dotted, label=empty]";
                     }
-                } else if let Some(partition_group) = &isolator_partition_group {
-                    if !partition_group.contains(&i) {
-                        style = "[style=invis]";
-                    }
+                } else if let Some(partition_group) = &isolator_partition_group
+                    && !partition_group.contains(&i)
+                {
+                    style = "[style=invis]";
                 }
 
                 writeln!(

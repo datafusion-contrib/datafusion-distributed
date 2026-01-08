@@ -132,9 +132,12 @@ pub fn stage_metrics_rewriter(
     stage: &Stage,
     metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let mut node_idx = 0;
-
     let plan = stage.plan.decoded()?;
+
+    // First, collect all node metrics in pre-order traversal to match the order
+    // used by TaskMetricsCollector
+    let mut node_metrics_vec = Vec::new();
+    let mut node_idx = 0;
 
     plan.clone().transform_down(|plan| {
         // Stop at network boundaries.
@@ -151,8 +154,9 @@ pub fn stage_metrics_rewriter(
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
                         return internal_err!(
-                            "not enough metrics provided to rewrite task: {} metrics provided",
-                            task_metrics.len()
+                            "not enough metrics provided to rewrite task: {} metrics provided, node_idx={}",
+                            task_metrics.len(),
+                            node_idx
                         );
                     }
                     let node_metrics = task_metrics[node_idx].clone();
@@ -170,12 +174,32 @@ pub fn stage_metrics_rewriter(
             }
         }
 
+        node_metrics_vec.push(metrics_set_proto_to_df(&stage_metrics)?);
         node_idx += 1;
+        Ok(Transformed::no(plan))
+    })?;
+
+    // Now rewrite the plan with the collected metrics
+    let mut node_idx = 0;
+    plan.clone().transform_down(|plan| {
+        // Stop at network boundaries.
+        if plan.as_network_boundary().is_some() {
+            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
+        }
+
+        if node_idx >= node_metrics_vec.len() {
+            return internal_err!(
+                "mismatch between plan nodes and collected metrics: {} metrics collected, node_idx={}",
+                node_metrics_vec.len(),
+                node_idx
+            );
+        }
 
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan.clone(),
-            metrics_set_proto_to_df(&stage_metrics)?,
+            node_metrics_vec[node_idx].clone(),
         ));
+        node_idx += 1;
         Ok(Transformed::yes(wrapped_plan_node))
     }).map(|v| v.data)
 }
@@ -445,18 +469,20 @@ mod tests {
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
     fn assert_metrics_present_in_plan(plan: &Arc<dyn ExecutionPlan>) {
+        // Check if this is a PartitionIsolatorExec (possibly wrapped in MetricsWrapperExec)
+        // For MetricsWrapperExec, we check the name() which delegates to the inner plan
+        let is_partition_isolator = plan.name() == "PartitionIsolatorExec"
+            || plan
+                .as_any()
+                .downcast_ref::<PartitionIsolatorExec>()
+                .is_some();
+
         if let Some(metrics) = plan.metrics() {
-            assert!(metrics.iter().count() > 0);
+            // PartitionIsolatorExec nodes are allowed to have empty metrics
+            if !is_partition_isolator {
+                assert!(metrics.iter().count() > 0);
+            }
         } else {
-            let is_partition_isolator =
-                if let Some(metrics_wrapper) = plan.as_any().downcast_ref::<MetricsWrapperExec>() {
-                    metrics_wrapper
-                        .as_any()
-                        .downcast_ref::<PartitionIsolatorExec>()
-                        .is_some()
-                } else {
-                    false
-                };
             assert!(
                 plan.is_network_boundary()
                     || is_partition_isolator
@@ -469,7 +495,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_executed_distributed_plan_has_metrics() {
         let ctx = make_test_distributed_ctx().await;
         let plan = ctx

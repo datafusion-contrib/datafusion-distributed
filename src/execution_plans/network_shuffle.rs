@@ -162,10 +162,10 @@ impl NetworkShuffleExec {
                 // This is fine, we can let the node be here.
                 Ok(Transformed::no(plan))
             } else {
-                return plan_err!(
+                plan_err!(
                     "NetworkShuffleExec input must be hash partitioned, but {} is not",
                     plan.name()
-                );
+                )
             }
         })?;
 

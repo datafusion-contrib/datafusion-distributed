@@ -319,10 +319,10 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
     let children = parent.children();
     let first_child = children.first()?;
 
-    if let Some(r_exec) = first_child.as_any().downcast_ref::<RepartitionExec>() {
-        if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
-            return Some(RequiredNetworkBoundary::Shuffle);
-        }
+    if let Some(r_exec) = first_child.as_any().downcast_ref::<RepartitionExec>()
+        && matches!(r_exec.partitioning(), Partitioning::Hash(_, _))
+    {
+        return Some(RequiredNetworkBoundary::Shuffle);
     }
     if parent.as_any().is::<CoalescePartitionsExec>()
         || parent.as_any().is::<SortPreservingMergeExec>()
@@ -632,7 +632,7 @@ mod tests {
 
     #[allow(clippy::type_complexity)]
     struct CallbackEstimator {
-        f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
+        f: Arc<dyn Fn(&dyn ExecutionPlan) -> Option<TaskEstimation> + Send + Sync>,
     }
 
     impl CallbackEstimator {
