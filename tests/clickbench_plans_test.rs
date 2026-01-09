@@ -1,8 +1,8 @@
 #[cfg(all(feature = "integration", feature = "clickbench", test))]
 mod tests {
     use datafusion::error::Result;
-    use datafusion_distributed::test_utils::clickbench;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::{benchmarks_common, clickbench};
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
@@ -966,14 +966,14 @@ mod tests {
             })
             .await;
 
-        let query_sql = clickbench::get_clickbench_query(query_id)?;
+        let query_sql = clickbench::get_query(query_id)?;
 
         let (d_ctx, _guard) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        clickbench::register_tables(&d_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 
         let df = d_ctx.sql(&query_sql).await?;
         let plan = df.create_physical_plan().await?;
