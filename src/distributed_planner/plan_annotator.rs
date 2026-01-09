@@ -318,6 +318,7 @@ fn _annotate_plan(
 fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<RequiredNetworkBoundary> {
     let children = parent.children();
     let first_child = children.first()?;
+
     if let Some(r_exec) = first_child.as_any().downcast_ref::<RepartitionExec>() {
         if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             return Some(RequiredNetworkBoundary::Shuffle);
