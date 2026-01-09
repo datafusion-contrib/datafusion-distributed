@@ -40,20 +40,21 @@ mod tests {
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
-          │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     CoalesceBatchesExec: target_batch_size=8192
-          │       FilterExec: MinTemp@0 > 10
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
           │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: MaxTemp@0 < 30
-          │           PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
-          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │         FilterExec: MinTemp@0 > 10
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: MaxTemp@0 < 30
+          │             PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
+          │               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
           └──────────────────────────────────────────────────
         ",
         );
@@ -92,24 +93,25 @@ mod tests {
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
-          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     CoalesceBatchesExec: target_batch_size=8192
-          │       FilterExec: MinTemp@0 > 20
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 20, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 20, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
           │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: MaxTemp@0 < 25
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 25, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 25, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: Temp9am@0 > 15
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          │         FilterExec: MinTemp@0 > 20
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 20, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 20, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: MaxTemp@0 < 25
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 25, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 25, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: Temp9am@0 > 15
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
           └──────────────────────────────────────────────────
         ",
         );
@@ -152,34 +154,35 @@ mod tests {
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=18, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p6..p11] t2:[p12..p17] 
-          │ DistributedUnionExec: t0:[c0, c1] t1:[c2, c3] t2:[c4]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     CoalesceBatchesExec: target_batch_size=8192
-          │       FilterExec: MinTemp@0 > 10
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
+          │   DistributedUnionExec: t0:[c0, c1] t1:[c2, c3] t2:[c4]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
           │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: MaxTemp@0 < 30
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: Temp9am@0 > 15
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[Temp3pm@0 as MinTemp, RainToday@1 as RainToday]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: Temp3pm@0 < 25
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp3pm, RainToday], file_type=parquet, predicate=Temp3pm@0 < 25, pruning_predicate=Temp3pm_null_count@1 != row_count@2 AND Temp3pm_min@0 < 25, required_guarantees=[]
-          │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │     ProjectionExec: expr=[Rainfall@0 as MinTemp, RainToday@1 as RainToday]
-          │       CoalesceBatchesExec: target_batch_size=8192
-          │         FilterExec: Rainfall@0 > 5
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=Rainfall@0 > 5, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 5, required_guarantees=[]
+          │         FilterExec: MinTemp@0 > 10
+          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: MaxTemp@0 < 30
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@0 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[Temp9am@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: Temp9am@0 > 15
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp9am, RainToday], file_type=parquet, predicate=Temp9am@0 > 15, pruning_predicate=Temp9am_null_count@1 != row_count@2 AND Temp9am_max@0 > 15, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[Temp3pm@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: Temp3pm@0 < 25
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Temp3pm, RainToday], file_type=parquet, predicate=Temp3pm@0 < 25, pruning_predicate=Temp3pm_null_count@1 != row_count@2 AND Temp3pm_min@0 < 25, required_guarantees=[]
+          │     SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │       ProjectionExec: expr=[Rainfall@0 as MinTemp, RainToday@1 as RainToday]
+          │         CoalesceBatchesExec: target_batch_size=8192
+          │           FilterExec: Rainfall@0 > 5
+          │             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=Rainfall@0 > 5, pruning_predicate=Rainfall_null_count@1 != row_count@2 AND Rainfall_max@0 > 5, required_guarantees=[]
           └──────────────────────────────────────────────────
         ",
         );
