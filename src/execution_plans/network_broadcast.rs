@@ -142,8 +142,8 @@ pub struct NetworkBroadcastExec {
 impl NetworkBroadcastExec {
     /// Creates a [NetworkBroadcastExec].
     ///
-    /// Use [Self::with_broadcast_stack] to create the full broadcast stack with
-    /// BroadcastExec for caching and CoalescePartitionsExec for merging.
+    /// Use [Self::with_inner_broadcast] to create the full broadcast stack with
+    /// BroadcastExec for caching.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
@@ -170,29 +170,25 @@ impl NetworkBroadcastExec {
         })
     }
 
-    /// Builds full broadcast stack: BroadcastExec -> NetworkBroadcastExec -> CoalescePartitionsExec
+    /// Builds inner broadcast stack: BroadcastExec -> NetworkBroadcastExec
     ///
     /// This is the standard way to create a broadcast network boundary. The stack:
     /// 1. [BroadcastExec]: Caches batches and scales partitions
     /// 2. [NetworkBroadcastExec]: Fetches cached data from producer tasks
-    /// 3. [CoalescePartitionsExec]: Merges partitions into 1 for CollectLeft HashJoinExec
-    pub fn with_broadcast_stack(
+    pub fn with_inner_broadcast(
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
         stage_num: usize,
-        input_task_count: usize,
         consumer_task_count: usize,
+        input_task_count: usize,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-
         let broadcast_exec = Arc::new(super::BroadcastExec::new(input, consumer_task_count));
-        let network_broadcast = Arc::new(Self::try_new(
+        Ok(Arc::new(Self::try_new(
             broadcast_exec,
             query_id,
             stage_num,
             input_task_count,
-        )?);
-        Ok(Arc::new(CoalescePartitionsExec::new(network_broadcast)))
+        )?))
     }
 }
 
