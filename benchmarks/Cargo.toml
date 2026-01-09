@@ -8,10 +8,6 @@ default-run = "dfbench"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-distributed = { path = "..", features = ["integration"] }
-ballista = { version = "50" }
-ballista-executor = { version = "50" }
-ballista-scheduler = { version = "50" }
-ballista-core = "50"
 tokio = { version = "1.46.1", features = ["full"] }
 parquet = { version = "57.1.0" }
 structopt = { version = "0.3.26" }
@@ -34,6 +30,20 @@ aws-sdk-ec2 = "1"
 openssl = { version = "0.10", features = ["vendored"] }
 clap = "4.5"
 
+# ballista feature
+ballista = { version = "50", optional = true }
+ballista-executor = { version = "50", optional = true }
+ballista-scheduler = { version = "50", optional = true }
+ballista-core = { version = "50", optional = true }
+
+[features]
+ballista-benchmarks = [
+    "ballista",
+    "ballista-executor",
+    "ballista-scheduler",
+    "ballista-core"
+]
+
 [[bin]]
 name = "dfbench"
 path = "src/main.rs"
@@ -45,11 +55,14 @@ path = "cdk/bin/worker.rs"
 [[bin]]
 name = "ballista-http"
 path = "cdk/bin/ballista_http.rs"
+required-features = ["ballista-benchmarks"]
 
 [[bin]]
 name = "ballista-executor"
 path = "cdk/bin/ballista_executor.rs"
+required-features = ["ballista-benchmarks"]
 
 [[bin]]
 name = "ballista-scheduler"
 path = "cdk/bin/ballista_scheduler.rs"
+required-features = ["ballista-benchmarks"]
