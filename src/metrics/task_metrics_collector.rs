@@ -122,6 +122,7 @@ mod tests {
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
+    use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{
@@ -285,13 +286,9 @@ mod tests {
             // We need to traverse in the same order as TaskMetricsCollector (DFS/pre-order, excluding network boundaries)
             let mut node_idx = 0;
             let mut nodes_without_metrics = std::collections::HashSet::new();
-            fn traverse_plan(
-                plan: &Arc<dyn ExecutionPlan>,
-                node_idx: &mut usize,
-                nodes_without_metrics: &mut std::collections::HashSet<usize>,
-            ) {
+            stage_plan.clone().transform_down(|plan| {
                 if plan.is_network_boundary() {
-                    return;
+                    return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
                 }
                 // PartitionIsolatorExec nodes typically don't have metrics
                 if plan
@@ -299,14 +296,12 @@ mod tests {
                     .downcast_ref::<PartitionIsolatorExec>()
                     .is_some()
                 {
-                    nodes_without_metrics.insert(*node_idx);
+                    nodes_without_metrics.insert(node_idx);
                 }
-                *node_idx += 1;
-                for child in plan.children() {
-                    traverse_plan(child, node_idx, nodes_without_metrics);
-                }
-            }
-            traverse_plan(stage_plan, &mut node_idx, &mut nodes_without_metrics);
+                node_idx += 1;
+                Ok(Transformed::no(plan))
+            })
+            .unwrap();
 
             // Ensure metrics were collected for all nodes. Some nodes (like PartitionIsolatorExec)
             // may legitimately have empty metrics, which is fine - we just verify the metrics set exists.
@@ -362,15 +357,13 @@ mod tests {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
 
-    /// Test that verifies metrics collection works correctly with PartitionIsolatorExec nodes.
-    /// PartitionIsolatorExec nodes are created when using children_isolator_unions feature.
-    /// This test ensures that PartitionIsolatorExec nodes are preserved in the plan during
-    /// metrics collection and that empty metrics are collected for them.
+    /// Test that verifies PartitionIsolatorExec nodes are preserved during metrics collection.
+    /// This tests the corner case where PartitionIsolatorExec nodes (which have no metrics)
+    /// must still be included in the metrics collection to maintain correct node-to-metric mapping.
     #[tokio::test]
     async fn test_metrics_collection_with_partition_isolator() {
-        // Create a context with children_isolator_unions enabled
+        // Create context with children_isolator_unions enabled to generate PartitionIsolatorExec nodes
         let config = SessionConfig::new().with_target_partitions(2);
-
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
@@ -383,37 +376,18 @@ mod tests {
             .build();
 
         let ctx = SessionContext::from(state);
-        // Enable children_isolator_unions after context is created
         ctx.sql("SET distributed.children_isolator_unions=true;")
             .await
             .unwrap();
 
-        // Register test data
-        let schema1 = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
+        // Use weather dataset (already available)
+        register_parquet_tables(&ctx).await.unwrap();
 
-        let batches1 = vec![
-            RecordBatch::try_new(
-                schema1.clone(),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
-                    Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e", "f"])),
-                ],
-            )
-            .unwrap(),
-        ];
-
-        let _ = register_temp_parquet_table("table1", schema1, batches1, &ctx)
-            .await
-            .unwrap();
-
-        // Create a UNION query that will use PartitionIsolatorExec
+        // UNION query that creates PartitionIsolatorExec nodes
         let query = r#"
-            SELECT id FROM table1 WHERE id > 2
+            SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
             UNION ALL
-            SELECT id FROM table1 WHERE id < 5
+            SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
         "#;
 
         let df = ctx.sql(query).await.unwrap();
@@ -426,88 +400,48 @@ mod tests {
             .expect("expected DistributedExec");
 
         let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
-
-        // Collect metrics
         let collector = TaskMetricsCollector::new();
         let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
-        // Verify metrics are collected for all stages
+        // Verify PartitionIsolatorExec nodes are preserved in metrics collection
         for expected_stage_key in expected_stage_keys {
             let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.decoded().unwrap();
 
-            // Count PartitionIsolatorExec nodes in the plan
-            let mut partition_isolator_count = 0;
-            fn count_partition_isolators(
-                plan: &Arc<dyn ExecutionPlan>,
-                count: &mut usize,
-            ) {
+            // Count PartitionIsolatorExec nodes and verify they're included in metrics
+            let mut partition_isolator_indices = Vec::new();
+            let mut node_idx = 0;
+            stage_plan.clone().transform_down(|plan| {
                 if plan.is_network_boundary() {
-                    return;
+                    return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
                 }
                 if plan
                     .as_any()
                     .downcast_ref::<PartitionIsolatorExec>()
                     .is_some()
                 {
-                    *count += 1;
+                    partition_isolator_indices.push(node_idx);
                 }
-                for child in plan.children() {
-                    count_partition_isolators(child, count);
-                }
-            }
-            count_partition_isolators(&stage_plan, &mut partition_isolator_count);
+                node_idx += 1;
+                Ok(Transformed::no(plan))
+            })
+            .unwrap();
 
-            // Verify metrics count matches plan node count
+            // Verify metrics count matches (this ensures PartitionIsolatorExec nodes are included)
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes(&stage_plan),
-                "Mismatch between collected metrics ({}) and plan nodes ({}) for stage {:?}. PartitionIsolatorExec count: {}",
-                actual_metrics.len(),
-                count_plan_nodes(&stage_plan),
-                expected_stage_key,
-                partition_isolator_count
+                "Metrics count must match plan nodes (including PartitionIsolatorExec) for stage {:?}",
+                expected_stage_key
             );
 
-            // Verify that PartitionIsolatorExec nodes have empty metrics
-            let mut node_idx = 0;
-            fn verify_partition_isolator_metrics(
-                plan: &Arc<dyn ExecutionPlan>,
-                node_idx: &mut usize,
-                metrics: &[MetricsSetProto],
-            ) {
-                if plan.is_network_boundary() {
-                    return;
-                }
-                if plan
-                    .as_any()
-                    .downcast_ref::<PartitionIsolatorExec>()
-                    .is_some()
-                {
-                    // PartitionIsolatorExec should have empty metrics
-                    assert!(
-                        metrics[*node_idx].metrics.is_empty(),
-                        "PartitionIsolatorExec at index {} should have empty metrics, but found {} metrics",
-                        node_idx,
-                        metrics[*node_idx].metrics.len()
-                    );
-                }
-                *node_idx += 1;
-                for child in plan.children() {
-                    verify_partition_isolator_metrics(child, node_idx, metrics);
-                }
-            }
-            verify_partition_isolator_metrics(&stage_plan, &mut node_idx, actual_metrics);
-
-            // If we found PartitionIsolatorExec nodes, verify they were handled correctly
-            if partition_isolator_count > 0 {
-                // Verify that we collected metrics for all nodes including PartitionIsolatorExec
+            // Verify PartitionIsolatorExec nodes have empty metrics (corner case)
+            for &idx in &partition_isolator_indices {
                 assert!(
-                    actual_metrics.len() >= partition_isolator_count,
-                    "Should have collected metrics for at least {} PartitionIsolatorExec nodes, but only have {} total metrics",
-                    partition_isolator_count,
-                    actual_metrics.len()
+                    actual_metrics[idx].metrics.is_empty(),
+                    "PartitionIsolatorExec at index {} should have empty metrics",
+                    idx
                 );
             }
         }

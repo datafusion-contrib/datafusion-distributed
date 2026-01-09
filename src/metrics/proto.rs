@@ -159,11 +159,11 @@ pub fn df_metrics_set_to_proto(
             Ok(metric_proto) => metrics.push(metric_proto),
             Err(err) => {
                 // Check if this is the specific custom metrics error we want to filter out
-                if let DataFusionError::Internal(msg) = &err
-                    && (msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS)
-                {
-                    // Filter out custom/unsupported metrics error - continue processing other metrics
-                    continue;
+                if let DataFusionError::Internal(msg) = &err {
+                    if msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS {
+                        // Filter out custom/unsupported metrics error - continue processing other metrics
+                        continue;
+                    }
                 }
                 // Any other error should be returned
                 return Err(err);
