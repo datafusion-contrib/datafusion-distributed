@@ -1,5 +1,6 @@
+use crate::test_utils::benchmarks_common;
 use arrow::datatypes::{DataType, Field};
-use datafusion::common::{internal_datafusion_err, internal_err};
+use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr::expressions::{CastColumnExpr, Column};
@@ -16,31 +17,12 @@ use std::sync::Arc;
 
 const URL: &str = "https://github.com/apache/datafusion-benchmarks/archive/refs/heads/main.zip";
 
-/// Load a single TPC-DS query by ID (1-99).
-pub fn get_tpcds_query(id: &str) -> Result<String, DataFusionError> {
-    let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tpcds/queries");
+pub fn get_queries() -> Vec<String> {
+    benchmarks_common::get_queries("testdata/tpcds/queries")
+}
 
-    if !queries_dir.exists() {
-        return internal_err!(
-            "TPC-DS queries directory not found: {}",
-            queries_dir.display()
-        );
-    }
-
-    let query_file = queries_dir.join(format!("{id}.sql"));
-
-    if !query_file.exists() {
-        return internal_err!("Query file not found: {}", query_file.display());
-    }
-
-    let query_sql = fs::read_to_string(&query_file)
-        .map_err(|e| {
-            internal_datafusion_err!("Failed to read query file {}: {e}", query_file.display())
-        })?
-        .trim()
-        .to_string();
-
-    Ok(query_sql)
+pub fn get_query(id: &str) -> Result<String, DataFusionError> {
+    benchmarks_common::get_query("testdata/tpcds/queries", id)
 }
 
 /// Downloads the datafusion-benchmarks repository as a zip file
@@ -189,7 +171,7 @@ fn project_cols_as_dict(
     Ok(Arc::new(project))
 }
 
-pub async fn prepare_tables(
+async fn prepare_tables(
     data_path: PathBuf,
     dest_path: PathBuf,
     partitions: usize,
@@ -217,7 +199,7 @@ pub async fn prepare_tables(
     Ok(())
 }
 
-pub async fn generate_tpcds_data(
+pub async fn generate_data(
     dir: &Path,
     sf: f64,
     partitions: usize,
@@ -229,24 +211,5 @@ pub async fn generate_tpcds_data(
     download_benchmarks(base_path.join("main.zip")).await?;
     unzip_benchmarks(base_path.join("main.zip"), base_path.join("downloaded"))?;
     prepare_tables(base_path.join("downloaded"), dir.to_path_buf(), partitions).await?;
-    Ok(())
-}
-
-pub async fn register_tables(
-    ctx: &SessionContext,
-    data_path: &Path,
-) -> Result<(), DataFusionError> {
-    for entry in fs::read_dir(data_path)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            let table_name = path.file_name().unwrap().to_str().unwrap();
-            ctx.register_parquet(
-                table_name,
-                path.to_str().unwrap(),
-                ParquetReadOptions::default(),
-            )
-            .await?;
-        }
-    }
     Ok(())
 }

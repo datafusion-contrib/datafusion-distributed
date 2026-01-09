@@ -9,7 +9,7 @@ mod tests {
     use datafusion_distributed::test_utils::property_based::{
         compare_ordering, compare_result_set,
     };
-    use datafusion_distributed::test_utils::tpcds;
+    use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
@@ -548,14 +548,14 @@ mod tests {
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap_or(false) {
-                    tpcds::generate_tpcds_data(&data_dir, SF, PARQUET_PARTITIONS)
+                    tpcds::generate_data(&data_dir, SF, PARQUET_PARTITIONS)
                         .await
                         .unwrap();
                 }
             })
             .await;
 
-        let query_sql = tpcds::get_tpcds_query(query_id)?;
+        let query_sql = tpcds::get_query(query_id)?;
         // Create a single node context to compare results to.
         let s_ctx = SessionContext::new();
 
@@ -565,8 +565,8 @@ mod tests {
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        tpcds::register_tables(&s_ctx, &data_dir).await?;
-        tpcds::register_tables(&d_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&s_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;

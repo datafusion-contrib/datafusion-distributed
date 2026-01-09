@@ -2,7 +2,7 @@
 mod tests {
     use datafusion::error::Result;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::test_utils::tpcds;
+    use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
@@ -10273,21 +10273,21 @@ mod tests {
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap_or(false) {
-                    tpcds::generate_tpcds_data(&data_dir, SF, PARQUET_PARTITIONS)
+                    tpcds::generate_data(&data_dir, SF, PARQUET_PARTITIONS)
                         .await
                         .unwrap();
                 }
             })
             .await;
 
-        let query_sql = tpcds::get_tpcds_query(query_id)?;
+        let query_sql = tpcds::get_query(query_id)?;
         // Make distributed localhost context to run queries
         let (d_ctx, _guard) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        tpcds::register_tables(&d_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 
         let df = d_ctx.sql(&query_sql).await?;
         let plan = df.create_physical_plan().await?;

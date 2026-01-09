@@ -21,7 +21,7 @@ pub struct PrepareTpcdsOpt {
 
 impl PrepareTpcdsOpt {
     pub async fn run(self) -> datafusion::common::Result<()> {
-        tpcds::generate_tpcds_data(Path::new(&self.output_path), self.sf, self.partitions)
+        tpcds::generate_data(Path::new(&self.output_path), self.sf, self.partitions)
             .await
             .map_err(|e| DataFusionError::Internal(format!("{e:?}")))
     }

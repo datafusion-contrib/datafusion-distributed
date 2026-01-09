@@ -2,7 +2,7 @@
 mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::test_utils::tpch;
+    use datafusion_distributed::test_utils::{benchmarks_common, tpch};
     use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
     use std::error::Error;
     use std::fs;
@@ -1001,7 +1001,7 @@ mod tests {
     // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(ctx: SessionContext, query_id: &str) -> Result<String, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
-        let sql = tpch::get_tpch_query(query_id)?;
+        let sql = tpch::get_query(query_id)?;
         ctx.state_ref()
             .write()
             .config_mut()
@@ -1009,18 +1009,7 @@ mod tests {
             .execution
             .target_partitions = PARTITIONS;
 
-        // Register tables for first context
-        for table_name in [
-            "lineitem", "orders", "part", "partsupp", "customer", "nation", "region", "supplier",
-        ] {
-            let query_path = data_dir.join(table_name);
-            ctx.register_parquet(
-                table_name,
-                query_path.to_string_lossy().as_ref(),
-                datafusion::prelude::ParquetReadOptions::default(),
-            )
-            .await?;
-        }
+        benchmarks_common::register_tables(&ctx, &data_dir).await?;
 
         // Query 15 has three queries in it, one creating the view, the second
         // executing, which we want to capture the output of, and the third
