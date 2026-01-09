@@ -111,16 +111,16 @@ async function isDirWithAllParquetFiles(dir: string): Promise<boolean> {
     return true
 }
 
-async function queriesForDataset(dataset: string): Promise<[string, string][]> {
+async function queriesForDataset(dataset: string): Promise<{ id: string, sql: string }[]> {
     const datasetSuffix = dataset.split("_")[0]
     const queriesPath = path.join(ROOT, "testdata", datasetSuffix, "queries")
 
-    const queries: [string, string][] = []
-    for (const queryName of await fs.readdir(queriesPath)) {
-        const sql = await fs.readFile(path.join(queriesPath, queryName), 'utf-8');
-        queries.push([queryName, sql])
+    const queries = []
+    for (const fileName of await fs.readdir(queriesPath)) {
+        const sql = await fs.readFile(path.join(queriesPath, fileName), 'utf-8');
+        queries.push({ id: fileName.replace(".sql", ""), sql })
     }
-    queries.sort(([name1], [name2]) => numericId(name1) > numericId(name2) ? 1 : -1)
+    queries.sort((a, b) => numericId(a.id) > numericId(b.id) ? 1 : -1)
     return queries
 }
 
@@ -133,7 +133,7 @@ export async function runBenchmark(
     options: {
         dataset: string
         iterations: number;
-        queries: number[];
+        queries: string[];
         outputPath: string;
     }
 ) {
@@ -145,15 +145,13 @@ export async function runBenchmark(
     const s3Paths = await tablePathsForDataset(dataset)
     await runner.createTables(s3Paths);
 
-    for (const [queryName, sql] of await queriesForDataset(dataset)) {
-        const id = numericId(queryName)
-
+    for (const { id, sql } of await queriesForDataset(dataset)) {
         if (queries.length > 0 && !queries.includes(id)) {
             continue;
         }
 
         const queryResult: QueryResult = {
-            query: queryName,
+            query: id,
             iterations: [],
         };
 

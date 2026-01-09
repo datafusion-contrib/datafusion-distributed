@@ -16,7 +16,7 @@ async function main() {
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
-        .option('--query <number>', 'A specific query to run', undefined)
+        .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
 
     const options = program.opts();
@@ -26,7 +26,7 @@ async function main() {
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
-    const queries = options.query ? [parseInt(options.query)] : [];
+    const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
 
     const runner = new DataFusionRunner({

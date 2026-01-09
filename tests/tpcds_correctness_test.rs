@@ -9,7 +9,7 @@ mod tests {
     use datafusion_distributed::test_utils::property_based::{
         compare_ordering, compare_result_set,
     };
-    use datafusion_distributed::test_utils::tpcds;
+    use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
     };
@@ -26,359 +26,359 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpcds_1() -> Result<()> {
-        test_tpcds_query(1).await
+        test_tpcds_query("q1").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_2() -> Result<()> {
-        test_tpcds_query(2).await
+        test_tpcds_query("q2").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_3() -> Result<()> {
-        test_tpcds_query(3).await
+        test_tpcds_query("q3").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_4() -> Result<()> {
-        test_tpcds_query(4).await
+        test_tpcds_query("q4").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_5() -> Result<()> {
-        test_tpcds_query(5).await
+        test_tpcds_query("q5").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_6() -> Result<()> {
-        test_tpcds_query(6).await
+        test_tpcds_query("q6").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_7() -> Result<()> {
-        test_tpcds_query(7).await
+        test_tpcds_query("q7").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_8() -> Result<()> {
-        test_tpcds_query(8).await
+        test_tpcds_query("q8").await
     }
 
     #[tokio::test]
     #[ignore = "expected no error but got: Arrow error: Invalid argument error: must either specify a row count or at least one column"]
     async fn test_tpcds_9() -> Result<()> {
-        test_tpcds_query(9).await
+        test_tpcds_query("q9").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_10() -> Result<()> {
-        test_tpcds_query(10).await
+        test_tpcds_query("q10").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_11() -> Result<()> {
-        test_tpcds_query(11).await
+        test_tpcds_query("q11").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_12() -> Result<()> {
-        test_tpcds_query(12).await
+        test_tpcds_query("q12").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_13() -> Result<()> {
-        test_tpcds_query(13).await
+        test_tpcds_query("q13").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_14() -> Result<()> {
-        test_tpcds_query(14).await
+        test_tpcds_query("q14").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_15() -> Result<()> {
-        test_tpcds_query(15).await
+        test_tpcds_query("q15").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_16() -> Result<()> {
-        test_tpcds_query(16).await
+        test_tpcds_query("q16").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_17() -> Result<()> {
-        test_tpcds_query(17).await
+        test_tpcds_query("q17").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_18() -> Result<()> {
-        test_tpcds_query(18).await
+        test_tpcds_query("q18").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_19() -> Result<()> {
-        test_tpcds_query(19).await
+        test_tpcds_query("q19").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_20() -> Result<()> {
-        test_tpcds_query(20).await
+        test_tpcds_query("q20").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_21() -> Result<()> {
-        test_tpcds_query(21).await
+        test_tpcds_query("q21").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_22() -> Result<()> {
-        test_tpcds_query(22).await
+        test_tpcds_query("q22").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_23() -> Result<()> {
-        test_tpcds_query(23).await
+        test_tpcds_query("q23").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_24() -> Result<()> {
-        test_tpcds_query(24).await
+        test_tpcds_query("q24").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_25() -> Result<()> {
-        test_tpcds_query(25).await
+        test_tpcds_query("q25").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_26() -> Result<()> {
-        test_tpcds_query(26).await
+        test_tpcds_query("q26").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_27() -> Result<()> {
-        test_tpcds_query(27).await
+        test_tpcds_query("q27").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_28() -> Result<()> {
-        test_tpcds_query(28).await
+        test_tpcds_query("q28").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_29() -> Result<()> {
-        test_tpcds_query(29).await
+        test_tpcds_query("q29").await
     }
 
     #[tokio::test]
     #[ignore = "Fails with column 'c_last_review_date_sk' not found"]
     async fn test_tpcds_30() -> Result<()> {
-        test_tpcds_query(30).await
+        test_tpcds_query("q30").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_31() -> Result<()> {
-        test_tpcds_query(31).await
+        test_tpcds_query("q31").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_32() -> Result<()> {
-        test_tpcds_query(32).await
+        test_tpcds_query("q32").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_33() -> Result<()> {
-        test_tpcds_query(33).await
+        test_tpcds_query("q33").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_34() -> Result<()> {
-        test_tpcds_query(34).await
+        test_tpcds_query("q34").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_35() -> Result<()> {
-        test_tpcds_query(35).await
+        test_tpcds_query("q35").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_36() -> Result<()> {
-        test_tpcds_query(36).await
+        test_tpcds_query("q36").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_37() -> Result<()> {
-        test_tpcds_query(37).await
+        test_tpcds_query("q37").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_38() -> Result<()> {
-        test_tpcds_query(38).await
+        test_tpcds_query("q38").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_39() -> Result<()> {
-        test_tpcds_query(39).await
+        test_tpcds_query("q39").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_40() -> Result<()> {
-        test_tpcds_query(40).await
+        test_tpcds_query("q40").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_41() -> Result<()> {
-        test_tpcds_query(41).await
+        test_tpcds_query("q41").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_42() -> Result<()> {
-        test_tpcds_query(42).await
+        test_tpcds_query("q42").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_43() -> Result<()> {
-        test_tpcds_query(43).await
+        test_tpcds_query("q43").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_44() -> Result<()> {
-        test_tpcds_query(44).await
+        test_tpcds_query("q44").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_45() -> Result<()> {
-        test_tpcds_query(45).await
+        test_tpcds_query("q45").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_46() -> Result<()> {
-        test_tpcds_query(46).await
+        test_tpcds_query("q46").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_47() -> Result<()> {
-        test_tpcds_query(47).await
+        test_tpcds_query("q47").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_48() -> Result<()> {
-        test_tpcds_query(48).await
+        test_tpcds_query("q48").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_49() -> Result<()> {
-        test_tpcds_query(49).await
+        test_tpcds_query("q49").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_50() -> Result<()> {
-        test_tpcds_query(50).await
+        test_tpcds_query("q50").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_51() -> Result<()> {
-        test_tpcds_query(51).await
+        test_tpcds_query("q51").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_52() -> Result<()> {
-        test_tpcds_query(52).await
+        test_tpcds_query("q52").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_53() -> Result<()> {
-        test_tpcds_query(53).await
+        test_tpcds_query("q53").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_54() -> Result<()> {
-        test_tpcds_query(54).await
+        test_tpcds_query("q54").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_55() -> Result<()> {
-        test_tpcds_query(55).await
+        test_tpcds_query("q55").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_56() -> Result<()> {
-        test_tpcds_query(56).await
+        test_tpcds_query("q56").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_57() -> Result<()> {
-        test_tpcds_query(57).await
+        test_tpcds_query("q57").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_58() -> Result<()> {
-        test_tpcds_query(58).await
+        test_tpcds_query("q58").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_59() -> Result<()> {
-        test_tpcds_query(59).await
+        test_tpcds_query("q59").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_60() -> Result<()> {
-        test_tpcds_query(60).await
+        test_tpcds_query("q60").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_61() -> Result<()> {
-        test_tpcds_query(61).await
+        test_tpcds_query("q61").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_62() -> Result<()> {
-        test_tpcds_query(62).await
+        test_tpcds_query("q62").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_63() -> Result<()> {
-        test_tpcds_query(63).await
+        test_tpcds_query("q63").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_64() -> Result<()> {
-        test_tpcds_query(64).await
+        test_tpcds_query("q64").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_65() -> Result<()> {
-        test_tpcds_query(65).await
+        test_tpcds_query("q65").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_66() -> Result<()> {
-        test_tpcds_query(66).await
+        test_tpcds_query("q66").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_67() -> Result<()> {
-        test_tpcds_query(67).await
+        test_tpcds_query("q67").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_68() -> Result<()> {
-        test_tpcds_query(68).await
+        test_tpcds_query("q68").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_69() -> Result<()> {
-        test_tpcds_query(69).await
+        test_tpcds_query("q69").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_70() -> Result<()> {
-        test_tpcds_query(70).await
+        test_tpcds_query("q70").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_71() -> Result<()> {
-        test_tpcds_query(71).await
+        test_tpcds_query("q71").await
     }
 
     #[tokio::test]
@@ -387,137 +387,137 @@ mod tests {
     // long to execute that it's not worth the time.
     #[ignore = "Query takes too long to execute"]
     async fn test_tpcds_72() -> Result<()> {
-        test_tpcds_query(72).await
+        test_tpcds_query("q72").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_73() -> Result<()> {
-        test_tpcds_query(73).await
+        test_tpcds_query("q73").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_74() -> Result<()> {
-        test_tpcds_query(74).await
+        test_tpcds_query("q74").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_75() -> Result<()> {
-        test_tpcds_query(75).await
+        test_tpcds_query("q75").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_76() -> Result<()> {
-        test_tpcds_query(76).await
+        test_tpcds_query("q76").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_77() -> Result<()> {
-        test_tpcds_query(77).await
+        test_tpcds_query("q77").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_78() -> Result<()> {
-        test_tpcds_query(78).await
+        test_tpcds_query("q78").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_79() -> Result<()> {
-        test_tpcds_query(79).await
+        test_tpcds_query("q79").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_80() -> Result<()> {
-        test_tpcds_query(80).await
+        test_tpcds_query("q80").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_81() -> Result<()> {
-        test_tpcds_query(81).await
+        test_tpcds_query("q81").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_82() -> Result<()> {
-        test_tpcds_query(82).await
+        test_tpcds_query("q82").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_83() -> Result<()> {
-        test_tpcds_query(83).await
+        test_tpcds_query("q83").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_84() -> Result<()> {
-        test_tpcds_query(84).await
+        test_tpcds_query("q84").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_85() -> Result<()> {
-        test_tpcds_query(85).await
+        test_tpcds_query("q85").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_86() -> Result<()> {
-        test_tpcds_query(86).await
+        test_tpcds_query("q86").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_87() -> Result<()> {
-        test_tpcds_query(87).await
+        test_tpcds_query("q87").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_88() -> Result<()> {
-        test_tpcds_query(88).await
+        test_tpcds_query("q88").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_89() -> Result<()> {
-        test_tpcds_query(89).await
+        test_tpcds_query("q89").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_90() -> Result<()> {
-        test_tpcds_query(90).await
+        test_tpcds_query("q90").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_91() -> Result<()> {
-        test_tpcds_query(91).await
+        test_tpcds_query("q91").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_92() -> Result<()> {
-        test_tpcds_query(92).await
+        test_tpcds_query("q92").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_93() -> Result<()> {
-        test_tpcds_query(93).await
+        test_tpcds_query("q93").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_94() -> Result<()> {
-        test_tpcds_query(94).await
+        test_tpcds_query("q94").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_95() -> Result<()> {
-        test_tpcds_query(95).await
+        test_tpcds_query("q95").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_96() -> Result<()> {
-        test_tpcds_query(96).await
+        test_tpcds_query("q96").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_97() -> Result<()> {
-        test_tpcds_query(97).await
+        test_tpcds_query("q97").await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tpcds_98() -> Result<()> {
-        test_tpcds_query(98).await
+        test_tpcds_query("q98").await
     }
 
     #[tokio::test]
@@ -526,7 +526,7 @@ mod tests {
     // long to execute that it's not worth the time.
     #[ignore = "Query takes too long to execute"]
     async fn test_tpcds_99() -> Result<()> {
-        test_tpcds_query(99).await
+        test_tpcds_query("q99").await
     }
 
     static INIT_TEST_TPCDS_TABLES: OnceCell<()> = OnceCell::const_new();
@@ -541,21 +541,21 @@ mod tests {
         (plan.clone(), Arc::new(collect(plan, task_ctx).await)) // Collect execution errors, do not unwrap.
     }
 
-    async fn test_tpcds_query(query_id: usize) -> Result<()> {
+    async fn test_tpcds_query(query_id: &str) -> Result<()> {
         let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
             "testdata/tpcds/correctness_sf{SF}_partitions{PARQUET_PARTITIONS}"
         ));
         INIT_TEST_TPCDS_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap_or(false) {
-                    tpcds::generate_tpcds_data(&data_dir, SF, PARQUET_PARTITIONS)
+                    tpcds::generate_data(&data_dir, SF, PARQUET_PARTITIONS)
                         .await
                         .unwrap();
                 }
             })
             .await;
 
-        let query_sql = tpcds::get_test_tpcds_query(query_id)?;
+        let query_sql = tpcds::get_query(query_id)?;
         // Create a single node context to compare results to.
         let s_ctx = SessionContext::new();
 
@@ -565,8 +565,8 @@ mod tests {
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        tpcds::register_tables(&s_ctx, &data_dir).await?;
-        tpcds::register_tables(&d_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&s_ctx, &data_dir).await?;
+        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;

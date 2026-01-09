@@ -11,14 +11,14 @@ async function main() {
     program
         .option('--dataset <string>', 'Scale factor', '1')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--query <number>', 'A specific query to run', undefined)
+        .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
 
     const options = program.opts();
 
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
-    const queries = options.query ? [parseInt(options.query)] : [];
+    const queries = options.queries?.split(",") ?? []
 
     const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
     const outputPath = path.join(datasetPath, "remote-results.json")
