@@ -17,21 +17,21 @@ let ballistaExecutorBinary: s3assets.Asset
 export const BALLISTA_ENGINE: QueryEngine = {
     beforeEc2Machines(ctx: BeforeEc2MachinesContext): void {
         console.log('Building Ballista server binary...');
-        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin ballista-http --target x86_64-unknown-linux-gnu', {
+        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --features ballista-benchmarks --release --bin ballista-http --target x86_64-unknown-linux-gnu', {
             cwd: ROOT,
             stdio: 'inherit',
         });
         console.log('Ballista server binary built successfully');
 
         console.log('Building Ballista scheduler...');
-        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin ballista-scheduler --target x86_64-unknown-linux-gnu', {
+        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --features ballista-benchmarks --release --bin ballista-scheduler --target x86_64-unknown-linux-gnu', {
             cwd: ROOT,
             stdio: 'inherit',
         });
         console.log('Ballista scheduler built successfully');
 
         console.log('Building Ballista executor...');
-        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin ballista-executor --target x86_64-unknown-linux-gnu', {
+        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --features ballista-benchmarks --release --bin ballista-executor --target x86_64-unknown-linux-gnu', {
             cwd: ROOT,
             stdio: 'inherit',
         });
