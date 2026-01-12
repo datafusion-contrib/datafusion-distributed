@@ -1696,6 +1696,10 @@ dependencies = [
 
 [[package]]
 name = "console"
+version = "0.1.0"
+
+[[package]]
+name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
@@ -4284,7 +4288,7 @@ version = "1.44.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8732d3774162a0851e3f2b150eb98f31a9885dd75985099421d393385a01dfd"
 dependencies = [
- "console",
+ "console 0.15.11",
  "once_cell",
  "regex",
  "similar",
