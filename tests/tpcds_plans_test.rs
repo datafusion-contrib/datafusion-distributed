@@ -1,5 +1,4 @@
-// #[cfg(all(feature = "integration", feature = "tpcds", test))]
-#[cfg(all(feature = "integration", test))]
+#[cfg(all(feature = "integration", feature = "tpcds", test))]
 mod tests {
     use datafusion::error::Result;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;

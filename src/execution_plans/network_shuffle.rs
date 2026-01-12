@@ -40,10 +40,10 @@ use uuid::Uuid;
 ///
 /// The easiest way of thinking about this node is as a plan [RepartitionExec] node that is
 /// capable of fanning out the different produced partitions to different tasks.
-/// This allows redistributing data across different tasks in different stages, that way different
+/// This allows redistributing data across different tasks in different stages, so that different
 /// physical machines can make progress on different non-overlapping sets of data.
 ///
-/// This node allows fanning out data from N tasks to M tasks, being N and M arbitrary non-zero
+/// This node allows fanning out of data from N tasks to M tasks, with N and M being arbitrary non-zero
 /// positive numbers. Here are some examples of how data can be shuffled in different scenarios:
 ///
 /// # 1 to many
@@ -108,12 +108,12 @@ use uuid::Uuid;
 ///
 /// The communication between two stages across a [NetworkShuffleExec] has two implications:
 ///
-/// - Each task in Stage N+1 gather data from all tasks in Stage N
-/// - The sum of the number of partitions in all tasks in Stage N+1 is equal to the
+/// - Each task in Stage N+1 gathers data from all tasks in Stage N
+/// - The total number of partitions across all tasks in Stage N+1 is equal to the
 ///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
 ///
 /// This node has two variants.
-/// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
+/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
 ///    using Arrow Flight.
 #[derive(Debug, Clone)]
