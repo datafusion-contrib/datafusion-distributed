@@ -132,6 +132,8 @@ mod tests {
         test_tpch_query(tpch::get_test_tpch_query(22)?).await
     }
 
+    // test_tpch_query runs each TPC-H query twice - once in a distributed manner and once
+    // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
 
@@ -142,8 +144,6 @@ mod tests {
         Ok(())
     }
 
-    // test_non_distributed_consistency runs each TPC-H query twice - once in a distributed manner
-    // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(
         ctx: SessionContext,
         sql: String,

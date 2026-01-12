@@ -1069,14 +1069,14 @@ mod tests {
         Ok(())
     }
 
+    // test_tpch_query runs each TPC-H query in a distributed manner while collecting metrics.
+    // This allows us to call `explain_analyze` on the resulting executed plan.
     async fn test_tpch_query(query_id: u8) -> Result<String, Box<dyn Error>> {
         let (mut ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
         ctx.set_distributed_metrics_collection(true)?;
         run_tpch_query(ctx, query_id).await
     }
 
-    // test_non_distributed_consistency runs each TPC-H query twice - once in a distributed manner
-    // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(ctx: SessionContext, query_id: u8) -> Result<String, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
         let sql = tpch::get_test_tpch_query(query_id)?;

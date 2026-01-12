@@ -40,10 +40,10 @@ use uuid::Uuid;
 ///
 /// The easiest way of thinking about this node is as a plan [RepartitionExec] node that is
 /// capable of fanning out the different produced partitions to different tasks.
-/// This allows redistributing data across different tasks in different stages, that way different
+/// This allows redistributing data across different tasks in different stages, so that different
 /// physical machines can make progress on different non-overlapping sets of data.
 ///
-/// This node allows fanning out data from N tasks to M tasks, being N and M arbitrary non-zero
+/// This node allows fanning out of data from N tasks to M tasks, with N and M being arbitrary non-zero
 /// positive numbers. Here are some examples of how data can be shuffled in different scenarios:
 ///
 /// # 1 to many
@@ -108,12 +108,12 @@ use uuid::Uuid;
 ///
 /// The communication between two stages across a [NetworkShuffleExec] has two implications:
 ///
-/// - Each task in Stage N+1 gather data from all tasks in Stage N
-/// - The sum of the number of partitions in all tasks in Stage N+1 is equal to the
+/// - Each task in Stage N+1 gathers data from all tasks in Stage N
+/// - The total number of partitions across all tasks in Stage N+1 is equal to the
 ///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
 ///
 /// This node has two variants.
-/// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
+/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
 ///    using Arrow Flight.
 #[derive(Debug, Clone)]
@@ -121,14 +121,14 @@ pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: PlanProperties,
     pub(crate) input_stage: Stage,
-    /// metrics_collection is used to collect metrics from child tasks. It is empty when an
-    /// is instantiated (deserialized, created via [NetworkShuffleExec::new_ready] etc...).
-    /// Metrics are populated in this map via [NetworkShuffleExec::execute].
+    /// metrics_collection is used to collect metrics from child tasks. It is initially
+    /// instantiated as an empty [DashMap] (see `try_decode` in `distributed_codec.rs`).
+    /// Metrics are populated here via [NetworkCoalesceExec::execute].
     ///
     /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
-    /// the stage it is reading from. This is because, by convention, the Worker
-    /// sends metrics for a task to the last NetworkShuffleExec to read from it, which may or may
-    /// not be this instance.
+    /// the stage it is reading from. This is because, by convention, the Worker sends metrics for
+    /// a task to the last NetworkCoalesceExec to read from it, which may or may not be this
+    /// instance.
     pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }
 
