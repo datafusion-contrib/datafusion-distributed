@@ -84,7 +84,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             Ok(Stage {
                 query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
-                    .map_err(|_| proto_error("Invalid query_id in ExecutionStageProto"))?,
+                    .map_err(|_| proto_error("Invalid query_id in StageProto"))?,
                 num: proto.num as usize,
                 plan,
                 tasks: decode_tasks(proto.tasks)?,

@@ -508,6 +508,7 @@ fn annotate_plan_top_down(
                 child.task_count = plan.task_count.clone();
             } else {
                 child.required_network_boundary = Some(RequiredNetworkBoundary::Coalesce);
+                child.task_count = Maximum(1);
             }
         }
     }
@@ -823,7 +824,7 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let annotated = sql_to_annotated_with_broadcast(query, true).await;
+        let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Desired(3)
           HashJoinExec: task_count=Desired(3)
@@ -840,12 +841,12 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let annotated = sql_to_annotated_single_partition_with_broadcast(query).await;
+        let annotated = sql_to_annotated_broadcast(query, 1, 1, true).await;
         // With single consumer, broadcast should downgrade to coalesce
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Desired(1)
           HashJoinExec: task_count=Desired(1)
-            DataSourceExec: task_count=Desired(1), required_network_boundary=Coalesce
+            DataSourceExec: task_count=Maximum(1), required_network_boundary=Coalesce
             DataSourceExec: task_count=Desired(1)
         ")
     }
@@ -857,7 +858,7 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let annotated = sql_to_annotated_with_broadcast(query, false).await;
+        let annotated = sql_to_annotated_broadcast(query, 4, 4, false).await;
         // With broadcast disabled, no Broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
@@ -877,7 +878,7 @@ mod tests {
         INNER JOIN weather b ON a."RainToday" = b."RainToday"
         INNER JOIN weather c ON b."RainToday" = c."RainToday"
         "#;
-        let annotated = sql_to_annotated_with_broadcast(query, true).await;
+        let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
@@ -934,12 +935,16 @@ mod tests {
         sql_to_annotated_with_options(query, move |b| b).await
     }
 
-    async fn sql_to_annotated_with_broadcast(query: &str, broadcast_enabled: bool) -> String {
+    async fn sql_to_annotated_broadcast(
+        query: &str,
+        target_partitions: usize,
+        num_workers: usize,
+        broadcast_enabled: bool,
+    ) -> String {
         let mut config = SessionConfig::new()
-            .with_target_partitions(4)
+            .with_target_partitions(target_partitions)
             .with_information_schema(true);
 
-        // Register DistributedConfig with broadcast_joins_enabled set
         let mut d_cfg = DistributedConfig::default();
         d_cfg.broadcast_joins_enabled = broadcast_enabled;
         config.set_distributed_option_extension(d_cfg).unwrap();
@@ -947,36 +952,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(query).await.unwrap();
-
-        let annotated = annotate_plan(
-            df.create_physical_plan().await.unwrap(),
-            ctx.state_ref().read().config_options().as_ref(),
-        )
-        .expect("failed to annotate plan");
-        format!("{annotated:?}")
-    }
-
-    async fn sql_to_annotated_single_partition_with_broadcast(query: &str) -> String {
-        let mut config = SessionConfig::new()
-            .with_target_partitions(1)
-            .with_information_schema(true);
-
-        // Register DistributedConfig with broadcast_joins_enabled set
-        let mut d_cfg = DistributedConfig::default();
-        d_cfg.broadcast_joins_enabled = true;
-        config.set_distributed_option_extension(d_cfg).unwrap();
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(1))
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
             .build();
 
         let ctx = SessionContext::new_with_state(state);

@@ -918,7 +918,6 @@ mod tests {
             .with_target_partitions(4)
             .with_information_schema(true);
 
-        // Register DistributedConfig with broadcast_joins_enabled set
         let mut d_cfg = DistributedConfig::default();
         d_cfg.broadcast_joins_enabled = broadcast_enabled;
         config.set_distributed_option_extension(d_cfg).unwrap();

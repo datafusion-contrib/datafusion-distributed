@@ -1,6 +1,6 @@
 # How a Distributed Plan is Built
 
-This page walks through the steps the distributed DataFusion planner takes to build a distributed query plan.
+This page walks through how the distributed DataFusion planner transforms a query into a distributed execution plan.
 
 Everything starts with a simple single-node plan, for example:
 
@@ -29,11 +29,14 @@ The first step is to split the leaf node into different tasks:
 Each task will handle a different non-overlapping piece of data.
 
 The number of tasks that will be used for executing leaf nodes is determined by a `TaskEstimator` implementation.
-There is one default implementation for a file-based `DataSourceExec`, but since a `DataSourceExec` in DataFusion can
-be anything the user wants to implement, it is the user who should also provide a custom `TaskEstimator` if they have
-a custom `DataSourceExec`.
+A default implementation exists for file-based `DataSourceExec` nodes. However, since `DataSourceExec` can be
+customized to represent any data source, users with custom implementations should also provide a corresponding
+`TaskEstimator`.
 
-In the case above, a `TaskEstimator` decided to use four tasks for the leaf node.
+In the case above, a `TaskEstimator` decided to use four tasks for the leaf node. Note that even if we are distributing
+the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
+partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a 
+task is a split of data processed by an entire machine within a cluster.
 
 After that, we can continue reconstructing the plan:
 
@@ -46,12 +49,11 @@ Let's keep constructing the plan:
 
 ![img_4.png](../_static/images/img_4.png)
 
-Things change at this point: a `RepartitionExec` implies that we want to repartition data so that each partition handles
-a non-overlapping set of the grouping keys of the ongoing aggregation.
+At this point, the plan encounters a `RepartitionExec` node, which requires repartitioning data so each partition
+handles a non-overlapping subset of grouping keys for the aggregation.
 
-If a `RepartitionExec` in a single-node context redistributes data across threads on the same machine, a
-`RepartitionExec` in a distributed context redistributes data across threads on different machines. This means that we
-need to perform a shuffle over the network.
+While `RepartitionExec` redistributes data across threads on a single machine in vanilla DataFusion, it redistributes
+data across threads on different machines in the distributed context—requiring a network shuffle.
 
 As we are about to send data over the network, it's convenient to coalesce smaller batches into larger ones to avoid
 the overhead of sending many small messages, and instead send fewer but larger messages:
@@ -80,9 +82,10 @@ The rest of the plan can be formed as normal:
 
 ![img_7.png](../_static/images/img_7.png)
 
-There's just one last step: the head of the plan is currently spread across two different machines, but we want it
-on one. In the same way that vanilla DataFusion coalesces all partitions into one in the head node for the user, we also
-need to do that, but not only across partitions on a single machine, but across tasks on different machines.
+One final step remains: the plan's head is currently distributed across two machines, but the final result must be
+consolidated on a single node. In the same way that vanilla DataFusion coalesces all partitions into one in the head
+node for the user, we also need to do that, but not only across partitions on a single machine, but across tasks on
+different machines.
 
 For that, the `NetworkCoalesceExec` network boundary is introduced: it coalesces P partitions across N tasks into
 N*P partitions in one task. This does not imply repartitioning, or shuffling, or anything like that. The partitions
