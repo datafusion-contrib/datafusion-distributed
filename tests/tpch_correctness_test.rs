@@ -2,9 +2,9 @@
 mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::DefaultSessionBuilder;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::tpch;
+    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fmt::Display;
@@ -134,6 +134,13 @@ mod tests {
 
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+
+        // Enable broadcast joins if BROADCAST_JOINS_ENABLED env var is set
+        let ctx = if std::env::var("BROADCAST_JOINS_ENABLED").is_ok() {
+            ctx.with_distributed_broadcast_joins_enabled(true)?
+        } else {
+            ctx
+        };
 
         let results_d = run_tpch_query(ctx, sql.clone()).await?;
         let results_s = run_tpch_query(SessionContext::new(), sql).await?;

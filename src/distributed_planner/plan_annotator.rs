@@ -191,12 +191,15 @@ impl Debug for AnnotatedPlan {
 ///                                                                                                           └──────────────────────┘
 /// ```
 ///
-/// # Pass 3: Set Operators' Task Count Top-to-bottom
+/// # Pass 2: Set Operators' Task Count Top-to-bottom
 ///
 /// This pass is a top-to-bottom pass that sets each node's task count in the [AnnotatedPlan] that
 /// depends on their parent's task_count. This pass is used for nodes marked [NetworkBoundary::Broadcast].
 /// As a result this marks:
-///     1. [NetworkBoundary::Broadcast] -> Parent's task_count.
+///     1. [NetworkBoundary::Broadcast] -> Parent's task_count if task_count > 1.
+///         - This pass will downgrade [NetworkBoundary::Broadcast] -> [NetworkBoundary::Coalesce]
+///         is task_count == 1 since their is no benefit to broadcasting and caching adds slight
+///         overhead.
 ///     2. All other nodes -> Unchanged since their task_count does not depend on their parent's.
 ///
 /// The example plan after this phase would look like:
@@ -330,7 +333,8 @@ fn _annotate_plan_bottom_up(
     task_count = task_count.limit(n_workers);
 
     // Check if this plan needs a network boundary below it.
-    let boundary = required_network_boundary_below(plan.as_ref());
+    let broadcast_joins_enabled = d_cfg.broadcast_joins_enabled;
+    let boundary = required_network_boundary_below(plan.as_ref(), broadcast_joins_enabled);
 
     // For Broadcast, mark the direct build child.
     let mut annotated_plan = if boundary == Some(RequiredNetworkBoundary::Broadcast) {
@@ -455,7 +459,10 @@ fn _annotate_plan_bottom_up(
 
 /// Returns if the [ExecutionPlan] requires a network boundary below it, and if it does, the kind
 /// of network boundary ([RequiredNetworkBoundary]).
-fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<RequiredNetworkBoundary> {
+fn required_network_boundary_below(
+    parent: &dyn ExecutionPlan,
+    broadcast_joins_enabled: bool,
+) -> Option<RequiredNetworkBoundary> {
     let children = parent.children();
     let first_child = children.first()?;
 
@@ -474,7 +481,11 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
         }
         return Some(RequiredNetworkBoundary::Coalesce);
     }
-    if let Some(hash_join) = parent.as_any().downcast_ref::<HashJoinExec>()
+    // Mark CollectLeft joins as Broadcast candidates when enabled.
+    // Actual decision of whether to use Broadcast vs Coalesce based on consumer_count
+    // is made in Pass 2 when we know the parent's task count.
+    if broadcast_joins_enabled
+        && let Some(hash_join) = parent.as_any().downcast_ref::<HashJoinExec>()
         && hash_join.partition_mode() == &PartitionMode::CollectLeft
     {
         return Some(RequiredNetworkBoundary::Broadcast);
@@ -488,9 +499,16 @@ fn annotate_plan_top_down(
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
     // Set broadcast children's task_count to parent's task_count
+    // Downgrade Broadcast to Coalesce if parent's task_count <= 1 since there is no benefit from
+    // broadcasting to a single consumer.
+    let parent_task_count = plan.task_count.as_usize();
     for child in &mut plan.children {
         if child.required_network_boundary == Some(RequiredNetworkBoundary::Broadcast) {
-            child.task_count = plan.task_count.clone();
+            if parent_task_count > 1 {
+                child.task_count = plan.task_count.clone();
+            } else {
+                child.required_network_boundary = Some(RequiredNetworkBoundary::Coalesce);
+            }
         }
     }
 
@@ -509,7 +527,7 @@ mod tests {
     use super::*;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{DistributedExt, TaskEstimation, assert_snapshot};
+    use crate::{DistributedConfig, DistributedExt, TaskEstimation, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -578,12 +596,14 @@ mod tests {
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Desired(3)
           HashJoinExec: task_count=Desired(3)
-            CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+            CoalescePartitionsExec: task_count=Desired(3)
               DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Desired(3)
         ")
     }
 
+    // TODO: should be changed once broadcasting is done more intelligently and not behind a
+    // feature flag.
     #[tokio::test]
     async fn test_left_join_distributed() {
         let query = r#"
@@ -613,7 +633,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Broadcast
+            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
                   CoalesceBatchesExec: task_count=Desired(2), required_network_boundary=Shuffle
@@ -645,7 +665,7 @@ mod tests {
         CoalesceBatchesExec: task_count=Desired(3)
           HashJoinExec: task_count=Desired(3)
             CoalescePartitionsExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3), required_network_boundary=Broadcast
+              DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Desired(3)
         ")
     }
@@ -796,6 +816,81 @@ mod tests {
         ")
     }
 
+    #[tokio::test]
+    async fn test_broadcast_join_annotation() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let annotated = sql_to_annotated_with_broadcast(query, true).await;
+        assert_snapshot!(annotated, @r"
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3)
+            CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+              DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_downgrade_single_consumer() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let annotated = sql_to_annotated_single_partition_with_broadcast(query).await;
+        // With single consumer, broadcast should downgrade to coalesce
+        assert_snapshot!(annotated, @r"
+        CoalesceBatchesExec: task_count=Desired(1)
+          HashJoinExec: task_count=Desired(1)
+            DataSourceExec: task_count=Desired(1), required_network_boundary=Coalesce
+            DataSourceExec: task_count=Desired(1)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_disabled_default() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let annotated = sql_to_annotated_with_broadcast(query, false).await;
+        // With broadcast disabled, no Broadcast annotation should appear
+        assert!(!annotated.contains("Broadcast"));
+        assert_snapshot!(annotated, @r"
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3)
+            CoalescePartitionsExec: task_count=Desired(3)
+              DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_multi_join_chain() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp", c."Rainfall"
+        FROM weather a
+        INNER JOIN weather b ON a."RainToday" = b."RainToday"
+        INNER JOIN weather c ON b."RainToday" = c."RainToday"
+        "#;
+        let annotated = sql_to_annotated_with_broadcast(query, true).await;
+        assert_snapshot!(annotated, @r"
+        CoalesceBatchesExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
+              CoalesceBatchesExec: task_count=Desired(3)
+                HashJoinExec: task_count=Desired(3)
+                  CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+                    DataSourceExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Maximum(1)
+        ")
+    }
+
     #[allow(clippy::type_complexity)]
     struct CallbackEstimator {
         f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
@@ -837,6 +932,64 @@ mod tests {
 
     async fn sql_to_annotated(query: &str) -> String {
         sql_to_annotated_with_options(query, move |b| b).await
+    }
+
+    async fn sql_to_annotated_with_broadcast(query: &str, broadcast_enabled: bool) -> String {
+        let mut config = SessionConfig::new()
+            .with_target_partitions(4)
+            .with_information_schema(true);
+
+        // Register DistributedConfig with broadcast_joins_enabled set
+        let mut d_cfg = DistributedConfig::default();
+        d_cfg.broadcast_joins_enabled = broadcast_enabled;
+        config.set_distributed_option_extension(d_cfg).unwrap();
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx.sql(query).await.unwrap();
+
+        let annotated = annotate_plan(
+            df.create_physical_plan().await.unwrap(),
+            ctx.state_ref().read().config_options().as_ref(),
+        )
+        .expect("failed to annotate plan");
+        format!("{annotated:?}")
+    }
+
+    async fn sql_to_annotated_single_partition_with_broadcast(query: &str) -> String {
+        let mut config = SessionConfig::new()
+            .with_target_partitions(1)
+            .with_information_schema(true);
+
+        // Register DistributedConfig with broadcast_joins_enabled set
+        let mut d_cfg = DistributedConfig::default();
+        d_cfg.broadcast_joins_enabled = true;
+        config.set_distributed_option_extension(d_cfg).unwrap();
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(1))
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx.sql(query).await.unwrap();
+
+        let annotated = annotate_plan(
+            df.create_physical_plan().await.unwrap(),
+            ctx.state_ref().read().config_options().as_ref(),
+        )
+        .expect("failed to annotate plan");
+        format!("{annotated:?}")
     }
 
     async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
