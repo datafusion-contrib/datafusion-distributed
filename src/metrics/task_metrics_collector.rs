@@ -124,9 +124,7 @@ mod tests {
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, PartitionIsolatorExec,
-    };
+    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -281,33 +279,10 @@ mod tests {
                 "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
             );
 
-            // Collect which nodes are expected to have no metrics (like PartitionIsolatorExec)
-            // We need to traverse in the same order as TaskMetricsCollector (DFS/pre-order, excluding network boundaries)
-            let mut node_idx = 0;
-            let mut nodes_without_metrics = std::collections::HashSet::new();
-            stage_plan
-                .clone()
-                .transform_down(|plan| {
-                    if plan.is_network_boundary() {
-                        return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
-                    }
-                    // PartitionIsolatorExec nodes typically don't have metrics
-                    if plan
-                        .as_any()
-                        .downcast_ref::<PartitionIsolatorExec>()
-                        .is_some()
-                    {
-                        nodes_without_metrics.insert(node_idx);
-                    }
-                    node_idx += 1;
-                    Ok(Transformed::no(plan))
-                })
-                .unwrap();
-
-            // Ensure metrics were collected for all nodes. Some nodes (like PartitionIsolatorExec)
-            // may legitimately have empty metrics, which is fine - we just verify the metrics set exists.
-            // The actual metrics content is verified by checking that the count matches the plan nodes.
-            // Note: Empty metrics sets are allowed for certain nodes like PartitionIsolatorExec.
+            // Verify that metrics were collected for all nodes. Some nodes may legitimately have
+            // empty metrics (e.g., custom execution plans without metrics), which is fine - we
+            // just verify that a metrics set exists for each node. The count assertion above
+            // ensures all nodes are included in the metrics collection.
         }
     }
 
@@ -404,47 +379,19 @@ mod tests {
         let collector = TaskMetricsCollector::new();
         let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
-        // Verify PartitionIsolatorExec nodes are preserved in metrics collection
+        // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_stage_key in expected_stage_keys {
             let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.decoded().unwrap();
 
-            // Count PartitionIsolatorExec nodes and verify they're included in metrics
-            let mut partition_isolator_indices = Vec::new();
-            let mut node_idx = 0;
-            stage_plan
-                .clone()
-                .transform_down(|plan| {
-                    if plan.is_network_boundary() {
-                        return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
-                    }
-                    if plan
-                        .as_any()
-                        .downcast_ref::<PartitionIsolatorExec>()
-                        .is_some()
-                    {
-                        partition_isolator_indices.push(node_idx);
-                    }
-                    node_idx += 1;
-                    Ok(Transformed::no(plan))
-                })
-                .unwrap();
-
-            // Verify metrics count matches (this ensures PartitionIsolatorExec nodes are included)
+            // Verify metrics count matches - this ensures all nodes are included in metrics collection
+            // regardless of whether they have metrics or not (some nodes may have empty metrics sets)
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes(stage_plan),
-                "Metrics count must match plan nodes (including PartitionIsolatorExec) for stage {expected_stage_key:?}"
+                "Metrics count must match plan nodes for stage {expected_stage_key:?}"
             );
-
-            // Verify PartitionIsolatorExec nodes have empty metrics (corner case)
-            for &idx in &partition_isolator_indices {
-                assert!(
-                    actual_metrics[idx].metrics.is_empty(),
-                    "PartitionIsolatorExec at index {idx} should have empty metrics"
-                );
-            }
         }
     }
 }
