@@ -16,7 +16,7 @@ use uuid::Uuid;
 /// It implements [`ExecutionPlan`] and can be executed to produce a
 /// stream of record batches.
 ///
-/// If the stage has input stages, then it those input stages will be executed on remote resources
+/// If a stage has input stages, then those input stages will be executed on remote resources
 /// and will be provided the remainder of the stage tree.
 ///
 /// For example, if our stage tree looks like this:
@@ -145,8 +145,8 @@ impl DistributedTaskContext {
 }
 
 impl Stage {
-    /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
-    /// responsible for partitions in the plan.
+    /// Creates a new `Stage` with the given plan and inputs. `ExecutionTasks` will be created for
+    /// each of the `n_tasks` specified tasks.
     pub(crate) fn new(
         query_id: Uuid,
         num: usize,
@@ -174,7 +174,7 @@ use prost::Message;
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVisitor`
 /// in [`datafusion::physical_plan::display`] is not public, and that it also
-/// is specific to a `ExecutionPlan` trait object, which we don't have.
+/// is specific to an `ExecutionPlan` trait object, which we don't have.
 ///
 /// TODO: try to upstream a change to make rendering of Trees (logical, physical, stages) against
 /// a generic trait rather than a specific trait object. This would allow us to
