@@ -632,7 +632,7 @@ mod tests {
 
     #[allow(clippy::type_complexity)]
     struct CallbackEstimator {
-        f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
+        f: Arc<dyn Fn(&dyn ExecutionPlan) -> Option<TaskEstimation> + Send + Sync>,
     }
 
     impl CallbackEstimator {
