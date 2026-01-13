@@ -454,19 +454,11 @@ mod tests {
         })
         .await;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
-        └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
-          │ CoalesceBatchesExec: target_batch_size=8192
-          │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          │     CoalescePartitionsExec
-          │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
-          └──────────────────────────────────────────────────
+        CoalesceBatchesExec: target_batch_size=8192
+          HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+            CoalescePartitionsExec
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
         ");
     }
 
@@ -918,8 +910,10 @@ mod tests {
             .with_target_partitions(4)
             .with_information_schema(true);
 
-        let mut d_cfg = DistributedConfig::default();
-        d_cfg.broadcast_joins_enabled = broadcast_enabled;
+        let d_cfg = DistributedConfig {
+            broadcast_joins_enabled: broadcast_enabled,
+            ..Default::default()
+        };
         config.set_distributed_option_extension(d_cfg).unwrap();
 
         let state = SessionStateBuilder::new()

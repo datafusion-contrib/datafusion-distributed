@@ -260,7 +260,7 @@ pub(super) fn annotate_plan(
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
     let annotated_plan = _annotate_plan_bottom_up(plan, cfg, true)?;
-    annotate_plan_top_down(annotated_plan, cfg)
+    annotate_plan_top_down(annotated_plan)
 }
 
 /// This is Phase 1 of annoatation as described above which sets initial task_counts and marks all
@@ -271,6 +271,7 @@ fn _annotate_plan_bottom_up(
     root: bool,
 ) -> Result<AnnotatedPlan, DataFusionError> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let broadcast_joins_enabled = d_cfg.broadcast_joins_enabled;
     let estimator = &d_cfg.__private_task_estimator;
     let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
@@ -315,6 +316,13 @@ fn _annotate_plan_bottom_up(
             count += annotated_child.task_count.as_usize();
         }
         task_count = Desired(count);
+    } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
+        && node.mode == PartitionMode::CollectLeft
+        && !broadcast_joins_enabled
+    {
+        // Onlly distriubte CollectLeft HashJoins after we broadcast more intelligently or when it
+        // is explicitly enabled.
+        task_count = Maximum(1);
     } else {
         // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
@@ -333,7 +341,6 @@ fn _annotate_plan_bottom_up(
     task_count = task_count.limit(n_workers);
 
     // Check if this plan needs a network boundary below it.
-    let broadcast_joins_enabled = d_cfg.broadcast_joins_enabled;
     let boundary = required_network_boundary_below(plan.as_ref(), broadcast_joins_enabled);
 
     // For Broadcast, mark the direct build child.
@@ -494,10 +501,7 @@ fn required_network_boundary_below(
     None
 }
 
-fn annotate_plan_top_down(
-    mut plan: AnnotatedPlan,
-    cfg: &ConfigOptions,
-) -> Result<AnnotatedPlan, DataFusionError> {
+fn annotate_plan_top_down(mut plan: AnnotatedPlan) -> Result<AnnotatedPlan, DataFusionError> {
     // Set broadcast children's task_count to parent's task_count
     // Downgrade Broadcast to Coalesce if parent's task_count <= 1 since there is no benefit from
     // broadcasting to a single consumer.
@@ -516,7 +520,7 @@ fn annotate_plan_top_down(
     let annotated_children = plan
         .children
         .into_iter()
-        .map(|child| annotate_plan_top_down(child, cfg))
+        .map(annotate_plan_top_down)
         .collect::<Result<Vec<_>, _>>()?;
 
     plan.children = annotated_children;
@@ -588,6 +592,8 @@ mod tests {
         ")
     }
 
+    // TODO: should be changed once broadcasting is done more intelligently and not behind a
+    // feature flag.
     #[tokio::test]
     async fn test_left_join() {
         let query = r#"
@@ -595,11 +601,11 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Desired(3)
-          HashJoinExec: task_count=Desired(3)
-            CoalescePartitionsExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+        CoalesceBatchesExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
+            DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -656,6 +662,8 @@ mod tests {
         ")
     }
 
+    // TODO: should be changed once broadcasting is done more intelligently and not behind a
+    // feature flag.
     #[tokio::test]
     async fn test_inner_join() {
         let query = r#"
@@ -663,11 +671,11 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Desired(3)
-          HashJoinExec: task_count=Desired(3)
-            CoalescePartitionsExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+        CoalesceBatchesExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
+            DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -862,11 +870,11 @@ mod tests {
         // With broadcast disabled, no Broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Desired(3)
-          HashJoinExec: task_count=Desired(3)
-            CoalescePartitionsExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+        CoalesceBatchesExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
+            DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -945,8 +953,10 @@ mod tests {
             .with_target_partitions(target_partitions)
             .with_information_schema(true);
 
-        let mut d_cfg = DistributedConfig::default();
-        d_cfg.broadcast_joins_enabled = broadcast_enabled;
+        let d_cfg = DistributedConfig {
+            broadcast_joins_enabled: broadcast_enabled,
+            ..Default::default()
+        };
         config.set_distributed_option_extension(d_cfg).unwrap();
 
         let state = SessionStateBuilder::new()
