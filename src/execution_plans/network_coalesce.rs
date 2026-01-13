@@ -44,11 +44,11 @@ use uuid::Uuid;
 /// The communication between two stages across a [NetworkCoalesceExec] has two implications:
 ///
 /// - Stage N+1 must have exactly 1 task. The distributed planner ensures this is true.
-/// - The amount of partitions in the single task of Stage N+1 is equal to the sum of all
-///   partitions in all tasks in Stage N+1 (e.g. (1,2,3,4,5,6,7,8,9) = (1,2,3)+(4,5,6)+(7,8,9) )
+/// - The number of partitions in the single task of Stage N+1 is equal to the total number of
+///   partitions across all tasks in Stage N (e.g. (1,2,3,4,5,6,7,8,9) = (1,2,3)+(4,5,6)+(7,8,9) )
 ///
 /// This node has two variants.
-/// 1. Pending: it acts as a placeholder for the distributed optimization step to mark it as ready.
+/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
 /// 2. Ready: runs within a distributed stage and queries the next input stage over the network
 ///    using Arrow Flight.
 #[derive(Debug, Clone)]
@@ -57,9 +57,9 @@ pub struct NetworkCoalesceExec {
     pub(crate) properties: PlanProperties,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
-    /// metrics_collection is used to collect metrics from child tasks. It is empty when an
-    /// is instantiated (deserialized, created via [NetworkCoalesceExec::new_ready] etc...).
-    /// Metrics are populated in this map via [NetworkCoalesceExec::execute].
+    /// metrics_collection is used to collect metrics from child tasks. It is initially
+    /// instantiated as an empty [DashMap] (see `try_decode` in `distributed_codec.rs`).
+    /// Metrics are populated here via [NetworkCoalesceExec::execute].
     ///
     /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
     /// the stage it is reading from. This is because, by convention, the Worker sends metrics for
@@ -71,7 +71,7 @@ pub struct NetworkCoalesceExec {
 impl NetworkCoalesceExec {
     /// Builds a new [NetworkCoalesceExec] in "Pending" state.
     ///
-    /// Typically, this node should be place right after nodes that coalesce all the input
+    /// Typically, this node should be placed right after nodes that coalesce all the input
     /// partitions into one, for example:
     /// - [CoalescePartitionsExec]
     /// - [SortPreservingMergeExec]
@@ -84,7 +84,7 @@ impl NetworkCoalesceExec {
     ) -> Result<Self> {
         if task_count > 1 {
             return plan_err!(
-                "NetworkCoalesceExec cannot be executed in more than one task, {task_count} where passed."
+                "NetworkCoalesceExec cannot be executed in more than one task, {task_count} were passed."
             );
         }
         Ok(Self {

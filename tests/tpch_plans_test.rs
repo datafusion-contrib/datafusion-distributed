@@ -991,13 +991,12 @@ mod tests {
         Ok(())
     }
 
+    // test_tpch_query generates and displays a distributed plan for each TPC-H query.
     async fn test_tpch_query(query_id: &str) -> Result<String, Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
         run_tpch_query(ctx, query_id).await
     }
 
-    // test_non_distributed_consistency runs each TPC-H query twice - once in a distributed manner
-    // and once in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn run_tpch_query(ctx: SessionContext, query_id: &str) -> Result<String, Box<dyn Error>> {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
         let sql = tpch::get_query(query_id)?;
