@@ -2,7 +2,7 @@ use crate::DefaultSessionBuilder;
 use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
-use crate::protobuf::StageKey;
+use crate::protobuf::{ObservabilityService, PingRequest, PingResponse, StageKey};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -209,5 +209,15 @@ impl FlightService for Worker {
         _: Request<Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         Err(Status::unimplemented("Not yet implemented"))
+    }
+}
+
+#[tonic::async_trait]
+impl ObservabilityService for Worker {
+    async fn ping(
+        &self,
+        _request: tonic::Request<PingRequest>,
+    ) -> Result<tonic::Response<PingResponse>, tonic::Status> {
+        Ok(tonic::Response::new(PingResponse { value: 0 }))
     }
 }
