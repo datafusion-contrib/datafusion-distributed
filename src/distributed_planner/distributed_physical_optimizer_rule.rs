@@ -102,6 +102,11 @@ fn distribute_plan(
 
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
 
+    let new_children = children
+        .into_iter()
+        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
+        .collect::<Result<Vec<_>, _>>()?;
+
     // We see significant speed-ups when we introduce network boundaries between nested CollectLeft
     // HashJoinExecs. This doesn't make logical sense as they are the same plans, only differing
     // via addiitional network boundaries which solely cause overhead.
@@ -112,20 +117,15 @@ fn distribute_plan(
         && parent_task_count == 1
         && max_child_task_count == Some(1)
     {
-        let new_children = distribute_children(children, cfg, query_id, stage_id)?;
         return annotated_plan.plan.with_new_children(new_children);
     }
 
     match annotated_plan.required_network_boundary {
         // No network boundary needed, just recurse on children.
-        None => {
-            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
-            annotated_plan.plan.with_new_children(new_children)
-        }
+        None => annotated_plan.plan.with_new_children(new_children),
         // If the current node has a RepartitionExec below, it needs a shuffle, so put one
         // NetworkShuffleExec boundary in between the RepartitionExec and the current node.
         Some(RequiredNetworkBoundary::Shuffle) => {
-            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
             let new_child = Arc::new(NetworkShuffleExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
@@ -140,7 +140,6 @@ fn distribute_plan(
         // plan is trying to merge all partitions into one. We need to go one step ahead and also merge
         // all distributed tasks into one.
         Some(RequiredNetworkBoundary::Coalesce) => {
-            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
             let new_child = Arc::new(NetworkCoalesceExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
@@ -155,7 +154,6 @@ fn distribute_plan(
         // that the build side (this node) is trying to broadcast to all consumers. We need to
         // insert a BroadcastExec and NetworkBroadcastExec.
         Some(RequiredNetworkBoundary::Broadcast) => {
-            let new_children = distribute_children(children, cfg, query_id, stage_id)?;
             let new_child = NetworkBroadcastExec::with_inner_broadcast(
                 require_one_child(new_children)?,
                 query_id,
@@ -167,19 +165,6 @@ fn distribute_plan(
             annotated_plan.plan.with_new_children(vec![new_child])
         }
     }
-}
-
-/// Distributes children and returns the resulting [ExecutionPlan]s.
-fn distribute_children(
-    children: Vec<AnnotatedPlan>,
-    cfg: &ConfigOptions,
-    query_id: Uuid,
-    stage_id: &mut usize,
-) -> Result<Vec<Arc<dyn ExecutionPlan>>, DataFusionError> {
-    children
-        .into_iter()
-        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
-        .collect::<Result<Vec<_>, _>>()
 }
 
 /// Rearranges the [CoalesceBatchesExec] nodes in the plan so that they are placed right below
