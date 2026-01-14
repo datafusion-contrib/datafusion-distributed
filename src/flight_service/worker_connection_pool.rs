@@ -264,7 +264,7 @@ pub(super) fn manually_propagate_distributed_config(
 impl Debug for WorkerConnectionPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerConnections")
-            .field("connections", &self.connections.len())
+            .field("num_connections", &self.connections.len())
             .finish()
     }
 }
@@ -277,6 +277,6 @@ impl Clone for WorkerConnectionPool {
 
 impl Debug for WorkerConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Streamer").finish()
+        f.debug_struct("WorkerConnection").finish()
     }
 }
