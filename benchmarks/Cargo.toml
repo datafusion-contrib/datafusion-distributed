@@ -8,10 +8,6 @@ default-run = "dfbench"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-distributed = { path = "..", features = ["integration"] }
-ballista = { version = "50" }
-ballista-executor = { version = "50" }
-ballista-scheduler = { version = "50" }
-ballista-core = "50"
 tokio = { version = "1.48", features = ["full"] }
 parquet = { version = "57.1.0" }
 structopt = { version = "0.3.26" }
@@ -41,15 +37,3 @@ path = "src/main.rs"
 [[bin]]
 name = "worker"
 path = "cdk/bin/worker.rs"
-
-[[bin]]
-name = "ballista-http"
-path = "cdk/bin/ballista_http.rs"
-
-[[bin]]
-name = "ballista-executor"
-path = "cdk/bin/ballista_executor.rs"
-
-[[bin]]
-name = "ballista-scheduler"
-path = "cdk/bin/ballista_scheduler.rs"

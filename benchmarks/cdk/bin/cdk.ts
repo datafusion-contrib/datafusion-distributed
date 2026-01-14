@@ -3,7 +3,6 @@ import * as cdk from 'aws-cdk-lib/core';
 import {CdkStack} from '../lib/cdk-stack';
 import {DATAFUSION_DISTRIBUTED_ENGINE} from "../lib/datafusion-distributed";
 import {TRINO_ENGINE} from "../lib/trino";
-import {BALLISTA_ENGINE} from "../lib/ballista";
 
 const app = new cdk.App();
 
@@ -13,7 +12,6 @@ const config = {
     engines: [
         DATAFUSION_DISTRIBUTED_ENGINE,
         TRINO_ENGINE,
-        BALLISTA_ENGINE
     ]
 };
 

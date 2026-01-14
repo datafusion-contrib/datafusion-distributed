@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    # "benchmarks",  # Excluded: ballista v50 depends on datafusion v50, conflicts with DF 52
-    "cli",
-    "console",
-]
+members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
 datafusion = { version = "52.0.0", default-features = false }

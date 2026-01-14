@@ -1,7 +1,10 @@
 mod do_get;
 mod session_builder;
+mod spawn_select_all;
 mod worker;
-pub(crate) use do_get::DoGet;
+mod worker_connection_pool;
+
+pub(crate) use worker_connection_pool::WorkerConnectionPool;
 
 pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,
