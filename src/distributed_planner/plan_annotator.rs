@@ -394,12 +394,10 @@ mod tests {
           SortPreservingMergeExec: task_count=Maximum(1), required_network_boundary=Coalesce
             SortExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  CoalesceBatchesExec: task_count=Desired(2), required_network_boundary=Shuffle
-                    RepartitionExec: task_count=Desired(3)
-                      RepartitionExec: task_count=Desired(3)
-                        AggregateExec: task_count=Desired(3)
-                          DataSourceExec: task_count=Desired(3)
+                AggregateExec: task_count=Desired(2), required_network_boundary=Shuffle
+                  RepartitionExec: task_count=Desired(3)
+                    AggregateExec: task_count=Desired(3)
+                      DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -410,11 +408,10 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
             DataSourceExec: task_count=Maximum(1)
+          DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -445,27 +442,22 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  CoalesceBatchesExec: task_count=Desired(2), required_network_boundary=Shuffle
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
+            ProjectionExec: task_count=Desired(2)
+              AggregateExec: task_count=Desired(2), required_network_boundary=Shuffle
+                RepartitionExec: task_count=Desired(3)
+                  AggregateExec: task_count=Desired(3)
+                    FilterExec: task_count=Desired(3)
+                      RepartitionExec: task_count=Desired(3)
+                        DataSourceExec: task_count=Desired(3)
+          ProjectionExec: task_count=Maximum(1)
+            AggregateExec: task_count=Maximum(1), required_network_boundary=Shuffle
+              RepartitionExec: task_count=Desired(3)
+                AggregateExec: task_count=Desired(3)
+                  FilterExec: task_count=Desired(3)
                     RepartitionExec: task_count=Desired(3)
-                      AggregateExec: task_count=Desired(3)
-                        CoalesceBatchesExec: task_count=Desired(3)
-                          FilterExec: task_count=Desired(3)
-                            RepartitionExec: task_count=Desired(3)
-                              DataSourceExec: task_count=Desired(3)
-            ProjectionExec: task_count=Maximum(1)
-              AggregateExec: task_count=Maximum(1)
-                CoalesceBatchesExec: task_count=Maximum(1), required_network_boundary=Shuffle
-                  RepartitionExec: task_count=Desired(3)
-                    AggregateExec: task_count=Desired(3)
-                      CoalesceBatchesExec: task_count=Desired(3)
-                        FilterExec: task_count=Desired(3)
-                          RepartitionExec: task_count=Desired(3)
-                            DataSourceExec: task_count=Desired(3)
+                      DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -476,11 +468,10 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
             DataSourceExec: task_count=Maximum(1)
+          DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -491,12 +482,10 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(2)
-          CoalesceBatchesExec: task_count=Desired(2), required_network_boundary=Shuffle
-            RepartitionExec: task_count=Desired(3)
-              RepartitionExec: task_count=Desired(3)
-                AggregateExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+        AggregateExec: task_count=Desired(2), required_network_boundary=Shuffle
+          RepartitionExec: task_count=Desired(3)
+            AggregateExec: task_count=Desired(3)
+              DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -510,15 +499,13 @@ mod tests {
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
-          CoalesceBatchesExec: task_count=Maximum(2)
+          FilterExec: task_count=Maximum(2)
+            RepartitionExec: task_count=Maximum(2)
+              DataSourceExec: task_count=Maximum(2)
+          ProjectionExec: task_count=Maximum(2)
             FilterExec: task_count=Maximum(2)
               RepartitionExec: task_count=Maximum(2)
                 DataSourceExec: task_count=Maximum(2)
-          ProjectionExec: task_count=Maximum(2)
-            CoalesceBatchesExec: task_count=Maximum(2)
-              FilterExec: task_count=Maximum(2)
-                RepartitionExec: task_count=Maximum(2)
-                  DataSourceExec: task_count=Maximum(2)
         ")
     }
 
@@ -531,10 +518,9 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Desired(3)
-          FilterExec: task_count=Desired(3)
-            RepartitionExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3)
+        FilterExec: task_count=Desired(3)
+          RepartitionExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -548,10 +534,9 @@ mod tests {
         assert_snapshot!(annotated, @r"
         ProjectionExec: task_count=Desired(3)
           BoundedWindowAggExec: task_count=Desired(3)
-            SortExec: task_count=Desired(3)
-              CoalesceBatchesExec: task_count=Desired(3), required_network_boundary=Shuffle
-                RepartitionExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+            SortExec: task_count=Desired(3), required_network_boundary=Shuffle
+              RepartitionExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -569,20 +554,17 @@ mod tests {
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
-          CoalesceBatchesExec: task_count=Maximum(1)
+          FilterExec: task_count=Maximum(1)
+            RepartitionExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
                 DataSourceExec: task_count=Maximum(1)
-          ProjectionExec: task_count=Maximum(1)
-            CoalesceBatchesExec: task_count=Maximum(1)
-              FilterExec: task_count=Maximum(1)
-                RepartitionExec: task_count=Maximum(1)
-                  DataSourceExec: task_count=Maximum(1)
           ProjectionExec: task_count=Maximum(2)
-            CoalesceBatchesExec: task_count=Maximum(2)
-              FilterExec: task_count=Maximum(2)
-                RepartitionExec: task_count=Maximum(2)
-                  DataSourceExec: task_count=Maximum(2)
+            FilterExec: task_count=Maximum(2)
+              RepartitionExec: task_count=Maximum(2)
+                DataSourceExec: task_count=Maximum(2)
         ")
     }
 
@@ -596,12 +578,10 @@ mod tests {
         })
         .await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(1)
-          CoalesceBatchesExec: task_count=Desired(1), required_network_boundary=Shuffle
-            RepartitionExec: task_count=Maximum(1)
-              RepartitionExec: task_count=Maximum(1)
-                AggregateExec: task_count=Maximum(1)
-                  DataSourceExec: task_count=Maximum(1)
+        AggregateExec: task_count=Desired(1), required_network_boundary=Shuffle
+          RepartitionExec: task_count=Maximum(1)
+            AggregateExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -618,15 +598,13 @@ mod tests {
         .await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(2)
-          CoalesceBatchesExec: task_count=Maximum(1)
+          FilterExec: task_count=Maximum(1)
+            RepartitionExec: task_count=Maximum(1)
+              DataSourceExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
                 DataSourceExec: task_count=Maximum(1)
-          ProjectionExec: task_count=Maximum(1)
-            CoalesceBatchesExec: task_count=Maximum(1)
-              FilterExec: task_count=Maximum(1)
-                RepartitionExec: task_count=Maximum(1)
-                  DataSourceExec: task_count=Maximum(1)
         ")
     }
 
