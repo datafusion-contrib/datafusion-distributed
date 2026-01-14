@@ -551,7 +551,7 @@ impl DistributedExt for SessionConfig {
         enabled: bool,
     ) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.broadcast_joins_enabled = enabled;
+        d_cfg.broadcast_joins = enabled;
         Ok(())
     }
 

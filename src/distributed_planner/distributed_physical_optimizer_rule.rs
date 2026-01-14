@@ -18,6 +18,8 @@ use std::ops::AddAssign;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::insert_broadcast::insert_broadcast_execs;
+
 /// Physical optimizer rule that inspects the plan, places the appropriate network
 /// boundaries, and breaks it down into stages that can be executed in a distributed manner.
 ///
@@ -52,6 +54,8 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         if original.output_partitioning().partition_count() > 1 {
             plan = Arc::new(CoalescePartitionsExec::new(plan))
         }
+
+        plan = insert_broadcast_execs(plan, cfg)?;
 
         let annotated = annotate_plan(plan, cfg)?;
 
@@ -150,17 +154,18 @@ fn distribute_plan(
             stage_id.add_assign(1);
             annotated_plan.plan.with_new_children(vec![new_child])
         }
-        // Broadcast boundary is placed on the build child of a CollectLeft HashJoinExec, it means
-        // that the build side (this node) is trying to broadcast to all consumers. We need to
-        // insert a BroadcastExec and NetworkBroadcastExec.
+        // Broadcast boundary is placed on the build child, a CoalescePartitionsExec, of a
+        // CollectLeft HashJoinExec. It means that the build side (this node) is trying to be
+        // broadcast to all consumers. We need to insert a NetworkBroadcastExec and scale the
+        // BroadcastExec task_count to the actual consumer count.
         Some(RequiredNetworkBoundary::Broadcast) => {
-            let new_child = NetworkBroadcastExec::with_inner_broadcast(
+            let new_child = Arc::new(NetworkBroadcastExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
                 *stage_id,
                 parent_task_count,
                 max_child_task_count.unwrap_or(1),
-            )?;
+            )?);
             stage_id.add_assign(1);
             annotated_plan.plan.with_new_children(vec![new_child])
         }
@@ -210,6 +215,7 @@ fn push_down_batch_coalescing(
 mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
+    use crate::test_utils::plans::sql_to_physical_plan;
     use crate::{DistributedConfig, DistributedExt, DistributedPhysicalOptimizerRule};
     use crate::{assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
@@ -429,6 +435,8 @@ mod tests {
         ");
     }
 
+    // TODO: should be changed once broadcasting is done more intelligently and not behind a
+    // feature flag.
     #[tokio::test]
     async fn test_left_join() {
         let query = r#"
@@ -447,6 +455,8 @@ mod tests {
         ");
     }
 
+    // TODO: should be changed once broadcasting is done more intelligently and not behind a
+    // feature flag.
     #[tokio::test]
     async fn test_left_join_distributed() {
         let query = r#"
@@ -774,51 +784,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_broadcast_creates_network_broadcast_exec() {
+    async fn test_broadcast_left_join_distributed() {
         let query = r#"
-        SELECT a."MinTemp", b."MaxTemp"
-        FROM weather a INNER JOIN weather b
-        ON a."RainToday" = b."RainToday"
+        WITH a AS (
+            SELECT
+                AVG("MinTemp") as "MinTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'yes'
+            GROUP BY "RainTomorrow"
+        ), b AS (
+            SELECT
+                AVG("MaxTemp") as "MaxTemp",
+                "RainTomorrow"
+            FROM weather
+            WHERE "RainToday" = 'no'
+            GROUP BY "RainTomorrow"
+        )
+        SELECT
+            a."MinTemp",
+            b."MaxTemp"
+        FROM a
+        LEFT JOIN b
+        ON a."RainTomorrow" = b."RainTomorrow"
         "#;
         let plan = sql_to_explain_with_broadcast(query, 3, true).await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
+        │   [Stage 4] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          ┌───── Stage 4 ── Tasks: t0:[p0..p3] t1:[p4..p7] 
           │ CoalesceBatchesExec: target_batch_size=8192
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
           │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
-          │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=8, input_tasks=2
+          │     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
+          │       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
+          │         [Stage 3] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
-            │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
-            │   PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
-            │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] 
+            │ BroadcastExec: input_partitions=4, consumer_tasks=2, output_partitions=8
+            │   ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
+            │     AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+            │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
             └──────────────────────────────────────────────────
-        ")
-    }
-
-    #[tokio::test]
-    async fn test_broadcast_downgrades_to_coalesce_single_consumer() {
-        // When broadcast_joins_enabled is true but there's only single consumer,
-        // broadcast should downgrade to coalesce
-        let query = r#"
-        SELECT a."MinTemp", b."MaxTemp"
-        FROM weather a INNER JOIN weather b
-        ON a."RainToday" = b."RainToday"
-        "#;
-        let plan = sql_to_explain_with_broadcast(query, 0, true).await;
-        assert_snapshot!(plan, @r"
-        CoalesceBatchesExec: target_batch_size=8192
-          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-            CoalescePartitionsExec
-              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
-        ")
+              ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
+              │ CoalesceBatchesExec: target_batch_size=8192
+              │   RepartitionExec: partitioning=Hash([RainTomorrow@0], 8), input_partitions=4
+              │     AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
+              │       CoalesceBatchesExec: target_batch_size=8192
+              │         FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
+              │           RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+              │             PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+              │               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
+              └──────────────────────────────────────────────────
+            ┌───── Stage 3 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
+            │ CoalesceBatchesExec: target_batch_size=8192
+            │   RepartitionExec: partitioning=Hash([RainTomorrow@0], 8), input_partitions=4
+            │     AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
+            │       CoalesceBatchesExec: target_batch_size=8192
+            │         FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
+            │           RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+            │             PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+            │               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@1 = no, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
+            └──────────────────────────────────────────────────
+        ");
     }
 
     #[tokio::test]
@@ -833,15 +864,59 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
-        │   CoalesceBatchesExec: target_batch_size=8192
-        │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@2, RainToday@1)], projection=[MinTemp@0, MaxTemp@1, Rainfall@3]
-        │       CoalescePartitionsExec
-        │         [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
-        │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 3 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ CoalesceBatchesExec: target_batch_size=8192
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@2, RainToday@1)], projection=[MinTemp@0, MaxTemp@1, Rainfall@3]
+          │     CoalescePartitionsExec
+          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
+          │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[Rainfall, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          └──────────────────────────────────────────────────
+            ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
+            │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
+            │   CoalesceBatchesExec: target_batch_size=8192
+            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2, RainToday@3]
+            │       CoalescePartitionsExec
+            │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
+            │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+            │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+            └──────────────────────────────────────────────────
+              ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
+              │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
+              │   PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+              │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+              └──────────────────────────────────────────────────
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_datasource_as_build_child() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+
+        let physical_plan = sql_to_physical_plan(query, 4, 3).await;
+        assert_snapshot!(physical_plan, @r"
+        CoalesceBatchesExec: target_batch_size=8192
+          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+            CoalescePartitionsExec
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        ");
+
+        let plan = sql_to_explain_with_broadcast(query, 3, true).await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
           │ CoalesceBatchesExec: target_batch_size=8192
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2, RainToday@3]
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           │     CoalescePartitionsExec
           │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
           │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
@@ -891,22 +966,38 @@ mod tests {
         num_workers: usize,
         broadcast_enabled: bool,
     ) -> String {
+        sql_to_plan_with_options(query, num_workers, broadcast_enabled, true).await
+    }
+
+    async fn sql_to_plan_with_options(
+        query: &str,
+        num_workers: usize,
+        broadcast_enabled: bool,
+        use_optimizer: bool,
+    ) -> String {
+        use datafusion::physical_plan::displayable;
+
         let mut config = SessionConfig::new()
             .with_target_partitions(4)
             .with_information_schema(true);
 
         let d_cfg = DistributedConfig {
-            broadcast_joins_enabled: broadcast_enabled,
+            broadcast_joins: broadcast_enabled,
             ..Default::default()
         };
         config.set_distributed_option_extension(d_cfg).unwrap();
 
-        let state = SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-            .build();
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers));
+
+        if use_optimizer {
+            builder =
+                builder.with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
+        }
+
+        let state = builder.build();
 
         let ctx = SessionContext::new_with_state(state);
         let mut queries = query.split(";").collect_vec();
@@ -921,6 +1012,11 @@ mod tests {
         let df = ctx.sql(last_query).await.unwrap();
 
         let physical_plan = df.create_physical_plan().await.unwrap();
-        display_plan_ascii(physical_plan.as_ref(), false)
+
+        if use_optimizer {
+            display_plan_ascii(physical_plan.as_ref(), false)
+        } else {
+            format!("{}", displayable(physical_plan.as_ref()).indent(true))
+        }
     }
 }

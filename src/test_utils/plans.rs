@@ -1,13 +1,18 @@
-use datafusion::{
-    common::{HashMap, HashSet},
-    physical_plan::ExecutionPlan,
-};
-use std::sync::Arc;
-
 use crate::NetworkBoundaryExt;
+use crate::distributed_ext::DistributedExt;
 use crate::execution_plans::DistributedExec;
 use crate::protobuf::StageKey;
 use crate::stage::Stage;
+use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
+use datafusion::{
+    common::{HashMap, HashSet},
+    execution::{SessionStateBuilder, context::SessionContext},
+    physical_plan::{ExecutionPlan, displayable},
+    prelude::SessionConfig,
+};
+use std::sync::Arc;
+
+use super::parquet::register_parquet_tables;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
 /// This does NOT traverse child stages, only the execution plan tree within this stage.
@@ -73,4 +78,30 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
         }
     }
     result
+}
+
+/// Creates a physical plan from SQL without applying broadcast insertion or distribution.
+/// Used for snapshotting the baseline physical plan in tests.
+pub async fn sql_to_physical_plan(
+    query: &str,
+    target_partitions: usize,
+    num_workers: usize,
+) -> String {
+    let config = SessionConfig::new()
+        .with_target_partitions(target_partitions)
+        .with_information_schema(true);
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+        .build();
+
+    let ctx = SessionContext::new_with_state(state);
+    register_parquet_tables(&ctx).await.unwrap();
+
+    let df = ctx.sql(query).await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+
+    format!("{}", displayable(physical_plan.as_ref()).indent(true))
 }

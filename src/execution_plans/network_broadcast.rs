@@ -142,23 +142,31 @@ pub struct NetworkBroadcastExec {
 impl NetworkBroadcastExec {
     /// Creates a [NetworkBroadcastExec].
     ///
-    /// Use [Self::with_inner_broadcast] to create the full broadcast stack with
-    /// BroadcastExec for caching.
+    /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
+    /// the correct consumer_task_count.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
         stage_num: usize,
+        consumer_task_count: usize,
         input_task_count: usize,
     ) -> Result<Self, DataFusionError> {
-        let total_partitions = input.properties().partitioning.partition_count();
-        let input_partition_count =
-            if let Some(broadcast) = input.as_any().downcast_ref::<super::BroadcastExec>() {
-                broadcast.input_partition_count()
-            } else {
-                total_partitions
-            };
-        let input_stage = Stage::new(query_id, stage_num, input.clone(), input_task_count);
-        let properties = input
+        let Some(broadcast) = input.as_any().downcast_ref::<super::BroadcastExec>() else {
+            return Err(internal_datafusion_err!(
+                "NetworkBroadcastExec requires a BroadcastExec input, found: {}",
+                input.name()
+            ));
+        };
+
+        let child = require_one_child(broadcast.children())?;
+        let input_partition_count = child.properties().partitioning.partition_count();
+        let broadcast_exec: Arc<dyn ExecutionPlan> =
+            Arc::new(super::BroadcastExec::new(child, consumer_task_count));
+
+        let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
+        let properties = input_stage
+            .plan
+            .decoded()?
             .properties()
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
@@ -168,27 +176,6 @@ impl NetworkBroadcastExec {
             input_stage,
             metrics_collection: Default::default(),
         })
-    }
-
-    /// Builds inner broadcast stack: BroadcastExec -> NetworkBroadcastExec
-    ///
-    /// This is the standard way to create a broadcast network boundary. The stack:
-    /// 1. [BroadcastExec]: Caches batches and scales partitions
-    /// 2. [NetworkBroadcastExec]: Fetches cached data from producer tasks
-    pub fn with_inner_broadcast(
-        input: Arc<dyn ExecutionPlan>,
-        query_id: Uuid,
-        stage_num: usize,
-        consumer_task_count: usize,
-        input_task_count: usize,
-    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let broadcast_exec = Arc::new(super::BroadcastExec::new(input, consumer_task_count));
-        Ok(Arc::new(Self::try_new(
-            broadcast_exec,
-            query_id,
-            stage_num,
-            input_task_count,
-        )?))
     }
 }
 

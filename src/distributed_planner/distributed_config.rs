@@ -44,7 +44,7 @@ extensions_options! {
         /// TODO: This option exists temporarily until we become smarter about when to actually
         /// use broadcasting like checking build side size.
         /// For now, broadcasting all CollectLeft joins is not always beneficial.
-        pub broadcast_joins_enabled: bool, default = false
+        pub broadcast_joins: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

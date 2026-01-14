@@ -1,6 +1,6 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
-use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimator};
+use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
@@ -65,220 +65,27 @@ impl Debug for AnnotatedPlan {
     }
 }
 
-/// Annotates an [ExecutionPlan] in three passes.
-///
-/// Here is an un-annotated, single-node plan which will be used to understand each phase's purpose:
-/// ```text
-///                  ┌──────────────────────┐
-///                  │                      │
-///                  │   CoalesceBatches    │
-///                  │                      │
-///                  └───────────▲──────────┘
-///                  ┌───────────┴──────────┐
-///                  │       HashJoin       │
-///                  │    (CollectLeft)     │
-///                  │                      │
-///                  └────▲────────────▲────┘
-///                       │            │
-///             ┌─────────┘            └──────────┐
-///        Build Side                        Probe Side
-/// ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// │                      │          │                      │
-/// │  CoalescePartitions  │          │  CoalescePartitions  │
-/// │                      │          │                      │
-/// └───────────▲──────────┘          └───────────▲──────────┘
-/// ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// │                      │          │                      │
-/// │      DataSource      │          │      Projection      │
-/// │                      │          │                      │
-/// └──────────────────────┘          └───────────▲──────────┘
-///                                   ┌───────────┴──────────┐
-///                                   │     Aggregation      │
-///                                   │       (Final)        │
-///                                   │                      │
-///                                   └───────────▲──────────┘
-///                                   ┌───────────┴──────────┐
-///                                   │                      │
-///                                   │     Repartition      │
-///                                   │                      │
-///                                   └───────────▲──────────┘
-///                                   ┌───────────┴──────────┐
-///                                   │     Aggregation      │
-///                                   │      (Partial)       │
-///                                   │                      │
-///                                   └───────────▲──────────┘
-///                                   ┌───────────┴──────────┐
-///                                   │                      │
-///                                   │      DataSource      │
-///                                   │                      │
-///                                   └──────────────────────┘
-/// ```
-///
-/// # Pass 1: bottom-to-top Task Estimation and Mark Network Boundaries
-///
-/// This pass is a bottom-to-top pass that sets each node's task_count that depends on its children's task_count
-/// and required_network_boundary in the [AnnotatedPlan]. This stems from the [DataSourceExec] nodes and sets
-/// task_counts based on the estimated amount of data and cardinality.
-///
-/// Regarding task_count this marks:
-///     1. DataSourceExec -> Estimates task_count via the [TaskEstimator].
-///     2. Non-[NetworkBoundary] nodes -> inherits the max task_count from its children.
-///     3. [NetworkBoundary] nodes:
-///         - [NetworkBoundary::Coalesce] -> Maximum(1): trying to coalesce partitions into 1.
-///         - [NetworkBoundary::Shuffle] -> Desired(N): calculated based on its child and if
-///         cardinality is increased or decreased.
-///         - [NetworkBoundary::Broadcast] -> Desired(1): this is a placeholder value because
-///         broadcst boundaries depend on their parent's task_count (the amount of consumers). Unlike other
-///         boundaries, which depend on their childrens' task_counts, the parent's task count isn't
-///         known during this bottom-to-top traversal. This will be correctly in pass 3.
-///
-/// Regarding required_network_boundary this marks:
-///     1. [RepartitionExec] with [Partitioning::Hash] -> [RequiredNetworkBoundary::Shuffle]
-///     2. [CoalescePartitionsExec] or [SortPreservingMergeExec] -> [RequiredNetworkBoundary::Coalesce]
-///     3. The build (left) child of a [HashJoinExec] with [PartitionMode::CollectLeft] -> [RequiredNetworkBoundary::Broadcast]
-///
-/// The example plan after this pass would look like:
-/// ```text
-///                                                                                          ┌──────────────────────┐
-///                                                                                          │                      │ required_network_boundary: None
-///                                                                                          │   CoalesceBatches    │ task_count: Maximum(1)
-///                                                                                          │                      │ Explanation: task_count inherited from child.
-///                                                                                          └───────────▲──────────┘
-///                                                                                                      │
-///                                                                                          ┌───────────┴──────────┐
-///                                                                                          │       HashJoin       │ required_network_boundary: None
-///                                                                                          │    (CollectLeft)     │ task_count: Maximum(1)
-///                                                                                          │                      │ Explanation: With two children (X, Y) a node chooses
-///                                                                                          └────▲────────────▲────┘ Maximum(Y) if X: Desired(N) and Y: Maximum(M).
-///                                                                                               │            │
-///                                                                                     ┌─────────┘            └──────────┐
-///                                                                                Build Side                        Probe Side
-///                                                                                     │                                 │
-/// required_network_boundary: Some(Broadcast)                              ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// task_count: Desired(1)                                                  │                      │          │                      │ required_network_boundary: Some(Coalesce)
-/// Explanation: Is a [NetworkBoundary::Broadcast] because its the build    │  CoalescePartitions  │          │  CoalescePartitions  │ task_count: Maximum(1)
-/// child of a [PartitionMode::CollectLeft] [HashJoinExec]. task_count is a │                      │          │                      │ Explanation: Is a [NetworkBoundary::Coalesce] because it is a
-/// placeholder since [NetworkBoundary::Broadcast] depends on its parent's  └───────────▲──────────┘          └───────────▲──────────┘ [CoalescePartitionsExec] and not the build child.
-/// task_count but is not known here (will be set in next pass).                        │                                 │
-///                                                                         ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// required_network_boundary: None                                         │                      │          │                      │ required_network_boundary: None
-/// task_count: Desired(2)                                                  │      DataSource      │          │      Projection      │ task_count: Desired(2)
-/// Explanation: task_count calculated by the [TaskEstimator].              │                      │          │                      │ Explanation: task_count inherited from child.
-///                                                                         └──────────────────────┘          └───────────▲──────────┘
-///                                                                                                                       │
-///                                                                                                           ┌───────────┴──────────┐ required_network_boundary: Some(Shuffle)
-///                                                                                                           │     Aggregation      │ task_count: Desired(2)
-///                                                                                                           │       (Final)        │ Explanation: Is a [NetworkBoundary::Shuffle] because its child
-///                                                                                                           │                      │ is a [RepartitionExec]. task_count calculated based on
-///                                                                                                           └───────────▲──────────┘ cardinality, which is reduced in stage below.
-///                                                                                                                       │
-///                                                                                                           ┌───────────┴──────────┐
-///                                                                                                           │                      │ required_network_boundary: None
-///                                                                                                           │     Repartition      │ task_count: Desired(4)
-///                                                                                                           │                      │ Explanation: task_count inherited from child.
-///                                                                                                           └───────────▲──────────┘
-///                                                                                                                       │
-///                                                                                                           ┌───────────┴──────────┐
-///                                                                                                           │     Aggregation      │ required_network_boundary: None
-///                                                                                                           │      (Partial)       │ task_count: Desired(4)
-///                                                                                                           │                      │ Explanation: task_count inherited from child.
-///                                                                                                           └───────────▲──────────┘
-///                                                                                                                       │
-///                                                                                                           ┌───────────┴──────────┐
-///                                                                                                           │                      │ required_network_boundary: None
-///                                                                                                           │      DataSource      │ task_count: Desired(4)
-///                                                                                                           │                      │ Explanation: task_count calculated by the [TaskEstimator].
-///                                                                                                           └──────────────────────┘
-/// ```
-///
-/// # Pass 2: Set Operators' Task Count Top-to-bottom
-///
-/// This pass is a top-to-bottom pass that sets each node's task count in the [AnnotatedPlan] that
-/// depends on their parent's task_count. This pass is used for nodes marked [NetworkBoundary::Broadcast].
-/// As a result this marks:
-///     1. [NetworkBoundary::Broadcast] -> Parent's task_count if task_count > 1.
-///         - This pass will downgrade [NetworkBoundary::Broadcast] -> [NetworkBoundary::Coalesce]
-///         is task_count == 1 since their is no benefit to broadcasting and caching adds slight
-///         overhead.
-///     2. All other nodes -> Unchanged since their task_count does not depend on their parent's.
-///
-/// The example plan after this phase would look like:
-/// ```text
-///                                                                       ┌──────────────────────┐
-///                                                                       │                      │ required_network_boundary: None
-///                                                                       │   CoalesceBatches    │ task_count: Maximum(1)
-///                                                                       │                      │
-///                                                                       └───────────▲──────────┘
-///                                                                                   │
-///                                                                       ┌───────────┴──────────┐
-///                                                                       │       HashJoin       │ required_network_boundary: None
-///                                                                       │    (CollectLeft)     │ task_count: Maximum(1)
-///                                                                       │                      │
-///                                                                       └────▲────────────▲────┘
-///                                                                            │            │
-///                                                                  ┌─────────┘            └──────────┐
-///                                                             Build Side                        Probe Side
-///                                                                  │                                 │
-/// required_network_boundary: Some(Broadcast)           ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// task_count: Maximum(1)                               │                      │          │                      │ required_network_boundary: Some(Coalesce)
-/// Explanation: Inherited from its parent since it is   │  CoalescePartitions  │          │  CoalescePartitions  │ task_count: Maximum(1)
-/// the build child of a [HashJoinExec] with             │                      │          │                      │
-/// [PartitionMode::CollectLeft]                         └───────────▲──────────┘          └───────────▲──────────┘
-///                                                                  │                                 │
-///                                                      ┌───────────┴──────────┐          ┌───────────┴──────────┐
-/// required_network_boundary: None                      │                      │          │                      │ required_network_boundary: None
-/// task_count: Desired(2)                               │      DataSource      │          │      Projection      │ task_count: Desired(2)
-///                                                      │                      │          │                      │
-///                                                      └──────────────────────┘          └───────────▲──────────┘
-///                                                                                                    │
-///                                                                                        ┌───────────┴──────────┐
-///                                                                                        │     Aggregation      │ required_network_boundary: Some(Shuffle)
-///                                                                                        │       (Final)        │ task_count: Desired(2)
-///                                                                                        │                      │
-///                                                                                        └───────────▲──────────┘
-///                                                                                                    │
-///                                                                                        ┌───────────┴──────────┐
-///                                                                                        │                      │ required_network_boundary: None
-///                                                                                        │     Repartition      │ task_count: Desired(4)
-///                                                                                        │                      │
-///                                                                                        └───────────▲──────────┘
-///                                                                                                    │
-///                                                                                        ┌───────────┴──────────┐
-///                                                                                        │     Aggregation      │ required_network_boundary: None
-///                                                                                        │      (Partial)       │ task_count: Desired(4)
-///                                                                                        │                      │
-///                                                                                        └───────────▲──────────┘
-///                                                                                                    │
-///                                                                                        ┌───────────┴──────────┐
-///                                                                                        │                      │ required_network_boundary: None
-///                                                                                        │      DataSource      │ task_count: Desired(4)
-///                                                                                        │                      │
-///                                                                                        └──────────────────────┘
-/// ```
 pub(super) fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
-    let annotated_plan = _annotate_plan_bottom_up(plan, cfg, true)?;
-    annotate_plan_top_down(annotated_plan)
+    _annotate_plan(plan, cfg, true)
 }
 
-/// This is Phase 1 of annoatation as described above which sets initial task_counts and marks all
-/// necessary [NetworkBoundary].
-fn _annotate_plan_bottom_up(
+fn _annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
     root: bool,
 ) -> Result<AnnotatedPlan, DataFusionError> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
-    let broadcast_joins_enabled = d_cfg.broadcast_joins_enabled;
+    let broadcast_joins = d_cfg.broadcast_joins;
     let estimator = &d_cfg.__private_task_estimator;
     let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
     let annotated_children = plan
         .children()
         .iter()
-        .map(|child| _annotate_plan_bottom_up(Arc::clone(child), cfg, false))
+        .map(|child| _annotate_plan(Arc::clone(child), cfg, false))
         .collect::<Result<Vec<_>, _>>()?;
 
     if plan.children().is_empty() {
@@ -318,7 +125,7 @@ fn _annotate_plan_bottom_up(
         task_count = Desired(count);
     } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
-        && !broadcast_joins_enabled
+        && !broadcast_joins
     {
         // Onlly distriubte CollectLeft HashJoins after we broadcast more intelligently or when it
         // is explicitly enabled.
@@ -340,28 +147,11 @@ fn _annotate_plan_bottom_up(
 
     task_count = task_count.limit(n_workers);
 
-    // Check if this plan needs a network boundary below it.
-    let boundary = required_network_boundary_below(plan.as_ref(), broadcast_joins_enabled);
-
-    // For Broadcast, mark the direct build child.
-    let mut annotated_plan = if boundary == Some(RequiredNetworkBoundary::Broadcast) {
-        let mut children = annotated_children;
-        if let Some(build_child) = children.first_mut() {
-            build_child.required_network_boundary = Some(RequiredNetworkBoundary::Broadcast);
-        }
-        AnnotatedPlan {
-            required_network_boundary: None,
-            children,
-            task_count,
-            plan,
-        }
-    } else {
-        AnnotatedPlan {
-            required_network_boundary: boundary,
-            children: annotated_children,
-            task_count,
-            plan,
-        }
+    let mut annotated_plan = AnnotatedPlan {
+        required_network_boundary: required_network_boundary_below(plan.as_ref()),
+        children: annotated_children,
+        task_count,
+        plan,
     };
 
     // The plan needs a NetworkBoundary. At this point we have all the info we need for choosing
@@ -466,10 +256,7 @@ fn _annotate_plan_bottom_up(
 
 /// Returns if the [ExecutionPlan] requires a network boundary below it, and if it does, the kind
 /// of network boundary ([RequiredNetworkBoundary]).
-fn required_network_boundary_below(
-    parent: &dyn ExecutionPlan,
-    broadcast_joins_enabled: bool,
-) -> Option<RequiredNetworkBoundary> {
+fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<RequiredNetworkBoundary> {
     let children = parent.children();
     let first_child = children.first()?;
 
@@ -478,6 +265,11 @@ fn required_network_boundary_below(
     {
         return Some(RequiredNetworkBoundary::Shuffle);
     }
+
+    if first_child.as_any().is::<BroadcastExec>() {
+        return Some(RequiredNetworkBoundary::Broadcast);
+    }
+
     if parent.as_any().is::<CoalescePartitionsExec>()
         || parent.as_any().is::<SortPreservingMergeExec>()
     {
@@ -488,50 +280,17 @@ fn required_network_boundary_below(
         }
         return Some(RequiredNetworkBoundary::Coalesce);
     }
-    // Mark CollectLeft joins as Broadcast candidates when enabled.
-    // Actual decision of whether to use Broadcast vs Coalesce based on consumer_count
-    // is made in Pass 2 when we know the parent's task count.
-    if broadcast_joins_enabled
-        && let Some(hash_join) = parent.as_any().downcast_ref::<HashJoinExec>()
-        && hash_join.partition_mode() == &PartitionMode::CollectLeft
-    {
-        return Some(RequiredNetworkBoundary::Broadcast);
-    }
 
     None
-}
-
-fn annotate_plan_top_down(mut plan: AnnotatedPlan) -> Result<AnnotatedPlan, DataFusionError> {
-    // Set broadcast children's task_count to parent's task_count
-    // Downgrade Broadcast to Coalesce if parent's task_count <= 1 since there is no benefit from
-    // broadcasting to a single consumer.
-    let parent_task_count = plan.task_count.as_usize();
-    for child in &mut plan.children {
-        if child.required_network_boundary == Some(RequiredNetworkBoundary::Broadcast) {
-            if parent_task_count > 1 {
-                child.task_count = plan.task_count.clone();
-            } else {
-                child.required_network_boundary = Some(RequiredNetworkBoundary::Coalesce);
-                child.task_count = Maximum(1);
-            }
-        }
-    }
-
-    let annotated_children = plan
-        .children
-        .into_iter()
-        .map(annotate_plan_top_down)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    plan.children = annotated_children;
-    Ok(plan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
+    use crate::test_utils::plans::sql_to_physical_plan;
     use crate::{DistributedConfig, DistributedExt, TaskEstimation, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::filter::FilterExec;
@@ -837,26 +596,41 @@ mod tests {
         CoalesceBatchesExec: task_count=Desired(3)
           HashJoinExec: task_count=Desired(3)
             CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
-              DataSourceExec: task_count=Desired(3)
+              BroadcastExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Desired(3)
         ")
     }
 
     #[tokio::test]
-    async fn test_broadcast_downgrade_single_consumer() {
+    async fn test_broadcast_datasource_as_build_child() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let annotated = sql_to_annotated_broadcast(query, 1, 1, true).await;
-        // With single consumer, broadcast should downgrade to coalesce
+
+        // Check physical plan before insertion, shouldn't have CoalescePartitionsExec
+        let physical_plan = sql_to_physical_plan(query, 1, 4).await;
+        assert_snapshot!(physical_plan, @r"
+        CoalesceBatchesExec: target_batch_size=8192
+          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+            DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        ");
+
+        // With target_partitions=1, there is no CoalescePartitionsExec initially
+        // With broadcast, should create one and insert BroadcastExec below it
+        let annotated = sql_to_annotated_broadcast(query, 1, 4, true).await;
+        assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Desired(1)
-          HashJoinExec: task_count=Desired(1)
-            DataSourceExec: task_count=Maximum(1), required_network_boundary=Coalesce
-            DataSourceExec: task_count=Desired(1)
-        ")
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3)
+            CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+              BroadcastExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
+        ");
     }
 
     #[tokio::test]
@@ -888,21 +662,23 @@ mod tests {
         "#;
         let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
-        CoalesceBatchesExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
-              CoalesceBatchesExec: task_count=Desired(3)
-                HashJoinExec: task_count=Desired(3)
-                  CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+        CoalesceBatchesExec: task_count=Desired(3)
+          HashJoinExec: task_count=Desired(3)
+            CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+              BroadcastExec: task_count=Desired(3)
+                CoalesceBatchesExec: task_count=Desired(3)
+                  HashJoinExec: task_count=Desired(3)
+                    CoalescePartitionsExec: task_count=Desired(3), required_network_boundary=Broadcast
+                      BroadcastExec: task_count=Desired(3)
+                        DataSourceExec: task_count=Desired(3)
                     DataSourceExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(1)
+            DataSourceExec: task_count=Desired(3)
         ")
     }
 
     #[allow(clippy::type_complexity)]
     struct CallbackEstimator {
-        f: Arc<dyn Fn(&(dyn ExecutionPlan)) -> Option<TaskEstimation> + Send + Sync>,
+        f: Arc<dyn Fn(&dyn ExecutionPlan) -> Option<TaskEstimation> + Send + Sync>,
     }
 
     impl CallbackEstimator {
@@ -940,10 +716,49 @@ mod tests {
     }
 
     async fn sql_to_annotated(query: &str) -> String {
-        sql_to_annotated_with_options(query, move |b| b).await
+        sql_to_annotated_with_options(query, 4, 4, false).await
     }
 
     async fn sql_to_annotated_broadcast(
+        query: &str,
+        target_partitions: usize,
+        num_workers: usize,
+        broadcast_enabled: bool,
+    ) -> String {
+        sql_to_annotated_with_options(query, target_partitions, num_workers, broadcast_enabled)
+            .await
+    }
+
+    async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
+        query: &str,
+        estimator: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
+    ) -> String {
+        let config = SessionConfig::new()
+            .with_target_partitions(4)
+            .with_information_schema(true);
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .with_distributed_task_estimator(CallbackEstimator::new(estimator))
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx.sql(query).await.unwrap();
+        let mut plan = df.create_physical_plan().await.unwrap();
+
+        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to insert broadcasts");
+
+        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to annotate plan");
+        format!("{annotated:?}")
+    }
+
+    async fn sql_to_annotated_with_options(
         query: &str,
         target_partitions: usize,
         num_workers: usize,
@@ -954,7 +769,7 @@ mod tests {
             .with_information_schema(true);
 
         let d_cfg = DistributedConfig {
-            broadcast_joins_enabled: broadcast_enabled,
+            broadcast_joins: broadcast_enabled,
             ..Default::default()
         };
         config.set_distributed_option_extension(d_cfg).unwrap();
@@ -964,43 +779,6 @@ mod tests {
             .with_config(config)
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
             .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(query).await.unwrap();
-
-        let annotated = annotate_plan(
-            df.create_physical_plan().await.unwrap(),
-            ctx.state_ref().read().config_options().as_ref(),
-        )
-        .expect("failed to annotate plan");
-        format!("{annotated:?}")
-    }
-
-    async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
-        query: &str,
-        estimator: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
-    ) -> String {
-        sql_to_annotated_with_options(query, move |b| {
-            b.with_distributed_task_estimator(CallbackEstimator::new(estimator))
-        })
-        .await
-    }
-
-    async fn sql_to_annotated_with_options(
-        query: &str,
-        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
-    ) -> String {
-        let config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let state = f(SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
-        .build();
 
         let ctx = SessionContext::new_with_state(state);
         let mut queries = query.split(";").collect_vec();
@@ -1013,12 +791,13 @@ mod tests {
         register_parquet_tables(&ctx).await.unwrap();
 
         let df = ctx.sql(last_query).await.unwrap();
+        let mut plan = df.create_physical_plan().await.unwrap();
 
-        let annotated = annotate_plan(
-            df.create_physical_plan().await.unwrap(),
-            ctx.state_ref().read().config_options().as_ref(),
-        )
-        .expect("failed to annotate plan");
+        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to insert broadcasts");
+
+        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to annotate plan");
         format!("{annotated:?}")
     }
 }
