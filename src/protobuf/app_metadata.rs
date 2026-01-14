@@ -26,14 +26,29 @@ pub struct TaskMetrics {
 // FlightAppMetadata represents all types of app_metadata which we use in the distributed execution.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FlightAppMetadata {
+    #[prost(uint64, tag = "1")]
+    pub partition: u64,
     // content should always be Some, but it is optional due to protobuf rules.
-    #[prost(oneof = "AppMetadata", tags = "1")]
+    #[prost(oneof = "AppMetadata", tags = "10")]
     pub content: Option<AppMetadata>,
+}
+
+impl FlightAppMetadata {
+    pub fn new(partition: u64) -> Self {
+        Self {
+            partition,
+            content: None,
+        }
+    }
+
+    pub fn set_content(&mut self, content: AppMetadata) {
+        self.content = Some(content);
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Oneof)]
 pub enum AppMetadata {
-    #[prost(message, tag = "1")]
+    #[prost(message, tag = "10")]
     MetricsCollection(MetricsCollection),
     // Note: For every additional enum variant, ensure to add tags to [FlightAppMetadata]. ex. `#[prost(oneof = "AppMetadata", tags = "1,2,3")]` etc.
     // If you don't the proto will compile but you may encounter errors during serialization/deserialization.
