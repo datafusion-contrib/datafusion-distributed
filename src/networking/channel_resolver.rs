@@ -81,10 +81,10 @@ pub(crate) fn get_distributed_channel_resolver(
     task_ctx: &TaskContext,
 ) -> Arc<dyn ChannelResolver + Send + Sync> {
     let opts = task_ctx.session_config().options();
-    if let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() {
-        if let Some(cr) = &distributed_cfg.__private_channel_resolver.0 {
-            return Arc::clone(cr);
-        }
+    if let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>()
+        && let Some(cr) = &distributed_cfg.__private_channel_resolver.0
+    {
+        return Arc::clone(cr);
     }
     let runtime_addr = Arc::as_ptr(&task_ctx.runtime_env()) as usize;
     DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME
