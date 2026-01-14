@@ -2,7 +2,7 @@ use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{LexOrdering, Partitioning};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[derive(Debug, PartialEq)]
 pub(super) enum RequiredNetworkBoundary {
     Shuffle,
-    Coalesce,
+    Coalesce(Option<LexOrdering>),
 }
 
 /// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
@@ -264,7 +264,7 @@ fn _annotate_plan(
         // If the current plan that needs a NetworkBoundary boundary below is either a
         // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
         // that they are going to be part of needs to run in exactly one task.
-        if nb == &RequiredNetworkBoundary::Coalesce {
+        if matches!(nb, RequiredNetworkBoundary::Coalesce(_)) {
             annotated_plan.task_count = Maximum(1);
             return Ok(annotated_plan);
         }
@@ -324,15 +324,17 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
             return Some(RequiredNetworkBoundary::Shuffle);
         }
     }
-    if parent.as_any().is::<CoalescePartitionsExec>()
-        || parent.as_any().is::<SortPreservingMergeExec>()
-    {
+    if parent.as_any().is::<CoalescePartitionsExec>() {
         // If the next node is a leaf node, distributing this is going to be a bit wasteful, so
         // we don't want to do it.
         if first_child.children().is_empty() {
             return None;
         }
-        return Some(RequiredNetworkBoundary::Coalesce);
+        return Some(RequiredNetworkBoundary::Coalesce(None));
+    }
+
+    if let Some(node) = parent.as_any().downcast_ref::<SortPreservingMergeExec>() {
+        return Some(RequiredNetworkBoundary::Coalesce(Some(node.expr().clone())));
     }
 
     None
@@ -389,9 +391,9 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let annotated = sql_to_annotated(query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @r#"
         ProjectionExec: task_count=Maximum(1)
-          SortPreservingMergeExec: task_count=Maximum(1), required_network_boundary=Coalesce
+          SortPreservingMergeExec: task_count=Maximum(1), required_network_boundary=Coalesce(Some(LexOrdering { exprs: [PhysicalSortExpr { expr: Column { name: "count(Int64(1))", index: 2 }, options: SortOptions { descending: false, nulls_first: false } }], set: {Column { name: "count(Int64(1))", index: 2 }} }))
             SortExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -400,7 +402,7 @@ mod tests {
                       RepartitionExec: task_count=Desired(3)
                         AggregateExec: task_count=Desired(3)
                           DataSourceExec: task_count=Desired(3)
-        ")
+        "#)
     }
 
     #[tokio::test]
@@ -447,7 +449,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         CoalesceBatchesExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce
+            CoalescePartitionsExec: task_count=Maximum(1), required_network_boundary=Coalesce(None)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
                   CoalesceBatchesExec: task_count=Desired(2), required_network_boundary=Shuffle
