@@ -42,14 +42,17 @@ pub struct DoGet {
     pub target_task_index: u64,
     #[prost(uint64, tag = "3")]
     pub target_task_count: u64,
-    /// the partition numbers we want to execute
-    #[prost(repeated, uint64, tag = "4")]
-    pub target_partitions: Vec<u64>,
+    /// lower bound for the list of partitions to execute (inclusive).
+    #[prost(uint64, tag = "4")]
+    pub target_partition_start: u64,
+    /// upper bound for the list of partitions to execute (exclusive).
+    #[prost(uint64, tag = "5")]
+    pub target_partition_end: u64,
     /// The stage key that identifies the stage.  This is useful to keep
     /// outside of the stage proto as it is used to store the stage
     /// and we may not need to deserialize the entire stage proto
     /// if we already have stored it
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "6")]
     pub stage_key: Option<StageKey>,
 }
 
@@ -131,8 +134,9 @@ impl Worker {
 
         // Execute all the requested partitions at once, and collect all the streams so that they
         // can be merged into a single one at the end of this function.
-        let mut streams = Vec::with_capacity(doget.target_partitions.len());
-        for partition in doget.target_partitions {
+        let n_streams = doget.target_partition_end - doget.target_partition_start;
+        let mut streams = Vec::with_capacity(n_streams as usize);
+        for partition in doget.target_partition_start..doget.target_partition_end {
             if partition >= partition_count as u64 {
                 return Err(datafusion_error_to_tonic_status(&exec_datafusion_err!(
                     "partition {partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
@@ -349,7 +353,8 @@ mod tests {
                 plan_proto,
                 target_task_index: task_number,
                 target_task_count: num_tasks,
-                target_partitions: vec![partition],
+                target_partition_start: partition,
+                target_partition_end: partition + 1,
                 stage_key: Some(stage_key),
             };
 

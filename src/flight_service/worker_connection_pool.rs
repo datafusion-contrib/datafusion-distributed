@@ -113,7 +113,8 @@ impl WorkerConnection {
             Ticket {
                 ticket: DoGet {
                     plan_proto: Bytes::clone(input_stage.plan.encoded()?),
-                    target_partitions: target_partition_range.clone().map(|v| v as u64).collect(),
+                    target_partition_start: target_partition_range.start as u64,
+                    target_partition_end: target_partition_range.end as u64,
                     stage_key: Some(StageKey::new(
                         Bytes::from(input_stage.query_id.as_bytes().to_vec()),
                         input_stage.num as u64,
