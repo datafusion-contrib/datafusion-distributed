@@ -159,11 +159,11 @@ pub fn df_metrics_set_to_proto(
             Ok(metric_proto) => metrics.push(metric_proto),
             Err(err) => {
                 // Check if this is the specific custom metrics error we want to filter out
-                if let DataFusionError::Internal(msg) = &err {
-                    if msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS {
-                        // Filter out custom/unsupported metrics error - continue processing other metrics
-                        continue;
-                    }
+                if let DataFusionError::Internal(msg) = &err
+                    && (msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS)
+                {
+                    // Filter out custom/unsupported metrics error - continue processing other metrics
+                    continue;
                 }
                 // Any other error should be returned
                 return Err(err);
@@ -288,7 +288,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             labels,
         }),
         MetricValue::Custom { .. } => internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED),
-        MetricValue::OutputBytes(_) | MetricValue::PruningMetrics { .. } | MetricValue::Ratio { .. } => {
+        MetricValue::OutputBytes(_) | MetricValue::OutputBatches(_) | MetricValue::PruningMetrics { .. } | MetricValue::Ratio { .. } => {
             // TODO: Support these metrics
             internal_err!("{}", UNSUPPORTED_METRICS)
         }

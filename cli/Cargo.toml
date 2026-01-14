@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-datafusion = { version = "51" }
+datafusion = { workspace = true }
 datafusion-distributed = { path = "..", features = ["avro", "integration"] }
-datafusion-cli = { version = "51", default-features = false }
-tokio = { version = "1.46.1", features = ["full"] }
+datafusion-cli = { version = "52", default-features = false }
+tokio = { version = "1.48", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 dirs = "6"
@@ -16,8 +16,8 @@ tonic = { version = "0.14.1", features = ["transport"] }
 tower = "0.5.2"
 hyper-util = "0.1.16"
 tokio-stream = "0.1.17"
-async-trait = "0.1.88"
-url = "2.5.4"
+async-trait = "0.1.89"
+url = "2.5.7"
 
 [[bin]]
 name = "datafusion-distributed-cli"

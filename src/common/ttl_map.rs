@@ -156,7 +156,7 @@ impl TTLMapConfig {
             ));
         }
 
-        if self.ttl.as_nanos() % self.tick.as_nanos() != 0 {
+        if !self.ttl.as_nanos().is_multiple_of(self.tick.as_nanos()) {
             return Err(DataFusionError::Configuration(
                 "`ttl` must be an integer multiple of tick".to_string(),
             ));

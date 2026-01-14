@@ -177,6 +177,9 @@ impl DataFusionErrorProto {
             DataFusionError::AvroError(err) => DataFusionErrorProto {
                 inner: Some(DataFusionErrorInnerProto::External(err.to_string())),
             },
+            DataFusionError::Ffi(err) => DataFusionErrorProto {
+                inner: Some(DataFusionErrorInnerProto::External(err.clone())),
+            },
         }
     }
 

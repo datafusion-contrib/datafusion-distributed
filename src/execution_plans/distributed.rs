@@ -59,8 +59,8 @@ impl DistributedExec {
                 return Ok(Transformed::no(plan));
             };
 
-            let mut rng = rand::thread_rng();
-            let start_idx = rng.gen_range(0..urls.len());
+            let mut rng = rand::rng();
+            let start_idx = rng.random_range(0..urls.len());
 
             let stage = plan.input_stage();
 
