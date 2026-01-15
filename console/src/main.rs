@@ -1,7 +1,7 @@
 use datafusion_distributed::PingRequest;
 use datafusion_distributed::protobuf::observability::observability_service_client::ObservabilityServiceClient;
-use ratatui::{DefaultTerminal, Frame};
 use ratatui::widgets::Paragraph;
+use ratatui::{DefaultTerminal, Frame};
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
