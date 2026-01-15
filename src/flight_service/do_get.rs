@@ -11,20 +11,19 @@ use crate::protobuf::{
     datafusion_error_to_tonic_status,
 };
 use crate::{DistributedConfig, DistributedTaskContext};
-use arrow_flight::FlightData;
 use arrow_flight::Ticket;
-use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use bytes::Bytes;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
+use crate::flight_service::spawn_select_all::spawn_select_all;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
@@ -43,14 +42,17 @@ pub struct DoGet {
     pub target_task_index: u64,
     #[prost(uint64, tag = "3")]
     pub target_task_count: u64,
-    /// the partition number we want to execute
+    /// lower bound for the list of partitions to execute (inclusive).
     #[prost(uint64, tag = "4")]
-    pub target_partition: u64,
+    pub target_partition_start: u64,
+    /// upper bound for the list of partitions to execute (exclusive).
+    #[prost(uint64, tag = "5")]
+    pub target_partition_end: u64,
     /// The stage key that identifies the stage.  This is useful to keep
     /// outside of the stage proto as it is used to store the stage
     /// and we may not need to deserialize the entire stage proto
     /// if we already have stored it
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "6")]
     pub stage_key: Option<StageKey>,
 }
 
@@ -90,10 +92,8 @@ impl Worker {
             .map_err(|err| datafusion_error_to_tonic_status(&err))?;
 
         let codec = DistributedCodec::new_combined_with_user(session_state.config());
-        let ctx = SessionContext::new_with_state(session_state.clone());
+        let task_ctx = session_state.task_ctx();
 
-        // There's only 1 `StageExec` responsible for all requests that share the same `stage_key`,
-        // so here we either retrieve the existing one or create a new one if it does not exist.
         let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let once = self
             .task_data_entries
@@ -102,7 +102,7 @@ impl Worker {
         let stage_data = once
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
-                let mut plan = proto_node.try_into_physical_plan(&ctx.task_ctx(), &codec)?;
+                let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
                 for hook in self.hooks.on_plan.iter() {
                     plan = hook(plan)
                 }
@@ -118,7 +118,6 @@ impl Worker {
             .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
         let plan = Arc::clone(&stage_data.plan);
 
-        // Find out which partition group we are executing
         let cfg = session_state.config_mut();
         let d_cfg =
             set_distributed_option_extension_from_headers::<DistributedConfig>(cfg, &headers)
@@ -131,70 +130,99 @@ impl Worker {
         }));
 
         let partition_count = plan.properties().partitioning.partition_count();
-        let target_partition = doget.target_partition as usize;
         let plan_name = plan.name();
-        if target_partition >= partition_count {
-            return Err(datafusion_error_to_tonic_status(&exec_datafusion_err!(
-                "partition {target_partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
-            )));
+
+        // Execute all the requested partitions at once, and collect all the streams so that they
+        // can be merged into a single one at the end of this function.
+        let n_streams = doget.target_partition_end - doget.target_partition_start;
+        let mut streams = Vec::with_capacity(n_streams as usize);
+        for partition in doget.target_partition_start..doget.target_partition_end {
+            if partition >= partition_count as u64 {
+                return Err(datafusion_error_to_tonic_status(&exec_datafusion_err!(
+                    "partition {partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
+                )));
+            }
+
+            let stream = plan
+                .execute(partition as usize, session_state.task_ctx())
+                .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
+
+            let stream = build_flight_data_stream(stream);
+
+            let task_data_entries = Arc::clone(&self.task_data_entries);
+            let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+
+            let key = key.clone();
+            let plan = Arc::clone(&plan);
+            let stream = map_last_stream(stream, move |msg, last_msg_in_stream| {
+                // For each FlightData produced by this stream, mark it with the appropriate
+                // partition. This stream will be merged with several others from other partitions,
+                // so marking it with the original partition allows it to be deconstructed into
+                // the original per-partition streams in later steps.
+                let mut flight_data = FlightAppMetadata::new(partition);
+
+                if last_msg_in_stream {
+                    // If it's the last message from the last partition, clean up the entry from
+                    // the TTLMap and send the collected metrics.
+                    if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                        task_data_entries.remove(key.clone());
+                        if send_metrics {
+                            // Last message of the last partition. This is the moment to send
+                            // the metrics back.
+                            flight_data.set_content(collect_and_create_metrics_flight_data(
+                                key.clone(),
+                                plan.clone(),
+                            )?);
+                        }
+                    }
+                }
+
+                msg.map(|v| v.with_app_metadata(flight_data.encode_to_vec()))
+            });
+            streams.push(stream)
         }
 
-        // Rather than executing the `StageExec` itself, we want to execute the inner plan instead,
-        // as executing `StageExec` performs some worker assignation that should have already been
-        // done in the head stage.
-        let stream = plan
-            .execute(doget.target_partition as usize, session_state.task_ctx())
-            .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
-
-        let schema = stream.schema().clone();
-
-        // Apply garbage collection of dictionary and view arrays before sending over the network
-        let stream = stream.and_then(|rb| std::future::ready(garbage_collect_arrays(rb)));
-
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            // This tells the encoder to send dictionaries across the wire as-is.
-            // The alternative (`DictionaryHandling::Hydrate`) would expand the dictionaries
-            // into their value types, which can potentially blow up the size of the data transfer.
-            // The main reason to use `DictionaryHandling::Hydrate` is for compatibility with clients
-            // that do not support dictionaries, but since we are using the same server/client on both
-            // sides, we can safely use `DictionaryHandling::Resend`.
-            // Note that we do garbage collection of unused dictionary values above, so we are not sending
-            // unused dictionary values over the wire.
-            .with_dictionary_handling(DictionaryHandling::Resend)
-            // Set max flight data size to unlimited.
-            // This requires servers and clients to also be configured to handle unlimited sizes.
-            // Using unlimited sizes avoids splitting RecordBatches into multiple FlightData messages,
-            // which could add significant overhead for large RecordBatches.
-            // The only reason to split them really is if the client/server are configured with a message size limit,
-            // which mainly makes sense in a public network scenario where you want to avoid DoS attacks.
-            // Since all of our Arrow Flight communication happens within trusted data plane networks,
-            // we can safely use unlimited sizes here.
-            .with_max_flight_data_size(usize::MAX)
-            .build(stream.map_err(|err| {
-                FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
-            }));
-
-        let task_data_entries = Arc::clone(&self.task_data_entries);
-        let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
-
-        let stream = map_last_stream(stream, move |last| {
-            if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                task_data_entries.remove(key.clone());
-                return if send_metrics {
-                    last.and_then(|el| collect_and_create_metrics_flight_data(key, plan, el))
-                } else {
-                    last
-                };
-            }
-            last
-        });
+        // Merge all the per-partition streams into one. Each message in the stream is marked with
+        // the original partition, so they can be reconstructed at the other side of the boundary.
+        let memory_pool = Arc::clone(&session_state.runtime_env().memory_pool);
+        let stream = spawn_select_all(streams, memory_pool);
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
             FlightError::Tonic(status) => *status,
             _ => Status::internal(format!("Error during flight stream: {err}")),
         }))))
     }
+}
+
+fn build_flight_data_stream(stream: SendableRecordBatchStream) -> FlightDataEncoder {
+    FlightDataEncoderBuilder::new()
+        .with_schema(stream.schema())
+        // This tells the encoder to send dictionaries across the wire as-is.
+        // The alternative (`DictionaryHandling::Hydrate`) would expand the dictionaries
+        // into their value types, which can potentially blow up the size of the data transfer.
+        // The main reason to use `DictionaryHandling::Hydrate` is for compatibility with clients
+        // that do not support dictionaries, but since we are using the same server/client on both
+        // sides, we can safely use `DictionaryHandling::Resend`.
+        // Note that we do garbage collection of unused dictionary values above, so we are not sending
+        // unused dictionary values over the wire.
+        .with_dictionary_handling(DictionaryHandling::Resend)
+        // Set max flight data size to unlimited.
+        // This requires servers and clients to also be configured to handle unlimited sizes.
+        // Using unlimited sizes avoids splitting RecordBatches into multiple FlightData messages,
+        // which could add significant overhead for large RecordBatches.
+        // The only reason to split them really is if the client/server are configured with a message size limit,
+        // which mainly makes sense in a public network scenario where you want to avoid DoS attacks.
+        // Since all of our Arrow Flight communication happens within trusted data plane networks,
+        // we can safely use unlimited sizes here.
+        .with_max_flight_data_size(usize::MAX)
+        .build(
+            stream
+                // Apply garbage collection of dictionary and view arrays before sending over the network
+                .and_then(|rb| std::future::ready(garbage_collect_arrays(rb)))
+                .map_err(|err| {
+                    FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
+                }),
+        )
 }
 
 fn missing(field: &'static str) -> impl FnOnce() -> Status {
@@ -205,8 +233,7 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
 fn collect_and_create_metrics_flight_data(
     stage_key: StageKey,
     plan: Arc<dyn ExecutionPlan>,
-    incoming: FlightData,
-) -> Result<FlightData, FlightError> {
+) -> Result<AppMetadata, FlightError> {
     // Get the metrics for the task executed on this worker + child tasks.
     let mut result = TaskMetricsCollector::new()
         .collect(plan)
@@ -235,18 +262,9 @@ fn collect_and_create_metrics_flight_data(
         });
     }
 
-    let flight_app_metadata = FlightAppMetadata {
-        content: Some(AppMetadata::MetricsCollection(MetricsCollection {
-            tasks: task_metrics_set,
-        })),
-    };
-
-    let mut buf = vec![];
-    flight_app_metadata
-        .encode(&mut buf)
-        .map_err(|err| FlightError::ProtocolError(err.to_string()))?;
-
-    Ok(incoming.with_app_metadata(buf))
+    Ok(AppMetadata::MetricsCollection(MetricsCollection {
+        tasks: task_metrics_set,
+    }))
 }
 
 /// Garbage collects values sub-arrays.
@@ -335,7 +353,8 @@ mod tests {
                 plan_proto,
                 target_task_index: task_number,
                 target_task_count: num_tasks,
-                target_partition: partition,
+                target_partition_start: partition,
+                target_partition_end: partition + 1,
                 stage_key: Some(stage_key),
             };
 
