@@ -4,7 +4,6 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {Construct} from 'constructs';
 import {DATAFUSION_DISTRIBUTED_ENGINE} from "./datafusion-distributed";
-import {BALLISTA_ENGINE} from "./ballista";
 import {TRINO_ENGINE} from "./trino";
 import {SPARK_ENGINE} from "./spark";
 import path from "path";
@@ -17,7 +16,6 @@ if (USER_DATA_CAUSES_REPLACEMENT) {
 
 const ENGINES = [
     DATAFUSION_DISTRIBUTED_ENGINE,
-    BALLISTA_ENGINE,
     TRINO_ENGINE,
     SPARK_ENGINE
 ]
