@@ -3,6 +3,9 @@ use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
+use crate::protobuf::observability::observability_service_server::ObservabilityService;
+use crate::protobuf::observability::observability_service_server::ObservabilityServiceServer;
+use crate::protobuf::observability::{PingRequest, PingResponse};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -123,6 +126,31 @@ impl Worker {
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
+
+    /// Convenience method that converts [Worker] into a [`ObservabilityServiceServer`]. This allows
+    /// the worker to respond to observability requests.
+    /// # Example
+    ///
+    /// ```
+    /// # use datafusion_distributed::Worker;
+    /// # use tonic::transport::Server;
+    /// # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// # async fn f() {
+    ///
+    /// let worker = Worker::default();
+    /// let server = worker.into_flight_server();
+    ///
+    /// Server::builder()
+    ///     .add_service(Worker::default().into_flight_server())
+    ///     .add_service(Worker::default().into_observability_server())
+    ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
+    ///     .await;
+    ///
+    /// # }
+    /// ```
+    pub fn into_observability_server(self) -> ObservabilityServiceServer<Self> {
+        ObservabilityServiceServer::new(self)
+    }
 }
 
 #[async_trait]
@@ -209,5 +237,15 @@ impl FlightService for Worker {
         _: Request<Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         Err(Status::unimplemented("Not yet implemented"))
+    }
+}
+
+#[tonic::async_trait]
+impl ObservabilityService for Worker {
+    async fn ping(
+        &self,
+        _request: tonic::Request<PingRequest>,
+    ) -> Result<tonic::Response<PingResponse>, tonic::Status> {
+        Ok(tonic::Response::new(PingResponse { value: 1 }))
     }
 }

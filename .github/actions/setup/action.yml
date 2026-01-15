@@ -20,6 +20,12 @@ runs:
         echo $HOME
         echo ${{ runner.os }}
 
+    - name: Install protoc
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable

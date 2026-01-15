@@ -7,3 +7,6 @@ edition = "2024"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 ratatui = "0.30.0"
+tokio = { version = "1.49.0", features = ["full"] }
+tonic = "0.14.2"
+datafusion-distributed = { workspace = true }

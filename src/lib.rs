@@ -10,7 +10,7 @@ mod stage;
 
 mod distributed_planner;
 mod networking;
-mod protobuf;
+pub mod protobuf;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
@@ -34,4 +34,9 @@ pub use networking::{
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
     explain_analyze,
+};
+
+pub use crate::protobuf::observability::{
+    PingRequest, PingResponse, observability_service_client::ObservabilityServiceClient,
+    observability_service_server::ObservabilityServiceServer,
 };
