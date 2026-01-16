@@ -13,6 +13,12 @@ pub(crate) fn get_queries(path: &str) -> Vec<String> {
             result.push(file_name.trim_end_matches(".sql").to_string());
         }
     }
+
+    // Each element might be something like q12.sql or custom2.sql.
+    // This orders the string list by the parsed integer number inside an arbitrary string.
+    result.sort_by(|a, b| {
+        todo!();
+    });
     result
 }
 
