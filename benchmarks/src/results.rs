@@ -60,10 +60,8 @@ impl BenchmarkRun {
         }
     }
 
-    pub fn load_previous(&self) -> Option<Self> {
-        let path = PathBuf::from(DATA_PATH)
-            .join(&self.dataset)
-            .join("previous.json");
+    pub fn load_previous(dataset: &str) -> Option<Self> {
+        let path = PathBuf::from(DATA_PATH).join(dataset).join("previous.json");
         let Ok(prev) = fs::read(path) else {
             return None;
         };
@@ -72,31 +70,8 @@ impl BenchmarkRun {
             return None;
         };
 
-        prev_output.load_results();
+        prev_output.results = BenchResult::load_many(&prev_output.dataset, &prev_output.branch);
         Some(prev_output)
-    }
-
-    fn load_results(&mut self) {
-        let dir = PathBuf::from(DATA_PATH)
-            .join(&self.dataset)
-            .join(RESULTS_DIR)
-            .join(&self.branch);
-
-        let Ok(dir) = fs::read_dir(dir) else { return };
-
-        for file in dir {
-            let Ok(file) = file else { continue };
-            let file_name = file.file_name().to_string_lossy().to_string();
-            let id = if file_name.ends_with(".json") {
-                file_name.trim_end_matches(".json")
-            } else {
-                continue;
-            };
-            let Ok(result) = BenchResult::load(&self.dataset, &self.branch, id) else {
-                continue;
-            };
-            self.results.push(result);
-        }
     }
 
     /// Write data as json into output path if it exists.
@@ -116,7 +91,7 @@ impl BenchmarkRun {
     }
 
     pub fn compare_with_previous(&self) -> Result<()> {
-        let Some(previous) = self.load_previous() else {
+        let Some(previous) = Self::load_previous(&self.dataset) else {
             return Ok(());
         };
 
@@ -143,37 +118,7 @@ impl BenchmarkRun {
                 println!("{}", "=".repeat(header.len()))
             }
 
-            let prev_err = prev_query.iterations.iter().find_map(|v| v.error.clone());
-            let new_err = query.iterations.iter().find_map(|v| v.error.clone());
-            match (prev_err, new_err) {
-                (Some(_prev_err), None) => {
-                    println!("{}: Previously failed, but now succeeded 🟠", query.id);
-                    continue;
-                }
-                (None, Some(_new_err)) => {
-                    println!("{}: Previously succeeded, but now failed ❌", query.id);
-                    continue;
-                }
-                (Some(_prev_err), Some(_new_err)) => {
-                    println!("{}: Previously failed, and now also failed ❌", query.id);
-                    continue;
-                }
-                (None, None) => {}
-            }
-
-            let avg_prev = prev_query.avg();
-            let avg = query.avg();
-            let (f, tag, emoji) = if avg < avg_prev {
-                let f = avg_prev as f64 / avg as f64;
-                (f, "faster", if f > 1.2 { "✅" } else { "✔" })
-            } else {
-                let f = avg as f64 / avg_prev as f64;
-                (f, "slower", if f > 1.2 { "❌" } else { "✖" })
-            };
-            println!(
-                "{:>8}: prev={avg_prev:>4} ms, new={avg:>4} ms, diff={f:.2} {tag} {emoji}",
-                query.id
-            );
+            query.compare(prev_query)
         }
 
         Ok(())
@@ -210,6 +155,49 @@ impl BenchResult {
         Ok(())
     }
 
+    pub fn load_many(dataset: &str, branch: &str) -> Vec<Self> {
+        let dir = PathBuf::from(DATA_PATH)
+            .join(dataset)
+            .join(RESULTS_DIR)
+            .join(branch);
+
+        let Ok(dir) = fs::read_dir(dir) else {
+            return vec![];
+        };
+
+        let mut results = vec![];
+        for file in dir {
+            let Ok(file) = file else { continue };
+            let file_name = file.file_name().to_string_lossy().to_string();
+            let id = if file_name.ends_with(".json") {
+                file_name.trim_end_matches(".json")
+            } else {
+                continue;
+            };
+            let Ok(result) = BenchResult::load(dataset, branch, id) else {
+                continue;
+            };
+            results.push(result);
+        }
+        results.sort_by(|a, b| {
+            let extract_number = |s: &str| -> Option<u32> {
+                s.chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .ok()
+            };
+
+            match (extract_number(&a.id), extract_number(&b.id)) {
+                (Some(num_a), Some(num_b)) => num_a.cmp(&num_b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.id.cmp(&b.id),
+            }
+        });
+        results
+    }
+
     pub fn load(dataset: &str, branch: &str, id: &str) -> Result<Self> {
         let path = PathBuf::from(DATA_PATH)
             .join(dataset)
@@ -221,6 +209,40 @@ impl BenchResult {
         let read =
             serde_json::from_slice(&read).map_err(|err| internal_datafusion_err!("{err}"))?;
         Ok(read)
+    }
+
+    pub fn compare(&self, prev_query: &Self) {
+        let prev_err = prev_query.iterations.iter().find_map(|v| v.error.clone());
+        let new_err = self.iterations.iter().find_map(|v| v.error.clone());
+        match (prev_err, new_err) {
+            (Some(_prev_err), None) => {
+                println!("{}: Previously failed, but now succeeded 🟠", self.id);
+                return;
+            }
+            (None, Some(_new_err)) => {
+                println!("{}: Previously succeeded, but now failed ❌", self.id);
+                return;
+            }
+            (Some(_prev_err), Some(_new_err)) => {
+                println!("{}: Previously failed, and now also failed ❌", self.id);
+                return;
+            }
+            (None, None) => {}
+        }
+
+        let avg_prev = prev_query.avg();
+        let avg = self.avg();
+        let (f, tag, emoji) = if avg < avg_prev {
+            let f = avg_prev as f64 / avg as f64;
+            (f, "faster", if f > 1.2 { "✅" } else { "✔" })
+        } else {
+            let f = avg as f64 / avg_prev as f64;
+            (f, "slower", if f > 1.2 { "❌" } else { "✖" })
+        };
+        println!(
+            "{:>8}: prev={avg_prev:>4} ms, new={avg:>4} ms, diff={f:.2} {tag} {emoji}",
+            self.id
+        );
     }
 }
 
