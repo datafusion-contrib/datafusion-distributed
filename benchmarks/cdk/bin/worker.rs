@@ -76,10 +76,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_broadcast_joins(true)?
         .build();
-    if cmd.broadcast_joins {
-        state = state.with_distributed_broadcast_joins(true)?;
-    }
     let ctx = SessionContext::from(state);
 
     let worker = Worker::default().with_runtime_env(runtime_env);

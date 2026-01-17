@@ -337,6 +337,7 @@ fn _annotate_plan(
         // The plan is a network boundary, so everything below it belongs to the same stage. This
         // means that we need to propagate the task count to all the nodes in that stage.
         if matches!(annotation.plan_or_nb, PlanOrNetworkBoundary::Broadcast) {
+            // Broadcast splits build/probe stages only cap the build stage if the probe is Maximum.
             if let Maximum(max) = annotation.task_count {
                 for annotated_child in annotation.children.iter_mut() {
                     let child_task_count = annotated_child.task_count.clone().limit(max);
