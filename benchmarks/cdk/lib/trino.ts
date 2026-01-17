@@ -35,10 +35,10 @@ node.id=instance-${ctx.instanceIdx}
 node.data-dir=/var/trino/data
 TRINO_EOF`,
 
-            // Configure Trino JVM settings (minimal - using conservative 8GB heap)
+            // Configure Trino JVM settings (using 12GB heap for better performance)
             `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
 -server
--Xmx8G
+-Xmx10G
 -XX:+UseG1GC
 -XX:G1HeapRegionSize=32M
 -XX:+ExplicitGCInvokesConcurrent
@@ -54,11 +54,15 @@ coordinator=true
 node-scheduler.include-coordinator=true
 http-server.http.port=8080
 discovery.uri=http://localhost:8080
+query.max-memory-per-node=8GB
+memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`
                 : `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
 coordinator=false
 http-server.http.port=8080
 discovery.uri=http://localhost:8080
+query.max-memory-per-node=8GB
+memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`,
 
             // Configure Hive catalog with AWS Glue metastore
@@ -117,6 +121,8 @@ TRINO_EOF`,
 coordinator=false
 http-server.http.port=8080
 discovery.uri=http://${coordinator.instancePrivateIp}:8080
+query.max-memory-per-node=8GB
+memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`,
                 'systemctl restart trino',
             ]
