@@ -6,7 +6,35 @@ import {
 } from "./cdk-stack";
 
 const TRINO_VERSION = 476
-const JVM_MEMORY_GB = 20
+const JVM_MEMORY_GB = 10
+
+const JVM_CONFIG = `\
+-server
+-Xmx${JVM_MEMORY_GB}G
+-XX:+UseG1GC
+-XX:G1HeapRegionSize=32M
+-XX:+ExplicitGCInvokesConcurrent
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:+ExitOnOutOfMemoryError
+-Djdk.attach.allowAttachSelf=true
+`
+const COORDINATOR_CONFIG = `\
+coordinator=true
+node-scheduler.include-coordinator=true
+http-server.http.port=8080
+discovery.uri=http://localhost:8080
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
+memory.heap-headroom-per-node=1.5GB
+`
+
+const INSTANCE_ID_PLACEHOLDER = '{instance-ip}'
+const WORKER_CONFIG = `\
+coordinator=false
+http-server.http.port=8080
+discovery.uri=http://${INSTANCE_ID_PLACEHOLDER}:8080
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
+memory.heap-headroom-per-node=1.5GB
+`
 
 export const TRINO_ENGINE: QueryEngine = {
     beforeEc2Machines(): void {
@@ -38,32 +66,16 @@ TRINO_EOF`,
 
             // Configure Trino JVM settings (10GB heap to support 8GB query memory)
             `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
--server
--Xmx${JVM_MEMORY_GB}G
--XX:+UseG1GC
--XX:G1HeapRegionSize=32M
--XX:+ExplicitGCInvokesConcurrent
--XX:+HeapDumpOnOutOfMemoryError
--XX:+ExitOnOutOfMemoryError
--Djdk.attach.allowAttachSelf=true
+${JVM_CONFIG}
 TRINO_EOF`,
 
             // Configure Trino config.properties (workers will be reconfigured during lazy startup)
             isCoordinator
                 ? `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
-coordinator=true
-node-scheduler.include-coordinator=true
-http-server.http.port=8080
-discovery.uri=http://localhost:8080
-query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
-memory.heap-headroom-per-node=1.5GB
+${COORDINATOR_CONFIG}
 TRINO_EOF`
                 : `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
-coordinator=false
-http-server.http.port=8080
-discovery.uri=http://localhost:8080
-query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
-memory.heap-headroom-per-node=1.5GB
+${WORKER_CONFIG.replace(INSTANCE_ID_PLACEHOLDER, "localhost")}
 TRINO_EOF`,
 
             // Configure Hive catalog with AWS Glue metastore
@@ -115,22 +127,10 @@ TRINO_EOF`,
             [coordinator],
             [
                 `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
--server
--Xmx${JVM_MEMORY_GB}G
--XX:+UseG1GC
--XX:G1HeapRegionSize=32M
--XX:+ExplicitGCInvokesConcurrent
--XX:+HeapDumpOnOutOfMemoryError
--XX:+ExitOnOutOfMemoryError
--Djdk.attach.allowAttachSelf=true
+${JVM_CONFIG}
 TRINO_EOF`,
                 `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
-coordinator=true
-node-scheduler.include-coordinator=true
-http-server.http.port=8080
-discovery.uri=http://localhost:8080
-query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
-memory.heap-headroom-per-node=1.5GB
+${COORDINATOR_CONFIG}
 TRINO_EOF`,
                 'systemctl start trino',
             ]
@@ -138,12 +138,11 @@ TRINO_EOF`,
         sendCommandsUnconditionally(ctx.scope, 'TrinoWorkerCommands',
             workers,
             [
+                `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
+${JVM_CONFIG}
+TRINO_EOF`,
                 `cat > /opt/trino-server/etc/config.properties << TRINO_EOF
-coordinator=false
-http-server.http.port=8080
-discovery.uri=http://${coordinator.instancePrivateIp}:8080
-query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
-memory.heap-headroom-per-node=1.5GB
+${WORKER_CONFIG.replace(INSTANCE_ID_PLACEHOLDER, coordinator.instancePrivateIp)}
 TRINO_EOF`,
                 'systemctl restart trino',
             ]
