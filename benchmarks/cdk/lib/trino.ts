@@ -35,7 +35,7 @@ node.id=instance-${ctx.instanceIdx}
 node.data-dir=/var/trino/data
 TRINO_EOF`,
 
-            // Configure Trino JVM settings (using 12GB heap for better performance)
+            // Configure Trino JVM settings (10GB heap to support 8GB query memory)
             `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
 -server
 -Xmx10G
