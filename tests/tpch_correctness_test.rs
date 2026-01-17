@@ -137,9 +137,9 @@ mod tests {
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
 
-        // Enable broadcast joins if BROADCAST_JOINS_ENABLED env var is set
-        let ctx = if std::env::var("BROADCAST_JOINS_ENABLED").is_ok() {
-            ctx.with_distributed_broadcast_joins_enabled(true)?
+        // Enable broadcast joins if BROADCAST_JOINS env var is set
+        let ctx = if std::env::var("BROADCAST_JOINS").is_ok() {
+            ctx.with_distributed_broadcast_joins(true)?
         } else {
             ctx
         };

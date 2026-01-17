@@ -565,9 +565,9 @@ mod tests {
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        // Enable broadcast joins if BROADCAST_JOINS_ENABLED env var is set
-        let d_ctx = if std::env::var("BROADCAST_JOINS_ENABLED").is_ok() {
-            d_ctx.with_distributed_broadcast_joins_enabled(true)?
+        // Enable broadcast joins if BROADCAST_JOINS env var is set
+        let d_ctx = if std::env::var("BROADCAST_JOINS").is_ok() {
+            d_ctx.with_distributed_broadcast_joins(true)?
         } else {
             d_ctx
         };

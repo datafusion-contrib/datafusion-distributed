@@ -456,16 +456,10 @@ pub trait DistributedExt: Sized {
     ///
     /// Note: This option is disabled by default until the implementation is smarter about when to
     /// broadcast.
-    fn with_distributed_broadcast_joins_enabled(
-        self,
-        enabled: bool,
-    ) -> Result<Self, DataFusionError>;
+    fn with_distributed_broadcast_joins(self, enabled: bool) -> Result<Self, DataFusionError>;
 
     /// Same as [DistributedExt::with_distributed_broadcast_joins_enabled] but with an in-place mutation.
-    fn set_distributed_broadcast_joins_enabled(
-        &mut self,
-        enabled: bool,
-    ) -> Result<(), DataFusionError>;
+    fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -546,10 +540,7 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_broadcast_joins_enabled(
-        &mut self,
-        enabled: bool,
-    ) -> Result<(), DataFusionError> {
+    fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.broadcast_joins = enabled;
         Ok(())
@@ -601,9 +592,9 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            #[call(set_distributed_broadcast_joins_enabled)]
+            #[call(set_distributed_broadcast_joins)]
             #[expr($?;Ok(self))]
-            fn with_distributed_broadcast_joins_enabled(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -666,10 +657,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_broadcast_joins_enabled(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_broadcast_joins_enabled)]
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
             #[expr($?;Ok(self))]
-            fn with_distributed_broadcast_joins_enabled(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -732,10 +723,10 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_broadcast_joins_enabled(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_broadcast_joins_enabled)]
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
             #[expr($?;Ok(self))]
-            fn with_distributed_broadcast_joins_enabled(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -798,10 +789,10 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_broadcast_joins_enabled(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_broadcast_joins_enabled)]
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
             #[expr($?;Ok(self))]
-            fn with_distributed_broadcast_joins_enabled(self, enabled: bool) -> Result<Self, DataFusionError>;
+            fn with_distributed_broadcast_joins(self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
