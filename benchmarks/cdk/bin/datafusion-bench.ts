@@ -1,7 +1,7 @@
-import path from "path";
 import {Command} from "commander";
 import {z} from 'zod';
-import {BenchmarkRunner, ROOT, runBenchmark, TableSpec} from "./@bench-common";
+import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
+import {execSync} from "child_process";
 
 // Remember to port-forward a worker with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
@@ -10,7 +10,7 @@ async function main() {
     const program = new Command();
 
     program
-        .option('--dataset <string>', 'Dataset to run queries on')
+        .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--files-per-task <number>', 'Files per task', '4')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
@@ -36,14 +36,11 @@ async function main() {
         collectMetrics
     });
 
-    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
-    const outputPath = path.join(datasetPath, "remote-results.json")
-
     await runBenchmark(runner, {
         dataset,
+        engine: `datafusion-distributed-${getCurrentBranch()}`,
         iterations,
         queries,
-        outputPath,
     });
 }
 
@@ -111,7 +108,16 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.collect_metrics=${this.options.collectMetrics};
     `);
     }
+}
 
+function getCurrentBranch(): string {
+    try {
+        // Try to get current git branch
+        return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+    } catch {
+        // Fallback if git command fails
+        return 'unknown';
+    }
 }
 
 main()

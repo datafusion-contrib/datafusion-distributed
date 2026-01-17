@@ -1,71 +1,9 @@
 import path from "path";
 import fs from "fs/promises";
-import {z} from 'zod';
+import {BenchmarkRun, BenchResult} from "./@results";
 
 export const ROOT = path.join(__dirname, '../../..')
 export const BUCKET = 's3://datafusion-distributed-benchmarks' // hardcoded in CDK code
-
-// Simple data structures
-export type QueryResult = {
-    query: string;
-    iterations: { elapsed: number; row_count: number }[];
-    failure?: string
-}
-
-export type BenchmarkResults = {
-    queries: QueryResult[];
-}
-
-export const BenchmarkResults = z.object({
-    queries: z.array(z.object({
-        query: z.string(),
-        iterations: z.array(z.object({
-            elapsed: z.number(),
-            row_count: z.number()
-        })),
-        failed: z.string().optional()
-    }))
-})
-
-export async function writeJson(results: BenchmarkResults, outputPath?: string) {
-    if (!outputPath) return;
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await fs.writeFile(outputPath, JSON.stringify(results, null, 2));
-}
-
-export async function compareWithPrevious(results: BenchmarkResults, outputPath: string) {
-    let prevResults: BenchmarkResults;
-    try {
-        const prevContent = await fs.readFile(outputPath, 'utf-8');
-        prevResults = BenchmarkResults.parse(JSON.parse(prevContent));
-    } catch {
-        return; // No previous results to compare
-    }
-
-    console.log('\n==== Comparison with previous run ====');
-
-    for (const query of results.queries) {
-        const prevQuery = prevResults.queries.find(q => q.query === query.query);
-        if (!prevQuery || prevQuery.iterations.length === 0 || query.iterations.length === 0) {
-            continue;
-        }
-
-        const avgPrev = Math.round(
-            prevQuery.iterations.reduce((sum, i) => sum + i.elapsed, 0) / prevQuery.iterations.length
-        );
-        const avg = Math.round(
-            query.iterations.reduce((sum, i) => sum + i.elapsed, 0) / query.iterations.length
-        );
-
-        const factor = avg < avgPrev ? avgPrev / avg : avg / avgPrev;
-        const tag = avg < avgPrev ? "faster" : "slower";
-        const emoji = factor > 1.2 ? (avg < avgPrev ? "✅" : "❌") : (avg < avgPrev ? "✔" : "✖");
-
-        console.log(
-            `${query.query.padStart(8)}: prev=${avgPrev.toString().padStart(4)} ms, new=${avg.toString().padStart(4)} ms, ${factor.toFixed(2)}x ${tag} ${emoji}`
-        );
-    }
-}
 
 export interface TableSpec {
     schema: string
@@ -132,14 +70,14 @@ export async function runBenchmark(
     runner: BenchmarkRunner,
     options: {
         dataset: string
+        engine: string,
         iterations: number;
         queries: string[];
-        outputPath: string;
     }
 ) {
-    const { dataset, iterations, queries, outputPath } = options;
+    const { dataset, engine, iterations, queries } = options;
 
-    const results: BenchmarkResults = { queries: [] };
+    const benchmarkRun = new BenchmarkRun(dataset, engine)
 
     console.log("Creating tables...");
     const s3Paths = await tablePathsForDataset(dataset)
@@ -150,17 +88,18 @@ export async function runBenchmark(
             continue;
         }
 
-        const queryResult: QueryResult = {
-            query: id,
-            iterations: [],
-        };
+        const result = new BenchResult(dataset, engine, id)
 
         console.log(`Warming up query ${id}...`)
         try {
             await runner.executeQuery(sql);
         } catch (e: any) {
-            queryResult.failure = e.toString();
-            console.error(`Query ${queryResult.query} failed: ${queryResult.failure}`)
+            result.iterations.push({
+                elapsed: 0,
+                rowCount: 0,
+                error: e.toString()
+            })
+            console.error(`Query ${id} failed: ${e.toString()}`)
             continue
         }
 
@@ -170,33 +109,32 @@ export async function runBenchmark(
             try {
                 response = await runner.executeQuery(sql);
             } catch (e: any) {
-                queryResult.failure = e.toString();
+                result.iterations.push({
+                    elapsed: 0,
+                    rowCount: 0,
+                    error: e.toString()
+                })
+                console.error(`Query ${id} failed: ${e.toString()}`)
                 break
             }
             const elapsed = Math.round(new Date().getTime() - start.getTime())
 
-            queryResult.iterations.push({
+            result.iterations.push({
                 elapsed,
-                row_count: response.rowCount
-            });
+                rowCount: response.rowCount,
+            })
 
             console.log(
                 `Query ${id} iteration ${i} took ${elapsed} ms and returned ${response.rowCount} rows`
             );
         }
 
-        const avg = Math.round(
-            queryResult.iterations.reduce((a, b) => a + b.elapsed, 0) / queryResult.iterations.length
-        );
-        console.log(`Query ${id} avg time: ${avg} ms`);
+        console.log(`Query ${id} avg time: ${result.avg()} ms`);
 
-        if (queryResult.failure) {
-            console.error(`Query ${queryResult.query} failed: ${queryResult.failure}`)
-        }
-        results.queries.push(queryResult);
+        benchmarkRun.results.push(result)
     }
 
     // Write results and compare
-    await compareWithPrevious(results, outputPath);
-    await writeJson(results, outputPath);
+    benchmarkRun.compareWithPrevious()
+    benchmarkRun.store()
 }

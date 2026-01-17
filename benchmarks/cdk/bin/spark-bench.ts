@@ -1,7 +1,6 @@
-import path from "path";
 import {Command} from "commander";
 import {z} from 'zod';
-import {BenchmarkRunner, ROOT, runBenchmark, TableSpec} from "./@bench-common";
+import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward the Spark HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"
@@ -10,7 +9,7 @@ async function main() {
     const program = new Command();
 
     program
-        .option('--dataset <string>', 'Dataset to run queries on')
+        .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
@@ -23,14 +22,11 @@ async function main() {
 
     const runner = new SparkRunner({});
 
-    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
-    const outputPath = path.join(datasetPath, "remote-results.json")
-
     await runBenchmark(runner, {
         dataset,
+        engine: 'spark',
         iterations,
         queries,
-        outputPath,
     });
 }
 
