@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .build();
     if cmd.broadcast_joins {
-        state = state.with_distributed_broadcast_joins_enabled(true)?;
+        state = state.with_distributed_broadcast_joins(true)?;
     }
     let ctx = SessionContext::from(state);
 

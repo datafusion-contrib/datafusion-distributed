@@ -217,17 +217,13 @@ fn push_down_batch_coalescing(
 
 #[cfg(test)]
 mod tests {
+    use crate::distributed_planner::test_utils::{
+        BuildSideOneTaskEstimator, TestPlanOptions, explain_test_plan,
+    };
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::sql_to_physical_plan;
-    use crate::{DistributedConfig, DistributedExt, DistributedPhysicalOptimizerRule};
-    use crate::{TaskEstimation, TaskEstimator, assert_snapshot, display_plan_ascii};
-    use datafusion::config::ConfigOptions;
-    use datafusion::physical_plan::ExecutionPlan;
+    use crate::{DistributedExt, assert_snapshot};
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::prelude::{SessionConfig, SessionContext};
-    use itertools::Itertools;
-    use std::sync::Arc;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -937,67 +933,11 @@ mod tests {
         ");
     }
 
-    #[derive(Debug)]
-    struct BuildSideOneTaskEstimator;
-
-    impl TaskEstimator for BuildSideOneTaskEstimator {
-        fn task_estimation(
-            &self,
-            plan: &Arc<dyn ExecutionPlan>,
-            _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            if !plan.children().is_empty() {
-                return None;
-            }
-            let schema = plan.schema();
-            let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
-            let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
-            if has_min_temp && !has_max_temp {
-                Some(TaskEstimation::maximum(1))
-            } else {
-                None
-            }
-        }
-
-        fn scale_up_leaf_node(
-            &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
-        }
-    }
-
     async fn sql_to_explain(
         query: &str,
         f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
     ) -> String {
-        let config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let builder = SessionStateBuilder::new()
-            .with_default_features()
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .with_config(config);
-
-        let state = f(builder).build();
-
-        let ctx = SessionContext::new_with_state(state);
-        let mut queries = query.split(";").collect_vec();
-        let last_query = queries.pop().unwrap();
-
-        for query in queries {
-            ctx.sql(query).await.unwrap();
-        }
-
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(last_query).await.unwrap();
-
-        let physical_plan = df.create_physical_plan().await.unwrap();
-        display_plan_ascii(physical_plan.as_ref(), false)
+        explain_test_plan(query, TestPlanOptions::default(), true, f).await
     }
 
     async fn sql_to_explain_with_broadcast(
@@ -1008,35 +948,16 @@ mod tests {
         sql_to_plan_with_options(query, num_workers, broadcast_enabled, true).await
     }
 
-    async fn sql_to_explain_with_broadcast_one_to_many(
-        query: &str,
-        num_workers: usize,
-    ) -> String {
-        let mut config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let d_cfg = DistributedConfig {
-            broadcast_joins: true,
-            ..Default::default()
+    async fn sql_to_explain_with_broadcast_one_to_many(query: &str, num_workers: usize) -> String {
+        let options = TestPlanOptions {
+            target_partitions: 4,
+            num_workers,
+            broadcast_enabled: true,
         };
-        config.set_distributed_option_extension(d_cfg).unwrap();
-
-        let builder = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-            .with_distributed_task_estimator(BuildSideOneTaskEstimator)
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
-
-        let state = builder.build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(query).await.unwrap();
-        let physical_plan = df.create_physical_plan().await.unwrap();
-        display_plan_ascii(physical_plan.as_ref(), false)
+        explain_test_plan(query, options, true, |b| {
+            b.with_distributed_task_estimator(BuildSideOneTaskEstimator)
+        })
+        .await
     }
 
     async fn sql_to_plan_with_options(
@@ -1045,48 +966,11 @@ mod tests {
         broadcast_enabled: bool,
         use_optimizer: bool,
     ) -> String {
-        use datafusion::physical_plan::displayable;
-
-        let mut config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let d_cfg = DistributedConfig {
-            broadcast_joins: broadcast_enabled,
-            ..Default::default()
+        let options = TestPlanOptions {
+            target_partitions: 4,
+            num_workers,
+            broadcast_enabled,
         };
-        config.set_distributed_option_extension(d_cfg).unwrap();
-
-        let mut builder = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers));
-
-        if use_optimizer {
-            builder =
-                builder.with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
-        }
-
-        let state = builder.build();
-
-        let ctx = SessionContext::new_with_state(state);
-        let mut queries = query.split(";").collect_vec();
-        let last_query = queries.pop().unwrap();
-
-        for query in queries {
-            ctx.sql(query).await.unwrap();
-        }
-
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(last_query).await.unwrap();
-
-        let physical_plan = df.create_physical_plan().await.unwrap();
-
-        if use_optimizer {
-            display_plan_ascii(physical_plan.as_ref(), false)
-        } else {
-            format!("{}", displayable(physical_plan.as_ref()).indent(true))
-        }
+        explain_test_plan(query, options, use_optimizer, |b| b).await
     }
 }

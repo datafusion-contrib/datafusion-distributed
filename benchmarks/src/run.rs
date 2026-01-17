@@ -94,8 +94,8 @@ pub struct RunOpt {
     children_isolator_unions: bool,
 
     /// Turns on broadcast joins.
-    #[structopt(long)]
-    enable_broadcast_joins: bool,
+    #[structopt(long = "broadcast-joins")]
+    broadcast_joins: bool,
 
     /// Collects metrics across network boundaries
     #[structopt(long)]
@@ -214,7 +214,7 @@ impl RunOpt {
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
             .with_distributed_children_isolator_unions(self.children_isolator_unions)?
-            .with_distributed_broadcast_joins_enabled(self.enable_broadcast_joins)?
+            .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
         let ctx = SessionContext::new_with_state(state);

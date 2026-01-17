@@ -4,6 +4,8 @@ mod insert_broadcast;
 mod network_boundary;
 mod plan_annotator;
 mod task_estimator;
+#[cfg(test)]
+mod test_utils;
 
 pub use distributed_config::DistributedConfig;
 pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;

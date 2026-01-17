@@ -382,18 +382,13 @@ fn required_network_boundary_below(parent: &dyn ExecutionPlan) -> Option<Require
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::parquet::register_parquet_tables;
-    use crate::test_utils::plans::sql_to_physical_plan;
-    use crate::{
-        DistributedConfig, DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot,
+    use crate::distributed_planner::test_utils::{
+        BuildSideOneTaskEstimator, TestPlanOptions, annotate_test_plan,
     };
+    use crate::test_utils::plans::sql_to_physical_plan;
+    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::filter::FilterExec;
-    use datafusion::prelude::{SessionConfig, SessionContext};
-    use itertools::Itertools;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -871,7 +866,7 @@ mod tests {
     }
 
     async fn sql_to_annotated(query: &str) -> String {
-        sql_to_annotated_with_options(query, 4, 4, false).await
+        annotate_test_plan(query, TestPlanOptions::default(), |b| b).await
     }
 
     async fn sql_to_annotated_broadcast(
@@ -880,37 +875,23 @@ mod tests {
         num_workers: usize,
         broadcast_enabled: bool,
     ) -> String {
-        sql_to_annotated_with_options(query, target_partitions, num_workers, broadcast_enabled)
-            .await
+        let options = TestPlanOptions {
+            target_partitions,
+            num_workers,
+            broadcast_enabled,
+        };
+        annotate_test_plan(query, options, |b| b).await
     }
 
     async fn sql_to_annotated_with_estimator<T: ExecutionPlan + Send + Sync + 'static>(
         query: &str,
         estimator: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
     ) -> String {
-        let config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-            .with_distributed_task_estimator(CallbackEstimator::new(estimator))
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(query).await.unwrap();
-        let mut plan = df.create_physical_plan().await.unwrap();
-
-        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
-
-        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to annotate plan");
-        format!("{annotated:?}")
+        let options = TestPlanOptions::default();
+        annotate_test_plan(query, options, |b| {
+            b.with_distributed_task_estimator(CallbackEstimator::new(estimator))
+        })
+        .await
     }
 
     async fn sql_to_annotated_broadcast_with_estimator(
@@ -918,109 +899,14 @@ mod tests {
         num_workers: usize,
         estimator: impl TaskEstimator + Send + Sync + 'static,
     ) -> String {
-        let mut config = SessionConfig::new()
-            .with_target_partitions(4)
-            .with_information_schema(true);
-
-        let d_cfg = DistributedConfig {
-            broadcast_joins: true,
-            ..Default::default()
+        let options = TestPlanOptions {
+            target_partitions: 4,
+            num_workers,
+            broadcast_enabled: true,
         };
-        config.set_distributed_option_extension(d_cfg).unwrap();
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-            .with_distributed_task_estimator(estimator)
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(query).await.unwrap();
-        let mut plan = df.create_physical_plan().await.unwrap();
-
-        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
-
-        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to annotate plan");
-        format!("{annotated:?}")
-    }
-
-    #[derive(Debug)]
-    struct BuildSideOneTaskEstimator;
-
-    impl TaskEstimator for BuildSideOneTaskEstimator {
-        fn task_estimation(
-            &self,
-            plan: &Arc<dyn ExecutionPlan>,
-            _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            if !plan.children().is_empty() {
-                return None;
-            }
-            let schema = plan.schema();
-            let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
-            let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
-            if has_min_temp && !has_max_temp {
-                Some(TaskEstimation::maximum(1))
-            } else {
-                None
-            }
-        }
-
-        fn scale_up_leaf_node(
-            &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
-        }
-    }
-
-    async fn sql_to_annotated_with_options(
-        query: &str,
-        target_partitions: usize,
-        num_workers: usize,
-        broadcast_enabled: bool,
-    ) -> String {
-        let mut config = SessionConfig::new()
-            .with_target_partitions(target_partitions)
-            .with_information_schema(true);
-
-        let d_cfg = DistributedConfig {
-            broadcast_joins: broadcast_enabled,
-            ..Default::default()
-        };
-        config.set_distributed_option_extension(d_cfg).unwrap();
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        let mut queries = query.split(";").collect_vec();
-        let last_query = queries.pop().unwrap();
-
-        for query in queries {
-            ctx.sql(query).await.unwrap();
-        }
-
-        register_parquet_tables(&ctx).await.unwrap();
-
-        let df = ctx.sql(last_query).await.unwrap();
-        let mut plan = df.create_physical_plan().await.unwrap();
-
-        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
-
-        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to annotate plan");
-        format!("{annotated:?}")
+        annotate_test_plan(query, options, |b| {
+            b.with_distributed_task_estimator(estimator)
+        })
+        .await
     }
 }
