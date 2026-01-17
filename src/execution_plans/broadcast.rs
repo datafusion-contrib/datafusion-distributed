@@ -61,7 +61,7 @@ use tokio::sync::OnceCell;
 /// ```
 ///
 /// Notice that the first consumer task, [NetworkBroadcastExec] task 1, triggers the execution of
-/// the operator below the [BroadCastExec] and populates each cache index with the repective
+/// the operator below the [BroadCastExec] and populates each cache index with the respective
 /// partition. Subsequent consumer tasks, rather than executing the same partitions, read the
 /// data from the cache for each partition.
 #[derive(Debug)]

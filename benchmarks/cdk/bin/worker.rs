@@ -71,12 +71,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
-    let mut state = SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-        .with_distributed_broadcast_joins(true)?
+        .with_distributed_broadcast_joins(cmd.broadcast_joins)?
         .build();
     let ctx = SessionContext::from(state);
 
