@@ -26,6 +26,9 @@ use structopt::StructOpt;
 use tonic::transport::Server;
 use url::Url;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Serialize)]
 struct QueryResult {
     plan: String,
