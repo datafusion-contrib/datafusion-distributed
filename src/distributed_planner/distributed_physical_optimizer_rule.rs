@@ -209,13 +209,17 @@ fn push_down_batch_coalescing(
 
 #[cfg(test)]
 mod tests {
-    use crate::distributed_planner::test_utils::{
-        BuildSideOneTaskEstimator, TestPlanOptions, explain_test_plan,
-    };
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::sql_to_physical_plan;
-    use crate::{DistributedExt, assert_snapshot};
+    use crate::test_utils::plans::{
+        BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
+        sql_to_physical_plan,
+    };
+    use crate::{
+        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
+    };
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::displayable;
+    use std::sync::Arc;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -951,5 +955,32 @@ mod tests {
             broadcast_enabled,
         };
         explain_test_plan(query, options, use_optimizer, |b| b).await
+    }
+
+    async fn explain_test_plan(
+        query: &str,
+        options: TestPlanOptions,
+        use_optimizer: bool,
+        configure: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
+    ) -> String {
+        let mut builder = base_session_builder(
+            options.target_partitions,
+            options.num_workers,
+            options.broadcast_enabled,
+        );
+        if use_optimizer {
+            builder =
+                builder.with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
+        }
+        let builder = configure(builder);
+        let (ctx, query) = context_with_query(builder, query).await;
+        let df = ctx.sql(&query).await.unwrap();
+        let physical_plan = df.create_physical_plan().await.unwrap();
+
+        if use_optimizer {
+            display_plan_ascii(physical_plan.as_ref(), false)
+        } else {
+            format!("{}", displayable(physical_plan.as_ref()).indent(true))
+        }
     }
 }

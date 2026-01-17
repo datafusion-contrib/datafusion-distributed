@@ -407,12 +407,14 @@ fn _annotate_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distributed_planner::test_utils::{
-        BuildSideOneTaskEstimator, TestPlanOptions, annotate_test_plan,
+    use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
+    use crate::test_utils::plans::{
+        BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
+        sql_to_physical_plan,
     };
-    use crate::test_utils::plans::sql_to_physical_plan;
     use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
+    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::filter::FilterExec;
     /* schema for the "weather" table
 
@@ -917,5 +919,28 @@ mod tests {
             b.with_distributed_task_estimator(estimator)
         })
         .await
+    }
+
+    async fn annotate_test_plan(
+        query: &str,
+        options: TestPlanOptions,
+        configure: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
+    ) -> String {
+        let builder = base_session_builder(
+            options.target_partitions,
+            options.num_workers,
+            options.broadcast_enabled,
+        );
+        let builder = configure(builder);
+        let (ctx, query) = context_with_query(builder, query).await;
+        let df = ctx.sql(&query).await.unwrap();
+        let mut plan = df.create_physical_plan().await.unwrap();
+
+        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to insert broadcasts");
+
+        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to annotate plan");
+        format!("{annotated:?}")
     }
 }
