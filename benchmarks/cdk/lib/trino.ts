@@ -6,6 +6,7 @@ import {
 } from "./cdk-stack";
 
 const TRINO_VERSION = 476
+const JVM_MEMORY_GB = 20
 
 export const TRINO_ENGINE: QueryEngine = {
     beforeEc2Machines(): void {
@@ -38,7 +39,7 @@ TRINO_EOF`,
             // Configure Trino JVM settings (10GB heap to support 8GB query memory)
             `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
 -server
--Xmx10G
+-Xmx${JVM_MEMORY_GB}G
 -XX:+UseG1GC
 -XX:G1HeapRegionSize=32M
 -XX:+ExplicitGCInvokesConcurrent
@@ -54,14 +55,14 @@ coordinator=true
 node-scheduler.include-coordinator=true
 http-server.http.port=8080
 discovery.uri=http://localhost:8080
-query.max-memory-per-node=8GB
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
 memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`
                 : `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
 coordinator=false
 http-server.http.port=8080
 discovery.uri=http://localhost:8080
-query.max-memory-per-node=8GB
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
 memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`,
 
@@ -112,7 +113,27 @@ TRINO_EOF`,
         // Then start workers (they will discover the coordinator)
         sendCommandsUnconditionally(ctx.scope, 'TrinoCoordinatorCommands',
             [coordinator],
-            ['systemctl start trino']
+            [
+                `cat > /opt/trino-server/etc/jvm.config << 'TRINO_EOF'
+-server
+-Xmx${JVM_MEMORY_GB}G
+-XX:+UseG1GC
+-XX:G1HeapRegionSize=32M
+-XX:+ExplicitGCInvokesConcurrent
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:+ExitOnOutOfMemoryError
+-Djdk.attach.allowAttachSelf=true
+TRINO_EOF`,
+                `cat > /opt/trino-server/etc/config.properties << 'TRINO_EOF'
+coordinator=true
+node-scheduler.include-coordinator=true
+http-server.http.port=8080
+discovery.uri=http://localhost:8080
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
+memory.heap-headroom-per-node=1.5GB
+TRINO_EOF`,
+                'systemctl start trino',
+            ]
         )
         sendCommandsUnconditionally(ctx.scope, 'TrinoWorkerCommands',
             workers,
@@ -121,7 +142,7 @@ TRINO_EOF`,
 coordinator=false
 http-server.http.port=8080
 discovery.uri=http://${coordinator.instancePrivateIp}:8080
-query.max-memory-per-node=8GB
+query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
 memory.heap-headroom-per-node=1.5GB
 TRINO_EOF`,
                 'systemctl restart trino',
