@@ -223,16 +223,9 @@ impl ExecutionPlan for NetworkBroadcastExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let new_child = require_one_child(children)?;
-        let mut new_stage = self.input_stage.clone();
-        new_stage.plan = MaybeEncodedPlan::Decoded(new_child);
-
-        Ok(Arc::new(Self {
-            properties: self.properties.clone(),
-            input_stage: new_stage,
-            worker_connections: self.worker_connections.clone(),
-            metrics_collection: self.metrics_collection.clone(),
-        }))
+        let mut self_clone = self.as_ref().clone();
+        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+        Ok(Arc::new(self_clone))
     }
 
     fn execute(
