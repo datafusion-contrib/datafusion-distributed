@@ -2,6 +2,7 @@ use super::get_distributed_user_codecs;
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
 };
+use crate::flight_service::WorkerConnectionPool;
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
@@ -473,6 +474,7 @@ fn new_network_hash_shuffle_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         ),
+        worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
     }
@@ -503,6 +505,7 @@ fn new_network_coalesce_tasks_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         ),
+        worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
     }
@@ -536,6 +539,7 @@ fn new_network_broadcast_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         ),
+        worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
     }

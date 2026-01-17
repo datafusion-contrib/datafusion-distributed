@@ -1,9 +1,9 @@
 [workspace]
-members = ["benchmarks", "cli"]
+members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { version = "51.0.0", default-features = false }
-datafusion-proto = { version = "51.0.0" }
+datafusion = { version = "52.0.0", default-features = false }
+datafusion-proto = { version = "52.0.0" }
 
 [package]
 name = "datafusion-distributed"
@@ -21,27 +21,27 @@ datafusion = { workspace = true, features = [
 datafusion-proto = { workspace = true }
 arrow-flight = "57.1.0"
 arrow-select = "57.1.0"
-async-trait = "0.1.88"
-tokio = { version = "1.46.1", features = ["full"] }
+async-trait = "0.1.89"
+tokio = { version = "1.48", features = ["full"] }
 tonic = { version = "0.14.1", features = ["transport"] }
 tower = "0.5.2"
 http = "1.3.1"
 itertools = "0.14.0"
 futures = "0.3.31"
-url = "2.5.4"
-uuid = "1.17.0"
+url = "2.5.7"
+uuid = "1.19"
 delegate = "0.13.4"
-dashmap = "6.1.0"
-prost = "0.14.0"
-rand = "0.8.5"
-object_store = "0.12.3"
-bytes = "1.10.1"
+dashmap = "6.0.1"
+prost = "0.14.1"
+rand = "0.9"
+object_store = "0.12.4"
+bytes = "1.11"
 pin-project = "1.1.10"
 tokio-stream = "0.1.17"
 moka = { version = "0.12", features = ["sync"] }
 
 # integration_tests deps
-insta = { version = "1.43.1", features = ["filters"], optional = true }
+insta = { version = "1.46.0", features = ["filters"], optional = true }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
 parquet = { version = "57.1.0", optional = true }
@@ -71,7 +71,7 @@ clickbench = ["integration"]
 
 [dev-dependencies]
 structopt = "0.3"
-insta = { version = "1.43.1", features = ["filters"] }
+insta = { version = "1.46.0", features = ["filters"] }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 parquet = "57.1.0"

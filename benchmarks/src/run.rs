@@ -59,7 +59,7 @@ use tonic::transport::Server;
 pub struct RunOpt {
     /// Query number. If not specified, runs all queries
     #[structopt(short, long, use_delimiter = true)]
-    pub query: Vec<usize>,
+    pub query: Vec<String>,
 
     /// Path to data files
     #[structopt(parse(from_os_str), short = "p", long = "path")]
@@ -146,18 +146,20 @@ impl Dataset {
         }
     }
 
-    fn queries(&self) -> Result<Vec<(usize, String)>, DataFusionError> {
+    fn queries(&self) -> Result<Vec<(String, String)>, DataFusionError> {
         match self {
-            Dataset::Tpch => (1..22 + 1)
-                .map(|i| Ok((i as usize, tpch::get_test_tpch_query(i)?)))
+            Dataset::Tpch => tpch::get_queries()
+                .into_iter()
+                .map(|id| Ok((id.clone(), tpch::get_query(&id)?)))
                 .collect(),
-            Dataset::Tpcds => (1..72)
-                // skip query 72, it's ridiculously slow
-                .chain(73..99 + 1)
-                .map(|i| Ok((i, tpcds::get_test_tpcds_query(i)?)))
+            Dataset::Tpcds => tpcds::get_queries()
+                .into_iter()
+                .filter(|id| id != "q72") // 72 is terribly slow
+                .map(|id| Ok((id.clone(), tpcds::get_query(&id)?)))
                 .collect(),
-            Dataset::Clickbench => (0..42 + 1)
-                .map(|i| Ok((i, clickbench::get_test_clickbench_query(i)?)))
+            Dataset::Clickbench => clickbench::get_queries()
+                .into_iter()
+                .map(|id| Ok((id.clone(), clickbench::get_query(&id)?)))
                 .collect(),
         }
     }
@@ -231,7 +233,7 @@ impl RunOpt {
         let dataset = Dataset::infer_from_data_path(path.clone())?;
 
         for (id, sql) in dataset.queries()? {
-            if !self.query.is_empty() && !self.query.contains(&id) {
+            if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
                 continue;
             }
             let query_id = format!("{dataset:?} {id}");

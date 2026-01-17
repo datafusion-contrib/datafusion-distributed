@@ -1,20 +1,10 @@
-use crate::DistributedConfig;
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
-use crate::config_extension_ext::ContextGrpcMetadata;
 use crate::distributed_planner::NetworkBoundary;
-use crate::execution_plans::common::{manually_propagate_distributed_config, spawn_select_all};
-use crate::flight_service::DoGet;
-use crate::metrics::MetricsCollectingStream;
+use crate::flight_service::WorkerConnectionPool;
 use crate::metrics::proto::MetricsSetProto;
-use crate::networking::get_distributed_channel_resolver;
-use crate::protobuf::StageKey;
-use crate::protobuf::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
+use crate::protobuf::{AppMetadata, StageKey};
 use crate::stage::{MaybeEncodedPlan, Stage};
-use arrow_flight::Ticket;
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
-use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
@@ -23,14 +13,9 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
-use http::Extensions;
-use prost::Message;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
-use tonic::Request;
-use tonic::metadata::MetadataMap;
 use uuid::Uuid;
 
 /// Network boundary for broadcasting data to all consumer tasks.
@@ -136,6 +121,7 @@ use uuid::Uuid;
 pub struct NetworkBroadcastExec {
     pub(crate) properties: PlanProperties,
     pub(crate) input_stage: Stage,
+    pub(crate) worker_connections: WorkerConnectionPool,
     pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
 }
 
@@ -174,6 +160,7 @@ impl NetworkBroadcastExec {
         Ok(Self {
             properties,
             input_stage,
+            worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),
         })
     }
@@ -243,6 +230,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
         Ok(Arc::new(Self {
             properties: self.properties.clone(),
             input_stage: new_stage,
+            worker_connections: self.worker_connections.clone(),
             metrics_collection: self.metrics_collection.clone(),
         }))
     }
@@ -253,74 +241,33 @@ impl ExecutionPlan for NetworkBroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let task_index = task_context.task_index;
+        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
 
-        let channel_resolver = get_distributed_channel_resolver(context.as_ref());
-        let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
-        let retrieve_metrics = d_cfg.collect_metrics;
+        for input_task_index in 0..self.input_stage.tasks.len() {
+            let worker_connection = self.worker_connections.get_or_init_worker_connection(
+                &self.input_stage,
+                off..(off + self.properties.partitioning.partition_count()),
+                input_task_index,
+                &context,
+            )?;
 
-        let input_stage = &self.input_stage;
-        let encoded_input_plan = input_stage.plan.encoded()?;
-        let input_stage_tasks = input_stage.tasks.to_vec();
-        let input_task_count = input_stage_tasks.len();
-        let input_stage_num = input_stage.num as u64;
-        let query_id = Bytes::from(input_stage.query_id.as_bytes().to_vec());
-        let input_partition_count = self.properties.partitioning.partition_count();
-        let stage_partition = task_index * input_partition_count + partition;
-
-        let context_headers = ContextGrpcMetadata::headers_from_ctx(&context);
-        let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
-        let metrics_collection = self.metrics_collection.clone();
-
-        let stream = input_stage_tasks.into_iter().enumerate().map(|(i, task)| {
-            let channel_resolver = Arc::clone(&channel_resolver);
-            let metrics_collection_capture = metrics_collection.clone();
-
-            let ticket = Request::from_parts(
-                MetadataMap::from_headers(context_headers.clone()),
-                Extensions::default(),
-                Ticket {
-                    ticket: DoGet {
-                        plan_proto: encoded_input_plan.clone(),
-                        target_partition: stage_partition as u64,
-                        stage_key: Some(StageKey::new(query_id.clone(), input_stage_num, i as u64)),
-                        target_task_index: i as u64,
-                        target_task_count: input_task_count as u64,
+            let metrics_collection = Arc::clone(&self.metrics_collection);
+            let stream = worker_connection.stream_partition(off + partition, move |meta| {
+                if let Some(AppMetadata::MetricsCollection(m)) = meta.content {
+                    for task_metrics in m.tasks {
+                        if let Some(stage_key) = task_metrics.stage_key {
+                            metrics_collection.insert(stage_key, task_metrics.metrics);
+                        };
                     }
-                    .encode_to_vec()
-                    .into(),
-                },
-            );
-
-            async move {
-                let url = task.url.ok_or(internal_datafusion_err!(
-                    "NetworkBroadcastExec: task is unassigned"
-                ))?;
-
-                let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
-                let stream = client
-                    .do_get(ticket)
-                    .await
-                    .map_err(map_status_to_datafusion_error)?
-                    .into_inner()
-                    .map_err(|err| FlightError::Tonic(Box::new(err)));
-
-                let stream = if retrieve_metrics {
-                    MetricsCollectingStream::new(stream, metrics_collection_capture).left_stream()
-                } else {
-                    stream.right_stream()
-                };
-
-                Ok(FlightRecordBatchStream::new_from_flight_data(stream)
-                    .map_err(map_flight_to_datafusion_error))
-            }
-            .try_flatten_stream()
-            .boxed()
-        });
+                }
+            })?;
+            streams.push(stream);
+        }
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            spawn_select_all(stream.collect(), Arc::clone(context.memory_pool())),
+            futures::stream::select_all(streams),
         )))
     }
 }
