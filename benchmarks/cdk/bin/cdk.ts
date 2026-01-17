@@ -8,7 +8,7 @@ import {SPARK_ENGINE} from "../lib/spark";
 const app = new cdk.App();
 
 const config = {
-    instanceType: 't3.xlarge',
+    instanceType: 't3.2xlarge',
     instanceCount: 4,
     engines: [
         DATAFUSION_DISTRIBUTED_ENGINE,
