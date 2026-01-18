@@ -11,6 +11,7 @@ use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver, display_plan_ascii,
+    get_distributed_worker_resolver,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -29,10 +30,22 @@ use url::Url;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+pub(crate) mod built_info {
+    // The file has been placed there by the build script.
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
 #[derive(Serialize)]
 struct QueryResult {
     plan: String,
     count: usize,
+}
+
+#[derive(Serialize)]
+struct WorkerInfo {
+    worker_urls: Vec<String>,
+    git_commit_hash: String,
+    build_time_utc: String,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -77,66 +90,89 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .build();
     let ctx = SessionContext::from(state);
+    let ctx_clone = ctx.clone();
 
     let worker = Worker::default().with_runtime_env(runtime_env);
     let http_server = axum::serve(
         listener,
-        Router::new().route(
-            "/",
-            get(move |Query(params): Query<HashMap<String, String>>| {
-                let ctx = ctx.clone();
+        Router::new()
+            .route(
+                "/info",
+                get(move || async move {
+                    let ctx = ctx_clone.clone();
 
-                async move {
-                    let sql = params.get("sql").ok_or(err("Missing 'sql' parameter"))?;
+                    let worker_resolver =
+                        get_distributed_worker_resolver(ctx.state_ref().read().config())
+                            .map_err(err)?;
 
-                    let mut df_opt = None;
-                    for sql in sql.split(";") {
-                        if sql.trim().is_empty() {
-                            continue;
+                    let worker_urls = worker_resolver.get_urls().map_err(err)?;
+                    let worker_urls = worker_urls.into_iter().map(|v| v.to_string()).collect();
+
+                    Ok::<_, (StatusCode, String)>(Json(WorkerInfo {
+                        worker_urls,
+                        git_commit_hash: built_info::GIT_COMMIT_HASH
+                            .unwrap_or_default()
+                            .to_string(),
+                        build_time_utc: built_info::BUILT_TIME_UTC.to_string(),
+                    }))
+                }),
+            )
+            .route(
+                "/",
+                get(move |Query(params): Query<HashMap<String, String>>| {
+                    let ctx = ctx.clone();
+
+                    async move {
+                        let sql = params.get("sql").ok_or(err("Missing 'sql' parameter"))?;
+
+                        let mut df_opt = None;
+                        for sql in sql.split(";") {
+                            if sql.trim().is_empty() {
+                                continue;
+                            }
+                            let df = ctx.sql(sql).await.map_err(err)?;
+                            df_opt = Some(df);
                         }
-                        let df = ctx.sql(sql).await.map_err(err)?;
-                        df_opt = Some(df);
-                    }
-                    let Some(df) = df_opt else {
-                        return Err(err("Empty 'sql' parameter"));
-                    };
+                        let Some(df) = df_opt else {
+                            return Err(err("Empty 'sql' parameter"));
+                        };
 
-                    let start = Instant::now();
+                        let start = Instant::now();
 
-                    info!("Executing query...");
-                    let abort_notifier = AbortNotifier::new("Query aborted");
-                    let abort_notifier_clone = abort_notifier.clone();
-                    let task = SpawnedTask::spawn(async move {
-                        let _ = abort_notifier_clone;
-                        loop {
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                            info!("Query still running...");
+                        info!("Executing query...");
+                        let abort_notifier = AbortNotifier::new("Query aborted");
+                        let abort_notifier_clone = abort_notifier.clone();
+                        let task = SpawnedTask::spawn(async move {
+                            let _ = abort_notifier_clone;
+                            loop {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                info!("Query still running...");
+                            }
+                        });
+                        let physical = df.create_physical_plan().await.map_err(err)?;
+                        let mut stream =
+                            execute_stream(physical.clone(), ctx.task_ctx()).map_err(err)?;
+                        let mut count = 0;
+                        while let Some(batch) = stream.next().await {
+                            count += batch.map_err(err)?.num_rows();
+                            info!("Gathered {count} rows, query still in progress..")
                         }
-                    });
-                    let physical = df.create_physical_plan().await.map_err(err)?;
-                    let mut stream =
-                        execute_stream(physical.clone(), ctx.task_ctx()).map_err(err)?;
-                    let mut count = 0;
-                    while let Some(batch) = stream.next().await {
-                        count += batch.map_err(err)?.num_rows();
-                        info!("Gathered {count} rows, query still in progress..")
+                        let plan = display_plan_ascii(physical.as_ref(), true);
+                        drop(task);
+
+                        let elapsed = start.elapsed();
+                        let ms = elapsed.as_secs_f64() * 1000.0;
+                        info!("Finished executing query:\n{sql}\n\n{plan}");
+                        info!("Returned {count} rows in {ms} ms");
+                        abort_notifier.finished();
+
+                        Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
                     }
-                    let plan = display_plan_ascii(physical.as_ref(), true);
-                    drop(task);
-
-                    let elapsed = start.elapsed();
-                    let ms = elapsed.as_secs_f64() * 1000.0;
-                    info!("Finished executing query:\n{sql}\n\n{plan}");
-                    info!("Returned {count} rows in {ms} ms");
-                    abort_notifier.finished();
-
-                    Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
-                }
-                .inspect_err(|(_, msg)| {
-                    error!("Error executing query: {msg}");
-                })
-            }),
-        ),
+                    .inspect_err(|(_, msg)| {
+                        error!("Error executing query: {msg}");
+                    })
+                }),
+            ),
     );
     let grpc_server = Server::builder()
         .add_service(worker.into_flight_server())
