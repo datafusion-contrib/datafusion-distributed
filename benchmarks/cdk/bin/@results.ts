@@ -80,7 +80,7 @@ export class BenchmarkRun {
       return;
     }
 
-    console.log(`=== Comparing results from engine '${previous.engine}' [prev] with '${this.engine}' [new] ===`);
+    console.log(`=== Comparing ${this.dataset} results from engine '${previous.engine}' [prev] with '${this.engine}' [new] ===`);
     for (const query of this.results) {
       const prevQuery = previous.results.find(v => v.id === query.id);
       if (!prevQuery) {

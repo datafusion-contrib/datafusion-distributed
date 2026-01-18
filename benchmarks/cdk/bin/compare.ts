@@ -18,7 +18,7 @@ async function main() {
     const prevResults = BenchResult.loadMany(options.dataset, program.args[0])
     const newResults = BenchResult.loadMany(options.dataset, program.args[1])
 
-    console.log(`=== Comparing results from engine '${program.args[0]}' [prev] with '${program.args[1]}' [new] ===`);
+    console.log(`=== Comparing ${options.dataset} results from engine '${program.args[0]}' [prev] with '${program.args[1]}' [new] ===`);
     for (const result of newResults) {
         const prev = prevResults.find(v => v.id === result.id)
         if (!prev) {

@@ -23,8 +23,10 @@ impl CompareOpt {
                 return internal_err!("Exactly two branches must be specified, got: {rest:?}");
             }
         };
-        println!("=== Comparing results from branch '{base}' [left] with '{new}' [right] ===");
-
+        println!(
+            "=== Comparing {} results from branch '{}' [prev] with '{}' [new] ===",
+            self.dataset, base, new
+        );
         let base = BenchResult::load_many(&self.dataset, base);
         let new = BenchResult::load_many(&self.dataset, new);
         for query in new {

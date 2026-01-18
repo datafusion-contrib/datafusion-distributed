@@ -95,29 +95,22 @@ impl BenchmarkRun {
             return Ok(());
         };
 
-        let mut header_printed = false;
+        let header = format!(
+            "=== Comparing {} results from branch '{}' [prev] with '{}' [new] ===",
+            self.dataset, previous.branch, self.branch
+        );
+        println!("{header}");
+        // Print machine information
+        println!("os:        {}", std::env::consts::OS);
+        println!("arch:      {}", std::env::consts::ARCH);
+        println!("cpu cores: {}", get_available_parallelism());
+        println!("threads:   {} -> {}", previous.threads, self.threads);
+        println!("workers:   {} -> {}", previous.workers, self.workers);
+        println!("{}", "=".repeat(header.len()));
         for query in self.results.iter() {
             let Some(prev_query) = previous.results.iter().find(|v| v.id == query.id) else {
                 continue;
             };
-
-            if !header_printed {
-                header_printed = true;
-                let datetime: DateTime<Utc> = self.start_time.into();
-                let header = format!(
-                    "==== Comparison with the previous benchmark from {} ====",
-                    datetime.format("%Y-%m-%d %H:%M:%S UTC")
-                );
-                println!("{header}");
-                // Print machine information
-                println!("os:        {}", std::env::consts::OS);
-                println!("arch:      {}", std::env::consts::ARCH);
-                println!("cpu cores: {}", get_available_parallelism());
-                println!("threads:   {} -> {}", previous.threads, self.threads);
-                println!("workers:   {} -> {}", previous.workers, self.workers);
-                println!("{}", "=".repeat(header.len()))
-            }
-
             query.compare(prev_query)
         }
 
