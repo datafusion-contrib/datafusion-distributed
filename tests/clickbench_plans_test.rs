@@ -68,14 +68,14 @@ mod tests {
     async fn test_clickbench_3() -> Result<()> {
         let display = test_clickbench_query("q3").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ AggregateExec: mode=Final, gby=[], aggr=[avg(hits.UserID)]
         │   CoalescePartitionsExec
         │     [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] 
+          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5]
           │ AggregateExec: mode=Partial, gby=[], aggr=[avg(hits.UserID)]
-          │   PartitionIsolatorExec: t0:[p0,p1,p2,__,__] t1:[__,__,__,p0,p1] 
+          │   PartitionIsolatorExec: t0:[p0,p1,p2,__,__] t1:[__,__,__,p0,p1]
           │     DataSourceExec: file_groups={5 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
           └──────────────────────────────────────────────────
         ");
@@ -917,7 +917,8 @@ mod tests {
         let (d_ctx, _guard) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
-            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
+            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
+            .with_distributed_broadcast_joins(true)?;
 
         benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 

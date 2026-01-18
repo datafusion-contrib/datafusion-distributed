@@ -2,9 +2,9 @@
 mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::DefaultSessionBuilder;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::{benchmarks_common, tpch};
+    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fmt::Display;
@@ -135,9 +135,10 @@ mod tests {
     // test_tpch_query runs each TPC-H query twice - once in a distributed manner and once
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let (d_ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
 
-        let results_d = run_tpch_query(ctx, sql.clone()).await?;
+        let results_d = run_tpch_query(d_ctx, sql.clone()).await?;
         let results_s = run_tpch_query(SessionContext::new(), sql).await?;
 
         pretty_assertions::assert_eq!(results_d.to_string(), results_s.to_string(),);
