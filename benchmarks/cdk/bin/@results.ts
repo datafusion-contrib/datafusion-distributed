@@ -80,20 +80,11 @@ export class BenchmarkRun {
       return;
     }
 
-    let headerPrinted = false;
-
+    console.log(`=== Comparing results from engine '${previous.engine}' [prev] with '${this.engine}' [new] ===`);
     for (const query of this.results) {
       const prevQuery = previous.results.find(v => v.id === query.id);
       if (!prevQuery) {
         continue;
-      }
-
-      if (!headerPrinted) {
-        headerPrinted = true;
-        const datetime = new Date(this.startTime * 1000);
-        const header = `==== Comparison with the previous benchmark from ${datetime.toISOString().replace('T', ' ').slice(0, -5)} UTC ====`;
-        console.log(header);
-        console.log("=".repeat(header.length));
       }
 
       query.compare(prevQuery);
