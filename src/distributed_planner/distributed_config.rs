@@ -39,6 +39,9 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// The compression used for sending data over the network between workers.
+        /// It can be set to either `zstd`, `lz4` or `none`.
+        pub compression: String, default = "lz4".to_string()
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

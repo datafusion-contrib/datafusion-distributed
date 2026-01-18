@@ -258,6 +258,10 @@ pub(super) fn manually_propagate_distributed_config(
         "distributed.collect_metrics",
         d_cfg.collect_metrics.to_string().parse().unwrap(),
     );
+    headers.insert(
+        "distributed.compression",
+        d_cfg.compression.parse().unwrap(),
+    );
     headers
 }
 
