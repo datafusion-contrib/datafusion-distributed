@@ -361,12 +361,6 @@ fn _annotate_plan(
             propagate_task_count(annotated_child, &annotation.task_count, d_cfg)?;
         }
 
-        // If the NetworkBoundary boundary below is broadcast then we don't want to scale based on
-        // cardinality, thus return early.
-        if matches!(annotation.plan_or_nb, PlanOrNetworkBoundary::Broadcast) {
-            return Ok(annotation);
-        }
-
         // If the current plan that needs a NetworkBoundary boundary below is either a
         // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
         // that they are going to be part of needs to run in exactly one task.
