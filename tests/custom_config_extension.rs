@@ -40,7 +40,7 @@ mod tests {
                 bar: 1,
                 baz: true,
                 throw_err: false,
-            })?
+            })
             .build()
             .into();
 
@@ -69,20 +69,13 @@ mod tests {
     }
 
     #[tokio::test]
-    // TODO: the solution to this test failure is to, rather than dumping the config extension
-    //  fields into headers immediately when calling `with_distributed_option_extension()`, to instead
-    //  register the ConfigExtension::PREFIX as something that we should lazily capture and send
-    //  in the headers of every network request. In order to do that, first this PR upstream
-    //  https://github.com/apache/datafusion/pull/18887 needs to be shipped. It will be available
-    //  in DataFusion 52.0.0.
-    #[ignore]
     async fn custom_config_extension_runtime_change() -> Result<(), Box<dyn std::error::Error>> {
         let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
         ctx = SessionStateBuilder::from(ctx.state())
             .with_distributed_option_extension(CustomExtension {
                 throw_err: true,
                 ..Default::default()
-            })?
+            })
             .build()
             .into();
 

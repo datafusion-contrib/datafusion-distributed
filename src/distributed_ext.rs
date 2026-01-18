@@ -62,16 +62,10 @@ pub trait DistributedExt: Sized {
     ///         .build())
     /// }
     /// ```
-    fn with_distributed_option_extension<T: ConfigExtension + Default>(
-        self,
-        t: T,
-    ) -> Result<Self, DataFusionError>;
+    fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
     /// Same as [DistributedExt::with_distributed_option_extension] but with an in-place mutation
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError>;
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
 
     /// Adds the provided [ConfigExtension] to the distributed context. The [ConfigExtension] will
     /// be serialized using gRPC metadata and sent across tasks. Users are expected to call this
@@ -452,10 +446,7 @@ pub trait DistributedExt: Sized {
 }
 
 impl DistributedExt for SessionConfig {
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError> {
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) {
         set_distributed_option_extension(self, t)
     }
 
@@ -532,8 +523,8 @@ impl DistributedExt for SessionConfig {
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             #[call(set_distributed_option_extension_from_headers)]
             #[expr($?;Ok(self))]
@@ -581,10 +572,10 @@ impl DistributedExt for SessionConfig {
 impl DistributedExt for SessionStateBuilder {
     delegate! {
         to self.config().get_or_insert_default() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -642,10 +633,10 @@ impl DistributedExt for SessionStateBuilder {
 impl DistributedExt for SessionState {
     delegate! {
         to self.config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -703,10 +694,10 @@ impl DistributedExt for SessionState {
 impl DistributedExt for SessionContext {
     delegate! {
         to self.state_ref().write().config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]

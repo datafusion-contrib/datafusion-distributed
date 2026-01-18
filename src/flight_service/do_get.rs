@@ -1,7 +1,5 @@
 use crate::common::map_last_stream;
-use crate::config_extension_ext::{
-    ContextGrpcMetadata, set_distributed_option_extension_from_headers,
-};
+use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::flight_service::session_builder::WorkerQueryContext;
 use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
@@ -123,7 +121,6 @@ impl Worker {
             set_distributed_option_extension_from_headers::<DistributedConfig>(cfg, &headers)
                 .map_err(|err| datafusion_error_to_tonic_status(&err))?;
         let send_metrics = d_cfg.collect_metrics;
-        cfg.set_extension(Arc::new(ContextGrpcMetadata(headers)));
         cfg.set_extension(Arc::new(DistributedTaskContext {
             task_index: doget.target_task_index as usize,
             task_count: doget.target_task_count as usize,
