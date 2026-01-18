@@ -570,14 +570,8 @@ mod tests {
         let (d_ctx, _guard) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
-            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
-
-        // Enable broadcast joins if BROADCAST_JOINS env var is set
-        let d_ctx = if std::env::var("BROADCAST_JOINS").is_ok() {
-            d_ctx.with_distributed_broadcast_joins(true)?
-        } else {
-            d_ctx
-        };
+            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
+            .with_distributed_broadcast_joins(true)?;
 
         benchmarks_common::register_tables(&s_ctx, &data_dir).await?;
         benchmarks_common::register_tables(&d_ctx, &data_dir).await?;

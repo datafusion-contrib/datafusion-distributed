@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_broadcast_join_annotation() {
+    async fn test_broadcast_join() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a INNER JOIN weather b

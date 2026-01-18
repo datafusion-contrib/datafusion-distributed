@@ -135,16 +135,10 @@ mod tests {
     // test_tpch_query runs each TPC-H query twice - once in a distributed manner and once
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let (d_ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
 
-        // Enable broadcast joins if BROADCAST_JOINS env var is set
-        let ctx = if std::env::var("BROADCAST_JOINS").is_ok() {
-            ctx.with_distributed_broadcast_joins(true)?
-        } else {
-            ctx
-        };
-
-        let results_d = run_tpch_query(ctx, sql.clone()).await?;
+        let results_d = run_tpch_query(d_ctx, sql.clone()).await?;
         let results_s = run_tpch_query(SessionContext::new(), sql).await?;
 
         pretty_assertions::assert_eq!(results_d.to_string(), results_s.to_string(),);
