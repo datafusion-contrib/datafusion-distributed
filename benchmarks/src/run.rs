@@ -198,7 +198,7 @@ impl RunOpt {
             }
             benchmark_run.results.push(query_run?);
         }
-        
+
         benchmark_run.compare_with_previous()?;
         benchmark_run.store()?;
         Ok(())
