@@ -16,6 +16,7 @@ async function main() {
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
+        .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
 
@@ -26,6 +27,7 @@ async function main() {
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
+    const compression = options.compression;
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
 
@@ -33,7 +35,8 @@ async function main() {
         filesPerTask,
         cardinalityTaskSf,
         shuffleBatchSize,
-        collectMetrics
+        collectMetrics,
+        compression
     });
 
     const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
@@ -61,6 +64,7 @@ class DataFusionRunner implements BenchmarkRunner {
         cardinalityTaskSf: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
+        compression: string
     }) {
     }
 
@@ -109,6 +113,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};
+      SET distributed.compression=${this.options.compression};
     `);
     }
 

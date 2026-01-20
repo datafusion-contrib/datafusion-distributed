@@ -5,6 +5,7 @@ use crate::distributed_planner::set_distributed_task_estimator;
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
+use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -443,6 +444,20 @@ pub trait DistributedExt: Sized {
         &mut self,
         enabled: bool,
     ) -> Result<(), DataFusionError>;
+
+    /// The compression type to use for sending data over the wire.
+    ///
+    /// The default is [CompressionType::LZ4_FRAME].
+    fn with_distributed_compression(
+        self,
+        compression: Option<CompressionType>,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_compression] but with an in-place mutation.
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -520,6 +535,19 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.compression = match compression {
+            Some(CompressionType::ZSTD) => "zstd".to_string(),
+            Some(CompressionType::LZ4_FRAME) => "lz4".to_string(),
+            _ => "none".to_string(),
+        };
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -565,6 +593,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -626,6 +658,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -687,6 +724,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -748,6 +790,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
