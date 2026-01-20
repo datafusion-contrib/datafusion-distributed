@@ -12,9 +12,10 @@ async function main() {
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--files-per-task <number>', 'Files per task', '4')
-        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
+        .option('--files-per-task <number>', 'Files per task', '8')
+        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
+        .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
@@ -28,12 +29,14 @@ async function main() {
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
+    const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
 
     const runner = new DataFusionRunner({
         filesPerTask,
         cardinalityTaskSf,
         shuffleBatchSize,
-        collectMetrics
+        collectMetrics,
+        childrenIsolatorUnions
     });
 
     await runBenchmark(runner, {
@@ -58,6 +61,7 @@ class DataFusionRunner implements BenchmarkRunner {
         cardinalityTaskSf: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
+        childrenIsolatorUnions: boolean
     }) {
     }
 
@@ -106,6 +110,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};
+      SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
     `);
     }
 }
