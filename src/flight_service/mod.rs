@@ -10,4 +10,5 @@ pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,
     WorkerQueryContext, WorkerSessionBuilder,
 };
+pub use worker::SharedWorker;
 pub use worker::Worker;

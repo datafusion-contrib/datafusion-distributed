@@ -10,3 +10,5 @@ ratatui = "0.30.0"
 tokio = { version = "1.49.0", features = ["full"] }
 tonic = "0.14.2"
 datafusion-distributed = { workspace = true }
+arrow-flight = "57.2.0"
+structopt = "0.3.26"

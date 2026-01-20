@@ -34,6 +34,17 @@ pub struct Worker {
     pub(super) max_message_size: Option<usize>,
 }
 
+/// A wrapper for [Arc<Worker>] useful for implementing multiple services
+/// such as [with_flight_service()] and [with_observability_service()].
+#[derive(Clone)]
+pub struct SharedWorker(Arc<Worker>);
+
+impl SharedWorker {
+    pub fn new(worker: Worker) -> Self {
+        Self(Arc::new(worker))
+    }
+}
+
 impl Default for Worker {
     fn default() -> Self {
         let ttl_map = TTLMap::try_new(TTLMapConfig::default())
@@ -132,17 +143,16 @@ impl Worker {
     /// # Example
     ///
     /// ```
-    /// # use datafusion_distributed::Worker;
+    /// # use datafusion_distributed::{SharedWorker, Worker};
     /// # use tonic::transport::Server;
     /// # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// # async fn f() {
     ///
-    /// let worker = Worker::default();
-    /// let server = worker.into_flight_server();
+    /// let worker = SharedWorker::new(Worker::default());
     ///
     /// Server::builder()
-    ///     .add_service(Worker::default().into_flight_server())
-    ///     .add_service(Worker::default().into_observability_server())
+    ///     .add_service(FlightServiceServer::new(worker.clone()))
+    ///     .add_service(ObservabilityServiceServer::new(worker))
     ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
     ///     .await;
     ///
@@ -240,6 +250,92 @@ impl FlightService for Worker {
     }
 }
 
+#[async_trait]
+impl FlightService for SharedWorker {
+    type HandshakeStream = <Worker as FlightService>::HandshakeStream;
+    async fn handshake(
+        &self,
+        request: Request<Streaming<HandshakeRequest>>,
+    ) -> Result<Response<Self::HandshakeStream>, Status> {
+        FlightService::handshake(self.0.as_ref(), request).await
+    }
+
+    type ListFlightsStream = <Worker as FlightService>::ListFlightsStream;
+
+    async fn list_flights(
+        &self,
+        request: Request<Criteria>,
+    ) -> Result<Response<Self::ListFlightsStream>, Status> {
+        FlightService::list_flights(self.0.as_ref(), request).await
+    }
+
+    async fn get_flight_info(
+        &self,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        FlightService::get_flight_info(self.0.as_ref(), request).await
+    }
+
+    async fn poll_flight_info(
+        &self,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<PollInfo>, Status> {
+        FlightService::poll_flight_info(self.0.as_ref(), request).await
+    }
+
+    async fn get_schema(
+        &self,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<SchemaResult>, Status> {
+        FlightService::get_schema(self.0.as_ref(), request).await
+    }
+
+    type DoGetStream = <Worker as FlightService>::DoGetStream;
+
+    async fn do_get(
+        &self,
+        request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        FlightService::do_get(self.0.as_ref(), request).await
+    }
+
+    type DoPutStream = <Worker as FlightService>::DoPutStream;
+
+    async fn do_put(
+        &self,
+        request: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoPutStream>, Status> {
+        FlightService::do_put(self.0.as_ref(), request).await
+    }
+
+    type DoExchangeStream = <Worker as FlightService>::DoExchangeStream;
+
+    async fn do_exchange(
+        &self,
+        request: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoExchangeStream>, Status> {
+        FlightService::do_exchange(self.0.as_ref(), request).await
+    }
+
+    type DoActionStream = <Worker as FlightService>::DoActionStream;
+
+    async fn do_action(
+        &self,
+        request: Request<Action>,
+    ) -> Result<Response<Self::DoActionStream>, Status> {
+        FlightService::do_action(self.0.as_ref(), request).await
+    }
+
+    type ListActionsStream = <Worker as FlightService>::ListActionsStream;
+
+    async fn list_actions(
+        &self,
+        request: Request<Empty>,
+    ) -> Result<Response<Self::ListActionsStream>, Status> {
+        FlightService::list_actions(self.0.as_ref(), request).await
+    }
+}
+
 #[tonic::async_trait]
 impl ObservabilityService for Worker {
     async fn ping(
@@ -247,5 +343,15 @@ impl ObservabilityService for Worker {
         _request: tonic::Request<PingRequest>,
     ) -> Result<tonic::Response<PingResponse>, tonic::Status> {
         Ok(tonic::Response::new(PingResponse { value: 1 }))
+    }
+}
+
+#[tonic::async_trait]
+impl ObservabilityService for SharedWorker {
+    async fn ping(
+        &self,
+        request: tonic::Request<PingRequest>,
+    ) -> Result<tonic::Response<PingResponse>, tonic::Status> {
+        ObservabilityService::ping(self.0.as_ref(), request).await
     }
 }

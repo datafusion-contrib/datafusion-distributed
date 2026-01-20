@@ -23,8 +23,8 @@ pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
 };
 pub use flight_service::{
-    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, Worker,
-    WorkerQueryContext, WorkerSessionBuilder,
+    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, SharedWorker,
+    Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use networking::{
