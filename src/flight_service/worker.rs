@@ -137,30 +137,6 @@ impl Worker {
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
-
-    /// Convenience method that converts [Worker] into a [`ObservabilityServiceServer`]. This allows
-    /// the worker to respond to observability requests.
-    /// # Example
-    ///
-    /// ```
-    /// # use datafusion_distributed::{SharedWorker, Worker};
-    /// # use tonic::transport::Server;
-    /// # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// # async fn f() {
-    ///
-    /// let worker = SharedWorker::new(Worker::default());
-    ///
-    /// Server::builder()
-    ///     .add_service(FlightServiceServer::new(worker.clone()))
-    ///     .add_service(ObservabilityServiceServer::new(worker))
-    ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
-    ///     .await;
-    ///
-    /// # }
-    /// ```
-    pub fn into_observability_server(self) -> ObservabilityServiceServer<Self> {
-        ObservabilityServiceServer::new(self)
-    }
 }
 
 #[async_trait]
