@@ -21,10 +21,9 @@ runs:
         echo ${{ runner.os }}
 
     - name: Install protoc
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+      uses: arduino/setup-protoc@v3
+      with:
+        version: "27.1"
 
     - uses: dtolnay/rust-toolchain@stable
       with:
