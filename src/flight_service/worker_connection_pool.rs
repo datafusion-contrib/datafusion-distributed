@@ -1,10 +1,10 @@
-use crate::config_extension_ext::ContextGrpcMetadata;
+use crate::Stage;
+use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::networking::get_distributed_channel_resolver;
 use crate::protobuf::{
     FlightAppMetadata, StageKey, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
 };
-use crate::{DistributedConfig, Stage};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightData, Ticket};
@@ -16,7 +16,7 @@ use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use futures::{Stream, TryStreamExt};
-use http::{Extensions, HeaderMap};
+use http::Extensions;
 use prost::Message;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
@@ -102,13 +102,10 @@ impl WorkerConnection {
         ctx: &Arc<TaskContext>,
     ) -> Result<Self> {
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
-        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
 
-        let context_headers = ContextGrpcMetadata::headers_from_ctx(ctx);
-        // TODO: this propagation should be automatic https://github.com/datafusion-contrib/datafusion-distributed/issues/247
-        let context_headers = manually_propagate_distributed_config(context_headers, d_cfg);
+        let headers = get_config_extension_propagation_headers(ctx.session_config())?;
         let ticket = Request::from_parts(
-            MetadataMap::from_headers(context_headers),
+            MetadataMap::from_headers(headers),
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
@@ -246,23 +243,6 @@ fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
     for o_tx in o_txs {
         let _ = o_tx.send(Err(err.clone()));
     }
-}
-
-/// Manual propagation of the [DistributedConfig] fields relevant for execution. Can be removed
-/// after https://github.com/datafusion-contrib/datafusion-distributed/issues/247 is fixed, as this will become automatic.
-pub(super) fn manually_propagate_distributed_config(
-    mut headers: HeaderMap,
-    d_cfg: &DistributedConfig,
-) -> HeaderMap {
-    headers.insert(
-        "distributed.collect_metrics",
-        d_cfg.collect_metrics.to_string().parse().unwrap(),
-    );
-    headers.insert(
-        "distributed.compression",
-        d_cfg.compression.parse().unwrap(),
-    );
-    headers
 }
 
 impl Debug for WorkerConnectionPool {
