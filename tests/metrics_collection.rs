@@ -23,8 +23,6 @@ mod tests {
 
         let s_ctx = SessionContext::default();
         let (s_physical, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
-        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
-        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         assert_metrics_equal::<DataSourceExec>(
             ["output_rows", "bytes_scanned"],
@@ -114,6 +112,11 @@ mod tests {
         Ok(())
     }
 
+    /// Looks for an [ExecutionPlan] that matches the provided type parameter `T` in
+    /// both root nodes and compares its metrics.
+    /// There might be more than one, so `index` determines which one is compared.
+    ///
+    /// If the two root nodes contain a child T with different metrics, the assertion fails.
     fn assert_metrics_equal<T: ExecutionPlan + 'static>(
         names: impl IntoIterator<Item = &'static str>,
         one: &Arc<dyn ExecutionPlan>,
