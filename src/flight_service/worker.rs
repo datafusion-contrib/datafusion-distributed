@@ -44,7 +44,7 @@ pub struct Worker {
 /// # use std::net::{ IpAddr, Ipv4Addr, SocketAddr };
 /// # async fn f() {
 ///
-/// let worker = SharedWorker::new(Worker::default());
+/// let worker = SharedWorker::default();
 /// let flight_service = FlightServiceServer::new(worker.clone());
 /// let observability_service = ObservabilityServiceServer::new(worker);
 ///
@@ -62,6 +62,12 @@ pub struct SharedWorker(Arc<Worker>);
 impl SharedWorker {
     pub fn new(worker: Worker) -> Self {
         Self(Arc::new(worker))
+    }
+}
+
+impl Default for SharedWorker {
+    fn default() -> Self {
+        Self(Arc::new(Worker::default()))
     }
 }
 
