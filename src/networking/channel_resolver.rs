@@ -56,10 +56,13 @@ pub(crate) fn set_distributed_channel_resolver(
     if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
         distributed_cfg.__private_channel_resolver = channel_resolver;
     } else {
-        set_distributed_option_extension(cfg, DistributedConfig {
-            __private_channel_resolver: channel_resolver,
-            ..Default::default()
-        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
+        set_distributed_option_extension(
+            cfg,
+            DistributedConfig {
+                __private_channel_resolver: channel_resolver,
+                ..Default::default()
+            },
+        )
     }
 }
 

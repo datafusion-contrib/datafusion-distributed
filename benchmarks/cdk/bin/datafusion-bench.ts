@@ -18,6 +18,7 @@ async function main() {
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
+        .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
 
@@ -29,6 +30,7 @@ async function main() {
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
+    const compression = options.compression;
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
@@ -39,7 +41,8 @@ async function main() {
         batchSize,
         shuffleBatchSize,
         collectMetrics,
-        childrenIsolatorUnions
+        childrenIsolatorUnions,
+        compression
     });
 
     await runBenchmark(runner, {
@@ -65,7 +68,8 @@ class DataFusionRunner implements BenchmarkRunner {
         batchSize: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
-        childrenIsolatorUnions: boolean
+        compression: string;
+        childrenIsolatorUnions: boolean;
     }) {
     }
 
@@ -115,6 +119,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET datafusion.execution.batch_size=${this.options.batchSize};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};
+      SET distributed.compression=${this.options.compression};
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
     `);
     }

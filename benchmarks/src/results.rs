@@ -1,5 +1,4 @@
 use crate::{DATA_PATH, RESULTS_DIR, built_info};
-use chrono::{DateTime, Utc};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
 use serde::ser::SerializeSeq;
