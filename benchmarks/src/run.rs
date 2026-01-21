@@ -17,12 +17,13 @@
 
 use chrono::{DateTime, Utc};
 use datafusion::DATAFUSION_VERSION;
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
-use datafusion::common::{exec_err, not_impl_err};
+use datafusion::common::{config_err, exec_err, not_impl_err};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -96,6 +97,10 @@ pub struct RunOpt {
     /// Collects metrics across network boundaries
     #[structopt(long)]
     collect_metrics: bool,
+
+    /// Collects metrics across network boundaries
+    #[structopt(long, default_value = "lz4")]
+    compression: String,
 
     /// Number of iterations of each test run
     #[structopt(short = "i", long = "iterations", default_value = "3")]
@@ -211,6 +216,12 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_compression(match self.compression.as_str() {
+                "zstd" => Some(CompressionType::ZSTD),
+                "lz4" => Some(CompressionType::LZ4_FRAME),
+                "none" => None,
+                v => return config_err!("Unknown compression type {v}"),
+            })?
             .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
