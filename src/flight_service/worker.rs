@@ -34,7 +34,28 @@ pub struct Worker {
 }
 
 /// A wrapper for [Arc<Worker>] useful for implementing multiple services
-/// such as [with_flight_service()] and [with_observability_service()].
+/// on a single worker instance.
+/// # Example
+///
+/// ```
+/// # use datafusion_distributed::{ Worker, ObservabilityServiceServer,SharedWorker };
+/// # use arrow_flight::flight_service_server::FlightServiceServer;
+/// # use tonic::transport::Server;
+/// # use std::net::{ IpAddr, Ipv4Addr, SocketAddr };
+/// # async fn f() {
+///
+/// let worker = SharedWorker::new(Worker::default());
+/// let flight_service = FlightServiceServer::new(worker.clone());
+/// let observability_service = ObservabilityServiceServer::new(worker);
+///
+/// Server::builder()
+///     .add_service(flight_service)
+///     .add_service(observability_service)
+///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
+///     .await;
+///
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct SharedWorker(Arc<Worker>);
 
