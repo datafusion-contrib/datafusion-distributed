@@ -4,7 +4,6 @@ use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
 use crate::protobuf::observability::observability_service_server::ObservabilityService;
-use crate::protobuf::observability::observability_service_server::ObservabilityServiceServer;
 use crate::protobuf::observability::{PingRequest, PingResponse};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
