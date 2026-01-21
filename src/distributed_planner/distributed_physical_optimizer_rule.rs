@@ -1,16 +1,14 @@
 use crate::common::require_one_child;
+use crate::distributed_planner::batch_coalescing_below_network_boundaries;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
 use crate::{
-    DistributedConfig, DistributedExec, NetworkBoundaryExt, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimator,
+    DistributedConfig, DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, TaskEstimator,
 };
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::fmt::Debug;
@@ -146,55 +144,6 @@ fn distribute_plan(
             Ok(node)
         }
     }
-}
-
-/// Rearranges the [CoalesceBatchesExec] nodes in the plan so that they are placed right below
-/// the network boundaries, so that fewer but bigger record batches are sent over the wire across
-/// stages.
-fn batch_coalescing_below_network_boundaries(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-
-    // Only apply this rule if the normal execution batch size is not already bigger than the
-    // shuffle batch size. Exchanging data between workers is better done with batches as big as
-    // possible, and if the normal execution batch size is already big, we don't want to proactively
-    // reduce it.
-    if d_cfg.shuffle_batch_size <= cfg.execution.batch_size {
-        return Ok(plan);
-    }
-
-    let transformed = plan.transform_up(|plan| {
-        if !plan.is_network_boundary() {
-            return Ok(Transformed::no(plan));
-        }
-
-        let input = require_one_child(plan.children())?;
-        if let Some(existing_coalesce) = input.as_any().downcast_ref::<CoalesceBatchesExec>() {
-            // There was already a CoalesceBatchesExec below...
-            if existing_coalesce.target_batch_size() == d_cfg.shuffle_batch_size {
-                // ...so either leave it alone if the batch size is correctly set...
-                Ok(Transformed::no(plan))
-            } else {
-                // ... or replace it with one with the correct batch size.
-                let coalesce_input = existing_coalesce.input();
-                let new_coalesce =
-                    CoalesceBatchesExec::new(Arc::clone(coalesce_input), d_cfg.shuffle_batch_size)
-                        .with_fetch(existing_coalesce.fetch());
-                let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
-                Ok(Transformed::yes(new_plan))
-            }
-        } else {
-            // No CoalesceBatchesExec below, need to put one.
-            let coalesce_input = input;
-            let new_coalesce = CoalesceBatchesExec::new(coalesce_input, d_cfg.shuffle_batch_size);
-            let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
-            Ok(Transformed::yes(new_plan))
-        }
-    })?;
-
-    Ok(transformed.data)
 }
 
 #[cfg(test)]
