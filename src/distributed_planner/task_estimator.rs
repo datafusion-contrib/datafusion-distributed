@@ -179,10 +179,13 @@ pub(crate) fn set_distributed_task_estimator(
     } else {
         let mut estimators = CombinedTaskEstimator::default();
         estimators.user_provided.push(Arc::new(estimator));
-        set_distributed_option_extension(cfg, DistributedConfig {
-            __private_task_estimator: estimators,
-            ..Default::default()
-        }).expect("Calling set_distributed_option_extension with a default DistributedConfig should never fail");
+        set_distributed_option_extension(
+            cfg,
+            DistributedConfig {
+                __private_task_estimator: estimators,
+                ..Default::default()
+            },
+        )
     }
 }
 

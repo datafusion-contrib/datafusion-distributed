@@ -5,6 +5,7 @@ use crate::distributed_planner::set_distributed_task_estimator;
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
+use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -50,7 +51,7 @@ pub trait DistributedExt: Sized {
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let state = SessionStateBuilder::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .with_distributed_option_extension(my_custom_extension)
     ///     .build();
     ///
     /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
@@ -62,16 +63,10 @@ pub trait DistributedExt: Sized {
     ///         .build())
     /// }
     /// ```
-    fn with_distributed_option_extension<T: ConfigExtension + Default>(
-        self,
-        t: T,
-    ) -> Result<Self, DataFusionError>;
+    fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
     /// Same as [DistributedExt::with_distributed_option_extension] but with an in-place mutation
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError>;
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
 
     /// Adds the provided [ConfigExtension] to the distributed context. The [ConfigExtension] will
     /// be serialized using gRPC metadata and sent across tasks. Users are expected to call this
@@ -109,7 +104,7 @@ pub trait DistributedExt: Sized {
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let state = SessionStateBuilder::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .with_distributed_option_extension(my_custom_extension)
     ///     .build();
     ///
     /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
@@ -449,13 +444,24 @@ pub trait DistributedExt: Sized {
         &mut self,
         enabled: bool,
     ) -> Result<(), DataFusionError>;
+
+    /// The compression type to use for sending data over the wire.
+    ///
+    /// The default is [CompressionType::LZ4_FRAME].
+    fn with_distributed_compression(
+        self,
+        compression: Option<CompressionType>,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_compression] but with an in-place mutation.
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError> {
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) {
         set_distributed_option_extension(self, t)
     }
 
@@ -529,11 +535,24 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.compression = match compression {
+            Some(CompressionType::ZSTD) => "zstd".to_string(),
+            Some(CompressionType::LZ4_FRAME) => "lz4".to_string(),
+            _ => "none".to_string(),
+        };
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             #[call(set_distributed_option_extension_from_headers)]
             #[expr($?;Ok(self))]
@@ -574,6 +593,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -581,10 +604,10 @@ impl DistributedExt for SessionConfig {
 impl DistributedExt for SessionStateBuilder {
     delegate! {
         to self.config().get_or_insert_default() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -635,6 +658,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -642,10 +670,10 @@ impl DistributedExt for SessionStateBuilder {
 impl DistributedExt for SessionState {
     delegate! {
         to self.config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -696,6 +724,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -703,10 +736,10 @@ impl DistributedExt for SessionState {
 impl DistributedExt for SessionContext {
     delegate! {
         to self.state_ref().write().config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -757,6 +790,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }

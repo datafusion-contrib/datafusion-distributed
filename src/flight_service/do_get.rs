@@ -1,7 +1,5 @@
 use crate::common::map_last_stream;
-use crate::config_extension_ext::{
-    ContextGrpcMetadata, set_distributed_option_extension_from_headers,
-};
+use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::flight_service::session_builder::WorkerQueryContext;
 use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
@@ -20,6 +18,8 @@ use bytes::Bytes;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
 use crate::flight_service::spawn_select_all::spawn_select_all;
+use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
@@ -122,8 +122,15 @@ impl Worker {
         let d_cfg =
             set_distributed_option_extension_from_headers::<DistributedConfig>(cfg, &headers)
                 .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+        let compression = match d_cfg.compression.as_str() {
+            "lz4" => Some(CompressionType::LZ4_FRAME),
+            "zstd" => Some(CompressionType::ZSTD),
+            "none" => None,
+            v => Err(Status::invalid_argument(format!(
+                "Unknown compression type {v}"
+            )))?,
+        };
         let send_metrics = d_cfg.collect_metrics;
-        cfg.set_extension(Arc::new(ContextGrpcMetadata(headers)));
         cfg.set_extension(Arc::new(DistributedTaskContext {
             task_index: doget.target_task_index as usize,
             task_count: doget.target_task_count as usize,
@@ -147,7 +154,7 @@ impl Worker {
                 .execute(partition as usize, session_state.task_ctx())
                 .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
-            let stream = build_flight_data_stream(stream);
+            let stream = build_flight_data_stream(stream, compression)?;
 
             let task_data_entries = Arc::clone(&self.task_data_entries);
             let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
@@ -194,8 +201,16 @@ impl Worker {
     }
 }
 
-fn build_flight_data_stream(stream: SendableRecordBatchStream) -> FlightDataEncoder {
-    FlightDataEncoderBuilder::new()
+fn build_flight_data_stream(
+    stream: SendableRecordBatchStream,
+    compression_type: Option<CompressionType>,
+) -> Result<FlightDataEncoder, Status> {
+    let stream = FlightDataEncoderBuilder::new()
+        .with_options(
+            IpcWriteOptions::default()
+                .try_with_compression(compression_type)
+                .map_err(|err| Status::internal(err.to_string()))?,
+        )
         .with_schema(stream.schema())
         // This tells the encoder to send dictionaries across the wire as-is.
         // The alternative (`DictionaryHandling::Hydrate`) would expand the dictionaries
@@ -222,7 +237,8 @@ fn build_flight_data_stream(stream: SendableRecordBatchStream) -> FlightDataEnco
                 .map_err(|err| {
                     FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(&err)))
                 }),
-        )
+        );
+    Ok(stream)
 }
 
 fn missing(field: &'static str) -> impl FnOnce() -> Status {
