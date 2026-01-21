@@ -82,3 +82,8 @@ hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 reqwest = "0.12"
 zip = "6.0"
+
+[[example]]
+name = "custom_execution_plan"
+path = "examples/custom_execution_plan.rs"
+required-features = ["integration"]
