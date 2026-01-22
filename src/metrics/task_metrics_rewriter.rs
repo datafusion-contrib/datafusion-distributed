@@ -3,8 +3,9 @@ use crate::execution_plans::DistributedExec;
 use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::MetricsCollectorResult;
 use crate::metrics::TaskMetricsCollector;
-use crate::metrics::proto::MetricsSetProto;
-use crate::metrics::proto::metrics_set_proto_to_df;
+use crate::metrics::proto::{
+    MetricsSetProto, annotate_metrics_set_with_task_id, metrics_set_proto_to_df,
+};
 use crate::protobuf::StageKey;
 use crate::stage::Stage;
 use bytes::Bytes;
@@ -19,10 +20,30 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use std::sync::Arc;
 use std::vec;
 
+/// Format to use when displaying metrics for a distributed plan.
+#[derive(Clone, Copy)]
+pub enum DistributedMetricsFormat {
+    /// Metrics are aggregated across all tasks. ex. a `output_rows=X` represents the output rows for all tasks.
+    Aggregated,
+
+    /// Metric names are rewritten to include the task id. ex. `output_rows` -> `output_rows_0`, `output_rows_1` etc.
+    PerTask,
+}
+
+impl DistributedMetricsFormat {
+    pub(crate) fn to_rewrite_ctx(self, task_id: u64) -> RewriteCtx {
+        match self {
+            DistributedMetricsFormat::Aggregated => RewriteCtx::from_task_id(task_id),
+            DistributedMetricsFormat::PerTask => RewriteCtx::default(),
+        }
+    }
+}
+
 /// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
 pub fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let Some(distributed_exec) = plan.as_any().downcast_ref::<DistributedExec>() else {
         return Ok(plan);
@@ -35,8 +56,11 @@ pub fn rewrite_distributed_plan_with_metrics(
     } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
-    let dist_exec_plan_with_metrics =
-        rewrite_local_plan_with_metrics(plan.children()[0].clone(), task_metrics)?;
+    let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
+        format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
+        plan.children()[0].clone(),
+        task_metrics,
+    )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
 
     let metrics_collection = Arc::new(input_task_metrics);
@@ -47,7 +71,8 @@ pub fn rewrite_distributed_plan_with_metrics(
             let stage = network_boundary.input_stage();
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
-            let plan_with_metrics = stage_metrics_rewriter(stage, metrics_collection.clone())?;
+            let plan_with_metrics =
+                stage_metrics_rewriter(stage, metrics_collection.clone(), format)?;
             return Ok(Transformed::yes(network_boundary.with_input_stage(
                 Stage::new(
                     stage.query_id,
@@ -61,6 +86,29 @@ pub fn rewrite_distributed_plan_with_metrics(
         Ok(Transformed::no(plan))
     })?;
     Ok(transformed.data)
+}
+
+/// Extra information for rewriting local plans.
+#[derive(Default)]
+pub struct RewriteCtx {
+    /// Used to rename metrics for the current task.
+    pub task_id: Option<u64>,
+}
+
+impl RewriteCtx {
+    pub(crate) fn from_task_id(task_id: u64) -> RewriteCtx {
+        RewriteCtx {
+            task_id: Some(task_id),
+        }
+    }
+
+    /// Rewrites the [MetricsSet] depending on the context.
+    pub(crate) fn maybe_rewrite_node_metics(&self, node_metrics: MetricsSet) -> MetricsSet {
+        if let Some(task_id) = self.task_id {
+            return annotate_metrics_set_with_task_id(&node_metrics, task_id);
+        }
+        node_metrics
+    }
 }
 
 /// Rewrites a local plan with metrics, stopping at network boundaries.
@@ -77,6 +125,7 @@ pub fn rewrite_distributed_plan_with_metrics(
 ///  └── MetricsWrapperExec (wrapped: ProjectionExec) [output_rows = 2, elapsed_compute = 200]
 ///      └── NetworkShuffleExec
 pub fn rewrite_local_plan_with_metrics(
+    ctx: RewriteCtx,
     plan: Arc<dyn ExecutionPlan>,
     metrics: Vec<MetricsSet>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -89,7 +138,10 @@ pub fn rewrite_local_plan_with_metrics(
             if idx >= metrics.len() {
                 return internal_err!("not enough metrics provided to rewrite plan");
             }
-            let node_metrics = metrics[idx].clone();
+            let mut node_metrics = metrics[idx].clone();
+
+            node_metrics = ctx.maybe_rewrite_node_metics(node_metrics);
+
             idx += 1;
             Ok(Transformed::yes(Arc::new(MetricsWrapperExec::new(
                 node.clone(),
@@ -131,6 +183,7 @@ pub fn rewrite_local_plan_with_metrics(
 pub fn stage_metrics_rewriter(
     stage: &Stage,
     metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
+    format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
 
@@ -143,10 +196,10 @@ pub fn stage_metrics_rewriter(
         }
 
         // Collect metrics for this node. It should contain metrics from each task.
-        let mut stage_metrics = MetricsSetProto::new();
+        let mut stage_metrics = MetricsSet::new();
 
-        for idx in 0..stage.tasks.len() {
-            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, idx as u64);
+        for task_id in 0..stage.tasks.len() {
+            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, task_id as u64);
             match metrics_collection.get(&stage_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
@@ -155,15 +208,20 @@ pub fn stage_metrics_rewriter(
                             task_metrics.len()
                         );
                     }
-                    let node_metrics = task_metrics[node_idx].clone();
-                    for metric in node_metrics.metrics.iter() {
-                        stage_metrics.push(metric.clone());
+                    let node_metrics_protos = task_metrics[node_idx].clone();
+                    let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
+
+                    let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
+                    node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
+
+                    for metric in node_metrics.iter().map(Arc::clone) {
+                        stage_metrics.push(metric);
                     }
                 }
                 None => {
                     return internal_err!(
                         "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
-                        idx,
+                        task_id,
                         stage.num
                     );
                 }
@@ -174,7 +232,7 @@ pub fn stage_metrics_rewriter(
 
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan.clone(),
-            metrics_set_proto_to_df(&stage_metrics)?,
+            stage_metrics,
         ));
         Ok(Transformed::yes(wrapped_plan_node))
     }).map(|v| v.data)
@@ -184,10 +242,11 @@ pub fn stage_metrics_rewriter(
 mod tests {
     use crate::PartitionIsolatorExec;
     use crate::metrics::proto::{
-        MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
+        MetricsSetProto, annotate_metrics_set_with_task_id, df_metrics_set_to_proto,
+        metrics_set_proto_to_df,
     };
-    use crate::metrics::rewrite_distributed_plan_with_metrics;
     use crate::metrics::task_metrics_rewriter::stage_metrics_rewriter;
+    use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
     use crate::protobuf::StageKey;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
@@ -364,7 +423,12 @@ mod tests {
         let metrics_collection = Arc::new(metrics_collection);
 
         // Rewrite the plan.
-        let rewritten_plan = stage_metrics_rewriter(&stage, metrics_collection.clone()).unwrap();
+        let rewritten_plan = stage_metrics_rewriter(
+            &stage,
+            metrics_collection.clone(),
+            DistributedMetricsFormat::Aggregated,
+        )
+        .unwrap();
 
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];
@@ -394,8 +458,13 @@ mod tests {
                 actual_task_node_metrics_set
                     .for_each(|metric| actual_metrics_set.push(metric.clone()));
 
-                let expected_metrics_set =
-                    metrics_set_proto_to_df(&expected_task_node_metrics).unwrap(); // Convert to proto to check for equality.
+                // Convert from proto to check for equality.
+                let mut expected_metrics_set =
+                    metrics_set_proto_to_df(&expected_task_node_metrics).unwrap();
+                // Add task ids labels. We expect the actual metrics to be annotated by the
+                // rewriter
+                expected_metrics_set =
+                    annotate_metrics_set_with_task_id(&expected_metrics_set, task_id as u64);
                 assert!(metrics_set_eq(&actual_metrics_set, &expected_metrics_set));
             }
         }
@@ -440,7 +509,10 @@ mod tests {
             .await
             .unwrap();
         assert!(plan.as_any().is::<DistributedExec>());
-        assert!(rewrite_distributed_plan_with_metrics(plan).is_err());
+        assert!(
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .is_err()
+        );
     }
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
@@ -481,7 +553,9 @@ mod tests {
             .unwrap();
         collect(plan.clone(), ctx.task_ctx()).await.unwrap();
         assert!(plan.as_any().is::<DistributedExec>());
-        let rewritten_plan = rewrite_distributed_plan_with_metrics(plan).unwrap();
+        let rewritten_plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .unwrap();
         assert_metrics_present_in_plan(&rewritten_plan);
     }
 

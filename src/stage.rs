@@ -162,7 +162,7 @@ impl Stage {
     }
 }
 
-use crate::rewrite_distributed_plan_with_metrics;
+use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use bytes::Bytes;
 use datafusion::common::DataFusionError;
@@ -185,13 +185,16 @@ use prost::Message;
 use std::fmt::Write;
 
 /// explain_analyze renders an [ExecutionPlan] with metrics.
-pub fn explain_analyze(executed: Arc<dyn ExecutionPlan>) -> Result<String, DataFusionError> {
+pub fn explain_analyze(
+    executed: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
+) -> Result<String, DataFusionError> {
     match executed.as_any().downcast_ref::<DistributedExec>() {
         None => Ok(DisplayableExecutionPlan::with_metrics(executed.as_ref())
             .indent(true)
             .to_string()),
         Some(_) => {
-            let executed = rewrite_distributed_plan_with_metrics(executed.clone())?;
+            let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format)?;
             Ok(display_plan_ascii(executed.as_ref(), true))
         }
     }
@@ -208,7 +211,12 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
         display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
-        displayable(plan).indent(true).to_string()
+        match show_metrics {
+            true => DisplayableExecutionPlan::with_metrics(plan)
+                .indent(true)
+                .to_string(),
+            false => displayable(plan).indent(true).to_string(),
+        }
     }
 }
 
