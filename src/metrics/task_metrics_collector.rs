@@ -37,7 +37,16 @@ impl TreeNodeRewriter for TaskMetricsCollector {
     type Node = Arc<dyn ExecutionPlan>;
 
     fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
-        // If the plan is an NetworkShuffleExec, assume it has collected metrics already
+        // For plan nodes in this task, collect metrics.
+        match plan.metrics() {
+            Some(metrics) => self.task_metrics.push(metrics.clone()),
+            None => {
+                // TODO: Consider using a more efficent encoding scheme to avoid empty slots in the vec.
+                self.task_metrics.push(MetricsSet::new())
+            }
+        }
+
+        // If the plan is a network boundary, assume it has collected metrics already
         // from child tasks.
         let metrics_collection =
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
@@ -72,14 +81,6 @@ impl TreeNodeRewriter for TaskMetricsCollector {
             return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
         }
 
-        // For plan nodes in this task, collect metrics.
-        match plan.metrics() {
-            Some(metrics) => self.task_metrics.push(metrics.clone()),
-            None => {
-                // TODO: Consider using a more efficent encoding scheme to avoid empty slots in the vec.
-                self.task_metrics.push(MetricsSet::new())
-            }
-        }
         Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
     }
 }
