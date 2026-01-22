@@ -1,14 +1,11 @@
-use crate::channel_resolver_ext::ChannelResolverExtension;
+use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
-use crate::{BoxCloneSyncChannel, ChannelResolver, TaskEstimator};
-use arrow_flight::flight_service_client::FlightServiceClient;
-use async_trait::async_trait;
+use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use url::Url;
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -31,15 +28,29 @@ extensions_options! {
         /// batches over the wire.
         /// If set to 0, batch coalescing is disabled on network shuffle operations.
         pub shuffle_batch_size: usize, default = 8192
+        /// When encountering a UNION operation, isolate its children depending on the task context.
+        /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
+        /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
+        /// 1/3, 2/3, and 3/3 respectively, Execute:
+        /// - The first child in the first task with a DistributedTaskContext of 1/1
+        /// - The second child in the second task with a DistributedTaskContext of 1/1
+        /// - The third child in the third task with a DistributedTaskContext of 1/1
+        pub children_isolator_unions: bool, default = true
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// The compression used for sending data over the network between workers.
+        /// It can be set to either `zstd`, `lz4` or `none`.
+        pub compression: String, default = "lz4".to_string()
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
         /// [ChannelResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_channel_resolver: ChannelResolverExtension, default = ChannelResolverExtension::default()
+        /// [WorkerResolver] implementation that tells the distributed planner information about
+        /// the available workers ready to execute distributed tasks.
+        pub(crate) __private_worker_resolver: WorkerResolverExtension, default = WorkerResolverExtension::not_implemented()
     }
 }
 
@@ -112,31 +123,25 @@ impl ConfigField for ChannelResolverExtension {
     }
 }
 
-impl Default for ChannelResolverExtension {
-    fn default() -> Self {
-        Self(Arc::new(NotImplementedChannelResolver))
-    }
-}
-
 impl Debug for ChannelResolverExtension {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "ChannelResolverExtension")
     }
 }
 
-struct NotImplementedChannelResolver;
-
-#[async_trait]
-impl ChannelResolver for NotImplementedChannelResolver {
-    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-        not_impl_err!("Not implemented")
+impl ConfigField for WorkerResolverExtension {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        // nothing to do.
     }
 
-    async fn get_flight_client_for_url(
-        &self,
-        _: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    fn set(&mut self, _: &str, _: &str) -> datafusion::common::Result<()> {
         not_impl_err!("Not implemented")
+    }
+}
+
+impl Debug for WorkerResolverExtension {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WorkerResolverExtension")
     }
 }
 

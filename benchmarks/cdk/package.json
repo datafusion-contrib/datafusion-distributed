@@ -11,7 +11,8 @@
     "cdk": "cdk",
     "sync-bucket": "aws s3 sync ../data s3://datafusion-distributed-benchmarks/",
     "datafusion-bench": "npx ts-node bin/datafusion-bench.ts",
-    "trino-bench": "npx ts-node bin/trino-bench.ts"
+    "trino-bench": "npx ts-node bin/trino-bench.ts",
+    "spark-bench": "npx ts-node bin/spark-bench.ts"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

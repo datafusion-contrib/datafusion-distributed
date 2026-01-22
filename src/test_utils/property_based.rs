@@ -12,7 +12,7 @@ use datafusion::{
 use std::sync::Arc;
 
 /// compares the set of record batches for equality
-pub async fn compare_result_set(
+pub fn compare_result_set(
     actual_result: &Result<Vec<RecordBatch>>,
     expected_result: &Result<Vec<RecordBatch>>,
 ) -> Result<()> {
@@ -42,7 +42,7 @@ pub async fn compare_result_set(
 
 // Ensures that the plans have the same ordering properties and that the actual result is sorted
 // correctly.
-pub async fn compare_ordering(
+pub fn compare_ordering(
     actual_physical_plan: Arc<dyn ExecutionPlan>,
     expected_physical_plan: Arc<dyn ExecutionPlan>,
     actual_result: &Result<Vec<RecordBatch>>,
@@ -448,18 +448,10 @@ mod tests {
         let df = expected_ctx.sql(ordered_query).await.unwrap();
         let expected_plan = df.create_physical_plan().await.unwrap();
 
-        assert!(
-            compare_ordering(actual_plan.clone(), expected_plan.clone(), &results)
-                .await
-                .is_ok()
-        );
+        assert!(compare_ordering(actual_plan.clone(), expected_plan.clone(), &results).is_ok());
 
         // This should fail because the batch is not sorted by value
         let result = Ok(vec![batch]);
-        assert!(
-            compare_ordering(actual_plan.clone(), expected_plan.clone(), &result)
-                .await
-                .is_err()
-        );
+        assert!(compare_ordering(actual_plan.clone(), expected_plan.clone(), &result).is_err());
     }
 }

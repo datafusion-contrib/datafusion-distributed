@@ -1,10 +1,11 @@
-use crate::channel_resolver_ext::set_distributed_channel_resolver;
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::distributed_planner::set_distributed_task_estimator;
+use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, TaskEstimator};
+use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
+use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -32,7 +33,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::config::ConfigExtension;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// extensions_options! {
     ///     pub struct CustomExtension {
@@ -50,27 +51,22 @@ pub trait DistributedExt: Sized {
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let state = SessionStateBuilder::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .with_distributed_option_extension(my_custom_extension)
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
-    ///     Ok(SessionStateBuilder::new()
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
     /// }
     /// ```
-    fn with_distributed_option_extension<T: ConfigExtension + Default>(
-        self,
-        t: T,
-    ) -> Result<Self, DataFusionError>;
+    fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
     /// Same as [DistributedExt::with_distributed_option_extension] but with an in-place mutation
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError>;
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
 
     /// Adds the provided [ConfigExtension] to the distributed context. The [ConfigExtension] will
     /// be serialized using gRPC metadata and sent across tasks. Users are expected to call this
@@ -78,7 +74,7 @@ pub trait DistributedExt: Sized {
     /// plan.
     ///
     /// - If there was a [ConfigExtension] of the same type already present, it's updated with an
-    ///   in-place mutation base on the headers that came over the wire.
+    ///   in-place mutation based on the headers that came over the wire.
     /// - If there was no [ConfigExtension] set before, it will get added, as if
     ///   [SessionConfig::with_option_extension] was being called.
     ///
@@ -90,7 +86,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::config::ConfigExtension;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// extensions_options! {
     ///     pub struct CustomExtension {
@@ -108,13 +104,14 @@ pub trait DistributedExt: Sized {
     /// // Now, the CustomExtension will be able to cross network boundaries. Upon making an Arrow
     /// // Flight request, it will be sent through gRPC metadata.
     /// let state = SessionStateBuilder::new()
-    ///     .with_distributed_option_extension(my_custom_extension).unwrap()
+    ///     .with_distributed_option_extension(my_custom_extension)
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // build sessions that retrieve the CustomExtension from gRPC metadata.
-    ///     Ok(SessionStateBuilder::new()
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
     ///         .build())
     /// }
@@ -143,7 +140,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::prelude::SessionConfig;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -162,8 +159,8 @@ pub trait DistributedExt: Sized {
     ///     .with_distributed_user_codec(CustomExecCodec)
     ///     .build();
     ///
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     // This function can be provided to an ArrowFlightEndpoint in order to tell it how to
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // This function can be provided to a Worker to tell it how to
     ///     // encode/decode CustomExec nodes.
     ///     Ok(SessionStateBuilder::new()
     ///         .with_distributed_user_codec(CustomExecCodec)
@@ -181,8 +178,14 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::set_distributed_user_codec] but with a dynamic argument.
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>);
 
-    /// Injects a [ChannelResolver] implementation for Distributed DataFusion to resolve worker
-    /// nodes. When running in distributed mode, setting a [ChannelResolver] is required.
+    /// This is what tells Distributed DataFusion the URLs of the workers available for serving queries.
+    ///
+    /// It injects a [WorkerResolver] implementation for Distributed DataFusion to resolve worker
+    /// nodes in the cluster. When running in distributed mode, setting a [WorkerResolver] is required.
+    ///
+    /// Even if this is required to be present in the [SessionContext] that first initiates and
+    /// plans the query, it's not necessary to be present in a Worker's session state builder,
+    /// as no planning happens there.
     ///
     /// Example:
     ///
@@ -194,17 +197,59 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
+    ///
+    /// struct CustomWorkerResolver;
+    ///
+    /// #[async_trait]
+    /// impl WorkerResolver for CustomWorkerResolver {
+    ///     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+    ///         todo!()
+    ///     }
+    /// }
+    ///
+    /// // This tweaks the SessionState so that it can plan for distributed queries and execute them.
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_worker_resolver(CustomWorkerResolver)
+    ///     // the DistributedPhysicalOptimizerRule also needs to be passed so that query plans
+    ///     // get distributed.
+    ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    ///     .build();
+    /// ```
+    fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        self,
+        resolver: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
+    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    );
+
+    /// This is what tells Distributed DataFusion how to build an Arrow Flight client out of a worker URL.
+    ///
+    /// There's a default implementation that caches the Arrow Flight client instances so that there's
+    /// only one per URL, but users can decide to override that behavior in favor of their own solution.
+    ///
+    /// Example:
+    ///
+    /// ```
+    /// # use arrow_flight::flight_service_client::FlightServiceClient;
+    /// # use async_trait::async_trait;
+    /// # use datafusion::common::DataFusionError;
+    /// # use datafusion::execution::{SessionState, SessionStateBuilder};
+    /// # use datafusion::prelude::SessionConfig;
+    /// # use url::Url;
+    /// # use std::sync::Arc;
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
     ///
     /// struct CustomChannelResolver;
     ///
     /// #[async_trait]
     /// impl ChannelResolver for CustomChannelResolver {
-    ///     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
-    ///         todo!()
-    ///     }
-    ///
     ///     async fn get_flight_client_for_url(&self, url: &Url) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ///         // Build a custom FlightServiceClient wrapped with tower layers or something similar.
     ///         todo!()
     ///     }
     /// }
@@ -217,10 +262,13 @@ pub trait DistributedExt: Sized {
     ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
     ///     .build();
     ///
-    /// // This function can be provided to an ArrowFlightEndpoint so that, upon receiving a distributed
+    /// // This function can be provided to a Worker so that, upon receiving a distributed
     /// // part of a plan, it knows how to resolve gRPC channels from URLs for making network calls to other nodes.
-    /// async fn build_state(ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///     Ok(SessionStateBuilder::new()
+    /// async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///     // If you have a custom channel resolver, it should also be passed in the
+    ///     // Worker session builder.
+    ///     Ok(ctx
+    ///         .builder
     ///         .with_distributed_channel_resolver(CustomChannelResolver)
     ///         .build())
     /// }
@@ -236,12 +284,12 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// Adds a distributed task count estimator. Estimators are executed on leaf nodes
-    /// sequentially until one returns an estimation on the amount of tasks that should be
-    /// used for the stage containing the leaf node.
+    /// Adds a distributed task count estimator. [TaskEstimator]s are executed on each node
+    /// sequentially until one returns an estimation on the number of tasks that should be
+    /// used for the stage containing that node.
     ///
-    /// The first one that returns something for a leaf node is the one that decides how many
-    /// tasks are used.
+    /// Many nodes might decide to provide an estimation, so a reconciliation between all of them
+    /// is performed internally during planning.
     ///
     /// ```text
     ///     ┌───────────────────────┐
@@ -260,8 +308,8 @@ pub trait DistributedExt: Sized {
     ///     ┌───────────────────────┐    │
     /// │   │      FilterExec       │
     ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐       TaskEstimator estimates tasks in
-    ///     │       SomeExec        │◀───┼──  stages containing leaf nodes
+    /// │   ┌───────────────────────┐       a TaskEstimator estimates the amount of tasks
+    ///     │       SomeExec        │◀───┼──  based on how much data will be pulled.
     /// │   └───────────────────────┘
     ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
     /// ```
@@ -367,13 +415,53 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_metrics_collection] but with an in-place mutation.
     fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+
+    /// Enables children isolator unions for distributing UNION operations across as many tasks as
+    /// the sum of all the tasks required for each child.
+    ///
+    /// For example, if there is a UNION with 3 children, requiring one task each, it will result
+    /// in a plan with 3 tasks where each task runs one child:
+    ///
+    /// ```text
+    /// ┌─────────────────────────────┐┌─────────────────────────────┐┌─────────────────────────────┐
+    /// │           Task 1            ││           Task 2            ││           Task 3            │
+    /// │┌───────────────────────────┐││┌───────────────────────────┐││┌───────────────────────────┐│
+    /// ││ ChildrenIsolatorUnionExec ││││ ChildrenIsolatorUnionExec ││││ ChildrenIsolatorUnionExec ││
+    /// │└───▲─────────▲─────────▲───┘││└───▲─────────▲─────────▲───┘││└───▲─────────▲─────────▲───┘│
+    /// │    │                        ││              │              ││                        │    │
+    /// │┌───┴───┐ ┌  ─│ ─   ┌  ─│ ─  ││┌  ─│ ─   ┌───┴───┐ ┌  ─│ ─  ││┌  ─│ ─   ┌  ─│ ─   ┌───┴───┐│
+    /// ││Child 1│  Child 2│  Child 3│││ Child 1│ │Child 2│  Child 3│││ Child 1│  Child 2│ │Child 3││
+    /// │└───────┘ └  ─  ─   └  ─  ─  ││└  ─  ─   └───────┘ └  ─  ─  ││└  ─  ─   └  ─  ─   └───────┘│
+    /// └─────────────────────────────┘└─────────────────────────────┘└─────────────────────────────┘
+    /// ```
+    fn with_distributed_children_isolator_unions(
+        self,
+        enabled: bool,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_children_isolator_unions] but with an in-place mutation.
+    fn set_distributed_children_isolator_unions(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError>;
+
+    /// The compression type to use for sending data over the wire.
+    ///
+    /// The default is [CompressionType::LZ4_FRAME].
+    fn with_distributed_compression(
+        self,
+        compression: Option<CompressionType>,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_compression] but with an in-place mutation.
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
-    fn set_distributed_option_extension<T: ConfigExtension + Default>(
-        &mut self,
-        t: T,
-    ) -> Result<(), DataFusionError> {
+    fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) {
         set_distributed_option_extension(self, t)
     }
 
@@ -391,6 +479,13 @@ impl DistributedExt for SessionConfig {
 
     fn set_distributed_user_codec_arc(&mut self, codec: Arc<dyn PhysicalExtensionCodec>) {
         set_distributed_user_codec_arc(self, codec)
+    }
+
+    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
+        &mut self,
+        resolver: T,
+    ) {
+        set_distributed_worker_resolver(self, resolver);
     }
 
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
@@ -431,11 +526,33 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_children_isolator_unions(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.children_isolator_unions = enabled;
+        Ok(())
+    }
+
+    fn set_distributed_compression(
+        &mut self,
+        compression: Option<CompressionType>,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.compression = match compression {
+            Some(CompressionType::ZSTD) => "zstd".to_string(),
+            Some(CompressionType::LZ4_FRAME) => "lz4".to_string(),
+            _ => "none".to_string(),
+        };
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             #[call(set_distributed_option_extension_from_headers)]
             #[expr($?;Ok(self))]
@@ -448,6 +565,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -468,6 +589,14 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -475,10 +604,10 @@ impl DistributedExt for SessionConfig {
 impl DistributedExt for SessionStateBuilder {
     delegate! {
         to self.config().get_or_insert_default() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -494,6 +623,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -519,6 +653,16 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -526,10 +670,10 @@ impl DistributedExt for SessionStateBuilder {
 impl DistributedExt for SessionState {
     delegate! {
         to self.config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -545,6 +689,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -570,6 +719,16 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -577,10 +736,10 @@ impl DistributedExt for SessionState {
 impl DistributedExt for SessionContext {
     delegate! {
         to self.state_ref().write().config_mut() {
-            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T) -> Result<(), DataFusionError>;
+            fn set_distributed_option_extension<T: ConfigExtension + Default>(&mut self, t: T);
             #[call(set_distributed_option_extension)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Result<Self, DataFusionError>;
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(self, t: T) -> Self;
 
             fn set_distributed_option_extension_from_headers<T: ConfigExtension + Default>(&mut self, h: &HeaderMap) -> Result<(), DataFusionError>;
             #[call(set_distributed_option_extension_from_headers)]
@@ -596,6 +755,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_user_codec_arc)]
             #[expr($;self)]
             fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+
+            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -621,6 +785,16 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
             fn with_distributed_metrics_collection(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_children_isolator_unions(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
         }
     }
 }

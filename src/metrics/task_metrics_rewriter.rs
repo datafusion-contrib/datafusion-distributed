@@ -44,25 +44,18 @@ pub fn rewrite_distributed_plan_with_metrics(
     let transformed = plan.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
         if let Some(network_boundary) = plan.as_network_boundary() {
-            return match network_boundary.input_stage() {
-                Some(stage) => {
-                    // This transform is a bit inefficient because we traverse the plan nodes twice
-                    // For now, we are okay with trading off performance for simplicity.
-                    let plan_with_metrics =
-                        stage_metrics_rewriter(stage, metrics_collection.clone())?;
-                    Ok(Transformed::yes(network_boundary.with_input_stage(
-                        Stage::new(
-                            stage.query_id,
-                            stage.num,
-                            plan_with_metrics,
-                            stage.tasks.len(),
-                        ),
-                    )?))
-                }
-                None => {
-                    internal_err!("Expected input stage to be set in network boundary")
-                }
-            };
+            let stage = network_boundary.input_stage();
+            // This transform is a bit inefficient because we traverse the plan nodes twice
+            // For now, we are okay with trading off performance for simplicity.
+            let plan_with_metrics = stage_metrics_rewriter(stage, metrics_collection.clone())?;
+            return Ok(Transformed::yes(network_boundary.with_input_stage(
+                Stage::new(
+                    stage.query_id,
+                    stage.num,
+                    plan_with_metrics,
+                    stage.tasks.len(),
+                ),
+            )?));
         }
 
         Ok(Transformed::no(plan))
@@ -196,7 +189,9 @@ mod tests {
     use crate::metrics::rewrite_distributed_plan_with_metrics;
     use crate::metrics::task_metrics_rewriter::stage_metrics_rewriter;
     use crate::protobuf::StageKey;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::{
+        InMemoryChannelResolver, InMemoryWorkerResolver,
+    };
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::plans::count_plan_nodes;
     use crate::test_utils::session_context::register_temp_parquet_table;
@@ -240,7 +235,8 @@ mod tests {
 
         if distributed {
             builder = builder
-                .with_distributed_channel_resolver(InMemoryChannelResolver::new(10))
+                .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
+                .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
@@ -473,6 +469,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_executed_distributed_plan_has_metrics() {
         let ctx = make_test_distributed_ctx().await;
         let plan = ctx

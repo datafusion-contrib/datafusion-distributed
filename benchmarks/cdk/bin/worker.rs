@@ -1,23 +1,19 @@
-use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_ec2::Client as Ec2Client;
 use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
-use dashmap::{DashMap, Entry};
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilder, DistributedSessionBuilderContext,
-    create_flight_client, display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver, display_plan_ascii,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
-use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -27,7 +23,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use structopt::StructOpt;
-use tonic::transport::{Channel, Server};
+use tonic::transport::Server;
 use url::Url;
 
 #[derive(Serialize)]
@@ -42,43 +38,6 @@ struct Cmd {
     /// The bucket name.
     #[structopt(long, default_value = "datafusion-distributed-benchmarks")]
     bucket: String,
-}
-
-#[derive(Clone)]
-struct BenchSessionStateBuilder {
-    s3_url: Url,
-    s3: Arc<dyn ObjectStore>,
-    channel_resolver: Ec2ChannelResolver,
-}
-
-impl BenchSessionStateBuilder {
-    fn new(s3_url: Url) -> Result<Self, Box<dyn Error>> {
-        let s3 = AmazonS3Builder::from_env()
-            .with_bucket_name(s3_url.host().unwrap().to_string())
-            .build()?;
-        Ok(Self {
-            s3_url,
-            s3: Arc::new(s3),
-            channel_resolver: Ec2ChannelResolver::new(),
-        })
-    }
-}
-
-#[async_trait]
-impl DistributedSessionBuilder for BenchSessionStateBuilder {
-    async fn build_session_state(
-        &self,
-        ctx: DistributedSessionBuilderContext,
-    ) -> Result<SessionState, DataFusionError> {
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_runtime_env(ctx.runtime_env)
-            .with_object_store(&self.s3_url, Arc::clone(&self.s3))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .with_distributed_channel_resolver(self.channel_resolver.clone())
-            .build();
-        Ok(state)
-    }
 }
 
 #[tokio::main]
@@ -98,15 +57,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Register S3 object store
     let s3_url = Url::parse(&format!("s3://{}", cmd.bucket))?;
-    let state_builder = BenchSessionStateBuilder::new(s3_url)?;
 
     info!("Building shared SessionContext for the whole lifetime of the HTTP listener...");
-    let state = state_builder
-        .build_session_state(Default::default())
-        .await?;
+    let s3 = Arc::new(
+        AmazonS3Builder::from_env()
+            .with_bucket_name(s3_url.host().unwrap().to_string())
+            .build()?,
+    );
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    runtime_env.register_object_store(&s3_url, s3);
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_runtime_env(Arc::clone(&runtime_env))
+        .with_distributed_worker_resolver(Ec2WorkerResolver::new())
+        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .build();
     let ctx = SessionContext::from(state);
 
-    let arrow_flight_endpoint = ArrowFlightEndpoint::try_new(state_builder.clone())?;
+    let worker = Worker::default().with_runtime_env(runtime_env);
     let http_server = axum::serve(
         listener,
         Router::new().route(
@@ -167,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     );
     let grpc_server = Server::builder()
-        .add_service(arrow_flight_endpoint.into_flight_server())
+        .add_service(worker.into_flight_server())
         .serve(WORKER_ADDR.parse()?);
 
     info!("Started listener HTTP server in {LISTENER_ADDR}");
@@ -213,9 +182,8 @@ fn err(s: impl Display) -> (StatusCode, String) {
 }
 
 #[derive(Clone)]
-struct Ec2ChannelResolver {
+struct Ec2WorkerResolver {
     urls: Arc<RwLock<Vec<Url>>>,
-    channels: Arc<DashMap<Url, BoxCloneSyncChannel>>,
 }
 
 async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
@@ -273,35 +241,17 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
     });
 }
 
-impl Ec2ChannelResolver {
+impl Ec2WorkerResolver {
     fn new() -> Self {
         let urls = Arc::new(RwLock::new(Vec::new()));
-        let channels = Arc::new(DashMap::new());
         tokio::spawn(background_ec2_worker_resolver(urls.clone()));
-        Self { urls, channels }
+        Self { urls }
     }
 }
 
 #[async_trait]
-impl ChannelResolver for Ec2ChannelResolver {
+impl WorkerResolver for Ec2WorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         Ok(self.urls.read().unwrap().clone())
-    }
-
-    async fn get_flight_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        let channel = match self.channels.entry(url.clone()) {
-            Entry::Occupied(v) => v.get().clone(),
-            Entry::Vacant(v) => {
-                let endpoint = Channel::from_shared(url.to_string()).unwrap();
-                let channel = endpoint.connect_lazy();
-                let channel = BoxCloneSyncChannel::new(channel);
-                v.insert(channel.clone());
-                channel
-            }
-        };
-        Ok(create_flight_client(channel))
     }
 }

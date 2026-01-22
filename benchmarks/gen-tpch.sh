@@ -33,6 +33,6 @@ if test -d "${FILE}"; then
 else
     echo " creating parquet files using benchmark binary ..."
     pushd "${SCRIPT_DIR}" > /dev/null
-    $CARGO_COMMAND -- tpch-convert --input "${TPCH_DIR}" --output "${TPCH_DIR}" --format parquet --partitions "$PARTITIONS"
+    $CARGO_COMMAND -- prepare-tpch --input "${TPCH_DIR}" --output "${TPCH_DIR}" --partitions "$PARTITIONS"
     popd > /dev/null
 fi

@@ -1,24 +1,21 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{extensions_options, internal_err};
+    use datafusion::common::tree_node::{Transformed, TreeNode};
+    use datafusion::common::{extensions_options, internal_datafusion_err, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
     use datafusion::execution::{
         SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
     };
-    use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+    use datafusion::physical_expr::EquivalenceProperties;
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+        execute_stream,
     };
-    use datafusion_distributed::NetworkShuffleExec;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{
-        DistributedExt, DistributedSessionBuilderContext, distribute_plan,
-    };
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use futures::TryStreamExt;
     use prost::Message;
@@ -26,12 +23,9 @@ mod tests {
     use std::fmt::Formatter;
     use std::sync::Arc;
 
-    async fn build_state(
-        ctx: DistributedSessionBuilderContext,
-    ) -> Result<SessionState, DataFusionError> {
-        Ok(SessionStateBuilder::new()
-            .with_runtime_env(ctx.runtime_env)
-            .with_default_features()
+    async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+        Ok(ctx
+            .builder
             .with_distributed_option_extension_from_headers::<CustomExtension>(&ctx.headers)?
             .with_distributed_user_codec(CustomConfigExtensionRequiredExecCodec)
             .build())
@@ -46,23 +40,27 @@ mod tests {
                 bar: 1,
                 baz: true,
                 throw_err: false,
-            })?
+            })
             .build()
             .into();
 
-        let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CustomConfigExtensionRequiredExec::new());
+        let query = r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#;
 
-        for size in [1, 2, 3] {
-            plan = Arc::new(NetworkShuffleExec::try_new(
-                Arc::new(RepartitionExec::try_new(
-                    plan,
-                    Partitioning::Hash(vec![], 10),
-                )?),
-                size,
-            )?);
-        }
+        register_parquet_tables(&ctx).await?;
+        let df = ctx.sql(query).await?;
+        let plan = df.create_physical_plan().await?;
 
-        let plan = distribute_plan(plan)?.unwrap();
+        // Wrap leaf nodes with CustomConfigExtensionRequiredExec to test config extension propagation
+        let transformed = plan.transform_up(|plan| {
+            if plan.children().is_empty() {
+                return Ok(Transformed::yes(Arc::new(
+                    CustomConfigExtensionRequiredExec::new(plan),
+                )));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = transformed.data;
+
         let stream = execute_stream(plan, ctx.task_ctx())?;
         // It should not fail.
         stream.try_collect::<Vec<_>>().await?;
@@ -71,36 +69,32 @@ mod tests {
     }
 
     #[tokio::test]
-    // TODO: the solution to this test failure is to, rather than dumping the config extension
-    //  fields into headers immediately when calling `with_distributed_option_extension()`, to instead
-    //  register the ConfigExtension::PREFIX as something that we should lazily capture and send
-    //  in the headers of every network request. In order to do that, first this PR upstream
-    //  https://github.com/apache/datafusion/pull/18887 needs to be shipped. It will be available
-    //  in DataFusion 52.0.0.
-    #[ignore]
     async fn custom_config_extension_runtime_change() -> Result<(), Box<dyn std::error::Error>> {
         let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
         ctx = SessionStateBuilder::from(ctx.state())
             .with_distributed_option_extension(CustomExtension {
                 throw_err: true,
                 ..Default::default()
-            })?
+            })
             .build()
             .into();
 
-        let mut plan: Arc<dyn ExecutionPlan> = Arc::new(CustomConfigExtensionRequiredExec::new());
+        let query = r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#;
 
-        for size in [1, 2, 3] {
-            plan = Arc::new(NetworkShuffleExec::try_new(
-                Arc::new(RepartitionExec::try_new(
-                    plan,
-                    Partitioning::Hash(vec![], 10),
-                )?),
-                size,
-            )?);
-        }
+        register_parquet_tables(&ctx).await?;
+        let df = ctx.sql(query).await?;
+        let plan = df.create_physical_plan().await?;
 
-        let plan = distribute_plan(plan)?.unwrap();
+        // Wrap leaf nodes with CustomConfigExtensionRequiredExec to test config extension propagation
+        let transformed = plan.transform_up(|plan| {
+            if plan.children().is_empty() {
+                return Ok(Transformed::yes(Arc::new(
+                    CustomConfigExtensionRequiredExec::new(plan),
+                )));
+            }
+            Ok(Transformed::no(plan))
+        })?;
+        let plan = transformed.data;
 
         // If the value is modified after setting it as a distributed option extension, it should
         // propagate the correct headers.
@@ -135,18 +129,20 @@ mod tests {
     #[derive(Debug)]
     pub struct CustomConfigExtensionRequiredExec {
         plan_properties: PlanProperties,
+        child: Arc<dyn ExecutionPlan>,
     }
 
     impl CustomConfigExtensionRequiredExec {
-        fn new() -> Self {
-            let schema = Schema::new(vec![Field::new("numbers", DataType::Int64, false)]);
+        fn new(child: Arc<dyn ExecutionPlan>) -> Self {
+            let plan_properties = PlanProperties::new(
+                EquivalenceProperties::new(child.schema()),
+                child.output_partitioning().clone(),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            );
             Self {
-                plan_properties: PlanProperties::new(
-                    EquivalenceProperties::new(Arc::new(schema)),
-                    Partitioning::UnknownPartitioning(1),
-                    EmissionType::Incremental,
-                    Boundedness::Bounded,
-                ),
+                plan_properties,
+                child,
             }
         }
     }
@@ -171,19 +167,21 @@ mod tests {
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![]
+            vec![&self.child]
         }
 
         fn with_new_children(
             self: Arc<Self>,
-            _: Vec<Arc<dyn ExecutionPlan>>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-            Ok(self)
+            Ok(Arc::new(CustomConfigExtensionRequiredExec::new(
+                children[0].clone(),
+            )))
         }
 
         fn execute(
             &self,
-            _: usize,
+            partition: usize,
             ctx: Arc<TaskContext>,
         ) -> datafusion::common::Result<SendableRecordBatchStream> {
             let Some(ext) = ctx
@@ -197,10 +195,8 @@ mod tests {
             if ext.throw_err {
                 return internal_err!("CustomExtension requested an error to be thrown");
             }
-            Ok(Box::pin(RecordBatchStreamAdapter::new(
-                self.schema(),
-                futures::stream::empty(),
-            )))
+            // Pass through to child
+            self.child.execute(partition, ctx)
         }
     }
 
@@ -213,11 +209,23 @@ mod tests {
     impl PhysicalExtensionCodec for CustomConfigExtensionRequiredExecCodec {
         fn try_decode(
             &self,
-            _buf: &[u8],
-            _: &[Arc<dyn ExecutionPlan>],
+            buf: &[u8],
+            inputs: &[Arc<dyn ExecutionPlan>],
             _ctx: &TaskContext,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-            Ok(Arc::new(CustomConfigExtensionRequiredExec::new()))
+            let _node = CustomConfigExtensionRequiredExecProto::decode(buf)
+                .map_err(|err| internal_datafusion_err!("{err}"))?;
+
+            if inputs.len() != 1 {
+                return internal_err!(
+                    "CustomConfigExtensionRequiredExec expects exactly one child, got {}",
+                    inputs.len()
+                );
+            }
+
+            Ok(Arc::new(CustomConfigExtensionRequiredExec::new(
+                inputs[0].clone(),
+            )))
         }
 
         fn try_encode(

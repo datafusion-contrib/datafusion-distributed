@@ -2,13 +2,11 @@ use arrow::util::pretty::pretty_format_batches;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
-use datafusion::common::utils::get_available_parallelism;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::displayable;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    ArrowFlightEndpoint, BoxCloneSyncChannel, ChannelResolver, DistributedExt,
-    DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext, create_flight_client,
+    BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, Worker,
+    WorkerQueryContext, WorkerResolver, create_flight_client, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -20,20 +18,16 @@ use tonic::transport::{Endpoint, Server};
 #[derive(StructOpt)]
 #[structopt(
     name = "run",
-    about = "An in-memory cluster Distributed DataFusion runner"
+    about = "Run a query in an in-memory Distributed DataFusion cluster"
 )]
 struct Args {
+    /// The SQL query to run.
     #[structopt()]
     query: String,
 
+    /// Whether the distributed plan should be rendered instead of executing the query.
     #[structopt(long)]
-    explain: bool,
-
-    #[structopt(long)]
-    files_per_task: Option<usize>,
-
-    #[structopt(long)]
-    cardinality_task_sf: Option<f64>,
+    show_distributed_plan: bool,
 }
 
 #[tokio::main]
@@ -42,33 +36,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let state = SessionStateBuilder::new()
         .with_default_features()
+        .with_distributed_worker_resolver(InMemoryWorkerResolver)
         .with_distributed_channel_resolver(InMemoryChannelResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-        .with_distributed_files_per_task(
-            args.files_per_task.unwrap_or(get_available_parallelism()),
-        )?
-        .with_distributed_cardinality_effect_task_scale_factor(
-            args.cardinality_task_sf.unwrap_or(1.),
-        )?
+        .with_distributed_files_per_task(1)?
         .build();
 
     let ctx = SessionContext::from(state);
-
-    ctx.register_parquet(
-        "flights_1m",
-        "testdata/flights-1m.parquet",
-        ParquetReadOptions::default(),
-    )
-    .await?;
 
     ctx.register_parquet("weather", "testdata/weather", ParquetReadOptions::default())
         .await?;
 
     let df = ctx.sql(&args.query).await?;
-    if args.explain {
+    if args.show_distributed_plan {
         let plan = df.create_physical_plan().await?;
-        let display = displayable(plan.as_ref()).indent(true).to_string();
-        println!("{display}");
+        println!("{}", display_plan_ascii(plan.as_ref(), false));
     } else {
         let stream = df.execute_stream().await?;
         let batches = stream.try_collect::<Vec<_>>().await?;
@@ -106,18 +88,10 @@ impl InMemoryChannelResolver {
         };
         let this_clone = this.clone();
 
-        let endpoint =
-            ArrowFlightEndpoint::try_new(move |ctx: DistributedSessionBuilderContext| {
-                let this = this.clone();
-                async move {
-                    let builder = SessionStateBuilder::new()
-                        .with_default_features()
-                        .with_distributed_channel_resolver(this)
-                        .with_runtime_env(ctx.runtime_env.clone());
-                    Ok(builder.build())
-                }
-            })
-            .unwrap();
+        let endpoint = Worker::from_session_builder(move |ctx: WorkerQueryContext| {
+            let this = this.clone();
+            async move { Ok(ctx.builder.with_distributed_channel_resolver(this).build()) }
+        });
 
         tokio::spawn(async move {
             Server::builder()
@@ -132,14 +106,18 @@ impl InMemoryChannelResolver {
 
 #[async_trait]
 impl ChannelResolver for InMemoryChannelResolver {
-    fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap()])
-    }
-
     async fn get_flight_client_for_url(
         &self,
         _: &url::Url,
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         Ok(self.channel.clone())
+    }
+}
+
+struct InMemoryWorkerResolver;
+
+impl WorkerResolver for InMemoryWorkerResolver {
+    fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
+        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); 16]) // simulate 16 workers.
     }
 }

@@ -16,16 +16,10 @@ use uuid::Uuid;
 /// It implements [`ExecutionPlan`] and can be executed to produce a
 /// stream of record batches.
 ///
-/// An ExecutionTask is a finer grained unit of work compared to an ExecutionStage.
-/// One ExecutionStage will create one or more ExecutionTasks
-///
-/// When an [`StageExec`] is execute()'d if will execute its plan and return a stream
-/// of record batches.
-///
-/// If the stage has input stages, then it those input stages will be executed on remote resources
+/// If a stage has input stages, then those input stages will be executed on remote resources
 /// and will be provided the remainder of the stage tree.
 ///
-/// For example if our stage tree looks like this:
+/// For example, if our stage tree looks like this:
 ///
 /// ```text
 ///                       ┌─────────┐
@@ -44,13 +38,13 @@ use uuid::Uuid;
 ///
 /// ```
 ///
-/// Then executing Stage 1 will run its plan locally.  Stage 1 has two inputs, Stage 2 and Stage 3.  We
-/// know these will execute on remote resources.   As such the plan for Stage 1 must contain an
-/// [`NetworkShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalese the
+/// Then executing Stage 1 will run its plan locally. Stage 1 has two inputs, Stage 2 and Stage 3. We
+/// know these will execute on remote resources. As such, the plan for Stage 1 must contain a
+/// [`NetworkShuffleExec`] node that will read the results of Stage 2 and Stage 3 and coalesce the
 /// results.
 ///
 /// When Stage 1's [`NetworkShuffleExec`] node is executed, it makes an ArrowFlightRequest to the
-/// host assigned in the Stage.  It provides the following Stage tree serialilzed in the body of the
+/// host assigned in the Stage. It provides the following Stage tree serialized in the body of the
 /// Arrow Flight Ticket:
 ///
 /// ```text
@@ -65,7 +59,7 @@ use uuid::Uuid;
 ///
 /// ```
 ///
-/// The receiving ArrowFlightEndpoint will then execute Stage 2 and will repeat this process.
+/// The receiving Worker will then execute Stage 2 and will repeat this process.
 ///
 /// When Stage 4 is executed, it has no input tasks, so it is assumed that the plan included in that
 /// Stage can complete on its own; it's likely holding a leaf node in the overall physical plan and
@@ -133,7 +127,7 @@ impl MaybeEncodedPlan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DistributedTaskContext {
     pub task_index: usize,
     pub task_count: usize,
@@ -151,8 +145,8 @@ impl DistributedTaskContext {
 }
 
 impl Stage {
-    /// Creates a new `ExecutionStage` with the given plan and inputs.  One task will be created
-    /// responsible for partitions in the plan.
+    /// Creates a new `Stage` with the given plan and inputs. `ExecutionTasks` will be created for
+    /// each of the `n_tasks` specified tasks.
     pub(crate) fn new(
         query_id: Uuid,
         num: usize,
@@ -178,9 +172,9 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use prost::Message;
 /// Be able to display a nice tree for stages.
 ///
-/// The challenge to doing this at the moment is that `TreeRenderVistor`
+/// The challenge to doing this at the moment is that `TreeRenderVisitor`
 /// in [`datafusion::physical_plan::display`] is not public, and that it also
-/// is specific to a `ExecutionPlan` trait object, which we don't have.
+/// is specific to an `ExecutionPlan` trait object, which we don't have.
 ///
 /// TODO: try to upstream a change to make rendering of Trees (logical, physical, stages) against
 /// a generic trait rather than a specific trait object. This would allow us to
@@ -334,7 +328,7 @@ const COLOR_SCHEME: &str = "spectral6";
 /// Graphviz dot format.
 /// You can view them on https://vis-js.com
 ///
-/// Or it is often useful to expertiment with plan output using
+/// Or it is often useful to experiment with plan output using
 /// https://datafusion-fiddle.vercel.app/
 pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
     let mut f = String::new();
@@ -479,7 +473,7 @@ fn display_plan(
         node_index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
             isolator_partition_group = Some(PartitionIsolatorExec::partition_group(
-                node.input().output_partitioning().partition_count(),
+                node.input.output_partitioning().partition_count(),
                 task_i,
                 n_tasks,
             ));
@@ -665,7 +659,7 @@ fn display_inter_task_edges(
     while let Some(plan) = queue.pop_front() {
         index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-            if node.input_stage().is_none_or(|v| v.num != input_stage.num) {
+            if node.input_stage().num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -689,7 +683,7 @@ fn display_inter_task_edges(
             }
             continue;
         } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            if node.input_stage().is_none_or(|v| v.num != input_stage.num) {
+            if node.input_stage().num != input_stage.num {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -739,9 +733,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     let mut result = vec![];
     for child in plan.children() {
         if let Some(plan) = child.as_network_boundary() {
-            if let Some(stage) = plan.input_stage() {
-                result.push(stage);
-            }
+            result.push(plan.input_stage());
         } else {
             result.extend(find_input_stages(child.as_ref()));
         }
@@ -752,9 +744,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
 pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
     let mut result = vec![];
     if let Some(plan) = plan.as_network_boundary() {
-        if let Some(stage) = plan.input_stage() {
-            result.push(stage);
-        }
+        result.push(plan.input_stage());
     }
     for child in plan.children() {
         result.extend(find_all_stages(child));

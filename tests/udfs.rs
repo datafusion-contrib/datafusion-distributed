@@ -4,7 +4,7 @@ mod tests {
     use arrow::util::pretty::pretty_format_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::{SessionState, SessionStateBuilder};
+    use datafusion::execution::SessionState;
     use datafusion::logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     };
@@ -16,8 +16,8 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, DistributedSessionBuilderContext,
-        assert_snapshot, display_plan_ascii,
+        DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
+        display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -26,12 +26,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_udf_in_partitioning_field() -> Result<(), Box<dyn Error>> {
-        async fn build_state(
-            ctx: DistributedSessionBuilderContext,
-        ) -> Result<SessionState, DataFusionError> {
-            Ok(SessionStateBuilder::new()
-                .with_runtime_env(ctx.runtime_env)
-                .with_default_features()
+        async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+            Ok(ctx
+                .builder
                 .with_scalar_functions(vec![udf()])
                 .with_distributed_task_estimator(2)
                 .build())
@@ -71,9 +68,8 @@ mod tests {
         │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
-          │ CoalesceBatchesExec: target_batch_size=8192
-          │   RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │     EmptyExec
+          │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
+          │   EmptyExec
           └──────────────────────────────────────────────────
         ",
         );

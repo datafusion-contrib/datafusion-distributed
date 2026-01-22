@@ -1,6 +1,6 @@
-use crate::channel_resolver_ext::get_distributed_channel_resolver;
+use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::execution_plans::common::require_one_child;
+use crate::networking::get_distributed_worker_resolver;
 use crate::protobuf::DistributedCodec;
 use crate::stage::{ExecutionTask, Stage};
 use datafusion::common::exec_err;
@@ -59,15 +59,10 @@ impl DistributedExec {
                 return Ok(Transformed::no(plan));
             };
 
-            let mut rng = rand::thread_rng();
-            let start_idx = rng.gen_range(0..urls.len());
+            let mut rng = rand::rng();
+            let start_idx = rng.random_range(0..urls.len());
 
-            let Some(stage) = plan.input_stage() else {
-                return exec_err!(
-                    "NetworkBoundary '{}' has not been assigned a stage",
-                    plan.name()
-                );
-            };
+            let stage = plan.input_stage();
 
             let ready_stage = Stage {
                 query_id: stage.query_id,
@@ -137,10 +132,10 @@ impl ExecutionPlan for DistributedExec {
             );
         }
 
-        let channel_resolver = get_distributed_channel_resolver(context.session_config())?;
+        let worker_resolver = get_distributed_worker_resolver(context.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(context.session_config());
 
-        let prepared = self.prepare_plan(&channel_resolver.get_urls()?, &codec)?;
+        let prepared = self.prepare_plan(&worker_resolver.get_urls()?, &codec)?;
         {
             let mut guard = self
                 .prepared_plan

@@ -16,18 +16,17 @@ git lfs checkout
 
 ### Spawning the workers
 
-In two different terminals spawn two ArrowFlightEndpoints
+In two different terminals spawn two workers
 
 ```shell
-cargo run --example localhost_worker -- 8080 --cluster-ports 8080,8081
+cargo run --example localhost_worker -- 8080
 ```
 
 ```shell
-cargo run --example localhost_worker -- 8081 --cluster-ports 8080,8081
+cargo run --example localhost_worker -- 8081
 ```
 
-- The positional numeric argument is the port in which each Arrow Flight endpoint will listen
-- The `--cluster-ports` parameter tells the Arrow Flight endpoint all the available localhost workers in the cluster
+The positional numeric argument is the port in which each worker will listen to.
 
 ### Issuing a distributed SQL query
 
@@ -43,7 +42,7 @@ command, but further stages will be delegated to the workers running on ports 80
 Additionally, the `--explain` flag can be passed to render the distributed plan:
 
 ```shell
-cargo run --example localhost_run -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"' --cluster-ports 8080,8081 --explain
+cargo run --example localhost_run -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"' --cluster-ports 8080,8081 --show-distributed-plan
 ```
 
 ### Available tables

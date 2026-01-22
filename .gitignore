@@ -3,4 +3,8 @@
 /benchmarks/data/
 testdata/tpch/*
 !testdata/tpch/queries
-testdata/tpcds/data/
+testdata/tpcds/*
+!testdata/tpcds/queries
+!testdata/tpcds/README.md
+testdata/clickbench/*
+!testdata/clickbench/queries

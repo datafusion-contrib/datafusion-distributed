@@ -1,27 +1,21 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::execute_stream;
-    use datafusion::prelude::SessionConfig;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{
-        DefaultSessionBuilder, MappedDistributedSessionBuilderExt, assert_snapshot,
-        display_plan_ascii,
-    };
+    use datafusion_distributed::{WorkerQueryContext, assert_snapshot, display_plan_ascii};
     use futures::TryStreamExt;
     use std::error::Error;
 
     #[tokio::test]
     async fn distributed_show_columns() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(
-            3,
-            DefaultSessionBuilder.map(|mut v: SessionStateBuilder| {
-                v = v.with_config(SessionConfig::default().with_information_schema(true));
-                Ok(v.build())
-            }),
-        )
+        let (ctx, _guard) = start_localhost_context(3, |mut ctx: WorkerQueryContext| async {
+            let cfg = ctx.builder.config().get_or_insert_default();
+            let opts = cfg.options_mut();
+            opts.catalog.information_schema = true;
+            Ok(ctx.builder.build())
+        })
         .await;
         register_parquet_tables(&ctx).await?;
 
@@ -32,12 +26,10 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        CoalescePartitionsExec
-          ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
-            CoalesceBatchesExec: target_batch_size=8192
-              FilterExec: table_name@2 = weather
-                RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-                  StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
+        ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
+          FilterExec: table_name@2 = weather
+            RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
+              StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
         ",
         );
 

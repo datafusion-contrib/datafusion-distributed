@@ -173,8 +173,12 @@ impl DataFusionErrorProto {
                     DataFusionErrorProto::from_datafusion_error(err.as_ref()),
                 ))),
             },
+            #[cfg(feature = "avro")]
+            DataFusionError::AvroError(err) => DataFusionErrorProto {
+                inner: Some(DataFusionErrorInnerProto::External(err.to_string())),
+            },
             DataFusionError::Ffi(err) => DataFusionErrorProto {
-                inner: Some(DataFusionErrorInnerProto::Plan(err.clone())),
+                inner: Some(DataFusionErrorInnerProto::External(err.clone())),
             },
         }
     }

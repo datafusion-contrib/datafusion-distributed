@@ -1,20 +1,18 @@
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use http::HeaderMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
-pub struct DistributedSessionBuilderContext {
-    pub runtime_env: Arc<RuntimeEnv>,
+#[derive(Debug, Default)]
+pub struct WorkerQueryContext {
+    pub builder: SessionStateBuilder,
     pub headers: HeaderMap,
 }
 
-/// Trait called by the Arrow Flight endpoint that handles distributed parts of a DataFusion
-/// plan for building a DataFusion's [SessionState].
+/// builds a DataFusion's [SessionState] in each query issued to a worker.
 #[async_trait]
-pub trait DistributedSessionBuilder {
+pub trait WorkerSessionBuilder {
     /// Builds a custom [SessionState] scoped to a single ArrowFlight gRPC call, allowing the
     /// users to provide a customized DataFusion session with things like custom extension codecs,
     /// custom physical optimization rules, UDFs, UDAFs, config extensions, etc...
@@ -28,7 +26,7 @@ pub trait DistributedSessionBuilder {
     /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-    /// # use datafusion_distributed::{DistributedExt, DistributedSessionBuilder, DistributedSessionBuilderContext};
+    /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
@@ -47,69 +45,64 @@ pub trait DistributedSessionBuilder {
     /// struct CustomSessionBuilder;
     ///
     /// #[async_trait]
-    /// impl DistributedSessionBuilder for CustomSessionBuilder {
-    ///     async fn build_session_state(&self, ctx: DistributedSessionBuilderContext) -> Result<SessionState, DataFusionError> {
-    ///         let mut builder = SessionStateBuilder::new()
-    ///             .with_runtime_env(ctx.runtime_env.clone())
-    ///             .with_default_features();
-    ///         builder.set_distributed_user_codec(CustomExecCodec);
-    ///         // Add your UDFs, optimization rules, etc...
-    ///
-    ///         Ok(builder.build())
+    /// impl WorkerSessionBuilder for CustomSessionBuilder {
+    ///     async fn build_session_state(&self, ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    ///         Ok(ctx
+    ///             .builder
+    ///             .with_distributed_user_codec(CustomExecCodec)
+    ///             // Add your UDFs, optimization rules, etc...
+    ///             .build())
     ///     }
     /// }
     /// ```
     async fn build_session_state(
         &self,
-        ctx: DistributedSessionBuilderContext,
+        ctx: WorkerQueryContext,
     ) -> Result<SessionState, DataFusionError>;
 }
 
-/// Noop implementation of the [DistributedSessionBuilder]. Used by default if no [DistributedSessionBuilder] is provided
-/// while building the Arrow Flight endpoint.
+/// Noop implementation of the [WorkerSessionBuilder]. Used by default if no [WorkerSessionBuilder]
+/// is provided while building the Worker.
 #[derive(Debug, Clone)]
 pub struct DefaultSessionBuilder;
 
 #[async_trait]
-impl DistributedSessionBuilder for DefaultSessionBuilder {
+impl WorkerSessionBuilder for DefaultSessionBuilder {
     async fn build_session_state(
         &self,
-        ctx: DistributedSessionBuilderContext,
+        ctx: WorkerQueryContext,
     ) -> Result<SessionState, DataFusionError> {
-        Ok(SessionStateBuilder::new()
-            .with_runtime_env(ctx.runtime_env.clone())
-            .with_default_features()
-            .build())
+        Ok(ctx.builder.build())
     }
 }
 
-/// Implementation of [DistributedSessionBuilder] for any async function that returns a [Result]
+/// Implementation of [WorkerSessionBuilder] for any async function that returns a [Result]
 #[async_trait]
-impl<F, Fut> DistributedSessionBuilder for F
+impl<F, Fut> WorkerSessionBuilder for F
 where
-    F: Fn(DistributedSessionBuilderContext) -> Fut + Send + Sync + 'static,
+    F: Fn(WorkerQueryContext) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<SessionState, DataFusionError>> + Send + 'static,
 {
     async fn build_session_state(
         &self,
-        ctx: DistributedSessionBuilderContext,
+        ctx: WorkerQueryContext,
     ) -> Result<SessionState, DataFusionError> {
         self(ctx).await
     }
 }
 
-pub trait MappedDistributedSessionBuilderExt {
-    /// Maps an existing [DistributedSessionBuilder] allowing to add further extensions
+pub trait MappedWorkerSessionBuilderExt {
+    /// Maps an existing [WorkerSessionBuilder] allowing to add further extensions
     /// to its already built [SessionStateBuilder].
     ///
-    /// Useful if there's already a [DistributedSessionBuilder] that needs to be extended
+    /// Useful if there's already a [WorkerSessionBuilder] that needs to be extended
     /// with further capabilities.
     ///
     /// Example:
     ///
     /// ```rust
     /// # use datafusion::execution::SessionStateBuilder;
-    /// # use datafusion_distributed::{DefaultSessionBuilder, MappedDistributedSessionBuilderExt};
+    /// # use datafusion_distributed::{DefaultSessionBuilder, MappedWorkerSessionBuilderExt};
     ///
     /// let session_builder = DefaultSessionBuilder
     ///     .map(|b: SessionStateBuilder| {
@@ -117,30 +110,30 @@ pub trait MappedDistributedSessionBuilderExt {
     ///         Ok(b.build())
     ///     });
     /// ```
-    fn map<F>(self, f: F) -> MappedDistributedSessionBuilder<Self, F>
+    fn map<F>(self, f: F) -> MappedWorkerSessionBuilder<Self, F>
     where
         Self: Sized,
         F: Fn(SessionStateBuilder) -> Result<SessionState, DataFusionError>;
 }
 
-impl<T: DistributedSessionBuilder> MappedDistributedSessionBuilderExt for T {
-    fn map<F>(self, f: F) -> MappedDistributedSessionBuilder<Self, F>
+impl<T: WorkerSessionBuilder> MappedWorkerSessionBuilderExt for T {
+    fn map<F>(self, f: F) -> MappedWorkerSessionBuilder<Self, F>
     where
         Self: Sized,
     {
-        MappedDistributedSessionBuilder {
+        MappedWorkerSessionBuilder {
             inner: self,
             f: Arc::new(f),
         }
     }
 }
 
-pub struct MappedDistributedSessionBuilder<T, F> {
+pub struct MappedWorkerSessionBuilder<T, F> {
     inner: T,
     f: Arc<F>,
 }
 
-impl<T: Clone, F> Clone for MappedDistributedSessionBuilder<T, F> {
+impl<T: Clone, F> Clone for MappedWorkerSessionBuilder<T, F> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -150,14 +143,14 @@ impl<T: Clone, F> Clone for MappedDistributedSessionBuilder<T, F> {
 }
 
 #[async_trait]
-impl<T, F> DistributedSessionBuilder for MappedDistributedSessionBuilder<T, F>
+impl<T, F> WorkerSessionBuilder for MappedWorkerSessionBuilder<T, F>
 where
-    T: DistributedSessionBuilder + Send + Sync + 'static,
+    T: WorkerSessionBuilder + Send + Sync + 'static,
     F: Fn(SessionStateBuilder) -> Result<SessionState, DataFusionError> + Send + Sync,
 {
     async fn build_session_state(
         &self,
-        ctx: DistributedSessionBuilderContext,
+        ctx: WorkerQueryContext,
     ) -> Result<SessionState, DataFusionError> {
         let state = self.inner.build_session_state(ctx).await?;
         let builder = SessionStateBuilder::new_from_existing(state);
