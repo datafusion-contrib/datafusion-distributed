@@ -3,18 +3,22 @@ use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{Count, Gauge, Label, Time, Timestamp};
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
+use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, RatioMetrics};
 use std::borrow::Cow;
 use std::sync::Arc;
 
 /// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricProto {
-    #[prost(oneof = "MetricValueProto", tags = "1,2,3,4,5,6,7,8,9,10,11")]
+    #[prost(
+        oneof = "MetricValueProto",
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+    )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
-    #[prost(message, repeated, tag = "12")]
+    #[prost(message, repeated, tag = "16")]
     pub labels: Vec<ProtoLabel>,
-    #[prost(uint64, optional, tag = "13")]
+    #[prost(uint64, optional, tag = "17")]
     pub partition: Option<u64>,
 }
 
@@ -63,6 +67,14 @@ pub enum MetricValueProto {
     StartTimestamp(StartTimestamp),
     #[prost(message, tag = "11")]
     EndTimestamp(EndTimestamp),
+    #[prost(message, tag = "12")]
+    OutputBytes(OutputBytes),
+    #[prost(message, tag = "13")]
+    OutputBatches(OutputBatches),
+    #[prost(message, tag = "14")]
+    PruningMetrics(NamedPruningMetrics),
+    #[prost(message, tag = "15")]
+    Ratio(NamedRatio),
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -135,6 +147,38 @@ pub struct StartTimestamp {
 pub struct EndTimestamp {
     #[prost(int64, optional, tag = "1")]
     pub value: Option<i64>,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct OutputBytes {
+    #[prost(uint64, tag = "1")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct OutputBatches {
+    #[prost(uint64, tag = "1")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct NamedPruningMetrics {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub pruned: u64,
+    #[prost(uint64, tag = "3")]
+    pub matched: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct NamedRatio {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub part: u64,
+    #[prost(uint64, tag = "3")]
+    pub total: u64,
 }
 
 /// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
@@ -288,10 +332,34 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             labels,
         }),
         MetricValue::Custom { .. } => internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED),
-        MetricValue::OutputBytes(_) | MetricValue::OutputBatches(_) | MetricValue::PruningMetrics { .. } | MetricValue::Ratio { .. } => {
-            // TODO: Support these metrics
-            internal_err!("{}", UNSUPPORTED_METRICS)
-        }
+        MetricValue::OutputBytes(count) => Ok(MetricProto {
+            metric: Some(MetricValueProto::OutputBytes(OutputBytes { value: count.value() as u64 })),
+            partition,
+            labels,
+        }),
+        MetricValue::OutputBatches(count) => Ok(MetricProto {
+            metric: Some(MetricValueProto::OutputBatches(OutputBatches { value: count.value() as u64 })),
+            partition,
+            labels,
+        }),
+        MetricValue::PruningMetrics { name, pruning_metrics } => Ok(MetricProto {
+            metric: Some(MetricValueProto::PruningMetrics(NamedPruningMetrics {
+                name: name.to_string(),
+                pruned: pruning_metrics.pruned() as u64,
+                matched: pruning_metrics.matched() as u64,
+            })),
+            partition,
+            labels,
+        }),
+        MetricValue::Ratio { name, ratio_metrics } => Ok(MetricProto {
+            metric: Some(MetricValueProto::Ratio(NamedRatio {
+                name: name.to_string(),
+                part: ratio_metrics.part() as u64,
+                total: ratio_metrics.total() as u64,
+            })),
+            partition,
+            labels,
+        }),
     }
 }
 
@@ -417,6 +485,50 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
+        Some(MetricValueProto::OutputBytes(output_bytes)) => {
+            let count = Count::new();
+            count.add(output_bytes.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::OutputBytes(count),
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::OutputBatches(output_batches)) => {
+            let count = Count::new();
+            count.add(output_batches.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::OutputBatches(count),
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::PruningMetrics(named_pruning)) => {
+            let pruning_metrics = DfPruningMetrics::new();
+            pruning_metrics.add_pruned(named_pruning.pruned as usize);
+            pruning_metrics.add_matched(named_pruning.matched as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::PruningMetrics {
+                    name: Cow::Owned(named_pruning.name),
+                    pruning_metrics,
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::Ratio(named_ratio)) => {
+            let ratio_metrics = RatioMetrics::new();
+            ratio_metrics.set_part(named_ratio.part as usize);
+            ratio_metrics.set_total(named_ratio.total as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Ratio {
+                    name: Cow::Owned(named_ratio.name),
+                    ratio_metrics,
+                },
+                partition,
+                labels,
+            )))
+        }
         None => internal_err!("proto metric is missing the metric field"),
     }
 }
@@ -427,6 +539,7 @@ mod tests {
     use datafusion::physical_plan::metrics::CustomMetricValue;
     use datafusion::physical_plan::metrics::{Count, Gauge, Label, MetricsSet, Time, Timestamp};
     use datafusion::physical_plan::metrics::{Metric, MetricValue};
+    use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, RatioMetrics};
     use std::borrow::Cow;
     use std::sync::Arc;
 
@@ -533,6 +646,40 @@ mod tests {
                         orig.value().map(|dt| dt.timestamp_nanos_opt().unwrap()),
                         rt.value().map(|dt| dt.timestamp_nanos_opt().unwrap())
                     );
+                }
+                (MetricValue::OutputBytes(orig), MetricValue::OutputBytes(rt)) => {
+                    assert_eq!(orig.value(), rt.value());
+                }
+                (MetricValue::OutputBatches(orig), MetricValue::OutputBatches(rt)) => {
+                    assert_eq!(orig.value(), rt.value());
+                }
+                (
+                    MetricValue::PruningMetrics {
+                        name: n1,
+                        pruning_metrics: p1,
+                    },
+                    MetricValue::PruningMetrics {
+                        name: n2,
+                        pruning_metrics: p2,
+                    },
+                ) => {
+                    assert_eq!(n1.as_ref(), n2.as_ref());
+                    assert_eq!(p1.pruned(), p2.pruned());
+                    assert_eq!(p1.matched(), p2.matched());
+                }
+                (
+                    MetricValue::Ratio {
+                        name: n1,
+                        ratio_metrics: r1,
+                    },
+                    MetricValue::Ratio {
+                        name: n2,
+                        ratio_metrics: r2,
+                    },
+                ) => {
+                    assert_eq!(n1.as_ref(), n2.as_ref());
+                    assert_eq!(r1.part(), r2.part());
+                    assert_eq!(r1.total(), r2.total());
                 }
                 _ => panic!(
                     "mismatched metric types in roundtrip test {}: {:?} vs {:?}",
@@ -878,5 +1025,69 @@ mod tests {
             roundtrip_result.is_ok(),
             "should successfully roundtrip default timestamp"
         );
+    }
+
+    #[test]
+    fn test_output_bytes_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        let count = Count::new();
+        count.add(8192);
+        let labels = vec![Label::new("source", "parquet")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::OutputBytes(count),
+            Some(0),
+            labels,
+        )));
+        test_roundtrip_helper(metrics_set, "output_bytes");
+    }
+
+    #[test]
+    fn test_output_batches_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        let count = Count::new();
+        count.add(42);
+        let labels = vec![Label::new("operator", "filter")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::OutputBatches(count),
+            Some(1),
+            labels,
+        )));
+        test_roundtrip_helper(metrics_set, "output_batches");
+    }
+
+    #[test]
+    fn test_pruning_metrics_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        let pruning_metrics = DfPruningMetrics::new();
+        pruning_metrics.add_pruned(100);
+        pruning_metrics.add_matched(50);
+        let labels = vec![Label::new("predicate", "range")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::PruningMetrics {
+                name: Cow::Borrowed("row_groups"),
+                pruning_metrics,
+            },
+            Some(2),
+            labels,
+        )));
+        test_roundtrip_helper(metrics_set, "pruning_metrics");
+    }
+
+    #[test]
+    fn test_ratio_metrics_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        let ratio_metrics = RatioMetrics::new();
+        ratio_metrics.set_part(75);
+        ratio_metrics.set_total(100);
+        let labels = vec![Label::new("type", "cache_hit")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::Ratio {
+                name: Cow::Borrowed("cache_hit_ratio"),
+                ratio_metrics,
+            },
+            Some(3),
+            labels,
+        )));
+        test_roundtrip_helper(metrics_set, "ratio_metrics");
     }
 }
