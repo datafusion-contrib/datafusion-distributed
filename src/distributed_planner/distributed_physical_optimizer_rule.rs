@@ -1,4 +1,5 @@
 use crate::common::require_one_child;
+use crate::distributed_planner::batch_coalescing_below_network_boundaries;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
@@ -6,11 +7,9 @@ use crate::{
     DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec, TaskEstimator,
 };
-use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::fmt::Debug;
@@ -64,7 +63,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         if stage_id == 1 {
             return Ok(original);
         }
-        let distributed = push_down_batch_coalescing(distributed, cfg)?;
+        let distributed = batch_coalescing_below_network_boundaries(distributed, cfg)?;
 
         Ok(Arc::new(DistributedExec::new(distributed)))
     }
@@ -166,45 +165,6 @@ fn distribute_plan(
             Ok(node)
         }
     }
-}
-
-/// Rearranges the [CoalesceBatchesExec] nodes in the plan so that they are placed right below
-/// the network boundaries, so that fewer but bigger record batches are sent over the wire across
-/// stages.
-fn push_down_batch_coalescing(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-
-    let transformed = plan.transform_up(|plan| {
-        let Some(node) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() else {
-            return Ok(Transformed::no(plan));
-        };
-
-        // Network shuffles imply partitioning each data stream in a lot of different partitions,
-        // which means that each resulting stream might contain tiny batches. It's important to
-        // have decent sized batches here as this will ultimately be sent over the wire, and the
-        // penalty there for sending many tiny batches instead of few big ones is big.
-        // TODO: After https://github.com/apache/datafusion/issues/18782 is shipped, the batching
-        //  will be integrated in RepartitionExec itself, so we will not need to add a
-        //  CoalesceBatchesExec, we just need to tell RepartitionExec to output a
-        //  `d_cfg.shuffle_batch_size` batch size.
-        //  Tracked by https://github.com/datafusion-contrib/datafusion-distributed/issues/243
-        let Some(shuffle) = node.input().as_any().downcast_ref::<NetworkShuffleExec>() else {
-            return Ok(Transformed::no(plan));
-        };
-        // First the child of the NetworkShuffleExec.
-        let plan = shuffle.input_stage.plan.decoded()?;
-        // Then a CoalesceBatchesExec for sending bigger chunks over the wire.
-        let plan = CoalesceBatchesExec::new(Arc::clone(plan), d_cfg.shuffle_batch_size);
-        // Then the NetworkShuffleExec itself with the CoalesceBatchesExec as a child.
-        let plan = Arc::clone(node.input()).with_new_children(vec![Arc::new(plan)])?;
-
-        Ok(Transformed::yes(plan))
-    })?;
-
-    Ok(transformed.data)
 }
 
 #[cfg(test)]

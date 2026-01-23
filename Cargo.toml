@@ -21,6 +21,7 @@ datafusion = { workspace = true, features = [
 datafusion-proto = { workspace = true }
 arrow-flight = "57.1.0"
 arrow-select = "57.1.0"
+arrow-ipc = { version = "57.1.0", features = ["zstd"] }
 async-trait = "0.1.89"
 tokio = { version = "1.48", features = ["full"] }
 tonic = { version = "0.14.1", features = ["transport"] }

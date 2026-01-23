@@ -126,7 +126,7 @@ pub(crate) fn base_session_builder(
         broadcast_joins: broadcast_enabled,
         ..Default::default()
     };
-    config.set_distributed_option_extension(d_cfg).unwrap();
+    config.set_distributed_option_extension(d_cfg);
 
     SessionStateBuilder::new()
         .with_default_features()

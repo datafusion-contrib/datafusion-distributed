@@ -45,6 +45,9 @@ extensions_options! {
         /// use broadcasting like checking build side size.
         /// For now, broadcasting all CollectLeft joins is not always beneficial.
         pub broadcast_joins: bool, default = false
+        /// The compression used for sending data over the network between workers.
+        /// It can be set to either `zstd`, `lz4` or `none`.
+        pub compression: String, default = "lz4".to_string()
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
