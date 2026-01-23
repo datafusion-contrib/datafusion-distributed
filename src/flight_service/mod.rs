@@ -11,3 +11,5 @@ pub use session_builder::{
     WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use worker::Worker;
+
+pub use do_get::TaskData;

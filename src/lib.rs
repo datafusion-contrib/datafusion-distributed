@@ -25,8 +25,8 @@ pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
 };
 pub use flight_service::{
-    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, Worker,
-    WorkerQueryContext, WorkerSessionBuilder,
+    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
+    Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use networking::{
@@ -39,6 +39,6 @@ pub use stage::{
 };
 
 pub use observability::{
-    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceServer, PingRequest,
-    PingResponse,
+    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceImpl,
+    ObservabilityServiceServer, PingRequest, PingResponse,
 };

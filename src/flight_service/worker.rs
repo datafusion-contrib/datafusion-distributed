@@ -1,8 +1,8 @@
-use crate::DefaultSessionBuilder;
 use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
+use crate::{DefaultSessionBuilder, ObservabilityServiceImpl};
 use crate::{ObservabilityService, PingRequest, PingResponse};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
@@ -123,6 +123,10 @@ impl Worker {
         FlightServiceServer::new(self)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
+    }
+
+    pub fn observability_service(&self) -> ObservabilityServiceImpl {
+        ObservabilityServiceImpl::new(self.task_data_entries.clone())
     }
 }
 
