@@ -38,6 +38,10 @@ struct Cmd {
     /// The bucket name.
     #[structopt(long, default_value = "datafusion-distributed-benchmarks")]
     bucket: String,
+
+    // Turns broadcast joins on.
+    #[structopt(long)]
+    broadcast_joins: bool,
 }
 
 #[tokio::main]
@@ -72,6 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_broadcast_joins(cmd.broadcast_joins)?
         .build();
     let ctx = SessionContext::from(state);
 
