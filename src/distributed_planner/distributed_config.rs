@@ -39,6 +39,12 @@ extensions_options! {
         /// Propagate collected metrics from all nodes in the plan across network boundaries
         /// so that they can be reconstructed on the head node of the plan.
         pub collect_metrics: bool, default = true
+        /// Enable broadcast joins for CollectLeft hash joins. When enabled, the build side of
+        /// a CollectLeft join is broadcast to all consumer tasks.
+        /// TODO: This option exists temporarily until we become smarter about when to actually
+        /// use broadcasting like checking build side size.
+        /// For now, broadcasting all CollectLeft joins is not always beneficial.
+        pub broadcast_joins: bool, default = false
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()

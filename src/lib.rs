@@ -22,7 +22,8 @@ pub use distributed_planner::{
     TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
-    DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
+    BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
+    PartitionIsolatorExec,
 };
 pub use flight_service::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,

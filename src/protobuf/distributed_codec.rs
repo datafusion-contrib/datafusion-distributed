@@ -1,5 +1,7 @@
 use super::get_distributed_user_codecs;
-use crate::execution_plans::{ChildrenIsolatorUnionExec, NetworkCoalesceExec};
+use crate::execution_plans::{
+    BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
+};
 use crate::flight_service::WorkerConnectionPool;
 use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
 use crate::{DistributedTaskContext, NetworkBoundary};
@@ -154,6 +156,46 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     n_tasks as usize,
                 )))
             }
+            DistributedExecNode::NetworkBroadcast(NetworkBroadcastExecProto {
+                schema,
+                partitioning,
+                input_stage,
+            }) => {
+                let schema: Schema = schema
+                    .as_ref()
+                    .map(|s| s.try_into())
+                    .ok_or(proto_error("NetworkBroadcastExec is missing schema"))??;
+
+                let partitioning = parse_protobuf_partitioning(
+                    partitioning.as_ref(),
+                    ctx,
+                    &schema,
+                    &DistributedCodec {},
+                )?
+                .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
+
+                Ok(Arc::new(new_network_broadcast_exec(
+                    partitioning,
+                    Arc::new(schema),
+                    parse_stage_proto(input_stage, inputs)?,
+                )))
+            }
+            DistributedExecNode::Broadcast(BroadcastExecProto {
+                consumer_task_count,
+            }) => {
+                if inputs.len() != 1 {
+                    return Err(proto_error(format!(
+                        "BroadcastExec expects exactly one child, got {}",
+                        inputs.len()
+                    )));
+                }
+
+                let child = inputs.first().unwrap();
+                Ok(Arc::new(BroadcastExec::new(
+                    child.clone(),
+                    consumer_task_count as usize,
+                )))
+            }
             DistributedExecNode::ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto {
                 partition_count,
                 task_idx_map,
@@ -250,6 +292,31 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<NetworkBroadcastExec>() {
+            let inner = NetworkBroadcastExecProto {
+                schema: Some(node.schema().try_into()?),
+                partitioning: Some(serialize_partitioning(
+                    node.properties().output_partitioning(),
+                    &DistributedCodec {},
+                )?),
+                input_stage: Some(encode_stage_proto(node.input_stage())?),
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::NetworkBroadcast(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<BroadcastExec>() {
+            let inner = BroadcastExecProto {
+                consumer_task_count: node.consumer_task_count() as u64,
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::Broadcast(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else if let Some(node) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
             let inner = ChildrenIsolatorUnionExecProto {
                 partition_count: node.properties().output_partitioning().partition_count() as u64,
@@ -332,7 +399,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -346,6 +413,10 @@ pub enum DistributedExecNode {
     PartitionIsolator(PartitionIsolatorExecProto),
     #[prost(message, tag = "4")]
     ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto),
+    #[prost(message, tag = "5")]
+    NetworkBroadcast(NetworkBroadcastExecProto),
+    #[prost(message, tag = "6")]
+    Broadcast(BroadcastExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -428,6 +499,40 @@ fn new_network_coalesce_tasks_exec(
     input_stage: Stage,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec {
+        properties: PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            partitioning,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ),
+        worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
+        input_stage,
+        metrics_collection: Default::default(),
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NetworkBroadcastExecProto {
+    #[prost(message, optional, tag = "1")]
+    schema: Option<protobuf::Schema>,
+    #[prost(message, optional, tag = "2")]
+    partitioning: Option<protobuf::Partitioning>,
+    #[prost(message, optional, tag = "3")]
+    input_stage: Option<StageProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BroadcastExecProto {
+    #[prost(uint64, tag = "1")]
+    pub consumer_task_count: u64,
+}
+
+fn new_network_broadcast_exec(
+    partitioning: Partitioning,
+    schema: SchemaRef,
+    input_stage: Stage,
+) -> NetworkBroadcastExec {
+    NetworkBroadcastExec {
         properties: PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
