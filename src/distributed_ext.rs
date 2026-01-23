@@ -566,59 +566,59 @@ impl DistributedExt for SessionConfig {
     }
 
     delegate! {
-            to self {
-                #[call(set_distributed_option_extension)]
-                #[expr($;self)]
-                fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
+        to self {
+            #[call(set_distributed_option_extension)]
+            #[expr($;self)]
+            fn with_distributed_option_extension<T: ConfigExtension + Default>(mut self, t: T) -> Self;
 
-                #[call(set_distributed_option_extension_from_headers)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_option_extension_from_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_option_extension_from_headers<T: ConfigExtension + Default>(mut self, headers: &HeaderMap) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_user_codec)]
-                #[expr($;self)]
-                fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
+            #[call(set_distributed_user_codec)]
+            #[expr($;self)]
+            fn with_distributed_user_codec<T: PhysicalExtensionCodec + 'static>(mut self, codec: T) -> Self;
 
-                #[call(set_distributed_user_codec_arc)]
-                #[expr($;self)]
-                fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
+            #[call(set_distributed_user_codec_arc)]
+            #[expr($;self)]
+            fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-                #[call(set_distributed_worker_resolver)]
-                #[expr($;self)]
-                fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            #[call(set_distributed_worker_resolver)]
+            #[expr($;self)]
+            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-                #[call(set_distributed_channel_resolver)]
-                #[expr($;self)]
-                fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            #[call(set_distributed_channel_resolver)]
+            #[expr($;self)]
+            fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-                #[call(set_distributed_task_estimator)]
-                #[expr($;self)]
-                fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+            #[call(set_distributed_task_estimator)]
+            #[expr($;self)]
+            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
-                #[call(set_distributed_files_per_task)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_files_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_cardinality_effect_task_scale_factor)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_cardinality_effect_task_scale_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_metrics_collection)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_metrics_collection)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_metrics_collection(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_children_isolator_unions)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_children_isolator_unions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_broadcast_joins)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-                #[call(set_distributed_compression)]
-                #[expr($?;Ok(self))]
-                fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
-            }
+            #[call(set_distributed_compression)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+        }
     }
 }
 
