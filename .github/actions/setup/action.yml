@@ -20,11 +20,6 @@ runs:
         echo $HOME
         echo ${{ runner.os }}
 
-    - name: Install protoc
-      uses: arduino/setup-protoc@v3
-      with:
-        version: "27.1"
-
     - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
