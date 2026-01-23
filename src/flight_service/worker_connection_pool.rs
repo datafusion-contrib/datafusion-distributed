@@ -420,3 +420,82 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn elapsed_compute_future() {
+        async fn cheap() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        async fn expensive() {
+            let mut _count = 0f64;
+            for i in 0..100000 {
+                tokio::task::yield_now().await;
+                _count /= i as f64
+            }
+        }
+
+        let cheap_time = Time::new();
+        cheap().with_elapsed_compute(cheap_time.clone()).await;
+        println!("cheap future: {}", cheap_time.value());
+
+        let expensive_time = Time::new();
+        expensive()
+            .with_elapsed_compute(expensive_time.clone())
+            .await;
+        println!("expensive future: {}", expensive_time.value());
+
+        assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[tokio::test]
+    async fn elapsed_compute_stream() {
+        fn cheap() -> impl Stream<Item = i64> {
+            futures::stream::unfold(0i64, |state| async move {
+                if state < 10 {
+                    tokio::time::sleep(Duration::from_micros(10)).await;
+                    Some((state, state + 1))
+                } else {
+                    None
+                }
+            })
+        }
+
+        fn expensive() -> impl Stream<Item = i64> {
+            futures::stream::unfold(0i64, |state| async move {
+                if state < 10 {
+                    // Simulate expensive computation
+                    let mut _count = 0f64;
+                    for i in 1..100000 {
+                        _count += (i as f64).sqrt();
+                    }
+                    tokio::task::yield_now().await;
+                    Some((state, state + 1))
+                } else {
+                    None
+                }
+            })
+        }
+
+        let cheap_time = Time::new();
+        cheap()
+            .with_elapsed_compute(cheap_time.clone())
+            .collect::<Vec<_>>()
+            .await;
+        println!("cheap future: {}", cheap_time.value());
+
+        let expensive_time = Time::new();
+        expensive()
+            .with_elapsed_compute(expensive_time.clone())
+            .collect::<Vec<_>>()
+            .await;
+        println!("expensive future: {}", expensive_time.value());
+
+        assert!(expensive_time.value() > cheap_time.value());
+    }
+}
