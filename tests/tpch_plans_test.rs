@@ -748,22 +748,22 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_suppkey@0 ASC NULLS LAST]
-        │   [Stage 6] => NetworkCoalesceExec: output_partitions=12, input_tasks=2
+        │   [Stage 6] => NetworkCoalesceExec: output_partitions=24, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 6 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
+          ┌───── Stage 6 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
           │ SortExec: expr=[s_suppkey@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(max(revenue0.total_revenue)@0, total_revenue@4)], projection=[s_suppkey@1, s_name@2, s_address@3, s_phone@4, total_revenue@5]
           │     CoalescePartitionsExec
-          │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=2, input_tasks=1
+          │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=4, input_tasks=1
           │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(s_suppkey@0, supplier_no@0)], projection=[s_suppkey@0, s_name@1, s_address@2, s_phone@3, total_revenue@5]
           │       CoalescePartitionsExec
-          │         [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=8, input_tasks=4
+          │         [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
           │       ProjectionExec: expr=[l_suppkey@0 as supplier_no, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as total_revenue]
           │         AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
           │           [Stage 5] => NetworkShuffleExec: output_partitions=6, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── Tasks: t0:[p0..p1] 
-            │ BroadcastExec: input_partitions=1, consumer_tasks=2, output_partitions=2
+            ┌───── Stage 3 ── Tasks: t0:[p0..p3] 
+            │ BroadcastExec: input_partitions=1, consumer_tasks=4, output_partitions=4
             │   AggregateExec: mode=Final, gby=[], aggr=[max(revenue0.total_revenue)]
             │     CoalescePartitionsExec
             │       [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=2
@@ -781,13 +781,13 @@ mod tests {
                 │       PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3] 
                 │         DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/lineitem/1.parquet], [/testdata/tpch/plan_sf0.02/lineitem/10.parquet], [/testdata/tpch/plan_sf0.02/lineitem/11.parquet], [/testdata/tpch/plan_sf0.02/lineitem/12.parquet], [/testdata/tpch/plan_sf0.02/lineitem/13.parquet], ...]}, projection=[l_suppkey, l_extendedprice, l_discount, l_shipdate], file_type=parquet, predicate=l_shipdate@10 >= 1996-01-01 AND l_shipdate@10 < 1996-04-01, pruning_predicate=l_shipdate_null_count@1 != row_count@2 AND l_shipdate_max@0 >= 1996-01-01 AND l_shipdate_null_count@1 != row_count@2 AND l_shipdate_min@3 < 1996-04-01, required_guarantees=[]
                 └──────────────────────────────────────────────────
-            ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=4, consumer_tasks=2, output_partitions=8
+            ┌───── Stage 4 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+            │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
             │   PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3] 
             │     DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/supplier/1.parquet], [/testdata/tpch/plan_sf0.02/supplier/10.parquet], [/testdata/tpch/plan_sf0.02/supplier/11.parquet], [/testdata/tpch/plan_sf0.02/supplier/12.parquet], [/testdata/tpch/plan_sf0.02/supplier/13.parquet], ...]}, projection=[s_suppkey, s_name, s_address, s_phone], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 5 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
-            │ RepartitionExec: partitioning=Hash([l_suppkey@0], 12), input_partitions=4
+            ┌───── Stage 5 ── Tasks: t0:[p0..p23] t1:[p0..p23] t2:[p0..p23] t3:[p0..p23] 
+            │ RepartitionExec: partitioning=Hash([l_suppkey@0], 24), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
             │     FilterExec: l_shipdate@3 >= 1996-01-01 AND l_shipdate@3 < 1996-04-01, projection=[l_suppkey@0, l_extendedprice@1, l_discount@2]
             │       PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3] 
@@ -854,19 +854,19 @@ mod tests {
         │ ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
         │     CoalescePartitionsExec
-        │       [Stage 4] => NetworkCoalesceExec: output_partitions=18, input_tasks=3
+        │       [Stage 4] => NetworkCoalesceExec: output_partitions=24, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 4 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
+          ┌───── Stage 4 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
           │ AggregateExec: mode=Partial, gby=[], aggr=[sum(lineitem.l_extendedprice)]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p_partkey@2, l_partkey@1)], filter=CAST(l_quantity@0 AS Decimal128(30, 15)) < Float64(0.2) * avg(lineitem.l_quantity)@1, projection=[l_extendedprice@1]
           │     CoalescePartitionsExec
-          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=12, input_tasks=4
+          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
           │     ProjectionExec: expr=[CAST(0.2 * CAST(avg(lineitem.l_quantity)@1 AS Float64) AS Decimal128(30, 15)) as Float64(0.2) * avg(lineitem.l_quantity), l_partkey@0 as l_partkey]
           │       AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
           │         [Stage 3] => NetworkShuffleExec: output_partitions=6, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p11] t1:[p12..p23] t2:[p24..p35] t3:[p36..p47] 
-            │ BroadcastExec: input_partitions=4, consumer_tasks=3, output_partitions=12
+            ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+            │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
             │   ProjectionExec: expr=[l_quantity@1 as l_quantity, l_extendedprice@2 as l_extendedprice, p_partkey@0 as p_partkey]
             │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p_partkey@0, l_partkey@0)], projection=[p_partkey@0, l_quantity@2, l_extendedprice@3]
             │       CoalescePartitionsExec
@@ -880,8 +880,8 @@ mod tests {
               │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3] 
               │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/part/1.parquet], [/testdata/tpch/plan_sf0.02/part/10.parquet], [/testdata/tpch/plan_sf0.02/part/11.parquet], [/testdata/tpch/plan_sf0.02/part/12.parquet], [/testdata/tpch/plan_sf0.02/part/13.parquet], ...]}, projection=[p_partkey, p_brand, p_container], file_type=parquet, predicate=p_brand@3 = Brand#23 AND p_container@6 = MED BOX, pruning_predicate=p_brand_null_count@2 != row_count@3 AND p_brand_min@0 <= Brand#23 AND Brand#23 <= p_brand_max@1 AND p_container_null_count@6 != row_count@3 AND p_container_min@4 <= MED BOX AND MED BOX <= p_container_max@5, required_guarantees=[p_brand in (Brand#23), p_container in (MED BOX)]
               └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── Tasks: t0:[p0..p17] t1:[p0..p17] t2:[p0..p17] t3:[p0..p17] 
-            │ RepartitionExec: partitioning=Hash([l_partkey@0], 18), input_partitions=4
+            ┌───── Stage 3 ── Tasks: t0:[p0..p23] t1:[p0..p23] t2:[p0..p23] t3:[p0..p23] 
+            │ RepartitionExec: partitioning=Hash([l_partkey@0], 24), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
             │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3] 
             │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/lineitem/1.parquet], [/testdata/tpch/plan_sf0.02/lineitem/10.parquet], [/testdata/tpch/plan_sf0.02/lineitem/11.parquet], [/testdata/tpch/plan_sf0.02/lineitem/12.parquet], [/testdata/tpch/plan_sf0.02/lineitem/13.parquet], ...]}, projection=[l_partkey, l_quantity], file_type=parquet, predicate=DynamicFilter [ empty ]

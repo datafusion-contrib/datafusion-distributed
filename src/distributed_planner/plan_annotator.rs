@@ -203,18 +203,6 @@ fn _annotate_plan(
         };
     }
 
-    let is_collect_left_join = plan
-        .as_any()
-        .downcast_ref::<HashJoinExec>()
-        .is_some_and(|node| node.mode == PartitionMode::CollectLeft);
-    let build_is_broadcast = is_collect_left_join
-        && plan.children().first().is_some_and(|child| {
-            if let Some(coalesce) = child.as_any().downcast_ref::<CoalescePartitionsExec>() {
-                coalesce.input().as_any().is::<BroadcastExec>()
-            } else {
-                false
-            }
-        });
     let mut task_count = estimator
         .task_estimation(&plan, cfg)
         .map_or(Desired(1), |v| v.task_count);
@@ -235,16 +223,11 @@ fn _annotate_plan(
         // is explicitly enabled.
         task_count = Maximum(1);
     } else {
-        // For CollectLeft joins with a broadcast build side, ignore the build child so the
-        // probe side drives the stage size.
-        // The task count for this plan is decided by the biggest task count from the children unless
+        // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
         // nodes can only run in one task. If there is a subplan with a single node declaring that
         // it can only run in one task, all the rest of the nodes in the stage need to respect it.
-        for (idx, annotated_child) in annotated_children.iter().enumerate() {
-            if build_is_broadcast && idx == 0 {
-                continue;
-            }
+        for annotated_child in annotated_children.iter() {
             task_count = match (task_count, &annotated_child.task_count) {
                 (Desired(desired), Desired(child)) => Desired(desired.max(*child)),
                 (Maximum(max), Desired(_)) => Maximum(max),
@@ -425,6 +408,7 @@ mod tests {
     use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::filter::FilterExec;
     /* schema for the "weather" table
 
@@ -764,6 +748,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_broadcast_build_coalesce_caps_join_stage() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let annotated =
+            sql_to_annotated_broadcast_with_estimator(query, 3, BroadcastBuildCoalesceMaxEstimator)
+                .await;
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
+            [NetworkBoundary] Broadcast: task_count=Maximum(1)
+              BroadcastExec: task_count=Desired(1)
+                DataSourceExec: task_count=Desired(1)
+          DataSourceExec: task_count=Maximum(1)
+        ");
+    }
+
+    #[tokio::test]
     async fn test_broadcast_disabled_default() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
@@ -874,6 +878,33 @@ mod tests {
             _: &ConfigOptions,
         ) -> Option<TaskEstimation> {
             (self.f)(plan.as_ref())
+        }
+
+        fn scale_up_leaf_node(
+            &self,
+            _: &Arc<dyn ExecutionPlan>,
+            _: usize,
+            _: &ConfigOptions,
+        ) -> Option<Arc<dyn ExecutionPlan>> {
+            None
+        }
+    }
+
+    #[derive(Debug)]
+    struct BroadcastBuildCoalesceMaxEstimator;
+
+    impl TaskEstimator for BroadcastBuildCoalesceMaxEstimator {
+        fn task_estimation(
+            &self,
+            plan: &Arc<dyn ExecutionPlan>,
+            _: &ConfigOptions,
+        ) -> Option<TaskEstimation> {
+            let coalesce = plan.as_any().downcast_ref::<CoalescePartitionsExec>()?;
+            if coalesce.input().as_any().is::<BroadcastExec>() {
+                Some(TaskEstimation::maximum(1))
+            } else {
+                None
+            }
         }
 
         fn scale_up_leaf_node(
