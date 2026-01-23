@@ -1,5 +1,5 @@
+use datafusion_distributed::ObservabilityServiceClient;
 use datafusion_distributed::PingRequest;
-use datafusion_distributed::protobuf::observability::observability_service_client::ObservabilityServiceClient;
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 

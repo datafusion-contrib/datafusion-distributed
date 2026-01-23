@@ -3,8 +3,7 @@ use crate::common::ttl_map::{TTLMap, TTLMapConfig};
 use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_get::TaskData;
 use crate::protobuf::StageKey;
-use crate::protobuf::observability::observability_service_server::ObservabilityService;
-use crate::protobuf::observability::{PingRequest, PingResponse};
+use crate::{ObservabilityService, PingRequest, PingResponse};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -38,7 +37,7 @@ pub struct Worker {
 /// # Example
 ///
 /// ```
-/// # use datafusion_distributed::{ Worker, ObservabilityServiceServer,SharedWorker };
+/// # use datafusion_distributed::{ Worker, ObservabilityServiceServer, SharedWorker };
 /// # use arrow_flight::flight_service_server::FlightServiceServer;
 /// # use tonic::transport::Server;
 /// # use std::net::{ IpAddr, Ipv4Addr, SocketAddr };

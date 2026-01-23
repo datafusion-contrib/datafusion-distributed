@@ -10,7 +10,8 @@ mod stage;
 
 mod distributed_planner;
 mod networking;
-pub mod protobuf;
+mod observability;
+mod protobuf;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
@@ -24,8 +25,8 @@ pub use execution_plans::{
     DistributedExec, NetworkCoalesceExec, NetworkShuffleExec, PartitionIsolatorExec,
 };
 pub use flight_service::{
-    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, SharedWorker,
-    Worker, WorkerQueryContext, WorkerSessionBuilder,
+    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, Worker,
+    WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::rewrite_distributed_plan_with_metrics;
 pub use networking::{
@@ -37,7 +38,7 @@ pub use stage::{
     explain_analyze,
 };
 
-pub use crate::protobuf::observability::{
-    PingRequest, PingResponse, observability_service_client::ObservabilityServiceClient,
-    observability_service_server::ObservabilityServiceServer,
+pub use observability::{
+    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceServer, PingRequest,
+    PingResponse,
 };
