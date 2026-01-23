@@ -1,3 +1,0 @@
-# Build artifacts from the gen crate
-gen/target/
-gen/Cargo.lock
