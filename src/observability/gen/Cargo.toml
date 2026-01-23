@@ -1,5 +1,5 @@
-# [workspace]
-# # Empty workspace table to exclude this crate from parent workspace
+[workspace]
+# Empty workspace table to exclude this crate from parent workspace
 
 [package]
 name = "observability-gen"
