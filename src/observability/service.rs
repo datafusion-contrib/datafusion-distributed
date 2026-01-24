@@ -7,6 +7,7 @@ use tonic::{Request, Response, Status};
 
 use super::{ObservabilityService, PingRequest, PingResponse};
 
+#[allow(dead_code)] // TEMP: will be used in future implementations.
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
 }
