@@ -1,4 +1,5 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
+use crate::distributed_planner::children_isolator_union_split::children_isolator_union_split;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, plan_datafusion_err};
@@ -316,10 +317,18 @@ fn _annotate_plan(
             // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
             // determine which children to run and which to exclude depending on the task index in
             // which it's running.
-            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
-                plan.children().into_iter().cloned(),
-                annotation.children.iter().map(|v| v.task_count.as_usize()),
+            let task_idx_map = children_isolator_union_split(
+                annotation
+                    .children
+                    .iter()
+                    .map(|v| v.task_count.as_usize())
+                    .collect(),
                 task_count.as_usize(),
+            )?;
+
+            let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
+                plan.children().into_iter().cloned().collect(),
+                task_idx_map,
             )?;
             for children_and_tasks in c_i_union.task_idx_map.iter() {
                 for (child_i, task_ctx) in children_and_tasks {
