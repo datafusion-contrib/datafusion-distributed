@@ -13,6 +13,7 @@ mod tests {
     use tokio::sync::OnceCell;
 
     const PARTITIONS: usize = 6;
+    const BYTES_PROCESSED_PER_PARTITION: usize = 1024 * 1024;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
     const TPCH_DATA_PARTS: i32 = 16;
 
@@ -136,7 +137,9 @@ mod tests {
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let (d_ctx, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;
-        let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
+        let d_ctx = d_ctx
+            .with_distributed_bytes_processed_per_partition(BYTES_PROCESSED_PER_PARTITION)?
+            .with_distributed_broadcast_joins(true)?;
 
         let results_d = run_tpch_query(d_ctx, sql.clone()).await?;
         let results_s = run_tpch_query(SessionContext::new(), sql).await?;
