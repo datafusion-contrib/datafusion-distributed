@@ -23,7 +23,7 @@ const DEFAULT_DATA_SIZE_PER_COLUMN: usize = 50;
 ///
 /// Reference: Trino's PlanNodeStatsEstimate.getOutputSizeForSymbol()
 /// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/PlanNodeStatsEstimate.java#L89-L114
-pub(crate) fn bytes_per_row(schema: &SchemaRef) -> usize {
+pub(crate) fn calculate_bytes_per_row(schema: &SchemaRef) -> usize {
     schema
         .fields()
         .iter()
@@ -150,27 +150,27 @@ mod tests {
     fn test_primitive_types() {
         // Int32: 1 byte validity + 4 bytes data = 5 bytes
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        assert_eq!(bytes_per_row(&schema), 5);
+        assert_eq!(calculate_bytes_per_row(&schema), 5);
 
         // Int64: 1 byte validity + 8 bytes data = 9 bytes
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
-        assert_eq!(bytes_per_row(&schema), 9);
+        assert_eq!(calculate_bytes_per_row(&schema), 9);
 
         // Float64: 1 byte validity + 8 bytes data = 9 bytes
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
-        assert_eq!(bytes_per_row(&schema), 9);
+        assert_eq!(calculate_bytes_per_row(&schema), 9);
 
         // Boolean: 1 byte validity + 1 byte data = 2 bytes
         // (Arrow stores booleans as bits, but we round up for estimation)
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true)]));
-        assert_eq!(bytes_per_row(&schema), 2);
+        assert_eq!(calculate_bytes_per_row(&schema), 2);
     }
 
     #[test]
     fn test_variable_width_types() {
         // Utf8: 1 byte validity + 4 bytes offset + 50 bytes default = 55 bytes
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-        assert_eq!(bytes_per_row(&schema), 55);
+        assert_eq!(calculate_bytes_per_row(&schema), 55);
 
         // LargeUtf8: 1 byte validity + 8 bytes offset + 50 bytes default = 59 bytes
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -178,7 +178,7 @@ mod tests {
             DataType::LargeUtf8,
             true,
         )]));
-        assert_eq!(bytes_per_row(&schema), 59);
+        assert_eq!(calculate_bytes_per_row(&schema), 59);
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
             Field::new("balance", DataType::Float64, false),
         ]));
         // Int32: 5 + Utf8: 55 + Float64: 9 = 69 bytes
-        assert_eq!(bytes_per_row(&schema), 69);
+        assert_eq!(calculate_bytes_per_row(&schema), 69);
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
             true,
         )]));
         // Struct with 2 Int32 fields: (1 + 4) + (1 + 4) = 10 bytes
-        assert_eq!(bytes_per_row(&schema), 10);
+        assert_eq!(calculate_bytes_per_row(&schema), 10);
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
         )]));
         // Dictionary with UInt16 keys: 1 byte validity + 2 bytes key = 3 bytes
         // (value dictionary is shared, not counted per row)
-        assert_eq!(bytes_per_row(&schema), 3);
+        assert_eq!(calculate_bytes_per_row(&schema), 3);
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
             false,
         )]));
         // FixedSizeBinary(32): 1 byte validity + 32 bytes data = 33 bytes
-        assert_eq!(bytes_per_row(&schema), 33);
+        assert_eq!(calculate_bytes_per_row(&schema), 33);
     }
 
     #[test]
@@ -238,6 +238,6 @@ mod tests {
             true,
         )]));
         // List<Int32>: 1 byte validity + 4 bytes offset + 10 * (1 + 4) = 55 bytes
-        assert_eq!(bytes_per_row(&schema), 55);
+        assert_eq!(calculate_bytes_per_row(&schema), 55);
     }
 }
