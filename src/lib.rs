@@ -1,4 +1,5 @@
 #![deny(clippy::all)]
+extern crate core;
 
 mod common;
 mod config_extension_ext;
@@ -18,8 +19,8 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator,
+    DistributedConfig, DistributedPhysicalOptimizerRule, DistributedPlannerExtension,
+    NetworkBoundary, NetworkBoundaryExt,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,

@@ -1,10 +1,10 @@
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::distributed_planner::set_distributed_task_estimator;
+use crate::distributed_planner::set_distributed_planner_extension;
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
+use crate::{ChannelResolver, DistributedConfig, DistributedPlannerExtension, WorkerResolver};
 use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -284,12 +284,11 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// Adds a distributed task count estimator. [TaskEstimator]s are executed on each node
-    /// sequentially until one returns an estimation on the number of tasks that should be
-    /// used for the stage containing that node.
+    /// Adds a [DistributedPlannerExtension] to the session that handles custom `ExecutionPlan`s
+    /// during distributed planning.
     ///
-    /// Many nodes might decide to provide an estimation, so a reconciliation between all of them
-    /// is performed internally during planning.
+    /// Multiple [DistributedPlannerExtension] can be provided, and they will be called sequentially
+    /// for each node in the plan until one returns a way of handling the node.
     ///
     /// ```text
     ///     ┌───────────────────────┐
@@ -308,106 +307,21 @@ pub trait DistributedExt: Sized {
     ///     ┌───────────────────────┐    │
     /// │   │      FilterExec       │
     ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐       a TaskEstimator estimates the amount of tasks
-    ///     │       SomeExec        │◀───┼──  based on how much data will be pulled.
-    /// │   └───────────────────────┘
+    /// │   ┌───────────────────────┐         a DistributedPlannerExtension determines how this node
+    ///     │       SomeExec        │◀───┼──  should be "scaled up" in case of getting executed in
+    /// │   └───────────────────────┘         a distributed manner.
     ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
     /// ```
-    fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+    fn with_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(
         self,
         estimator: T,
     ) -> Self;
 
-    /// Same as [DistributedExt::with_distributed_task_estimator] but with an in-place mutation.
-    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+    /// Same as [DistributedExt::with_distributed_planner_extension] but with an in-place mutation.
+    fn set_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(
         &mut self,
         estimator: T,
     );
-
-    /// Sets the maximum number of files each task in a stage with a FileScanConfig node will
-    /// handle. Reducing this number will increment the amount of tasks. By default, this
-    /// is close to the number of cores in the machine.
-    ///
-    /// ```text
-    ///     ┌───────────────────────┐
-    ///     │SortPreservingMergeExec│
-    ///     └───────────────────────┘
-    ///                 ▲
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2
-    ///     ┌───────────┴───────────┐    │
-    /// │   │       SortExec        │
-    ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐
-    ///     │     AggregateExec     │    │
-    /// │   └───────────────────────┘
-    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1
-    ///     ┌───────────────────────┐    │
-    /// │   │      FilterExec       │
-    ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐        Sets the max number of files
-    ///     │    FileScanConfig     │◀───┼─   each task will handle. Less
-    /// │   └───────────────────────┘        files_per_task == more tasks
-    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-    ///```
-    fn with_distributed_files_per_task(
-        self,
-        files_per_task: usize,
-    ) -> Result<Self, DataFusionError>;
-
-    /// Same as [DistributedExt::with_distributed_files_per_task] but with an in-place mutation.
-    fn set_distributed_files_per_task(
-        &mut self,
-        files_per_task: usize,
-    ) -> Result<(), DataFusionError>;
-
-    /// The number of tasks in each stage is calculated in a bottom-to-top fashion.
-    ///
-    /// Bottom stages containing leaf nodes will provide an estimation of the amount of tasks
-    /// for those stages, but upper stages might see a reduction (or increment) in the amount
-    /// of tasks based on the cardinality effect bottom stages have in the data.
-    ///
-    /// For example: If there are two stages, and the leaf stage is estimated to use 10 tasks,
-    ///  the upper stage might use less (e.g. 5) if it sees that the leaf stage is returning
-    ///  less data because of filters or aggregations.
-    ///
-    /// This function sets the scale factor for when encountering these nodes that change the
-    /// cardinality of the data. For example, if a stage with 10 tasks contains an AggregateExec
-    /// node, and the scale factor is 2.0, the following stage will use  10 / 2.0 = 5 tasks.
-    ///
-    /// ```text
-    ///     ┌───────────────────────┐
-    ///     │SortPreservingMergeExec│
-    ///     └───────────────────────┘
-    ///                 ▲
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2 (N/scale_factor tasks)
-    ///     ┌───────────┴───────────┐    │
-    /// │   │       SortExec        │
-    ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐
-    ///     │     AggregateExec     │    │
-    /// │   └───────────────────────┘
-    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1 (N tasks)
-    ///     ┌───────────────────────┐    │       A filter reduces cardinality,
-    /// │   │      FilterExec       │◀────────therefore the next stage will have
-    ///     └───────────────────────┘    │    less tasks according to this factor
-    /// │   ┌───────────────────────┐
-    ///     │    FileScanConfig     │    │
-    /// │   └───────────────────────┘
-    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-    /// ```
-    fn with_distributed_cardinality_effect_task_scale_factor(
-        self,
-        factor: f64,
-    ) -> Result<Self, DataFusionError>;
-
-    /// Same as [DistributedExt::with_distributed_cardinality_effect_task_scale_factor] but with
-    /// an in-place mutation.
-    fn set_distributed_cardinality_effect_task_scale_factor(
-        &mut self,
-        factor: f64,
-    ) -> Result<(), DataFusionError>;
 
     /// Enables metrics collection across network boundaries so that all the metrics gather in
     /// each node are accessible from the head stage that started running the query.
@@ -469,6 +383,20 @@ pub trait DistributedExt: Sized {
         &mut self,
         compression: Option<CompressionType>,
     ) -> Result<(), DataFusionError>;
+
+    /// The amount of bytes each partition is expected to process.
+    ///
+    /// TODO: longer explanation.
+    fn with_distributed_bytes_processed_per_partition(
+        self,
+        bytes_processed_per_partition: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_bytes_processed_per_partition] but with an in-place mutation.
+    fn set_distributed_bytes_processed_per_partition(
+        &mut self,
+        bytes_processed_per_partition: usize,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -506,29 +434,11 @@ impl DistributedExt for SessionConfig {
         set_distributed_channel_resolver(self, resolver);
     }
 
-    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
+    fn set_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(
         &mut self,
         estimator: T,
     ) {
-        set_distributed_task_estimator(self, estimator)
-    }
-
-    fn set_distributed_files_per_task(
-        &mut self,
-        files_per_task: usize,
-    ) -> Result<(), DataFusionError> {
-        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.files_per_task = files_per_task;
-        Ok(())
-    }
-
-    fn set_distributed_cardinality_effect_task_scale_factor(
-        &mut self,
-        factor: f64,
-    ) -> Result<(), DataFusionError> {
-        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.cardinality_task_count_factor = factor;
-        Ok(())
+        set_distributed_planner_extension(self, estimator)
     }
 
     fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError> {
@@ -565,6 +475,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_bytes_processed_per_partition(
+        &mut self,
+        bytes_processed_per_partition: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.bytes_processed_per_partition = bytes_processed_per_partition;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -591,17 +510,9 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            #[call(set_distributed_task_estimator)]
+            #[call(set_distributed_planner_extension)]
             #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
-
-            #[call(set_distributed_files_per_task)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
-
-            #[call(set_distributed_cardinality_effect_task_scale_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+            fn with_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
             #[call(set_distributed_metrics_collection)]
             #[expr($?;Ok(self))]
@@ -618,6 +529,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
             fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_bytes_processed_per_partition)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_bytes_processed_per_partition(mut self, processed_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -655,20 +570,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
+            fn set_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_planner_extension)]
             #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
-
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
-            #[call(set_distributed_cardinality_effect_task_scale_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+            fn with_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
             fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_metrics_collection)]
@@ -689,6 +594,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
             fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_bytes_processed_per_partition(&mut self, bytes_processed_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_bytes_processed_per_partition)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_bytes_processed_per_partition(mut self, bytes_processed_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -726,20 +636,10 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
+            fn set_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_planner_extension)]
             #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
-
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
-            #[call(set_distributed_cardinality_effect_task_scale_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Result<Self, DataFusionError>;
+            fn with_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
             fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_metrics_collection)]
@@ -760,6 +660,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
             fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_bytes_processed_per_partition(&mut self, bytes_processed_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_bytes_processed_per_partition)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_bytes_processed_per_partition(mut self, bytes_processed_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -797,20 +702,10 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
 
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
+            fn set_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(&mut self, estimator: T);
+            #[call(set_distributed_planner_extension)]
             #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(self, estimator: T) -> Self;
-
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(self, files_per_task: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
-            #[call(set_distributed_cardinality_effect_task_scale_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_cardinality_effect_task_scale_factor(self, factor: f64) -> Result<Self, DataFusionError>;
+            fn with_distributed_planner_extension<T: DistributedPlannerExtension + Send + Sync + 'static>(self, estimator: T) -> Self;
 
             fn set_distributed_metrics_collection(&mut self, enabled: bool) -> Result<(), DataFusionError>;
             #[call(set_distributed_metrics_collection)]
@@ -831,6 +726,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
             fn with_distributed_compression(self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_bytes_processed_per_partition(&mut self, bytes_processed_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_bytes_processed_per_partition)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_bytes_processed_per_partition(self, bytes_processed_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
