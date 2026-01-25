@@ -1,26 +1,12 @@
-use crate::TaskEstimator;
-use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
+use crate::distributed_planner::distributed_planner_extension::CombinedDistributedPlannerExtension;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
-use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 
 extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
-        /// Sets the maximum amount of files that will be assigned to each task. Reducing this
-        /// number will spawn more tasks for the same number of files. This only applies when
-        /// estimating tasks for stages containing `DataSourceExec` nodes with `FileScanConfig`
-        /// implementations.
-        pub files_per_task: usize, default = files_per_task_default()
-        /// Task multiplying factor for when a node declares that it changes the cardinality
-        /// of the data:
-        /// - If a node is increasing the cardinality of the data, this factor will increase.
-        /// - If a node reduces the cardinality of the data, this factor will decrease.
-        /// - In any other situation, this factor is left intact.
-        pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
         /// Upon shuffling over the network, data streams need to be disassembled in a lot of output
         /// partitions, which means the resulting streams might contain a lot of tiny record batches
         /// to be sent over the wire. This parameter controls the batch size in number of rows for
@@ -48,9 +34,14 @@ extensions_options! {
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
-        /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
+        /// How many bytes is each partition expected to process. This is used to calculate how many
+        /// partitions are suitable to be used for driving the query forward. If the result of the
+        /// calculation is that more partitions than `datafusion.execution.target_partitions` are
+        /// needed, the query will use more workers.
+        pub bytes_processed_per_partition: usize, default = 128 * 1024 * 1024
+        /// Collection of [DistributedPlannerExtension]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
-        pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
+        pub(crate) __private_distributed_planner_extension: CombinedDistributedPlannerExtension, default = CombinedDistributedPlannerExtension::default()
         /// [ChannelResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_channel_resolver: ChannelResolverExtension, default = ChannelResolverExtension::default()
@@ -60,36 +51,7 @@ extensions_options! {
     }
 }
 
-fn files_per_task_default() -> usize {
-    if cfg!(test) || cfg!(feature = "integration") {
-        1
-    } else {
-        get_available_parallelism()
-    }
-}
-
-fn cardinality_task_count_factor_default() -> f64 {
-    if cfg!(test) || cfg!(feature = "integration") {
-        1.5
-    } else {
-        1.0
-    }
-}
-
 impl DistributedConfig {
-    /// Appends a [TaskEstimator] to the list. [TaskEstimator] will be executed sequentially in
-    /// order on leaf nodes, and the first one to provide a value is the one that gets to decide
-    /// how many tasks are used for that [Stage].
-    pub fn with_task_estimator(
-        mut self,
-        task_estimator: impl TaskEstimator + Send + Sync + 'static,
-    ) -> Self {
-        self.__private_task_estimator
-            .user_provided
-            .push(Arc::new(task_estimator));
-        self
-    }
-
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
     pub fn from_config_options(cfg: &ConfigOptions) -> Result<&Self, DataFusionError> {
         let Some(distributed_cfg) = cfg.extensions.get::<DistributedConfig>() else {
@@ -111,7 +73,7 @@ impl ConfigExtension for DistributedConfig {
     const PREFIX: &'static str = "distributed";
 }
 
-// FIXME: Ideally, both ChannelResolverExtension and TaskEstimators would be passed as
+// FIXME: Ideally, all this structs would be passed as
 //  extensions in SessionConfig's AnyMap instead of the ConfigOptions. However, we need
 //  to pass this as ConfigOptions as we need these two fields to be present during
 //  planning in the DistributedPhysicalOptimizerRule, and the signature of the optimize()
@@ -151,7 +113,7 @@ impl Debug for WorkerResolverExtension {
     }
 }
 
-impl ConfigField for CombinedTaskEstimator {
+impl ConfigField for CombinedDistributedPlannerExtension {
     fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
         //nothing to do.
     }
@@ -161,8 +123,8 @@ impl ConfigField for CombinedTaskEstimator {
     }
 }
 
-impl Debug for CombinedTaskEstimator {
+impl Debug for CombinedDistributedPlannerExtension {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TaskEstimators")
+        write!(f, "CombinedDistributedPlannerExtension")
     }
 }
