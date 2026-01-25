@@ -7,7 +7,7 @@
 //! - Custom TableProvider for mapping the table function to an execution plan
 //! - Custom ExecutionPlan for returning the requested number range
 //! - Custom PhysicalExtensionCodec for serialization across the network
-//! - Custom TaskEstimator to control parallelism
+//! - Custom DistributedPlannerExtension to control how to scale up a custom node
 //!
 //! Run this example with:
 //! ```bash
@@ -23,24 +23,26 @@ use arrow::record_batch::RecordBatchOptions;
 use arrow::util::pretty::pretty_format_batches;
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableFunctionImpl};
+use datafusion::common::stats::Precision;
 use datafusion::common::{
-    DataFusionError, Result, ScalarValue, exec_err, extensions_options, internal_err, plan_err,
+    DataFusionError, Result, ScalarValue, Statistics, exec_err, internal_err, plan_err,
 };
-use datafusion::config::ConfigExtension;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::physical_plan::{
+    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+};
+use datafusion::prelude::SessionContext;
 use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, DistributedTaskContext, TaskEstimation,
-    TaskEstimator, WorkerQueryContext, display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, DistributedPlannerExtension,
+    DistributedTaskContext, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -219,6 +221,23 @@ impl ExecutionPlan for NumbersExec {
             stream::once(async { Ok(batch) }),
         )))
     }
+
+    /// Implementing [ExecutionPlan::partition_statistics] is essential for Distributed DataFusion
+    /// to infer how much compute is going to be needed across the plan.
+    fn partition_statistics(&self, _: Option<usize>) -> Result<Statistics> {
+        let mut stats = Statistics::default();
+        let num_rows = self
+            .ranges_per_task
+            .iter()
+            .map(|v| v.end - v.start)
+            .sum::<i64>();
+
+        stats.num_rows = Precision::Exact(num_rows as usize);
+        stats.column_statistics =
+            vec![ColumnStatistics::new_unknown().with_distinct_count(stats.num_rows)];
+
+        Ok(stats)
+    }
 }
 
 /// Custom codec for serializing/deserializing NumbersExec across the network. As the NumbersExec
@@ -261,7 +280,7 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
             .schema
             .as_ref()
             .map(|s| s.try_into())
-            .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
+            .ok_or(proto_error("NumbersExec is missing schema"))??;
 
         Ok(Arc::new(NumbersExec::new(
             proto.ranges.iter().map(|v| v.start..v.end),
@@ -292,37 +311,11 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
     }
 }
 
-extensions_options! {
-    /// Custom ConfigExtension for configuring NumbersExec distributed task estimation behavior
-    /// at runtime with SET statements.
-    struct NumbersConfig {
-        /// how many numbers each task will produce
-        numbers_per_task: usize, default = 10
-    }
-}
-
-impl ConfigExtension for NumbersConfig {
-    const PREFIX: &'static str = "numbers";
-}
-
-/// Custom TaskEstimator that tells the planner how to distribute NumbersExec.
+/// Custom [DistributedPlannerExtension] that tells the planner how to distribute [NumbersExec].
 #[derive(Debug)]
-struct NumbersTaskEstimator;
+struct NumbersDistributedPlannerExtension;
 
-impl TaskEstimator for NumbersTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let plan = plan.as_any().downcast_ref::<NumbersExec>()?;
-        let cfg: &NumbersConfig = cfg.extensions.get()?;
-        let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
-            / cfg.numbers_per_task as f64;
-
-        Some(TaskEstimation::desired(task_count.ceil() as usize))
-    }
-
+impl DistributedPlannerExtension for NumbersDistributedPlannerExtension {
     fn scale_up_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
@@ -375,16 +368,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build())
         });
 
-    let config = SessionConfig::new().with_option_extension(NumbersConfig::default());
-
     let state = SessionStateBuilder::new()
         .with_default_features()
-        .with_config(config)
         .with_distributed_worker_resolver(worker_resolver)
         .with_distributed_channel_resolver(channel_resolver)
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         .with_distributed_user_codec(NumbersExecCodec)
-        .with_distributed_task_estimator(NumbersTaskEstimator)
+        .with_distributed_planner_extension(NumbersDistributedPlannerExtension)
         .build();
 
     let ctx = SessionContext::from(state);

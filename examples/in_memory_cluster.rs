@@ -38,8 +38,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_default_features()
         .with_distributed_worker_resolver(InMemoryWorkerResolver)
         .with_distributed_channel_resolver(InMemoryChannelResolver::new())
+        // Set to something very low so that we see some distribution.
+        .with_distributed_bytes_processed_per_partition(100)?
         .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-        .with_distributed_files_per_task(1)?
         .build();
 
     let ctx = SessionContext::from(state);
