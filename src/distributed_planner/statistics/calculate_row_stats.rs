@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
+use datafusion::arrow::datatypes::DataType;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::plan_err;
 use datafusion::common::stats::Precision;
+use datafusion::common::{ColumnStatistics, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExprRef;
@@ -27,6 +26,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use std::sync::Arc;
 
 /// Default filter selectivity when predicate statistics are unknown.
 ///
@@ -50,6 +50,15 @@ const IS_NULL_SELECTIVITY: f64 = 0.1;
 
 /// Default selectivity for IS NOT NULL predicates (complement of IS NULL).
 const IS_NOT_NULL_SELECTIVITY: f64 = 1.0 - IS_NULL_SELECTIVITY;
+
+/// Default NDV ratio for string columns when no statistics are available.
+/// Strings often have repeated values (e.g., status codes, categories, names).
+/// 50% is a reasonable middle ground between unique IDs and low-cardinality enums.
+const DEFAULT_STRING_NDV_RATIO: f64 = 0.5;
+
+/// Default NDV ratio for complex types (lists, maps, structs).
+/// These are less likely to have many duplicates due to their structure.
+const DEFAULT_COMPLEX_NDV_RATIO: f64 = 0.8;
 
 /// Statistics for row count and NDV (Number of Distinct Values) per column.
 ///
@@ -75,16 +84,8 @@ impl RowStats {
         Self { count, ndv }
     }
 
-    /// Creates RowsStats with count and assumes NDV = count for all columns.
-    fn with_count(count: usize, num_columns: usize) -> Self {
-        Self {
-            count,
-            ndv: vec![count; num_columns],
-        }
-    }
-
     /// Returns RowsStats with zero rows.
-    fn zero(num_columns: usize) -> Self {
+    pub(crate) fn zero(num_columns: usize) -> Self {
         Self {
             count: 0,
             ndv: vec![0; num_columns],
@@ -180,11 +181,8 @@ pub(crate) fn calculate_row_stats(
             stats
                 .column_statistics
                 .iter()
-                .map(|v| match v.distinct_count {
-                    Precision::Exact(v) => v,
-                    Precision::Inexact(v) => v,
-                    Precision::Absent => count,
-                })
+                .enumerate()
+                .map(|(i, v)| ndv_from_column_stats(v, count, node.schema().field(i).data_type()))
                 .collect()
         } else {
             vec![count; field_count]
@@ -356,12 +354,12 @@ pub(crate) fn calculate_row_stats(
     // UnionExec: concatenates all inputs
     // Reference: Trino's UnionStatsRule.java
     if any.is::<UnionExec>() {
-        return Ok(compute_union_stats(&input_rows_per_children));
+        return Ok(compute_union_stats(input_rows_per_children));
     }
 
     // InterleaveExec: round-robin merge of inputs (same as union for stats)
     if any.is::<InterleaveExec>() {
-        return Ok(compute_union_stats(&input_rows_per_children));
+        return Ok(compute_union_stats(input_rows_per_children));
     }
 
     // --- Special leaf nodes (should have been handled above) ---
@@ -381,6 +379,180 @@ pub(crate) fn calculate_row_stats(
         .first()
         .cloned()
         .unwrap_or_else(|| RowStats::zero(node.schema().fields().len())))
+}
+
+/// Estimates NDV from column statistics, using multiple strategies:
+///
+/// 1. If distinct_count is available, use it directly
+/// 2. If min/max bounds are available for discrete types, use range size (Trino's approach)
+/// 3. Apply type-specific heuristics (e.g., strings often have repeated values)
+/// 4. Fall back to type-based theoretical bounds
+///
+/// Reference: Trino's StatsNormalizer.java for range-based NDV bounds
+/// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/StatsNormalizer.java
+fn ndv_from_column_stats(
+    column_statistics: &ColumnStatistics,
+    row_count: usize,
+    ty: &DataType,
+) -> usize {
+    // Strategy 1: Use distinct_count if available
+    match column_statistics.distinct_count {
+        Precision::Exact(v) => return v.min(row_count),
+        Precision::Inexact(v) => return v.min(row_count),
+        Precision::Absent => {}
+    }
+
+    // Strategy 2: For discrete types, try to compute NDV from min/max range
+    // This follows Trino's approach in StatsNormalizer.maxDistinctValuesByLowHigh()
+    if let Some(range_ndv) = ndv_from_min_max_range(column_statistics, ty) {
+        return range_ndv.min(row_count).max(1);
+    }
+
+    // Strategy 3: Apply type-specific heuristics
+    match ty {
+        // Null type: only one possible value (null)
+        DataType::Null => 1,
+
+        // Boolean: exactly 2 possible values (true/false)
+        DataType::Boolean => row_count.min(2),
+
+        // Small integer types: cap at the number of possible values
+        DataType::Int8 => row_count.min(256),
+        DataType::UInt8 => row_count.min(256),
+        DataType::Int16 => row_count.min(65_536),
+        DataType::UInt16 => row_count.min(65_536),
+
+        // Larger integer types: without min/max, assume high cardinality
+        DataType::Int32 | DataType::Int64 | DataType::UInt32 | DataType::UInt64 => row_count,
+
+        // Floating point: effectively infinite range
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => row_count,
+
+        // Date: without min/max, could be anything
+        DataType::Date32 | DataType::Date64 => row_count,
+
+        // Timestamps: nanosecond precision, effectively unique per row
+        DataType::Timestamp(_, _) => row_count,
+
+        // Time32: limited to seconds/millis in a day
+        DataType::Time32(_) => row_count.min(86_400),
+        DataType::Time64(_) => row_count,
+
+        // Duration and Interval: wide range
+        DataType::Duration(_) | DataType::Interval(_) => row_count,
+
+        // String types: often have repeated values (categories, names, status codes)
+        // Use a heuristic ratio - strings are rarely all unique
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            ((row_count as f64 * DEFAULT_STRING_NDV_RATIO).ceil() as usize).max(1)
+        }
+
+        // Binary types: similar to strings but slightly higher cardinality expected
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => {
+            ((row_count as f64 * DEFAULT_STRING_NDV_RATIO).ceil() as usize).max(1)
+        }
+
+        // Complex types: lists, maps, structs - less likely to have duplicates
+        DataType::List(_)
+        | DataType::ListView(_)
+        | DataType::FixedSizeList(_, _)
+        | DataType::LargeList(_)
+        | DataType::LargeListView(_)
+        | DataType::Struct(_)
+        | DataType::Union(_, _)
+        | DataType::Map(_, _)
+        | DataType::RunEndEncoded(_, _) => {
+            ((row_count as f64 * DEFAULT_COMPLEX_NDV_RATIO).ceil() as usize).max(1)
+        }
+
+        // Dictionary: the whole point is low cardinality, assume ~10% of rows
+        DataType::Dictionary(_, _) => ((row_count as f64 * 0.1).ceil() as usize).max(1),
+
+        // Decimal types: typically numeric IDs or amounts, high cardinality
+        DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => row_count,
+    }
+}
+
+/// Computes NDV from min/max range for discrete types.
+///
+/// For integer types: NDV ≤ max - min + 1
+/// For dates: NDV ≤ days between max and min + 1
+///
+/// Reference: Trino's StatsNormalizer.maxDistinctValuesByLowHigh()
+/// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/StatsNormalizer.java#L142
+fn ndv_from_min_max_range(column_statistics: &ColumnStatistics, ty: &DataType) -> Option<usize> {
+    use datafusion::common::ScalarValue;
+
+    let min = match &column_statistics.min_value {
+        Precision::Exact(v) | Precision::Inexact(v) => v,
+        Precision::Absent => return None,
+    };
+    let max = match &column_statistics.max_value {
+        Precision::Exact(v) | Precision::Inexact(v) => v,
+        Precision::Absent => return None,
+    };
+
+    // Compute range size based on type
+    match (ty, min, max) {
+        // Signed integers
+        (DataType::Int8, ScalarValue::Int8(Some(min)), ScalarValue::Int8(Some(max))) => {
+            Some((*max as i64 - *min as i64 + 1) as usize)
+        }
+        (DataType::Int16, ScalarValue::Int16(Some(min)), ScalarValue::Int16(Some(max))) => {
+            Some((*max as i64 - *min as i64 + 1) as usize)
+        }
+        (DataType::Int32, ScalarValue::Int32(Some(min)), ScalarValue::Int32(Some(max))) => {
+            Some((*max as i64 - *min as i64 + 1) as usize)
+        }
+        (DataType::Int64, ScalarValue::Int64(Some(min)), ScalarValue::Int64(Some(max))) => max
+            .checked_sub(*min)
+            .and_then(|diff| diff.checked_add(1))
+            .map(|v| v as usize),
+
+        // Unsigned integers
+        (DataType::UInt8, ScalarValue::UInt8(Some(min)), ScalarValue::UInt8(Some(max))) => {
+            Some((*max as usize) - (*min as usize) + 1)
+        }
+        (DataType::UInt16, ScalarValue::UInt16(Some(min)), ScalarValue::UInt16(Some(max))) => {
+            Some((*max as usize) - (*min as usize) + 1)
+        }
+        (DataType::UInt32, ScalarValue::UInt32(Some(min)), ScalarValue::UInt32(Some(max))) => {
+            Some((*max as usize) - (*min as usize) + 1)
+        }
+        (DataType::UInt64, ScalarValue::UInt64(Some(min)), ScalarValue::UInt64(Some(max))) => max
+            .checked_sub(*min)
+            .and_then(|diff| diff.checked_add(1))
+            .map(|v| v as usize),
+
+        // Date32: days since epoch
+        (DataType::Date32, ScalarValue::Date32(Some(min)), ScalarValue::Date32(Some(max))) => {
+            Some((*max - *min + 1) as usize)
+        }
+
+        // Date64: milliseconds since epoch, convert to days
+        (DataType::Date64, ScalarValue::Date64(Some(min)), ScalarValue::Date64(Some(max))) => {
+            let days = (*max - *min) / (24 * 60 * 60 * 1000) + 1;
+            Some(days as usize)
+        }
+
+        // Boolean: if we have min=false max=true, that's 2 values
+        (DataType::Boolean, ScalarValue::Boolean(Some(min)), ScalarValue::Boolean(Some(max))) => {
+            if min == max {
+                Some(1)
+            } else {
+                Some(2)
+            }
+        }
+
+        // For other types, we can't easily compute range
+        _ => None,
+    }
 }
 
 /// Computes NDV for projection output columns.
@@ -978,6 +1150,147 @@ mod tests {
         assert!((INEQUALITY_SELECTIVITY - 0.5).abs() < f64::EPSILON);
         assert!((IS_NULL_SELECTIVITY - 0.1).abs() < f64::EPSILON);
         assert!((IS_NOT_NULL_SELECTIVITY - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_ndv_from_column_stats_no_stats() {
+        // Test with absent statistics - falls back to type-based heuristics
+        let absent_stats = ColumnStatistics::new_unknown();
+
+        // Null type: always 1
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1000, &DataType::Null),
+            1
+        );
+
+        // Boolean: capped at 2
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1000, &DataType::Boolean),
+            2
+        );
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1, &DataType::Boolean),
+            1
+        );
+
+        // Int8/UInt8: capped at 256
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1000, &DataType::Int8),
+            256
+        );
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 100, &DataType::Int8),
+            100
+        );
+
+        // Int16/UInt16: capped at 65536
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 100_000, &DataType::Int16),
+            65_536
+        );
+
+        // Larger integers: use row count
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1000, &DataType::Int32),
+            1000
+        );
+
+        // Strings: use heuristic ratio (50%)
+        assert_eq!(
+            ndv_from_column_stats(&absent_stats, 1000, &DataType::Utf8),
+            500
+        );
+
+        // Dictionary: low cardinality assumption (10%)
+        assert_eq!(
+            ndv_from_column_stats(
+                &absent_stats,
+                1000,
+                &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8))
+            ),
+            100
+        );
+
+        // Time32: capped at 86400 (seconds in a day)
+        assert_eq!(
+            ndv_from_column_stats(
+                &absent_stats,
+                100_000,
+                &DataType::Time32(arrow::datatypes::TimeUnit::Second)
+            ),
+            86_400
+        );
+    }
+
+    #[test]
+    fn test_ndv_from_column_stats_with_distinct_count() {
+        // When distinct_count is available, use it directly
+        let stats_with_ndv = ColumnStatistics {
+            distinct_count: Precision::Exact(42),
+            ..ColumnStatistics::new_unknown()
+        };
+
+        assert_eq!(
+            ndv_from_column_stats(&stats_with_ndv, 1000, &DataType::Int32),
+            42
+        );
+        assert_eq!(
+            ndv_from_column_stats(&stats_with_ndv, 1000, &DataType::Utf8),
+            42
+        );
+    }
+
+    #[test]
+    fn test_ndv_from_column_stats_with_min_max() {
+        use datafusion::common::ScalarValue;
+
+        // Int32 with min=10, max=19 -> range of 10 values
+        let stats_with_range = ColumnStatistics {
+            min_value: Precision::Exact(ScalarValue::Int32(Some(10))),
+            max_value: Precision::Exact(ScalarValue::Int32(Some(19))),
+            ..ColumnStatistics::new_unknown()
+        };
+
+        assert_eq!(
+            ndv_from_column_stats(&stats_with_range, 1000, &DataType::Int32),
+            10 // max - min + 1 = 19 - 10 + 1 = 10
+        );
+
+        // Boolean with min=false, max=true -> 2 values
+        let bool_range = ColumnStatistics {
+            min_value: Precision::Exact(ScalarValue::Boolean(Some(false))),
+            max_value: Precision::Exact(ScalarValue::Boolean(Some(true))),
+            ..ColumnStatistics::new_unknown()
+        };
+
+        assert_eq!(
+            ndv_from_column_stats(&bool_range, 1000, &DataType::Boolean),
+            2
+        );
+
+        // Boolean with min=true, max=true -> 1 value (all true)
+        let bool_single = ColumnStatistics {
+            min_value: Precision::Exact(ScalarValue::Boolean(Some(true))),
+            max_value: Precision::Exact(ScalarValue::Boolean(Some(true))),
+            ..ColumnStatistics::new_unknown()
+        };
+
+        assert_eq!(
+            ndv_from_column_stats(&bool_single, 1000, &DataType::Boolean),
+            1
+        );
+
+        // Date32: min=0 (1970-01-01), max=364 -> 365 days
+        let date_range = ColumnStatistics {
+            min_value: Precision::Exact(ScalarValue::Date32(Some(0))),
+            max_value: Precision::Exact(ScalarValue::Date32(Some(364))),
+            ..ColumnStatistics::new_unknown()
+        };
+
+        assert_eq!(
+            ndv_from_column_stats(&date_range, 10000, &DataType::Date32),
+            365
+        );
     }
 
     #[test]

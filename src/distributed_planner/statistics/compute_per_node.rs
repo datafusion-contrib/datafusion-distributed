@@ -1,5 +1,4 @@
-use std::sync::Arc;
-
+use crate::BroadcastExec;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -18,6 +17,7 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use std::sync::Arc;
 
 /// Represents the relative CPU/compute cost of an execution plan node.
 ///
@@ -64,6 +64,21 @@ pub enum ComputeCost {
     XXL,
 }
 
+impl ComputeCost {
+    pub(crate) fn factor(&self) -> f64 {
+        match self {
+            ComputeCost::Zero => 0.0,
+            ComputeCost::XXS => 0.3,
+            ComputeCost::XS => 0.5,
+            ComputeCost::S => 0.7,
+            ComputeCost::M => 1.0,
+            ComputeCost::L => 1.3,
+            ComputeCost::XL => 1.6,
+            ComputeCost::XXL => 2.0,
+        }
+    }
+}
+
 /// Returns the estimated [`ComputeCost`] for the given execution plan node.
 ///
 /// Cost estimation is based on the actual computational work performed by each
@@ -71,7 +86,7 @@ pub enum ComputeCost {
 ///
 /// Reference: DataFusion physical-plan implementations:
 /// <https://github.com/apache/datafusion/tree/branch-52/datafusion/physical-plan/src>
-pub(crate) fn compute_cost_for_node(node: &Arc<dyn ExecutionPlan>) -> ComputeCost {
+pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCost {
     let any = node.as_any();
 
     // === XXL: Very heavy computation (O(n*m) or worse) ===
@@ -200,6 +215,11 @@ pub(crate) fn compute_cost_for_node(node: &Arc<dyn ExecutionPlan>) -> ComputeCos
     }
 
     // === Zero: No compute (passthrough or I/O-bound) ===
+
+    // BroadcastExec: This node does not do any computation, does not even read the data.
+    if any.is::<BroadcastExec>() {
+        return ComputeCost::Zero;
+    }
 
     // DataSourceExec: I/O-bound, CPU just receives decoded data
     // The actual decoding is done by the storage layer
