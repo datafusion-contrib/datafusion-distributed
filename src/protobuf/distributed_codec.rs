@@ -801,11 +801,20 @@ mod tests {
             dummy_stage(),
         )) as Arc<dyn ExecutionPlan>;
 
+        fn d_ctx(task_index: usize, task_count: usize) -> DistributedTaskContext {
+            DistributedTaskContext {
+                task_index,
+                task_count,
+            }
+        }
+
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
                 vec![left.clone(), right.clone()],
-                vec![2, 2],
-                4,
+                vec![
+                    vec![(0, d_ctx(0, 2)), (0, d_ctx(1, 2))],
+                    vec![(1, d_ctx(0, 2)), (1, d_ctx(1, 2))],
+                ],
             )?);
 
         let mut buf = Vec::new();
