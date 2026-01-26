@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let proto_dir = repo_root.join("src/observability/proto");
     let proto_file = proto_dir.join("observability.proto");
-    let out_dir = repo_root.join("src/observability/src/generated");
+    let out_dir = repo_root.join("src/observability/generated");
 
     fs::create_dir_all(&out_dir)?;
 
