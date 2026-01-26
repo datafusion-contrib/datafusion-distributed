@@ -1,4 +1,5 @@
 mod batch_coalescing_below_network_boundaries;
+mod coalesce_partitions_below_network_coalesce;
 mod distributed_config;
 mod distributed_physical_optimizer_rule;
 mod insert_broadcast;
