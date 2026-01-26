@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::results::{BenchResult, BenchmarkRun, QueryIter};
-use chrono::{DateTime, Utc};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::instant::Instant;
