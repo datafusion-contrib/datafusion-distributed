@@ -17,6 +17,7 @@ async function main() {
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
+        .option('--broadcast-joins <number>', 'Use broadcast joins', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
@@ -34,6 +35,7 @@ async function main() {
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
+    const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
 
     const runner = new DataFusionRunner({
         filesPerTask,
@@ -42,7 +44,8 @@ async function main() {
         shuffleBatchSize,
         collectMetrics,
         childrenIsolatorUnions,
-        compression
+        compression,
+        broadcastJoins
     });
 
     await runBenchmark(runner, {
@@ -70,6 +73,7 @@ class DataFusionRunner implements BenchmarkRunner {
         collectMetrics: boolean;
         compression: string;
         childrenIsolatorUnions: boolean;
+        broadcastJoins: boolean;
     }) {
     }
 
@@ -121,6 +125,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.collect_metrics=${this.options.collectMetrics};
       SET distributed.compression=${this.options.compression};
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
+      SET distributed.broadcast_joins=${this.options.broadcastJoins};
     `);
     }
 }
