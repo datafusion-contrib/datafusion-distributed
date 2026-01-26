@@ -45,6 +45,18 @@ extensions_options! {
         /// use broadcasting like checking build side size.
         /// For now, broadcasting all CollectLeft joins is not always beneficial.
         pub broadcast_joins: bool, default = false
+        /// The minimum number of upstream tasks required to insert a coalesce tree.
+        ///
+        /// Set this to `0` to disable coalesce tree insertion.
+        ///
+        /// If the coalesce boundary has fewer input tasks than this threshold, the planner will
+        /// insert only the final `NetworkCoalesceExec` to a single task.
+        ///
+        /// Configure via SQL:
+        /// ```sql
+        /// SET distributed.coalesce_tree_min_input_tasks = 8; -- enable for 8+ upstream tasks
+        /// ```
+        pub coalesce_tree_min_input_tasks: usize, default = coalesce_tree_min_input_tasks_default()
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
@@ -66,6 +78,10 @@ fn files_per_task_default() -> usize {
     } else {
         get_available_parallelism()
     }
+}
+
+fn coalesce_tree_min_input_tasks_default() -> usize {
+    0
 }
 
 fn cardinality_task_count_factor_default() -> f64 {

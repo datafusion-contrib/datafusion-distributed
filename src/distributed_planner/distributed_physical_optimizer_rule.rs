@@ -19,6 +19,44 @@ use uuid::Uuid;
 
 use super::insert_broadcast::insert_broadcast_execs;
 
+const MIN_COALESCE_TREE_FANIN: usize = 2;
+const MAX_COALESCE_TREE_FANIN: usize = 16;
+
+fn coalesce_tree_fanin(n_workers: usize) -> usize {
+    // ceil(log2(n)) for n>=1:
+    // - n==1 => 0
+    // - otherwise: floor(log2(n-1)) + 1
+    let n = n_workers.max(1);
+    let ceil_log2_workers = if n <= 1 {
+        0usize
+    } else {
+        (n - 1).ilog2() as usize + 1
+    };
+    MIN_COALESCE_TREE_FANIN
+        .max(ceil_log2_workers)
+        .min(MAX_COALESCE_TREE_FANIN)
+}
+
+fn next_coalesce_tree_task_count(
+    n_workers: usize,
+    child_task_count: usize,
+    min_input_tasks: usize,
+) -> usize {
+    if child_task_count <= 1 {
+        return 1;
+    }
+    if min_input_tasks == 0 {
+        return 1;
+    }
+    if child_task_count < min_input_tasks {
+        return 1;
+    }
+    let fanin = coalesce_tree_fanin(n_workers);
+    child_task_count
+        .div_ceil(fanin)
+        .clamp(1, child_task_count - 1)
+}
+
 /// Physical optimizer rule that inspects the plan, places the appropriate network
 /// boundaries, and breaks it down into stages that can be executed in a distributed manner.
 ///
@@ -91,6 +129,7 @@ fn distribute_plan(
     stage_id: &mut usize,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
     let children = annotated_plan.children;
     let task_count = annotated_plan.task_count.as_usize();
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
@@ -136,15 +175,44 @@ fn distribute_plan(
             if task_count == 1 && max_child_task_count == Some(1) {
                 return require_one_child(new_children);
             }
-            let node = Arc::new(NetworkCoalesceExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
+
+            // NOTE: `annotate_plan` forces `task_count = 1` for coalesce boundaries (to preserve
+            // CoalescePartitionsExec / SortPreservingMergeExec semantics). Here we optionally add
+            // intermediate coalesce stages (a gather tree) to reduce fan-in, while still ending
+            // in a single final task.
+            let target_consumer_task_count = task_count;
+            let mut current_plan = require_one_child(new_children)?;
+            let mut current_child_task_count = max_child_task_count.unwrap_or(1);
+
+            while current_child_task_count > target_consumer_task_count {
+                let next_consumer_task_count = if target_consumer_task_count == 1 {
+                    next_coalesce_tree_task_count(
+                        n_workers,
+                        current_child_task_count,
+                        d_cfg.coalesce_tree_min_input_tasks,
+                    )
+                } else {
+                    target_consumer_task_count
+                };
+
+                let node = Arc::new(NetworkCoalesceExec::try_new(
+                    current_plan,
+                    query_id,
+                    *stage_id,
+                    next_consumer_task_count,
+                    current_child_task_count,
+                )?);
+                stage_id.add_assign(1);
+
+                current_plan = node;
+                current_child_task_count = next_consumer_task_count;
+
+                if next_consumer_task_count == target_consumer_task_count {
+                    break;
+                }
+            }
+
+            Ok(current_plan)
         }
         // This is a CollectLeft HashJoinExec with the build side marked as being broadcast. we
         // need to insert a NetworkBroadcastExec and scale up the BroadcastExec consumer_tasks.
