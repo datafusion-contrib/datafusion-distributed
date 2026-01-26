@@ -1,9 +1,12 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
+use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
+use datafusion::common::HashMap;
 use datafusion::common::plan_err;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use itertools::Either;
 use std::collections::VecDeque;
@@ -162,7 +165,7 @@ impl Stage {
     }
 }
 
-use crate::rewrite_distributed_plan_with_metrics;
+use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use bytes::Bytes;
 use datafusion::common::DataFusionError;
@@ -185,13 +188,16 @@ use prost::Message;
 use std::fmt::Write;
 
 /// explain_analyze renders an [ExecutionPlan] with metrics.
-pub fn explain_analyze(executed: Arc<dyn ExecutionPlan>) -> Result<String, DataFusionError> {
+pub fn explain_analyze(
+    executed: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
+) -> Result<String, DataFusionError> {
     match executed.as_any().downcast_ref::<DistributedExec>() {
         None => Ok(DisplayableExecutionPlan::with_metrics(executed.as_ref())
             .indent(true)
             .to_string()),
         Some(_) => {
-            let executed = rewrite_distributed_plan_with_metrics(executed.clone())?;
+            let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format)?;
             Ok(display_plan_ascii(executed.as_ref(), true))
         }
     }
@@ -208,7 +214,12 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
         display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
-        displayable(plan).indent(true).to_string()
+        match show_metrics {
+            true => DisplayableExecutionPlan::with_metrics(plan)
+                .indent(true)
+                .to_string(),
+            false => displayable(plan).indent(true).to_string(),
+        }
     }
 }
 
@@ -280,14 +291,23 @@ fn display_inner_ascii(
     show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
-    let node_str = if show_metrics {
-        DisplayableExecutionPlan::with_metrics(plan.as_ref())
-            .one_line()
-            .to_string()
+    let metrics_str = if show_metrics {
+        if let Some(metrics) = plan.metrics() {
+            let formatted = format_metrics_by_task(&metrics);
+            if formatted.is_empty() {
+                ", metrics=[]".to_string()
+            } else {
+                format!(", metrics=[{formatted}]")
+            }
+        } else {
+            ", metrics=[]".to_string()
+        }
     } else {
-        displayable(plan.as_ref()).one_line().to_string()
+        String::new()
     };
-    writeln!(f, "{} {node_str}", " ".repeat(indent))?;
+
+    let node_str = displayable(plan.as_ref()).one_line().to_string();
+    writeln!(f, "{} {node_str}{metrics_str}", " ".repeat(indent))?;
 
     if plan.is_network_boundary() {
         return Ok(());
@@ -297,6 +317,109 @@ fn display_inner_ascii(
         display_inner_ascii(child, indent + 2, show_metrics, f)?;
     }
     Ok(())
+}
+
+/// Aggregates metrics by (name, task_id), preserving the [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL]
+/// only. Metrics without a task_id label (ie. non distributed metrics) are aggregated together.
+///
+/// For a non-distributed plan, this is equivalent to [MetricsSet::aggregate_by_name] since there
+/// will be no task ids. For a distributed plan, it's expected that the metrics rewriter populated
+/// task id labels in all metrics.
+fn aggregate_by_task_id(metrics: &MetricsSet) -> MetricsSet {
+    // Key: (metric_name, Option<task_id>)
+    let mut map: HashMap<(String, Option<String>), Metric> = HashMap::new();
+
+    for metric in metrics.iter() {
+        let name = metric.value().name().to_string();
+        let task_id = metric
+            .labels()
+            .iter()
+            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+            .map(|l| l.value().to_string());
+
+        let key = (name, task_id.clone());
+
+        map.entry(key)
+            .and_modify(|accum| {
+                accum.value_mut().aggregate(metric.value());
+            })
+            .or_insert_with(|| {
+                let labels = task_id
+                    .map(|id| vec![Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, id)])
+                    .unwrap_or_default();
+                let mut accum = Metric::new_with_labels(
+                    metric.value().new_empty(),
+                    None, // no partition
+                    labels,
+                );
+                accum.value_mut().aggregate(metric.value());
+                accum
+            });
+    }
+
+    let mut result = MetricsSet::new();
+    for (_, metric) in map {
+        result.push(Arc::new(metric));
+    }
+    result
+}
+
+/// Sorts metrics by display priority, then name, then by task_id (numerically).
+///
+/// For a non-distributed plan, this is equivalent to [MetricsSet::sorted_for_display] since there
+/// will be no task ids. For a distributed plan, it's expected that the metrics rewriter populated
+/// task id labels in all metrics.
+fn sorted_for_display_by_task_id(metrics: MetricsSet) -> MetricsSet {
+    let mut vec: Vec<Arc<Metric>> = metrics.iter().cloned().collect();
+    vec.sort_unstable_by_key(|metric| {
+        let task_id = metric
+            .labels()
+            .iter()
+            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+            .and_then(|l| l.value().parse::<u64>().ok());
+        (
+            metric.value().display_sort_key(),
+            metric.value().name().to_owned(),
+            task_id,
+        )
+    });
+    let mut result = MetricsSet::new();
+    for m in vec {
+        result.push(m);
+    }
+    result
+}
+
+/// Formats metrics as "{metric_name}_{task_id}={value}, {metric_name}_{task_id}={value}"
+/// e.g., "output_rows_0=100, output_rows_1=150, elapsed_compute_0=50ns, elapsed_compute_1=100ns"
+///
+/// For a non-distributed plan, this is equivalent to using [ShowMetrics::Aggregated] /
+/// [DisplayableExecutionPlan::with_metrics] which aggregates, sorts, removes timestamps, and finally formats
+/// the metrics.
+///
+/// See
+/// https://github.com/apache/datafusion/blob/b463a9f9e3c9603eb2db7113125fea3a1b7f5455/datafusion/physical-plan/src/display.rs#L421.
+fn format_metrics_by_task(metrics: &MetricsSet) -> String {
+    let aggregated = aggregate_by_task_id(metrics);
+    let sorted = sorted_for_display_by_task_id(aggregated).timestamps_removed();
+
+    sorted
+        .iter()
+        .map(|m| {
+            let name = m.value().name();
+            let task_id = m
+                .labels()
+                .iter()
+                .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+                .map(|l| l.value());
+
+            match task_id {
+                Some(id) => format!("{name}_{id}={}", m.value()),
+                None => format!("{name}={}", m.value()),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> String {
