@@ -13,7 +13,8 @@
     "compare": "npx ts-node bin/compare.ts",
     "datafusion-bench": "npx ts-node bin/datafusion-bench.ts",
     "trino-bench": "npx ts-node bin/trino-bench.ts",
-    "spark-bench": "npx ts-node bin/spark-bench.ts"
+    "spark-bench": "npx ts-node bin/spark-bench.ts",
+    "fast-deploy": "npx ts-node lib/fastDeploy.ts"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

@@ -8,6 +8,7 @@ import {
 } from "./cdk-stack";
 import {execSync} from "child_process";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
+import * as cdk from "aws-cdk-lib";
 import path from "path";
 
 let workerBinary: s3assets.Asset
@@ -69,5 +70,17 @@ EOF`,
                 'chmod +x /usr/local/bin/worker',
                 'systemctl restart worker',
             ])
+
+        // Output data needed for fast-deploy
+        const instanceIds = ctx.instances.map(instance => instance.instanceId);
+        new cdk.CfnOutput(ctx.scope, 'WorkerInstanceIds', {
+            value: cdk.Fn.join(',', instanceIds),
+        });
+        new cdk.CfnOutput(ctx.scope, 'WorkerBinaryS3Bucket', {
+            value: workerBinary.s3BucketName,
+        });
+        new cdk.CfnOutput(ctx.scope, 'WorkerBinaryS3Key', {
+            value: workerBinary.s3ObjectKey,
+        });
     }
 }
