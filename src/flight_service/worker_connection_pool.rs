@@ -353,6 +353,8 @@ struct ElapsedComputeStream<T> {
     elapsed_compute: Time,
 }
 
+/// Drop implementation that ensures that any accumulated time is properly dumped to the metric
+/// in case the stream gets dropped before completion.
 #[pinned_drop]
 impl<T> PinnedDrop for ElapsedComputeStream<T> {
     fn drop(self: Pin<&mut Self>) {
@@ -391,6 +393,8 @@ struct ElapsedComputeFuture<T> {
     elapsed_compute: Time,
 }
 
+/// Drop implementation that ensures that any accumulated time is properly dumped to the metric
+/// in case the future gets dropped before completion.
 #[pinned_drop]
 impl<T> PinnedDrop for ElapsedComputeFuture<T> {
     fn drop(self: Pin<&mut Self>) {
