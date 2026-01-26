@@ -1,0 +1,12 @@
+syntax = "proto3";
+package observability;
+
+service ObservabilityService {
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  uint32 value = 1;
+}

@@ -1,0 +1,12 @@
+[workspace]
+# Empty workspace table to exclude this crate from parent workspace
+
+[package]
+name = "observability-gen"
+version = "0.1.0"
+edition = "2024"
+description = "Protobuf code generation for observability services"
+publish = false
+
+[dependencies]
+tonic-prost-build = "0.14.2"

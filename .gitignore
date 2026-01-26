@@ -8,3 +8,5 @@ testdata/tpcds/*
 !testdata/tpcds/README.md
 testdata/clickbench/*
 !testdata/clickbench/queries
+src/observability/gen/target/*
+src/observability/gen/Cargo.lock

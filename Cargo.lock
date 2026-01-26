@@ -1417,15 +1417,6 @@ checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
 
 [[package]]
 name = "console"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "crossterm",
- "ratatui",
-]
-
-[[package]]
-name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
@@ -2037,6 +2028,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-prost",
  "tower",
  "tpchgen",
  "tpchgen-arrow",
@@ -2095,6 +2087,20 @@ dependencies = [
  "tonic",
  "tower",
  "url",
+]
+
+[[package]]
+name = "datafusion-distributed-console"
+version = "0.1.0"
+dependencies = [
+ "arrow-flight",
+ "color-eyre",
+ "crossterm",
+ "datafusion-distributed",
+ "ratatui",
+ "structopt",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -3522,7 +3528,7 @@ version = "1.46.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "248b42847813a1550dafd15296fd9748c651d0c32194559dbc05d804d54b21e8"
 dependencies = [
- "console 0.15.11",
+ "console",
  "once_cell",
  "regex",
  "similar",
