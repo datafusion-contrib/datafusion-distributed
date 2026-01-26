@@ -1,6 +1,5 @@
-import path from "path";
 import {Command} from "commander";
-import {ROOT, runBenchmark, BenchmarkRunner, TableSpec} from "./@bench-common";
+import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward Trino coordinator with
 // aws ssm start-session --target {instance-0-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=8080,localPortNumber=8080"
@@ -9,7 +8,7 @@ async function main() {
     const program = new Command();
 
     program
-        .option('--dataset <string>', 'Scale factor', '1')
+        .requiredOption('--dataset <string>', 'Scale factor', '1')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .parse(process.argv);
@@ -20,16 +19,13 @@ async function main() {
     const iterations = parseInt(options.iterations);
     const queries = options.queries?.split(",") ?? []
 
-    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
-    const outputPath = path.join(datasetPath, "remote-results.json")
-
     const runner = new TrinoRunner();
 
     await runBenchmark(runner, {
         dataset,
+        engine: 'trino',
         iterations,
         queries,
-        outputPath,
     });
 }
 

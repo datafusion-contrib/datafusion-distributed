@@ -80,7 +80,7 @@ static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
     >,
 > = LazyLock::new(|| moka::sync::Cache::builder().max_capacity(256).build());
 
-pub(crate) fn get_distributed_channel_resolver(
+pub fn get_distributed_channel_resolver(
     task_ctx: &TaskContext,
 ) -> Arc<dyn ChannelResolver + Send + Sync> {
     let opts = task_ctx.session_config().options();

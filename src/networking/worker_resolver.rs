@@ -39,7 +39,7 @@ pub(crate) fn set_distributed_worker_resolver(
     }
 }
 
-pub(crate) fn get_distributed_worker_resolver(
+pub fn get_distributed_worker_resolver(
     cfg: &SessionConfig,
 ) -> Result<Arc<dyn WorkerResolver + Send + Sync>, DataFusionError> {
     let opts = cfg.options();

@@ -13,6 +13,26 @@ pub(crate) fn get_queries(path: &str) -> Vec<String> {
             result.push(file_name.trim_end_matches(".sql").to_string());
         }
     }
+
+    // Each element might be something like q12.sql or custom2.sql.
+    // This orders the string list by the parsed integer number inside an arbitrary string.
+    result.sort_by(|a, b| {
+        // Extract numbers from both strings
+        let extract_number = |s: &str| -> Option<u32> {
+            s.chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .ok()
+        };
+
+        match (extract_number(a), extract_number(b)) {
+            (Some(num_a), Some(num_b)) => num_a.cmp(&num_b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b), // Fall back to lexicographic ordering
+        }
+    });
     result
 }
 

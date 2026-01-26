@@ -1,7 +1,7 @@
-import path from "path";
 import {Command} from "commander";
 import {z} from 'zod';
-import {BenchmarkRunner, ROOT, runBenchmark, TableSpec} from "./@bench-common";
+import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
+import {execSync} from "child_process";
 
 // Remember to port-forward a worker with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
@@ -10,11 +10,14 @@ async function main() {
     const program = new Command();
 
     program
-        .option('--dataset <string>', 'Dataset to run queries on')
+        .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--files-per-task <number>', 'Files per task', '4')
-        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '2')
-        .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '8192')
+        .option('--files-per-task <number>', 'Files per task', '8')
+        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
+        .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
+        .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
+        .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
+        .option('--broadcast-joins <number>', 'Use broadcast joins', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
@@ -26,27 +29,30 @@ async function main() {
     const iterations = parseInt(options.iterations);
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+    const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const compression = options.compression;
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
+    const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
+    const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
 
     const runner = new DataFusionRunner({
         filesPerTask,
         cardinalityTaskSf,
+        batchSize,
         shuffleBatchSize,
         collectMetrics,
-        compression
+        childrenIsolatorUnions,
+        compression,
+        broadcastJoins
     });
-
-    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset);
-    const outputPath = path.join(datasetPath, "remote-results.json")
 
     await runBenchmark(runner, {
         dataset,
+        engine: `datafusion-distributed-${getCurrentBranch()}`,
         iterations,
         queries,
-        outputPath,
     });
 }
 
@@ -62,9 +68,12 @@ class DataFusionRunner implements BenchmarkRunner {
     constructor(private readonly options: {
         filesPerTask: number;
         cardinalityTaskSf: number;
+        batchSize: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
-        compression: string
+        compression: string;
+        childrenIsolatorUnions: boolean;
+        broadcastJoins: boolean;
     }) {
     }
 
@@ -111,12 +120,24 @@ class DataFusionRunner implements BenchmarkRunner {
         await this.query(`
       SET distributed.files_per_task=${this.options.filesPerTask};
       SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
+      SET datafusion.execution.batch_size=${this.options.batchSize};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};
       SET distributed.compression=${this.options.compression};
+      SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
+      SET distributed.broadcast_joins=${this.options.broadcastJoins};
     `);
     }
+}
 
+function getCurrentBranch(): string {
+    try {
+        // Try to get current git branch
+        return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+    } catch {
+        // Fallback if git command fails
+        return 'unknown';
+    }
 }
 
 main()
