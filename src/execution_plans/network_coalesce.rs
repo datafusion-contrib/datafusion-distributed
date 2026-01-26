@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use std::any::Any;
@@ -193,5 +194,9 @@ impl ExecutionPlan for NetworkCoalesceExec {
             self.schema(),
             stream,
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.worker_connections.metrics.clone_inner())
     }
 }

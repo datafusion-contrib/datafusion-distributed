@@ -11,16 +11,24 @@ use arrow_flight::{FlightData, Ticket};
 use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricValue};
+use datafusion::physical_plan::metrics::{MetricBuilder, Time};
 use futures::{Stream, TryStreamExt};
 use http::Extensions;
+use pin_project::{pin_project, pinned_drop};
 use prost::Message;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -34,6 +42,7 @@ use tonic::{Request, Status};
 /// index.
 pub(crate) struct WorkerConnectionPool {
     connections: Vec<OnceLock<Result<WorkerConnection, Arc<DataFusionError>>>>,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
 impl WorkerConnectionPool {
@@ -44,7 +53,10 @@ impl WorkerConnectionPool {
         for _ in 0..input_tasks {
             connections.push(OnceLock::new());
         }
-        Self { connections }
+        Self {
+            connections,
+            metrics: ExecutionPlanMetricsSet::default(),
+        }
     }
 
     /// Lazily initializes the [WorkerConnection] corresponding to the provided `target_task`
@@ -65,8 +77,14 @@ impl WorkerConnectionPool {
         };
 
         let conn = worker_connection.get_or_init(|| {
-            WorkerConnection::init(input_stage, target_partitions, target_task, ctx)
-                .map_err(Arc::new)
+            WorkerConnection::init(
+                input_stage,
+                target_partitions,
+                target_task,
+                ctx,
+                &self.metrics,
+            )
+            .map_err(Arc::new)
         });
 
         match conn {
@@ -92,6 +110,10 @@ type WorkerMsg = Result<(FlightData, FlightAppMetadata, MemoryReservation), Stat
 pub(crate) struct WorkerConnection {
     task: Arc<SpawnedTask<()>>,
     per_partition_rx: DashMap<usize, UnboundedReceiver<WorkerMsg>>,
+
+    // Metrics collection stuff.
+    curr_mem_used: Arc<AtomicUsize>,
+    elapsed_compute: Time,
 }
 
 impl WorkerConnection {
@@ -100,9 +122,21 @@ impl WorkerConnection {
         target_partition_range: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
+        metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
 
+        // Stuff for collecting metrics.
+        let curr_mem_used = Arc::new(AtomicUsize::new(0));
+        let curr_mem_used_clone = Arc::clone(&curr_mem_used);
+        let mut curr_max_mem = 0;
+        let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
+        let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
+        let elapsed_compute = Time::new();
+        let elapsed_compute_clone = elapsed_compute.clone();
+        MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
+
+        // Building the actual request that will be sent to the worker.
         let headers = get_config_extension_propagation_headers(ctx.session_config())?;
         let ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
@@ -194,16 +228,31 @@ impl WorkerConnection {
                 // so that it gets dropped as soon as the message leaves the queue. Dropping the
                 // memory reservation means releasing the memory from the pool for that specific
                 // message
-                let reservation = consumer.clone_with_new_id().register(&memory_pool);
+                let mut reservation = consumer.clone_with_new_id().register(&memory_pool);
+                let size = msg.encoded_len();
+
+                // Update memory related metrics.
+                bytes_transferred.add(size);
+                let curr_mem_used = curr_mem_used.fetch_add(size, Ordering::Relaxed);
+                if curr_mem_used > curr_max_mem {
+                    curr_max_mem = curr_mem_used;
+                    max_mem_used.set(curr_max_mem);
+                }
+
+                reservation.grow(size);
                 if o_tx.send(Ok((msg, flight_metadata, reservation))).is_err() {
                     return; // channel closed
                 };
             }
-        });
+        }.with_elapsed_compute(elapsed_compute));
 
         Ok(Self {
             task: Arc::new(task),
             per_partition_rx,
+
+            // metrics stuff
+            curr_mem_used: curr_mem_used_clone,
+            elapsed_compute: elapsed_compute_clone,
         })
     }
 
@@ -225,17 +274,20 @@ impl WorkerConnection {
             );
         };
         let task = Arc::clone(&self.task);
+        let curr_mem_used = Arc::clone(&self.curr_mem_used);
+
         let stream = UnboundedReceiverStream::new(partition_receiver);
         let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
         let stream = stream.map_ok(move |(data, meta, reservation)| {
+            curr_mem_used.fetch_sub(reservation.size(), Ordering::Relaxed);
             drop(reservation); // <- drop the reservation, freeing memory on the memory pool.
-            let _ = &task; // <- keep the task that pools data from the network alive.
+            let _ = &task; // <- keep the task that polls data from the network alive.
             on_metadata(meta);
             data
         });
         let stream = FlightRecordBatchStream::new_from_flight_data(stream);
         let stream = stream.map_err(map_flight_to_datafusion_error);
-        Ok(stream)
+        Ok(stream.with_elapsed_compute(self.elapsed_compute.clone()))
     }
 }
 
@@ -262,5 +314,192 @@ impl Clone for WorkerConnectionPool {
 impl Debug for WorkerConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerConnection").finish()
+    }
+}
+
+trait ElapsedComputeFutureExt: Future + Sized {
+    fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeFuture<Self>;
+}
+
+trait ElapsedComputeStreamExt: Stream + Sized {
+    fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeStream<Self>;
+}
+
+impl<O, F: Future<Output = O>> ElapsedComputeFutureExt for F {
+    fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeFuture<Self> {
+        ElapsedComputeFuture {
+            inner: self,
+            curr: Duration::default(),
+            elapsed_compute,
+        }
+    }
+}
+
+impl<O, S: Stream<Item = O>> ElapsedComputeStreamExt for S {
+    fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeStream<Self> {
+        ElapsedComputeStream {
+            inner: self,
+            curr: Duration::default(),
+            elapsed_compute,
+        }
+    }
+}
+
+#[pin_project(PinnedDrop)]
+struct ElapsedComputeStream<T> {
+    #[pin]
+    inner: T,
+    curr: Duration,
+    elapsed_compute: Time,
+}
+
+/// Drop implementation that ensures that any accumulated time is properly dumped to the metric
+/// in case the stream gets dropped before completion.
+#[pinned_drop]
+impl<T> PinnedDrop for ElapsedComputeStream<T> {
+    fn drop(self: Pin<&mut Self>) {
+        if self.curr > Duration::default() {
+            let self_projected = self.project();
+            self_projected
+                .elapsed_compute
+                .add_duration(*self_projected.curr);
+        }
+    }
+}
+
+impl<O, F: Stream<Item = O>> Stream for ElapsedComputeStream<F> {
+    type Item = O;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let self_projected = self.project();
+        let start = Instant::now();
+        let result = self_projected.inner.poll_next(cx);
+        *self_projected.curr += start.elapsed();
+        if result.is_ready() {
+            self_projected
+                .elapsed_compute
+                .add_duration(*self_projected.curr);
+            *self_projected.curr = Duration::default();
+        }
+        result
+    }
+}
+
+#[pin_project(PinnedDrop)]
+struct ElapsedComputeFuture<T> {
+    #[pin]
+    inner: T,
+    curr: Duration,
+    elapsed_compute: Time,
+}
+
+/// Drop implementation that ensures that any accumulated time is properly dumped to the metric
+/// in case the future gets dropped before completion.
+#[pinned_drop]
+impl<T> PinnedDrop for ElapsedComputeFuture<T> {
+    fn drop(self: Pin<&mut Self>) {
+        if self.curr > Duration::default() {
+            let self_projected = self.project();
+            self_projected
+                .elapsed_compute
+                .add_duration(*self_projected.curr);
+        }
+    }
+}
+
+impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
+    type Output = O;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let self_projected = self.project();
+        let start = Instant::now();
+        let result = self_projected.inner.poll(cx);
+        *self_projected.curr += start.elapsed();
+        if result.is_ready() {
+            self_projected
+                .elapsed_compute
+                .add_duration(*self_projected.curr);
+            *self_projected.curr = Duration::default();
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn elapsed_compute_future() {
+        async fn cheap() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        async fn expensive() {
+            let mut _count = 0f64;
+            for i in 0..100000 {
+                tokio::task::yield_now().await;
+                _count /= i as f64
+            }
+        }
+
+        let cheap_time = Time::new();
+        cheap().with_elapsed_compute(cheap_time.clone()).await;
+        println!("cheap future: {}", cheap_time.value());
+
+        let expensive_time = Time::new();
+        expensive()
+            .with_elapsed_compute(expensive_time.clone())
+            .await;
+        println!("expensive future: {}", expensive_time.value());
+
+        assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[tokio::test]
+    async fn elapsed_compute_stream() {
+        fn cheap() -> impl Stream<Item = i64> {
+            futures::stream::unfold(0i64, |state| async move {
+                if state < 10 {
+                    tokio::time::sleep(Duration::from_micros(10)).await;
+                    Some((state, state + 1))
+                } else {
+                    None
+                }
+            })
+        }
+
+        fn expensive() -> impl Stream<Item = i64> {
+            futures::stream::unfold(0i64, |state| async move {
+                if state < 10 {
+                    // Simulate expensive computation
+                    let mut _count = 0f64;
+                    for i in 1..100000 {
+                        _count += (i as f64).sqrt();
+                    }
+                    tokio::task::yield_now().await;
+                    Some((state, state + 1))
+                } else {
+                    None
+                }
+            })
+        }
+
+        let cheap_time = Time::new();
+        cheap()
+            .with_elapsed_compute(cheap_time.clone())
+            .collect::<Vec<_>>()
+            .await;
+        println!("cheap future: {}", cheap_time.value());
+
+        let expensive_time = Time::new();
+        expensive()
+            .with_elapsed_compute(expensive_time.clone())
+            .collect::<Vec<_>>()
+            .await;
+        println!("expensive future: {}", expensive_time.value());
+
+        assert!(expensive_time.value() > cheap_time.value());
     }
 }

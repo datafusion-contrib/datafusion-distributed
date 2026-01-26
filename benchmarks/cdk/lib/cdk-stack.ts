@@ -3,9 +3,6 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import {Construct} from 'constructs';
-import {DATAFUSION_DISTRIBUTED_ENGINE} from "./datafusion-distributed";
-import {TRINO_ENGINE} from "./trino";
-import {SPARK_ENGINE} from "./spark";
 import path from "path";
 import * as cr from "aws-cdk-lib/custom-resources";
 
@@ -13,12 +10,6 @@ const USER_DATA_CAUSES_REPLACEMENT = process.env['USER_DATA_CAUSES_REPLACEMENT']
 if (USER_DATA_CAUSES_REPLACEMENT) {
     console.warn("Instances will forcefully get replaced")
 }
-
-const ENGINES = [
-    DATAFUSION_DISTRIBUTED_ENGINE,
-    TRINO_ENGINE,
-    SPARK_ENGINE
-]
 
 export const ROOT = path.join(__dirname, '../../..')
 
@@ -136,7 +127,7 @@ export class CdkStack extends Stack {
         // Grant read access to the bucket and worker binary
         bucket.grantRead(role);
 
-        for (const engine of ENGINES) {
+        for (const engine of config.engines) {
             engine.beforeEc2Machines({
                 scope: this,
                 role
@@ -148,7 +139,7 @@ export class CdkStack extends Stack {
         for (let i = 0; i < config.instanceCount; i++) {
             const userData = ec2.UserData.forLinux();
 
-            for (const engine of ENGINES) {
+            for (const engine of config.engines) {
                 engine.onEc2Machine({
                     bucketName: bucket.bucketName,
                     instanceIdx: i,
@@ -200,7 +191,7 @@ sudo journalctl -u worker.service -f -o cat
             description: 'Session Manager commands to connect to instances',
         });
 
-        for (const engine of ENGINES) {
+        for (const engine of config.engines) {
             engine.afterEc2Machines({
                 scope: this,
                 instances,

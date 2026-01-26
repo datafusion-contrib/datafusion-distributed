@@ -1,10 +1,10 @@
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
 use crate::execution_plans::MetricsWrapperExec;
+use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::MetricsCollectorResult;
 use crate::metrics::TaskMetricsCollector;
-use crate::metrics::proto::MetricsSetProto;
-use crate::metrics::proto::metrics_set_proto_to_df;
+use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
 use crate::protobuf::StageKey;
 use crate::stage::Stage;
 use bytes::Bytes;
@@ -15,14 +15,34 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
-use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use std::sync::Arc;
 use std::vec;
+
+/// Format to use when displaying metrics for a distributed plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistributedMetricsFormat {
+    /// Metrics are aggregated across all tasks. ex. a `output_rows=X` represents the output rows for all tasks.
+    Aggregated,
+
+    /// Metric names are rewritten to include the task id. ex. `output_rows` -> `output_rows_0`, `output_rows_1` etc.
+    PerTask,
+}
+
+impl DistributedMetricsFormat {
+    pub(crate) fn to_rewrite_ctx(self, task_id: u64) -> RewriteCtx {
+        match self {
+            DistributedMetricsFormat::Aggregated => RewriteCtx::default(),
+            DistributedMetricsFormat::PerTask => RewriteCtx::from_task_id(task_id),
+        }
+    }
+}
 
 /// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
 pub fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
+    format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let Some(distributed_exec) = plan.as_any().downcast_ref::<DistributedExec>() else {
         return Ok(plan);
@@ -35,8 +55,11 @@ pub fn rewrite_distributed_plan_with_metrics(
     } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
-    let dist_exec_plan_with_metrics =
-        rewrite_local_plan_with_metrics(plan.children()[0].clone(), task_metrics)?;
+    let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
+        format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
+        plan.children()[0].clone(),
+        task_metrics,
+    )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
 
     let metrics_collection = Arc::new(input_task_metrics);
@@ -47,20 +70,69 @@ pub fn rewrite_distributed_plan_with_metrics(
             let stage = network_boundary.input_stage();
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
-            let plan_with_metrics = stage_metrics_rewriter(stage, metrics_collection.clone())?;
-            return Ok(Transformed::yes(network_boundary.with_input_stage(
-                Stage::new(
-                    stage.query_id,
-                    stage.num,
-                    plan_with_metrics,
-                    stage.tasks.len(),
-                ),
-            )?));
+            let plan_with_metrics =
+                stage_metrics_rewriter(stage, metrics_collection.clone(), format)?;
+            let network_boundary = network_boundary.with_input_stage(Stage::new(
+                stage.query_id,
+                stage.num,
+                plan_with_metrics,
+                stage.tasks.len(),
+            ))?;
+            let network_boundary =
+                MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
+            return Ok(Transformed::yes(Arc::new(network_boundary)));
         }
 
         Ok(Transformed::no(plan))
     })?;
     Ok(transformed.data)
+}
+
+/// Extra information for rewriting local plans.
+#[derive(Default)]
+pub struct RewriteCtx {
+    /// Used to rename metrics for the current task.
+    pub task_id: Option<u64>,
+}
+
+impl RewriteCtx {
+    pub(crate) fn from_task_id(task_id: u64) -> RewriteCtx {
+        RewriteCtx {
+            task_id: Some(task_id),
+        }
+    }
+
+    /// Rewrites the [MetricsSet] depending on the context.
+    pub(crate) fn maybe_rewrite_node_metics(&self, node_metrics: MetricsSet) -> MetricsSet {
+        if let Some(task_id) = self.task_id {
+            return annotate_metrics_set_with_task_id(node_metrics, task_id);
+        }
+        node_metrics
+    }
+}
+
+/// Adds task id labels to all metrics in the provided [MetricsSet].
+///
+/// TODO: This re-allocates the vec of metrics by creating a new [MetricsSet]. It also
+/// reallocates the labels vec for each metric. Can we avoid this?
+/// See https://github.com/apache/datafusion/issues/19959
+pub fn annotate_metrics_set_with_task_id(metrics_set: MetricsSet, task_id: u64) -> MetricsSet {
+    let mut result = MetricsSet::new();
+
+    for metric in metrics_set.iter() {
+        let mut labels = metric.labels().to_vec();
+        labels.push(Label::new(
+            DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+            task_id.to_string(),
+        ));
+        result.push(Arc::new(Metric::new_with_labels(
+            metric.value().clone(),
+            metric.partition(),
+            labels,
+        )));
+    }
+
+    result
 }
 
 /// Rewrites a local plan with metrics, stopping at network boundaries.
@@ -69,32 +141,38 @@ pub fn rewrite_distributed_plan_with_metrics(
 ///
 /// AggregateExec [output_rows = 1, elapsed_compute = 100]
 ///  └── ProjectionExec [output_rows = 2, elapsed_compute = 200]
-///      └── NetworkShuffleExec
+///      └── NetworkShuffleExec [bytes_transferred = 100, max_mem_used = 100]
 ///
 /// The result will be:
 ///
 /// MetricsWrapperExec (wrapped: AggregateExec) [output_rows = 1, elapsed_compute = 100]
 ///  └── MetricsWrapperExec (wrapped: ProjectionExec) [output_rows = 2, elapsed_compute = 200]
-///      └── NetworkShuffleExec
+///      └── MetricsWrapperExec (wrapped: NetworkShuffleExec) [bytes_transferred = 100, max_mem_used = 100]
 pub fn rewrite_local_plan_with_metrics(
+    ctx: RewriteCtx,
     plan: Arc<dyn ExecutionPlan>,
     metrics: Vec<MetricsSet>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut idx = 0;
     Ok(plan
         .transform_down(|node| {
-            if node.is_network_boundary() {
-                return Ok(Transformed::new(node, false, TreeNodeRecursion::Jump));
-            }
             if idx >= metrics.len() {
                 return internal_err!("not enough metrics provided to rewrite plan");
             }
-            let node_metrics = metrics[idx].clone();
+            let mut node_metrics = metrics[idx].clone();
+
+            node_metrics = ctx.maybe_rewrite_node_metics(node_metrics);
+
             idx += 1;
-            Ok(Transformed::yes(Arc::new(MetricsWrapperExec::new(
-                node.clone(),
-                node_metrics,
-            ))))
+            Ok(Transformed::new(
+                Arc::new(MetricsWrapperExec::new(node.clone(), node_metrics)),
+                true,
+                if node.is_network_boundary() {
+                    TreeNodeRecursion::Jump
+                } else {
+                    TreeNodeRecursion::Continue
+                },
+            ))
         })?
         .data)
 }
@@ -126,27 +204,22 @@ pub fn rewrite_local_plan_with_metrics(
 /// - The NetworkShuffleExec node is not wrapped
 /// - Metrics may be aggregated by type (ex. output_rows) automatically by various datafusion utils.
 ///
-/// TODO(#184): Collect metrics from network nodes
 /// TODO(#185): Add labels for each task
 pub fn stage_metrics_rewriter(
     stage: &Stage,
     metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
+    format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
 
     let plan = stage.plan.decoded()?;
 
     plan.clone().transform_down(|plan| {
-        // Stop at network boundaries.
-        if plan.as_network_boundary().is_some() {
-            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
-        }
-
         // Collect metrics for this node. It should contain metrics from each task.
-        let mut stage_metrics = MetricsSetProto::new();
+        let mut stage_metrics = MetricsSet::new();
 
-        for idx in 0..stage.tasks.len() {
-            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, idx as u64);
+        for task_id in 0..stage.tasks.len() {
+            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, task_id as u64);
             match metrics_collection.get(&stage_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
@@ -155,15 +228,20 @@ pub fn stage_metrics_rewriter(
                             task_metrics.len()
                         );
                     }
-                    let node_metrics = task_metrics[node_idx].clone();
-                    for metric in node_metrics.metrics.iter() {
-                        stage_metrics.push(metric.clone());
+                    let node_metrics_protos = task_metrics[node_idx].clone();
+                    let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
+
+                    let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
+                    node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
+
+                    for metric in node_metrics.iter().map(Arc::clone) {
+                        stage_metrics.push(metric);
                     }
                 }
                 None => {
                     return internal_err!(
                         "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
-                        idx,
+                        task_id,
                         stage.num
                     );
                 }
@@ -174,20 +252,31 @@ pub fn stage_metrics_rewriter(
 
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan.clone(),
-            metrics_set_proto_to_df(&stage_metrics)?,
+            stage_metrics,
         ));
-        Ok(Transformed::yes(wrapped_plan_node))
+        Ok(Transformed::new(
+            wrapped_plan_node,
+            true,
+            if plan.is_network_boundary() {
+                TreeNodeRecursion::Jump
+            } else {
+                TreeNodeRecursion::Continue
+            }
+        ))
     }).map(|v| v.data)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::PartitionIsolatorExec;
+    use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::proto::{
         MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
     };
-    use crate::metrics::rewrite_distributed_plan_with_metrics;
-    use crate::metrics::task_metrics_rewriter::stage_metrics_rewriter;
+    use crate::metrics::task_metrics_rewriter::{
+        annotate_metrics_set_with_task_id, stage_metrics_rewriter,
+    };
+    use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
     use crate::protobuf::StageKey;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
@@ -203,6 +292,8 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::HashMap;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::metrics::{Count, Label, Metric, MetricValue, MetricsSet};
+    use test_case::test_case;
 
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use itertools::Itertools;
@@ -211,7 +302,6 @@ mod tests {
     use crate::DistributedExt;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::metrics::MetricsSet;
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use std::sync::Arc;
@@ -318,6 +408,8 @@ mod tests {
     }
 
     fn metrics_set_eq(a: &MetricsSet, b: &MetricsSet) -> bool {
+        println!("a: {a:?}");
+        println!("b: {b:?}");
         // Check equality by converting to proto representation.
         df_metrics_set_to_proto(a).unwrap() == df_metrics_set_to_proto(b).unwrap()
     }
@@ -327,7 +419,7 @@ mod tests {
     /// they are re-written (ie. ensures we don't assign metrics to the wrong nodes)
     ///
     /// Only tests single node plans since the [TaskMetricsRewriter] stops on [NetworkBoundary].
-    async fn run_stage_metrics_rewriter_test(sql: &str) {
+    async fn run_stage_metrics_rewriter_test(sql: &str, format: DistributedMetricsFormat) {
         // Generate the plan
         let ctx = make_test_ctx().await;
         let plan = ctx
@@ -364,7 +456,8 @@ mod tests {
         let metrics_collection = Arc::new(metrics_collection);
 
         // Rewrite the plan.
-        let rewritten_plan = stage_metrics_rewriter(&stage, metrics_collection.clone()).unwrap();
+        let rewritten_plan =
+            stage_metrics_rewriter(&stage, metrics_collection.clone(), format).unwrap();
 
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];
@@ -394,28 +487,43 @@ mod tests {
                 actual_task_node_metrics_set
                     .for_each(|metric| actual_metrics_set.push(metric.clone()));
 
-                let expected_metrics_set =
-                    metrics_set_proto_to_df(&expected_task_node_metrics).unwrap(); // Convert to proto to check for equality.
+                // Convert from proto to check for equality.
+                let mut expected_metrics_set =
+                    metrics_set_proto_to_df(&expected_task_node_metrics).unwrap();
+
+                if format == DistributedMetricsFormat::PerTask {
+                    // Add task ids labels. We expect the actual metrics to be annotated by the
+                    // rewriter when using DistributedMetricsFormat::PerTask
+                    expected_metrics_set =
+                        annotate_metrics_set_with_task_id(expected_metrics_set, task_id as u64);
+                }
                 assert!(metrics_set_eq(&actual_metrics_set, &expected_metrics_set));
             }
         }
     }
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_stage_metrics_rewriter_1() {
+    async fn test_stage_metrics_rewriter_1(format: DistributedMetricsFormat) {
         run_stage_metrics_rewriter_test(
             "SELECT sum(balance) / 7.0 as avg_yearly from table2 group by name",
+            format,
         )
         .await;
     }
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_stage_metrics_rewriter_2() {
-        run_stage_metrics_rewriter_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
+    async fn test_stage_metrics_rewriter_2(format: DistributedMetricsFormat) {
+        run_stage_metrics_rewriter_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10", format).await;
     }
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_stage_metrics_rewriter_3() {
+    async fn test_stage_metrics_rewriter_3(format: DistributedMetricsFormat) {
         run_stage_metrics_rewriter_test(
             "SELECT sum(balance) / 7.0 as avg_yearly
             FROM table2
@@ -425,6 +533,7 @@ mod tests {
                 FROM table2 t2_inner
                 WHERE t2_inner.id = table2.id
               )",
+            format,
         )
         .await;
     }
@@ -440,7 +549,10 @@ mod tests {
             .await
             .unwrap();
         assert!(plan.as_any().is::<DistributedExec>());
-        assert!(rewrite_distributed_plan_with_metrics(plan).is_err());
+        assert!(
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .is_err()
+        );
     }
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
@@ -481,7 +593,9 @@ mod tests {
             .unwrap();
         collect(plan.clone(), ctx.task_ctx()).await.unwrap();
         assert!(plan.as_any().is::<DistributedExec>());
-        let rewritten_plan = rewrite_distributed_plan_with_metrics(plan).unwrap();
+        let rewritten_plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .unwrap();
         assert_metrics_present_in_plan(&rewritten_plan);
     }
 
@@ -499,5 +613,46 @@ mod tests {
         let wrapped = MetricsWrapperExec::new(example_node, MetricsSet::new());
         assert_eq!(wrapped.name(), "EmptyExec");
         assert!(wrapped.as_any().is::<EmptyExec>());
+    }
+
+    #[test]
+    fn test_annotate_metrics_set_with_task_id_output_rows() {
+        // Create a MetricsSet with an OutputRows metric
+        let mut metrics_set = MetricsSet::new();
+        let count = Count::new();
+        count.add(1234);
+        let labels = vec![Label::new("operator", "scan")];
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::OutputRows(count),
+            Some(0),
+            labels,
+        )));
+
+        let task_id = 42;
+        let annotated = annotate_metrics_set_with_task_id(metrics_set, task_id);
+
+        // Verify we have one metric
+        assert_eq!(annotated.iter().count(), 1);
+
+        let metric = annotated.iter().next().unwrap();
+
+        // Verify metric type is preserved (OutputRows)
+        match metric.value() {
+            MetricValue::OutputRows(count) => {
+                assert_eq!(count.value(), 1234);
+            }
+            other => panic!("Expected OutputRows, got {:?}", other.name()),
+        }
+
+        // Verify partition is preserved
+        assert_eq!(metric.partition(), Some(0));
+
+        // Verify original labels are preserved and task_id label is added
+        let labels: Vec<_> = metric.labels().iter().collect();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].name(), "operator");
+        assert_eq!(labels[0].value(), "scan");
+        assert_eq!(labels[1].name(), DISTRIBUTED_DATAFUSION_TASK_ID_LABEL);
+        assert_eq!(labels[1].value(), "42");
     }
 }

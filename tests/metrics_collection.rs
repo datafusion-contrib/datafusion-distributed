@@ -7,25 +7,32 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec,
+        display_plan_ascii, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
-    use itertools::Itertools;
     use std::sync::Arc;
+    use test_case::test_case;
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_metrics_collection_in_aggregation() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_metrics_collection_in_aggregation(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
 
         let s_ctx = SessionContext::default();
-        let (s_physical, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         assert_metrics_equal::<DataSourceExec>(
-            ["output_rows", "bytes_scanned"],
+            ["output_rows", "output_bytes"],
             &s_physical,
             &d_physical,
             0,
@@ -34,8 +41,12 @@ mod tests {
         Ok(())
     }
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_metrics_collection_in_join() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_metrics_collection_in_join(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query = r#"
@@ -44,14 +55,14 @@ mod tests {
                 AVG("MinTemp") as "MinTemp",
                 "RainTomorrow"
             FROM weather
-            WHERE "RainToday" = 'yes'
+            WHERE "RainToday" = 'Yes'
             GROUP BY "RainTomorrow"
         ), b AS (
             SELECT
                 AVG("MaxTemp") as "MaxTemp",
                 "RainTomorrow"
             FROM weather
-            WHERE "RainToday" = 'no'
+            WHERE "RainToday" = 'No'
             GROUP BY "RainTomorrow"
         )
         SELECT
@@ -63,13 +74,14 @@ mod tests {
         "#;
 
         let s_ctx = SessionContext::default();
-        let (s_physical, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..2 {
             assert_metrics_equal::<DataSourceExec>(
-                ["output_rows", "bytes_scanned"],
+                ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
                 data_source_index,
@@ -79,8 +91,12 @@ mod tests {
         Ok(())
     }
 
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
     #[tokio::test]
-    async fn test_metrics_collection_in_union() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_metrics_collection_in_union(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query = r#"
@@ -96,18 +112,53 @@ mod tests {
         "#;
 
         let s_ctx = SessionContext::default();
-        let (s_physical, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+
+        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..5 {
             assert_metrics_equal::<DataSourceExec>(
-                ["output_rows", "bytes_scanned"],
+                ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
                 data_source_index,
             );
         }
+        Ok(())
+    }
+
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metric_collection_network_boundaries(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
+
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
 
         Ok(())
     }
@@ -149,7 +200,6 @@ mod tests {
         execute_stream(d_physical.clone(), d_ctx.task_ctx())?
             .try_collect::<Vec<_>>()
             .await?;
-        let d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone())?;
 
         Ok((s_physical, d_physical))
     }
@@ -174,23 +224,15 @@ mod tests {
             .unwrap();
         let metrics = metrics
             .unwrap_or_else(|| panic!("Could not find metrics for plan {}", T::static_name()));
-        let is_distributed = plan.as_any().is::<DistributedExec>();
-        metrics
+        let summed = metrics
             .iter()
-            .find(|v| v.value().name() == metric_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{} Could not find metric '{metric_name}' in {}. Available metrics are: {:?}",
-                    if is_distributed {
-                        "(distributed)"
-                    } else {
-                        "(single node)"
-                    },
-                    T::static_name(),
-                    metrics.iter().map(|v| v.value().name()).collect_vec()
-                )
-            })
-            .value()
-            .as_usize()
+            .filter(|v| v.value().name().starts_with(metric_name))
+            .map(|v| v.value().as_usize())
+            .sum();
+        assert!(
+            summed > 0,
+            "Sum of metric values is 0. Either the metric {metric_name} is not present or the test is too trivial"
+        );
+        summed
     }
 }

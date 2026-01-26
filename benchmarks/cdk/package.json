@@ -10,6 +10,7 @@
     "test": "jest",
     "cdk": "cdk",
     "sync-bucket": "aws s3 sync ../data s3://datafusion-distributed-benchmarks/",
+    "compare": "npx ts-node bin/compare.ts",
     "datafusion-bench": "npx ts-node bin/datafusion-bench.ts",
     "trino-bench": "npx ts-node bin/trino-bench.ts",
     "spark-bench": "npx ts-node bin/spark-bench.ts"

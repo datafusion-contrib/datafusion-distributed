@@ -29,10 +29,10 @@ pub use flight_service::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
-pub use metrics::rewrite_distributed_plan_with_metrics;
+pub use metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
-    create_flight_client,
+    create_flight_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,

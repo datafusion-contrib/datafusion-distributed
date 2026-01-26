@@ -29,6 +29,10 @@ aws-config = "1"
 aws-sdk-ec2 = "1"
 openssl = { version = "0.10", features = ["vendored"] }
 clap = "4.5"
+mimalloc = "0.1"
+
+[build-dependencies]
+built = { version = "0.8" , features = ["git2", "chrono"]}
 
 [[bin]]
 name = "dfbench"
