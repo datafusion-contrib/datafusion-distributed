@@ -1,4 +1,4 @@
-use crate::{NetworkCoalesceExec, NetworkShuffleExec, Stage};
+use crate::{NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
@@ -34,6 +34,8 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
         if let Some(node) = self.as_any().downcast_ref::<NetworkShuffleExec>() {
             Some(node)
         } else if let Some(node) = self.as_any().downcast_ref::<NetworkCoalesceExec>() {
+            Some(node)
+        } else if let Some(node) = self.as_any().downcast_ref::<NetworkBroadcastExec>() {
             Some(node)
         } else {
             None

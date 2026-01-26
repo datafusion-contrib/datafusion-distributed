@@ -445,6 +445,17 @@ pub trait DistributedExt: Sized {
         enabled: bool,
     ) -> Result<(), DataFusionError>;
 
+    /// Enables broadcast joins for CollectLeft hash joins. When enabled, the build side of
+    /// a CollectLeft join is broadcast to all consumer tasks instead of being coalesced
+    /// into a single partition.
+    ///
+    /// Note: This option is disabled by default until the implementation is smarter about when to
+    /// broadcast.
+    fn with_distributed_broadcast_joins(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_broadcast_joins_enabled] but with an in-place mutation.
+    fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+
     /// The compression type to use for sending data over the wire.
     ///
     /// The default is [CompressionType::LZ4_FRAME].
@@ -535,6 +546,12 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.broadcast_joins = enabled;
+        Ok(())
+    }
+
     fn set_distributed_compression(
         &mut self,
         compression: Option<CompressionType>,
@@ -593,6 +610,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_broadcast_joins)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
@@ -658,6 +679,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]
@@ -725,6 +751,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
             fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
@@ -790,6 +821,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_children_isolator_unions)]
             #[expr($?;Ok(self))]
             fn with_distributed_children_isolator_unions(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_broadcast_joins)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_broadcast_joins(self, enabled: bool) -> Result<Self, DataFusionError>;
 
             fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]

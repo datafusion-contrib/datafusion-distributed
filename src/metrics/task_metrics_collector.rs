@@ -1,3 +1,4 @@
+use crate::NetworkBroadcastExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::execution_plans::NetworkShuffleExec;
 use crate::metrics::proto::MetricsSetProto;
@@ -52,6 +53,8 @@ impl TreeNodeRewriter for TaskMetricsCollector {
             if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
                 Some(Arc::clone(&node.metrics_collection))
             } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
+                Some(Arc::clone(&node.metrics_collection))
+            } else if let Some(node) = plan.as_any().downcast_ref::<NetworkBroadcastExec>() {
                 Some(Arc::clone(&node.metrics_collection))
             } else {
                 None

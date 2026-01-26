@@ -94,6 +94,10 @@ pub struct RunOpt {
     #[structopt(long)]
     children_isolator_unions: bool,
 
+    /// Turns on broadcast joins.
+    #[structopt(long = "broadcast-joins")]
+    broadcast_joins: bool,
+
     /// Collects metrics across network boundaries
     #[structopt(long)]
     collect_metrics: bool,
@@ -223,6 +227,7 @@ impl RunOpt {
                 v => return config_err!("Unknown compression type {v}"),
             })?
             .with_distributed_children_isolator_unions(self.children_isolator_unions)?
+            .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .build();
         let ctx = SessionContext::new_with_state(state);

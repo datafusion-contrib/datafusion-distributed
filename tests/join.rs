@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
     use arrow::{
         array::RecordBatch,
@@ -72,7 +72,7 @@ mod tests {
         let (state, logical_plan) = df.into_parts();
         let physical_plan = state.create_physical_plan(&logical_plan).await?;
         let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
-        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{}", distributed_plan);
+        println!("\n——————— DISTRIBUTED PLAN ———————\n\n{distributed_plan}");
 
         let distributed_results = collect(physical_plan, state.task_ctx()).await?;
         pretty::print_batches(&distributed_results)?;
