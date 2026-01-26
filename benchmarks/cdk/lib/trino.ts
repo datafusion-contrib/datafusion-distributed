@@ -23,6 +23,8 @@ coordinator=true
 node-scheduler.include-coordinator=true
 http-server.http.port=8080
 discovery.uri=http://localhost:8080
+query.max-memory=80GB
+query.max-total-memory=80GB
 query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
 memory.heap-headroom-per-node=1.5GB
 `
@@ -32,6 +34,8 @@ const WORKER_CONFIG = `\
 coordinator=false
 http-server.http.port=8080
 discovery.uri=http://${INSTANCE_ID_PLACEHOLDER}:8080
+query.max-memory=80GB
+query.max-total-memory=80GB
 query.max-memory-per-node=${JVM_MEMORY_GB-2}GB
 memory.heap-headroom-per-node=1.5GB
 `
