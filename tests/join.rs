@@ -82,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn test_join_hive() -> Result<(), Box<dyn std::error::Error>> {
         let query = r#"
-            SELECT 
+            SELECT
                 f.f_dkey,
                 f.timestamp,
                 f.value,
@@ -94,6 +94,18 @@ mod tests {
             WHERE d.service = 'log'
             ORDER BY f_dkey, timestamp
         "#;
+
+        // First, print the single-node plan for comparison.
+        {
+            let mut single_ctx = SessionContext::new();
+            set_configs(&mut single_ctx);
+            register_tables(&single_ctx).await?;
+            let df = single_ctx.sql(query).await?;
+            let (state, logical_plan) = df.into_parts();
+            let physical_plan = state.create_physical_plan(&logical_plan).await?;
+            let single_plan = display_plan_ascii(physical_plan.as_ref(), false);
+            println!("\n——————— SINGLE NODE PLAN ———————\n\n{single_plan}");
+        }
 
         // Execute the query using distributed datafusion, 2 workers,
         // and hive-style partitioned data.
