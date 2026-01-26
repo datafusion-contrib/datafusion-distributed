@@ -7,8 +7,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExec, NetworkCoalesceExec, NetworkShuffleExec,
+        display_plan_ascii, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use itertools::Itertools;
@@ -108,6 +108,33 @@ mod tests {
                 data_source_index,
             );
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metric_collection_network_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
+
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "max_mem_used", 1);
+        assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
+        assert!(value > 100);
 
         Ok(())
     }

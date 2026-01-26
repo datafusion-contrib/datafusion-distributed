@@ -48,14 +48,15 @@ pub fn rewrite_distributed_plan_with_metrics(
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
             let plan_with_metrics = stage_metrics_rewriter(stage, metrics_collection.clone())?;
-            return Ok(Transformed::yes(network_boundary.with_input_stage(
-                Stage::new(
-                    stage.query_id,
-                    stage.num,
-                    plan_with_metrics,
-                    stage.tasks.len(),
-                ),
-            )?));
+            let network_boundary = network_boundary.with_input_stage(Stage::new(
+                stage.query_id,
+                stage.num,
+                plan_with_metrics,
+                stage.tasks.len(),
+            ))?;
+            let network_boundary =
+                MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
+            return Ok(Transformed::yes(Arc::new(network_boundary)));
         }
 
         Ok(Transformed::no(plan))
@@ -83,18 +84,20 @@ pub fn rewrite_local_plan_with_metrics(
     let mut idx = 0;
     Ok(plan
         .transform_down(|node| {
-            if node.is_network_boundary() {
-                return Ok(Transformed::new(node, false, TreeNodeRecursion::Jump));
-            }
             if idx >= metrics.len() {
                 return internal_err!("not enough metrics provided to rewrite plan");
             }
             let node_metrics = metrics[idx].clone();
             idx += 1;
-            Ok(Transformed::yes(Arc::new(MetricsWrapperExec::new(
-                node.clone(),
-                node_metrics,
-            ))))
+            Ok(Transformed::new(
+                Arc::new(MetricsWrapperExec::new(node.clone(), node_metrics)),
+                true,
+                if node.is_network_boundary() {
+                    TreeNodeRecursion::Jump
+                } else {
+                    TreeNodeRecursion::Continue
+                },
+            ))
         })?
         .data)
 }
@@ -126,7 +129,6 @@ pub fn rewrite_local_plan_with_metrics(
 /// - The NetworkShuffleExec node is not wrapped
 /// - Metrics may be aggregated by type (ex. output_rows) automatically by various datafusion utils.
 ///
-/// TODO(#184): Collect metrics from network nodes
 /// TODO(#185): Add labels for each task
 pub fn stage_metrics_rewriter(
     stage: &Stage,
@@ -137,11 +139,6 @@ pub fn stage_metrics_rewriter(
     let plan = stage.plan.decoded()?;
 
     plan.clone().transform_down(|plan| {
-        // Stop at network boundaries.
-        if plan.as_network_boundary().is_some() {
-            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
-        }
-
         // Collect metrics for this node. It should contain metrics from each task.
         let mut stage_metrics = MetricsSetProto::new();
 
@@ -176,7 +173,15 @@ pub fn stage_metrics_rewriter(
             plan.clone(),
             metrics_set_proto_to_df(&stage_metrics)?,
         ));
-        Ok(Transformed::yes(wrapped_plan_node))
+        Ok(Transformed::new(
+            wrapped_plan_node,
+            true,
+            if plan.is_network_boundary() {
+                TreeNodeRecursion::Jump
+            } else {
+                TreeNodeRecursion::Continue
+            }
+        ))
     }).map(|v| v.data)
 }
 

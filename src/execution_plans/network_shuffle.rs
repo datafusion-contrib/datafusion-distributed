@@ -11,6 +11,7 @@ use datafusion::common::{Result, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -256,5 +257,9 @@ impl ExecutionPlan for NetworkShuffleExec {
             self.schema(),
             futures::stream::select_all(streams),
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.worker_connections.metrics.clone_inner())
     }
 }
