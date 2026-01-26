@@ -27,6 +27,10 @@ function sleep(ms: number): Promise<void> {
 async function waitForCommand(commandId: string, instanceId: string): Promise<boolean> {
     const maxAttempts = 60;
     const pollInterval = 2000;
+    const SUCCESS = 'Success'
+    const FAILED = 'Failed'
+    const CANCELLED = 'Cancelled'
+    const TIMED_OUT = 'TimedOut'
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
@@ -35,9 +39,9 @@ async function waitForCommand(commandId: string, instanceId: string): Promise<bo
             );
             const [status, statusDetails] = stdout.trim().split(/\s+/);
 
-            if (status === 'Success') {
+            if (status === SUCCESS) {
                 return true;
-            } else if (status === 'Failed' || status === 'Cancelled' || status === 'TimedOut') {
+            } else if (status === FAILED || status === CANCELLED || status === TIMED_OUT) {
                 console.error(`  ${instanceId}: Command ${status} - ${statusDetails}`);
                 return false;
             }
