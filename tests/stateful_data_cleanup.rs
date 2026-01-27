@@ -36,7 +36,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn no_pending_tasks_if_query_aborts() -> Result<()> {
         let (d_ctx, _guard, workers) =
             start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
