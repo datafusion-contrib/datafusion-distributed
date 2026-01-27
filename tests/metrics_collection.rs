@@ -152,6 +152,8 @@ mod tests {
         assert!(value > 100);
         let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "time_to_first_byte", 1);
+        assert!(value > 0);
 
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
         assert!(value > 100);
@@ -159,6 +161,8 @@ mod tests {
         assert!(value > 100);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "time_to_first_byte", 1);
+        assert!(value > 0);
 
         Ok(())
     }
