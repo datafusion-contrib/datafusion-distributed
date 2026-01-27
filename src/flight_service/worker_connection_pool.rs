@@ -133,9 +133,19 @@ impl WorkerConnection {
         // Stuff for collecting metrics.
         let curr_mem_used = Arc::new(AtomicUsize::new(0));
         let curr_mem_used_clone = Arc::clone(&curr_mem_used);
+
+        // Track the maximum memory used to buffer recieved messages.
         let mut curr_max_mem = 0;
         let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
+        // Track the total encoded size of all recieved messages.
         let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
+        // Track the time between calling do_get on the client and recieving the first message
+        // from any partition.
+        let time_to_first_byte = Time::new();
+        MetricBuilder::new(metrics).build(MetricValue::Time {
+            name: "time_to_first_byte".into(),
+            time: time_to_first_byte.clone(),
+        });
         let elapsed_compute = Time::new();
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
@@ -201,10 +211,18 @@ impl WorkerConnection {
                     return fanout(&per_partition_tx, datafusion_error_to_tonic_status(&err));
                 }
             };
-            let mut interleaved_stream = match client.do_get(ticket).await {
+
+            // Capture start time before do_get to include connection setup time.
+            let start = Instant::now();
+
+            let interleaved_stream = match client.do_get(ticket).await {
                 Ok(v) => v.into_inner(),
                 Err(err) => return fanout(&per_partition_tx, err),
             };
+
+            // Wrap stream to measure time to first byte.
+            let mut interleaved_stream =
+                interleaved_stream.with_time_to_first_byte(start, time_to_first_byte);
 
             let consumer = MemoryConsumer::new("WorkerConnection");
 
@@ -458,10 +476,62 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
     }
 }
 
+trait TimeToFirstByteStreamExt: Stream + Sized {
+    fn with_time_to_first_byte(
+        self,
+        start: Instant,
+        time_to_first_byte: Time,
+    ) -> TimeToFirstByteStream<Self>;
+}
+
+impl<O, S: Stream<Item = O>> TimeToFirstByteStreamExt for S {
+    fn with_time_to_first_byte(
+        self,
+        start: Instant,
+        time_to_first_byte: Time,
+    ) -> TimeToFirstByteStream<Self> {
+        TimeToFirstByteStream {
+            inner: self,
+            start,
+            time_to_first_byte,
+            recorded: false,
+        }
+    }
+}
+
+#[pin_project]
+struct TimeToFirstByteStream<T> {
+    #[pin]
+    inner: T,
+    start: Instant,
+    time_to_first_byte: Time,
+    recorded: bool,
+}
+
+impl<O, F: Stream<Item = O>> Stream for TimeToFirstByteStream<F> {
+    type Item = O;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let self_projected = self.project();
+        let result = self_projected.inner.poll_next(cx);
+        if !*self_projected.recorded {
+            if let Poll::Ready(Some(_)) = &result {
+                *self_projected.recorded = true;
+                self_projected
+                    .time_to_first_byte
+                    .add_elapsed(*self_projected.start);
+            }
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use futures::stream::unfold;
+    use std::pin::pin;
 
     #[tokio::test]
     async fn elapsed_compute_future() {
@@ -493,7 +563,7 @@ mod tests {
     #[tokio::test]
     async fn elapsed_compute_stream() {
         fn cheap() -> impl Stream<Item = i64> {
-            futures::stream::unfold(0i64, |state| async move {
+            unfold(0i64, |state| async move {
                 if state < 10 {
                     tokio::time::sleep(Duration::from_micros(10)).await;
                     Some((state, state + 1))
@@ -504,7 +574,7 @@ mod tests {
         }
 
         fn expensive() -> impl Stream<Item = i64> {
-            futures::stream::unfold(0i64, |state| async move {
+            unfold(0i64, |state| async move {
                 if state < 10 {
                     // Simulate expensive computation
                     let mut _count = 0f64;
@@ -534,5 +604,37 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[tokio::test]
+    async fn time_to_first_byte_stream() {
+        // Create a stream that yields 10 items with delays between them.
+        fn delayed_stream() -> impl Stream<Item = i64> {
+            unfold(0i64, |state| async move {
+                if state < 10 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    Some((state, state + 1))
+                } else {
+                    None
+                }
+            })
+        }
+
+        let time_to_first_byte = Time::new();
+        let start = Instant::now();
+
+        let mut stream =
+            pin!(delayed_stream().with_time_to_first_byte(start, time_to_first_byte.clone()));
+
+        // Consume the first item and assert that the time to first byte is nonzero.
+        let _ = stream.next().await;
+        let metric_value = time_to_first_byte.value();
+        assert!(metric_value > 0);
+
+        // Finish the stream.
+        while stream.next().await.is_some() {}
+
+        // The metric should not change after the first message.
+        assert_eq!(metric_value, time_to_first_byte.value());
     }
 }
