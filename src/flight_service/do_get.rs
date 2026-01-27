@@ -1,4 +1,4 @@
-use crate::common::map_last_stream;
+use crate::common::{map_last_stream, on_drop_stream};
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::flight_service::session_builder::WorkerQueryContext;
 use crate::flight_service::worker::Worker;
@@ -29,7 +29,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::{Request, Response, Status};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -160,7 +160,10 @@ impl Worker {
             let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
 
             let key = key.clone();
+            let key_clone = key.clone();
             let plan = Arc::clone(&plan);
+            let fully_finished = Arc::new(AtomicBool::new(false));
+            let fully_finished_cloned = Arc::clone(&fully_finished);
             let stream = map_last_stream(stream, move |msg, last_msg_in_stream| {
                 // For each FlightData produced by this stream, mark it with the appropriate
                 // partition. This stream will be merged with several others from other partitions,
@@ -182,9 +185,23 @@ impl Worker {
                             )?);
                         }
                     }
+                    fully_finished.store(true, Ordering::SeqCst);
                 }
 
                 msg.map(|v| v.with_app_metadata(flight_data.encode_to_vec()))
+            });
+
+            let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+            let task_data_entries = Arc::clone(&self.task_data_entries);
+            let stream = on_drop_stream(stream, move || {
+                if !fully_finished_cloned.load(Ordering::SeqCst) {
+                    // If the stream was not fully consumed, but it ws dropped (abandoned), we
+                    // still need to remove the entry from `task_data_entries`, otherwise we
+                    // might leak memory until it gets automatically released due to a TTL.
+                    if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                        task_data_entries.remove(key_clone);
+                    }
+                }
             });
             streams.push(stream)
         }
