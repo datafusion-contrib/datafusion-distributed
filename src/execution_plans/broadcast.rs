@@ -7,17 +7,11 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
-use futures::future::{BoxFuture, FutureExt, Shared, ready};
-use futures::stream;
+use futures::{Stream, StreamExt, stream};
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::Arc;
-use tokio::sync::OnceCell;
-use tokio::task::JoinHandle;
-
-type CacheResult = Arc<Result<Arc<Vec<RecordBatch>>, DataFusionError>>;
-type CacheFuture = Shared<BoxFuture<'static, CacheResult>>;
-type CacheHandle = Arc<OnceCell<CacheFuture>>;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -70,12 +64,174 @@ type CacheHandle = Arc<OnceCell<CacheFuture>>;
 /// the operator below the [BroadCastExec] and populates each cache index with the respective
 /// partition. Subsequent consumer tasks, rather than executing the same partitions, read the
 /// data from the cache for each partition.
+///
+/// Represents a single cache entry in the [BroadcastExec] cache. This entry will hold the results
+/// for a single "real" partition.
+#[derive(Debug)]
+struct CacheEntry {
+    state: Mutex<EntryState>,
+    notify: Notify,
+}
+
+#[derive(Debug)]
+struct EntryState {
+    buffer: Vec<Arc<RecordBatch>>,
+    started: bool,
+    done: bool,
+    error: Option<Arc<str>>,
+}
+
+impl CacheEntry {
+    fn new() -> Self {
+        let state = Mutex::new(EntryState {
+            buffer: Vec::new(),
+            started: false,
+            done: false,
+            error: None,
+        });
+
+        Self {
+            state,
+            notify: Notify::new(),
+        }
+    }
+
+    /// Performs a modificaton to the [CacheEntry] internal state via the passed closure in a
+    /// lock-safe manner.
+    fn with_state<T>(&self, f: impl FnOnce(&mut EntryState) -> T) -> Result<T, DataFusionError> {
+        let mut guard = self.state.lock().map_err(|e| {
+            DataFusionError::Execution(format!("broadcast cache lock poisoned: {e}"))
+        })?;
+        Ok(f(&mut guard))
+    }
+
+    /// Pushes a [RecordBatch] onto the buffer and notifies all consumers.
+    fn push_batch(&self, batch: Arc<RecordBatch>) -> Result<(), DataFusionError> {
+        self.with_state(|s| s.buffer.push(batch))?;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Sets field `done` to true and notifies all consumers.
+    fn finish_ok(&self) -> Result<(), DataFusionError> {
+        self.with_state(|s| s.done = true)?;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Sets field `err` to the passed error, `done` to true and notifies all consumers.
+    fn finish_err(&self, err: DataFusionError) -> Result<(), DataFusionError> {
+        self.with_state(|s| {
+            s.error = Some(Arc::from(err.to_string()));
+            s.done = true;
+        })?;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Tries to start executing a input operator and populate [CacheEntry] `buffer`.
+    fn start_if_needed(
+        self: &Arc<Self>,
+        input: Arc<dyn ExecutionPlan>,
+        partition: usize,
+        ctx: Arc<TaskContext>,
+    ) -> Result<(), DataFusionError> {
+        let should_start = self.with_state(|s| {
+            if s.started {
+                false
+            } else {
+                s.started = true;
+                true
+            }
+        })?;
+
+        if !should_start {
+            return Ok(());
+        }
+
+        let entry = Arc::clone(self);
+        tokio::spawn(async move {
+            let result: Result<(), DataFusionError> = async {
+                let mut stream = input.execute(partition, ctx)?;
+                while let Some(next) = stream.next().await {
+                    let batch = next?;
+                    entry.push_batch(Arc::new(batch))?;
+                }
+                entry.finish_ok()?;
+                Ok(())
+            }
+            .await;
+
+            if let Err(err) = result {
+                let _ = entry.finish_err(err);
+            }
+        });
+
+        Ok(())
+    }
+
+    fn stream(self: Arc<Self>) -> impl Stream<Item = Result<RecordBatch, DataFusionError>> {
+        let read_state = |entry: &CacheEntry, idx: usize| {
+            entry.with_state(|s| {
+                if idx < s.buffer.len() {
+                    (Some(Arc::clone(&s.buffer[idx])), false, None)
+                } else {
+                    (None, s.done, s.error.clone())
+                }
+            })
+        };
+
+        enum StreamState {
+            Active { entry: Arc<CacheEntry>, idx: usize },
+            Done,
+        }
+
+        stream::unfold(
+            StreamState::Active {
+                entry: self,
+                idx: 0,
+            },
+            move |state| async move {
+                match state {
+                    StreamState::Done => None,
+                    StreamState::Active { entry, mut idx } => loop {
+                        let (batch_opt, done, err_opt) = match read_state(&entry, idx) {
+                            Ok(v) => v,
+                            Err(err) => return Some((Err(err), StreamState::Done)),
+                        };
+
+                        if let Some(batch) = batch_opt {
+                            idx += 1;
+                            return Some((
+                                Ok(batch.as_ref().clone()),
+                                StreamState::Active { entry, idx },
+                            ));
+                        }
+
+                        if done {
+                            if let Some(err) = err_opt {
+                                return Some((
+                                    Err(DataFusionError::Execution(err.to_string())),
+                                    StreamState::Done,
+                                ));
+                            }
+                            return None;
+                        }
+
+                        entry.notify.notified().await;
+                    },
+                }
+            },
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: PlanProperties,
-    cached_batches: Vec<CacheHandle>,
+    cached_entries: Vec<Arc<CacheEntry>>,
 }
 
 impl BroadcastExec {
@@ -88,15 +244,15 @@ impl BroadcastExec {
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(output_partition_count));
 
-        let cached_batches = (0..input_partition_count)
-            .map(|_| Arc::new(OnceCell::new()))
-            .collect::<Vec<CacheHandle>>();
+        let cached_entries = (0..input_partition_count)
+            .map(|_| Arc::new(CacheEntry::new()))
+            .collect::<Vec<Arc<CacheEntry>>>();
 
         Self {
             input,
             consumer_task_count,
             properties,
-            cached_batches,
+            cached_entries,
         }
     }
 
@@ -155,63 +311,15 @@ impl ExecutionPlan for BroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let real_partition = partition % self.input_partition_count();
-        let cache = Arc::clone(&self.cached_batches[real_partition]);
-        let input = Arc::clone(&self.input);
+        let entry = Arc::clone(&self.cached_entries[real_partition]);
         let schema = self.schema();
 
-        // TODO: Stream batches as they're produced instead of collect-then-emit. Currently we
-        // wait for all batches before consumers receive any. Streaming would allow overlapping
-        // production with network transfer.
-        //
-        // Challenges: late subscribers must replay from buffer since tokio::sync::broadcast drops old messages,
-        // need proper error propagation to all consumers and backpressure handling.
-        let stream = futures::stream::once(async move {
-            // Initialized the cache immediately with a shared future. Actual execution runs on a
-            // background tasks that will not be cancelled in the event that the consumer task is
-            // cancelled (like a TopK). This way, any consumer that reuses the same results will
-            // still see fetch from the cache even if the the first consumer was cancelled.
-            let cached = cache
-                .get_or_init(|| {
-                    let input = Arc::clone(&input);
-                    let context = Arc::clone(&context);
-                    let handle: JoinHandle<Result<Arc<Vec<RecordBatch>>, DataFusionError>> =
-                        tokio::spawn(async move {
-                            let stream = input.execute(real_partition, context)?;
-                            let batches: Vec<RecordBatch> =
-                                futures::TryStreamExt::try_collect(stream).await?;
-                            Ok(Arc::new(batches))
-                        });
-                    let cache_future: CacheFuture = async move {
-                        match handle.await {
-                            Ok(result) => Arc::new(result),
-                            Err(err) => Arc::new(Err(DataFusionError::Execution(format!(
-                                "BroadcastExec cache task failed: {err}"
-                            )))),
-                        }
-                    }
-                    .boxed()
-                    .shared();
-                    ready(cache_future)
-                })
-                .await
-                .clone();
+        // Streaming cache: consumers replay buffered batches and wait for new ones as they arrive.
+        // TODO: add bounded buffering/backpressure or eviction policies if memory grows too large.
+        entry.start_if_needed(Arc::clone(&self.input), real_partition, context)?;
+        let stream = entry.stream();
 
-            let result = cached.await;
-            let batches: Arc<Vec<RecordBatch>> = match result.as_ref() {
-                Ok(batches) => Arc::clone(batches),
-                Err(err) => return Err(DataFusionError::Execution(err.to_string())),
-            };
-
-            let batches_vec: Vec<RecordBatch> = batches.iter().cloned().collect();
-            Ok::<_, datafusion::error::DataFusionError>(stream::iter(
-                batches_vec.into_iter().map(Ok),
-            ))
-        });
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::TryStreamExt::try_flatten(stream),
-        )))
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
     fn schema(&self) -> SchemaRef {
