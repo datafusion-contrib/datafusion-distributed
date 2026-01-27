@@ -97,7 +97,8 @@ mod tests {
 
         // Execute the query using distributed datafusion, 2 workers,
         // and hive-style partitioned data.
-        let (mut distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let (mut distributed_ctx, _guard, _) =
+            start_localhost_context(2, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =
@@ -175,7 +176,8 @@ mod tests {
 
         // Execute the query using distributed datafusion, 2 workers,
         // and hive-style partitioned data.
-        let (mut distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let (mut distributed_ctx, _guard, _) =
+            start_localhost_context(2, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =
@@ -250,7 +252,8 @@ mod tests {
 
         // Execute the query using distributed datafusion, 2 workers,
         // and hive-style partitioned data.
-        let (mut distributed_ctx, _guard) = start_localhost_context(2, DefaultSessionBuilder).await;
+        let (mut distributed_ctx, _guard, _) =
+            start_localhost_context(2, DefaultSessionBuilder).await;
         set_configs(&mut distributed_ctx);
         register_tables(&distributed_ctx).await?;
         let (distributed_plan, distributed_results) =

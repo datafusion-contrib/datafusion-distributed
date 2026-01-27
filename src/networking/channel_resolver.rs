@@ -230,13 +230,13 @@ pub fn create_flight_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DefaultSessionBuilder;
-    use crate::test_utils::localhost::spawn_flight_service;
+    use crate::Worker;
     use datafusion::common::assert_contains;
     use datafusion::common::runtime::SpawnedTask;
     use std::error::Error;
     use std::time::Instant;
     use tokio::net::TcpListener;
+    use tonic::transport::Server;
 
     #[tokio::test]
     async fn fails_establishing_connection() -> Result<(), Box<dyn Error>> {
@@ -282,7 +282,13 @@ mod tests {
             .port();
 
         let task = SpawnedTask::spawn(async {
-            if let Err(err) = spawn_flight_service(DefaultSessionBuilder, listener).await {
+            let worker = Worker::default();
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            if let Err(err) = Server::builder()
+                .add_service(worker.into_flight_server())
+                .serve_with_incoming(incoming)
+                .await
+            {
                 panic!("{err}")
             }
         });

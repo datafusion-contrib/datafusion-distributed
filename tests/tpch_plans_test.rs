@@ -1118,7 +1118,7 @@ mod tests {
 
     // test_tpch_query generates and displays a distributed plan for each TPC-H query.
     async fn test_tpch_query(query_id: &str) -> Result<String, Box<dyn Error>> {
-        let (d_ctx, _guard) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let (d_ctx, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;
         let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
         let sql = tpch::get_query(query_id)?;

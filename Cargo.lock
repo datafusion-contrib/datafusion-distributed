@@ -2028,6 +2028,7 @@ dependencies = [
  "test-case",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tonic-prost",
  "tower",

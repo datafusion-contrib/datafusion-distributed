@@ -17,12 +17,13 @@ use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct WorkerHooks {
     pub(super) on_plan:
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
+#[derive(Clone)]
 pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
     pub(super) task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
@@ -126,6 +127,11 @@ impl Worker {
 
     pub fn observability_service(&self) -> ObservabilityServiceImpl {
         ObservabilityServiceImpl::new(self.task_data_entries.clone())
+    }
+
+    #[cfg(any(test, feature = "integration"))]
+    pub fn tasks_running(&self) -> usize {
+        self.task_data_entries.len()
     }
 }
 

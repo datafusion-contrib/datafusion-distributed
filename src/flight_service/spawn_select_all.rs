@@ -4,20 +4,24 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool};
 use futures::{Stream, StreamExt};
 use std::sync::Arc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Consumes all the provided streams in parallel sending their produced messages to a single
 /// queue in random order. The resulting queue is returned as a stream.
+///
+/// Uses a bounded channel with send timeout to detect when the client has stopped consuming
+/// (e.g., due to disconnect), allowing for prompt cleanup of resources.
 pub(crate) fn spawn_select_all<T, El, Err>(
     inner: Vec<T>,
     pool: Arc<dyn MemoryPool>,
+    queue_size: usize,
 ) -> impl Stream<Item = Result<El, Err>>
 where
     T: Stream<Item = Result<El, Err>> + Send + Unpin + 'static,
     El: MemoryFootPrint + Send + 'static,
     Err: Send + 'static,
 {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
 
     let mut tasks = vec![];
     for mut t in inner {
@@ -26,20 +30,29 @@ where
         let consumer = MemoryConsumer::new("NetworkBoundary");
 
         tasks.push(SpawnedTask::spawn(async move {
-            while let Some(msg) = t.next().await {
+            loop {
+                // Capture the closed() event as soon as possible. We don't want to do
+                // extra work if we know nobody is going to listen to it.
+                let msg = tokio::select! {
+                    biased;
+                    _ = tx.closed() => return,
+                    msg = t.next() => msg
+                };
+                let Some(msg) = msg else { return };
+
                 let mut reservation = consumer.clone_with_new_id().register(&pool);
                 if let Ok(msg) = &msg {
                     reservation.grow(msg.get_memory_size());
                 }
 
-                if tx.send((msg, reservation)).is_err() {
+                if tx.send((msg, reservation)).await.is_err() {
                     return;
                 };
             }
         }))
     }
 
-    UnboundedReceiverStream::new(rx).map(move |(msg, _reservation)| {
+    ReceiverStream::new(rx).map(move |(msg, _reservation)| {
         // keep the tasks alive as long as the stream lives
         let _ = &tasks;
         msg
@@ -80,6 +93,7 @@ mod tests {
                 futures::stream::iter(vec![Ok(4), Ok(5)]),
             ],
             Arc::clone(&pool),
+            5,
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         let reserved = pool.reserved();
@@ -95,6 +109,54 @@ mod tests {
 
         drop(stream);
 
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_reservation_backpressure() -> Result<(), Box<dyn Error>> {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+
+        let mut stream = spawn_select_all(
+            vec![futures::stream::iter(vec![
+                Ok::<_, String>(1),
+                Ok(2),
+                Ok(3),
+            ])],
+            Arc::clone(&pool),
+            1,
+        );
+        // First two messages are buffered (1+2)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 3);
+
+        // First message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 1);
+
+        // The third message is buffered, but the first one came out (2+3)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 5);
+
+        // Second message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 2);
+
+        // Only the third message is buffered
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 3);
+
+        // The third message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 3);
+
+        // Nothing remains in the pool
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         let reserved = pool.reserved();
         assert_eq!(reserved, 0);
 
