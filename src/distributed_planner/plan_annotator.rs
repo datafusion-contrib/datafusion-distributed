@@ -285,11 +285,7 @@ fn _annotate_plan(
         .map(|child| _annotate_plan(Arc::clone(child), Some(&plan), cfg))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut max_task_count_restriction = if estimator.force_one_task(&plan, cfg) {
-        Some(1)
-    } else {
-        None
-    };
+    let mut max_task_count_restriction = estimator.max_tasks(&plan, cfg);
     if annotated_children.is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
@@ -873,11 +869,13 @@ mod tests {
     struct BroadcastBuildCoalesceMaxEstimator;
 
     impl DistributedPlannerExtension for BroadcastBuildCoalesceMaxEstimator {
-        fn force_one_task(&self, plan: &Arc<dyn ExecutionPlan>, _: &ConfigOptions) -> bool {
-            let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() else {
-                return false;
-            };
-            coalesce.input().as_any().is::<BroadcastExec>()
+        fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, _: &ConfigOptions) -> Option<usize> {
+            let coalesce = plan.as_any().downcast_ref::<CoalescePartitionsExec>()?;
+            if coalesce.input().as_any().is::<BroadcastExec>() {
+                Some(1)
+            } else {
+                None
+            }
         }
 
         fn scale_up_leaf_node(
