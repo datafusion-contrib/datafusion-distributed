@@ -154,6 +154,8 @@ mod tests {
             .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
             .with_distributed_metrics_collection(true)
             .unwrap()
+            .with_distributed_bytes_processed_per_partition(10)
+            .unwrap()
             .build();
 
         let ctx = SessionContext::from(state);
