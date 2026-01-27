@@ -345,6 +345,8 @@ mod tests {
                 .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
+                .with_distributed_bytes_processed_per_partition(1)
+                .unwrap()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
         }
 
@@ -559,9 +561,6 @@ mod tests {
     #[tokio::test]
     async fn test_rewrite_unexecuted_distributed_plan_with_metrics_err() {
         let ctx = make_test_distributed_ctx().await;
-        ctx.sql("SET distributed.bytes_processed_per_partition = 10")
-            .await
-            .unwrap();
         let plan = ctx
             .sql("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10")
             .await
