@@ -34,6 +34,7 @@ mod tests {
     #[tokio::test]
     async fn custom_config_extension() -> Result<(), Box<dyn std::error::Error>> {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx.set_distributed_bytes_processed_per_partition(1000)?;
         ctx = SessionStateBuilder::from(ctx.state())
             .with_distributed_option_extension(CustomExtension {
                 foo: "foo".to_string(),
