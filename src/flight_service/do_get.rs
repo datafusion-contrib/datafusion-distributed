@@ -72,7 +72,8 @@ pub struct TaskData {
 impl TaskData {
     /// Returns the number of partitions remaining to be processed.
     pub(crate) fn num_partitions_remaining(&self) -> usize {
-        self.num_partitions_remaining.load(std::sync::atomic::Ordering::Relaxed)
+        self.num_partitions_remaining
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the total number of partitions in this task.
