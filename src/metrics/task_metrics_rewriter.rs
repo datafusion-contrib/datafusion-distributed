@@ -187,24 +187,20 @@ pub fn rewrite_local_plan_with_metrics(
 /// Task 1:
 /// AggregateExec [output_rows = 1, elapsed_compute = 100]
 ///  └── ProjectionExec [output_rows = 2, elapsed_compute = 200]
-///      └── NetworkShuffleExec
+///      └── NetworkShuffleExec [bytes_transferred = 100, max_mem_used = 100]
 ///
 /// Task 2:
 /// AggregateExec [output_rows = 3, elapsed_compute = 300]
 ///  └── ProjectionExec [output_rows = 4, elapsed_compute = 400]
-///      └── NetworkShuffleExec
+///      └── NetworkShuffleExec [bytes_transferred = 200, max_mem_used = 200]
 ///
 /// The result will be:
 ///
 /// MetricsWrapperExec (wrapped: AggregateExec) [output_rows = 1, output_rows = 3, elapsed_compute = 100, elapsed_compute = 300]
 ///  └── MetricsWrapperExec (wrapped: ProjectionExec) [output_rows = 2, output_rows = 4, elapsed_compute = 200, elapsed_compute = 400]
-///      └── NetworkShuffleExec
+///      └── MetricsWrapperExec (wrapped: NetworkShuffleExec) [bytes_transferred = 100, bytes_transferred = 200, max_mem_used = 100, max_mem_used = 200]
 ///
-/// Note:
-/// - The NetworkShuffleExec node is not wrapped
-/// - Metrics may be aggregated by type (ex. output_rows) automatically by various datafusion utils.
-///
-/// TODO(#185): Add labels for each task
+/// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &Stage,
     metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
@@ -282,7 +278,7 @@ mod tests {
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
-    use crate::test_utils::plans::count_plan_nodes;
+    use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
     use crate::{NetworkBoundaryExt, Stage};
@@ -442,7 +438,7 @@ mod tests {
                 stage.num as u64,
                 task_id as u64,
             );
-            let metrics = (0..count_plan_nodes(&plan))
+            let metrics = (0..count_plan_nodes_up_to_network_boundary(&plan))
                 .map(|node_id| {
                     make_test_metrics_set_proto_from_seed(
                         (node_id * task_id) as u64,
@@ -462,7 +458,10 @@ mod tests {
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];
         collect_metrics_from_plan(&rewritten_plan, &mut actual_metrics);
-        assert_eq!(actual_metrics.len(), count_plan_nodes(&plan));
+        assert_eq!(
+            actual_metrics.len(),
+            count_plan_nodes_up_to_network_boundary(&plan)
+        );
 
         // Assert that metrics from all tasks are present.
         // actual_stage_node_metrics_set contains metrics for all task ex. [output_rows=1, elapsed_compute=1, output_rows=2, elapsed_compute=2...]
@@ -557,18 +556,16 @@ mod tests {
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
     fn assert_metrics_present_in_plan(plan: &Arc<dyn ExecutionPlan>) {
+        // Check if this is a PartitionIsolatorExec (possibly wrapped in MetricsWrapperExec)
+        // For MetricsWrapperExec, we check the name() which delegates to the inner plan
+        let is_partition_isolator = plan.name() == PartitionIsolatorExec::static_name();
+
         if let Some(metrics) = plan.metrics() {
-            assert!(metrics.iter().count() > 0);
+            // PartitionIsolatorExec nodes are allowed to have empty metrics
+            if !is_partition_isolator {
+                assert!(metrics.iter().count() > 0);
+            }
         } else {
-            let is_partition_isolator =
-                if let Some(metrics_wrapper) = plan.as_any().downcast_ref::<MetricsWrapperExec>() {
-                    metrics_wrapper
-                        .as_any()
-                        .downcast_ref::<PartitionIsolatorExec>()
-                        .is_some()
-                } else {
-                    false
-                };
             assert!(
                 plan.is_network_boundary()
                     || is_partition_isolator
@@ -581,7 +578,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_executed_distributed_plan_has_metrics() {
         let ctx = make_test_distributed_ctx().await;
         let plan = ctx

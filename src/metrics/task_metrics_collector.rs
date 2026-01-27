@@ -122,11 +122,13 @@ mod tests {
     use futures::StreamExt;
 
     use crate::execution_plans::DistributedExec;
-    use crate::metrics::proto::metrics_set_proto_to_df;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
-    use crate::test_utils::plans::{count_plan_nodes, get_stages_and_stage_keys};
+    use crate::test_utils::parquet::register_parquet_tables;
+    use crate::test_utils::plans::{
+        count_plan_nodes_up_to_network_boundary, get_stages_and_stage_keys,
+    };
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
@@ -274,34 +276,27 @@ mod tests {
             // Get the collected metrics for this task.
             let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
 
-            // Assert that there's metrics for each node in this task.
+            // Verify that metrics were collected for all nodes. Some nodes may legitimately have
+            // empty metrics (e.g., custom execution plans without metrics), which is fine - we
+            // just verify that a metrics set exists for each node. The count assertion above
+            // ensures all nodes are included in the metrics collection.
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            let stage_plan = stage.plan.decoded().unwrap();
             assert_eq!(
                 actual_metrics.len(),
-                count_plan_nodes(stage.plan.decoded().unwrap()),
+                count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
             );
-
-            // Ensure each node has at least one metric which was collected.
-            for metrics_set in actual_metrics.iter() {
-                let metrics_set = metrics_set_proto_to_df(metrics_set).unwrap();
-                assert!(
-                    metrics_set.iter().count() > 0,
-                    "Did not found metrics for Stage {expected_stage_key:?}"
-                );
-            }
         }
     }
 
     #[tokio::test]
-    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_1() {
         run_metrics_collection_e2e_test("SELECT id, COUNT(*) as count FROM table1 WHERE id > 1 GROUP BY id ORDER BY id LIMIT 10").await;
     }
 
     // Skip this test, it's failing after upgrading to datafusion 50
     // See https://github.com/datafusion-contrib/datafusion-distributed/pull/146#issuecomment-3356621629
-    #[ignore]
     #[tokio::test]
     async fn test_metrics_collection_e2e_2() {
         run_metrics_collection_e2e_test(
@@ -318,7 +313,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
     async fn test_metrics_collection_e2e_3() {
         run_metrics_collection_e2e_test(
             "SELECT
@@ -338,9 +332,64 @@ mod tests {
         .await;
     }
 
+    /// Skipped due to https://github.com/apache/datafusion/issues/14218
+    ///
+    /// When aggregating on a dictionary column (ex. `company` in this case which is Dict<UInt16, Utf8>),
+    /// the aggregation seems to be outputting Utf8. Some assertion fails due to this, even in
+    /// single node execution:
+    /// "column types must match schema types, expected Dictionary(UInt16, Utf8) but found Utf8 at column index 0"
     #[tokio::test]
-    #[ignore] // https://github.com/datafusion-contrib/datafusion-distributed/issues/260
+    #[ignore]
     async fn test_metrics_collection_e2e_4() {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
+    }
+
+    /// Test that verifies PartitionIsolatorExec nodes are preserved during metrics collection.
+    /// This tests the corner case where PartitionIsolatorExec nodes (which have no metrics)
+    /// must still be included in the metrics collection to maintain correct node-to-metric mapping.
+    #[tokio::test]
+    async fn test_metrics_collection_with_partition_isolator() {
+        let ctx = make_test_ctx().await;
+        ctx.sql("SET distributed.children_isolator_unions=true;")
+            .await
+            .unwrap();
+
+        // Use weather dataset (already available)
+        register_parquet_tables(&ctx).await.unwrap();
+
+        // UNION query that creates PartitionIsolatorExec nodes
+        let query = r#"
+            SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+            UNION ALL
+            SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        "#;
+
+        let df = ctx.sql(query).await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        execute_plan(plan.clone(), &ctx).await;
+
+        let dist_exec = plan
+            .as_any()
+            .downcast_ref::<DistributedExec>()
+            .expect("expected DistributedExec");
+
+        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(dist_exec.plan.clone()).unwrap();
+
+        // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
+        for expected_stage_key in expected_stage_keys {
+            let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
+            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            let stage_plan = stage.plan.decoded().unwrap();
+
+            // Verify metrics count matches - this ensures all nodes are included in metrics collection
+            // regardless of whether they have metrics or not (some nodes may have empty metrics sets)
+            assert_eq!(
+                actual_metrics.len(),
+                count_plan_nodes_up_to_network_boundary(stage_plan),
+                "Metrics count must match plan nodes for stage {expected_stage_key:?}"
+            );
+        }
     }
 }

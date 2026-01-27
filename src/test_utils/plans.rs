@@ -22,18 +22,19 @@ use super::parquet::register_parquet_tables;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
 /// This does NOT traverse child stages, only the execution plan tree within this stage.
-/// Excludes [NetworkBoundary] nodes from the count.
-pub fn count_plan_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
+/// Network boundary nodes are counted but their children (which belong to child stages) are not traversed.
+pub fn count_plan_nodes_up_to_network_boundary(plan: &Arc<dyn ExecutionPlan>) -> usize {
     let mut count = 0;
     let mut queue = vec![plan];
 
     while let Some(plan) = queue.pop() {
-        // Skip [NetworkBoundary] nodes from the count.
+        // Include the network boundary in the count.
+        count += 1;
+
+        // Stop at network boundaries - don't traverse into child stages
         if plan.as_ref().is_network_boundary() {
             continue;
         }
-
-        count += 1;
 
         // Add children to the queue for BFS traversal
         for child in plan.children() {
