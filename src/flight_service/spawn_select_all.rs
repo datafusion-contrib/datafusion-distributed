@@ -115,6 +115,54 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn memory_reservation_backpressure() -> Result<(), Box<dyn Error>> {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+
+        let mut stream = spawn_select_all(
+            vec![futures::stream::iter(vec![
+                Ok::<_, String>(1),
+                Ok(2),
+                Ok(3),
+            ])],
+            Arc::clone(&pool),
+            1,
+        );
+        // First two messages are buffered (1+2)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 3);
+
+        // First message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 1);
+
+        // The third message is buffered, but the first one came out (2+3)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 5);
+
+        // Second message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 2);
+
+        // Only the third message is buffered
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 3);
+
+        // The third message is pulled
+        let n = stream.next().await.unwrap()?;
+        assert_eq!(n, 3);
+
+        // Nothing remains in the pool
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        let reserved = pool.reserved();
+        assert_eq!(reserved, 0);
+
+        Ok(())
+    }
+
     impl MemoryFootPrint for usize {
         fn get_memory_size(&self) -> usize {
             *self
