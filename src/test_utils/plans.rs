@@ -185,14 +185,17 @@ pub(crate) struct BuildSideOneDistributedPlannerExtension;
 
 #[cfg(test)]
 impl DistributedPlannerExtension for BuildSideOneDistributedPlannerExtension {
-    fn force_one_task(&self, plan: &Arc<dyn ExecutionPlan>, _: &ConfigOptions) -> bool {
+    fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, _: &ConfigOptions) -> Option<usize> {
         if !plan.children().is_empty() {
-            return false;
+            return None;
         }
         let schema = plan.schema();
         let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
         let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
-        has_min_temp && !has_max_temp
+        if has_min_temp && !has_max_temp {
+            return Some(1);
+        }
+        None
     }
 
     fn scale_up_leaf_node(
