@@ -7,6 +7,7 @@ use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::Shared;
+use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tonic::body::Body;
@@ -105,6 +106,14 @@ type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionErr
 #[derive(Clone, Default)]
 pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send + Sync>>);
 
+static IO_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_name("worker-channels")
+        .enable_io()
+        .build()
+        .ok()
+});
+
 /// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
 /// and stores the connection instance in a TTI cache.
 ///
@@ -130,18 +139,33 @@ impl Default for DefaultChannelResolver {
         }
     }
 }
+#[derive(Clone)]
+struct HyperExecutor(tokio::runtime::Handle);
+
+impl hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>> for HyperExecutor {
+    fn execute(&self, fut: Pin<Box<dyn Future<Output = ()> + Send>>) {
+        self.0.clone().spawn(fut);
+    }
+}
 
 impl DefaultChannelResolver {
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+        let mut io_handle = None;
+        if let Some(io_runtime) = IO_RUNTIME.as_ref() {
+            io_handle = Some(io_runtime.handle().clone())
+        }
         let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
+                let mut endpoint = Channel::from_shared(url.clone()).map_err(|err| {
                     config_datafusion_err!(
                         "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
                     )
                 })?;
+                if let Some(io_handle) = io_handle {
+                    endpoint = endpoint.executor(HyperExecutor(io_handle))
+                }
                 let mut channel = endpoint.connect().await.map_err(|err| {
                     DataFusionError::Context(
                         format!("{err:?}"),
@@ -160,8 +184,8 @@ impl DefaultChannelResolver {
                 })?;
                 Ok(BoxCloneSyncChannel::new(channel))
             }
-            .boxed()
-            .shared()
+                .boxed()
+                .shared()
         });
 
         channel.await.map_err(|err| {
