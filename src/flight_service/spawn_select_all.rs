@@ -6,9 +6,6 @@ use futures::{Stream, StreamExt};
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// Buffer size for the channel. Small enough to detect backpressure quickly.
-const CHANNEL_BUFFER_SIZE: usize = 2;
-
 /// Consumes all the provided streams in parallel sending their produced messages to a single
 /// queue in random order. The resulting queue is returned as a stream.
 ///
@@ -17,13 +14,14 @@ const CHANNEL_BUFFER_SIZE: usize = 2;
 pub(crate) fn spawn_select_all<T, El, Err>(
     inner: Vec<T>,
     pool: Arc<dyn MemoryPool>,
+    queue_size: usize,
 ) -> impl Stream<Item = Result<El, Err>>
 where
     T: Stream<Item = Result<El, Err>> + Send + Unpin + 'static,
     El: MemoryFootPrint + Send + 'static,
     Err: Send + 'static,
 {
-    let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
 
     let mut tasks = vec![];
     for mut t in inner {
@@ -95,6 +93,7 @@ mod tests {
                 futures::stream::iter(vec![Ok(4), Ok(5)]),
             ],
             Arc::clone(&pool),
+            5,
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         let reserved = pool.reserved();

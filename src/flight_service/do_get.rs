@@ -32,6 +32,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::{Request, Response, Status};
 
+/// How many record batches to buffer from the plan execution.
+const RECORD_BATCH_BUFFER_SIZE: usize = 2;
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
     /// The [Arc<dyn ExecutionPlan>] we are going to execute encoded as protobuf bytes.
@@ -209,7 +212,7 @@ impl Worker {
         // Merge all the per-partition streams into one. Each message in the stream is marked with
         // the original partition, so they can be reconstructed at the other side of the boundary.
         let memory_pool = Arc::clone(&session_state.runtime_env().memory_pool);
-        let stream = spawn_select_all(streams, memory_pool);
+        let stream = spawn_select_all(streams, memory_pool, RECORD_BATCH_BUFFER_SIZE);
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
             FlightError::Tonic(status) => *status,

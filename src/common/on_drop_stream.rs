@@ -63,8 +63,8 @@ impl<S, F: FnOnce()> PinnedDrop for OnDropStream<S, F> {
 mod tests {
     use super::*;
     use futures::StreamExt;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn fires_on_drop_when_fully_consumed() {
