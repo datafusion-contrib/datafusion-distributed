@@ -264,7 +264,7 @@ where
     }
 
     /// Returns the number of entries currently stored in the map
-    #[cfg(test)]
+    #[cfg(any(test, feature = "integration"))]
     pub fn len(&self) -> usize {
         self.data.len()
     }

@@ -20,7 +20,7 @@ mod tests {
     async fn test_metrics_collection_in_aggregation(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -47,7 +47,7 @@ mod tests {
     async fn test_metrics_collection_in_join(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query = r#"
         WITH a AS (
@@ -97,7 +97,7 @@ mod tests {
     async fn test_metrics_collection_in_union(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
@@ -135,7 +135,7 @@ mod tests {
     async fn test_metric_collection_network_boundaries(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;

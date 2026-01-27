@@ -17,7 +17,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_aggregation() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -103,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_aggregation_head_node_partitioned() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard) = start_localhost_context(6, DefaultSessionBuilder).await;
+        let (ctx_distributed, _guard, _) = start_localhost_context(6, DefaultSessionBuilder).await;
 
         let query = r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday""#;
 
@@ -158,7 +158,7 @@ mod tests {
     //       a new approach must be used in this case.
     #[tokio::test]
     async fn test_multiple_first_value_aggregations() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("group_id", DataType::Int32, false),

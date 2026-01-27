@@ -10,7 +10,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_show_columns() -> Result<(), Box<dyn Error>> {
-        let (ctx, _guard) = start_localhost_context(3, |mut ctx: WorkerQueryContext| async {
+        let (ctx, _guard, _) = start_localhost_context(3, |mut ctx: WorkerQueryContext| async {
             let cfg = ctx.builder.config().get_or_insert_default();
             let opts = cfg.options_mut();
             opts.catalog.information_schema = true;

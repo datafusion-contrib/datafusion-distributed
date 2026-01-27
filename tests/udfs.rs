@@ -34,7 +34,7 @@ mod tests {
                 .build())
         }
 
-        let (ctx, _guard) = start_localhost_context(3, build_state).await;
+        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
 
         let wrap = |input: Arc<dyn ExecutionPlan>| -> Arc<dyn ExecutionPlan> {
             Arc::new(
