@@ -6,14 +6,17 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
+    use datafusion_distributed::{
+        DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn more_tasks_than_children() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        ctx_distributed.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
@@ -61,7 +64,8 @@ mod tests {
 
     #[tokio::test]
     async fn same_children_than_tasks() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        ctx_distributed.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 20.0
@@ -114,7 +118,8 @@ mod tests {
 
     #[tokio::test]
     async fn more_children_than_tasks() -> Result<(), Box<dyn Error>> {
-        let (ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut ctx_distributed, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        ctx_distributed.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0

@@ -43,6 +43,7 @@ mod tests {
         }
 
         let (mut ctx_distributed, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx_distributed.set_distributed_bytes_processed_per_partition(1000)?;
         ctx_distributed.set_distributed_user_codec(PassThroughExecCodec);
         register_parquet_tables(&ctx_distributed).await?;
 

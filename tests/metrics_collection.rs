@@ -9,8 +9,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec,
-        display_plan_ascii, rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
+        NetworkShuffleExec, display_plan_ascii, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -22,7 +22,8 @@ mod tests {
     async fn test_metrics_collection_in_aggregation(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -49,7 +50,8 @@ mod tests {
     async fn test_metrics_collection_in_join(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         WITH a AS (
@@ -99,7 +101,8 @@ mod tests {
     async fn test_metrics_collection_in_union(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
@@ -137,7 +140,8 @@ mod tests {
     async fn test_metric_collection_network_boundaries(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
