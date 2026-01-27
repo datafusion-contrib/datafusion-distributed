@@ -1,17 +1,23 @@
 use crate::common::require_one_child;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
+use futures::future::{BoxFuture, FutureExt, Shared, ready};
 use futures::stream;
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use tokio::task::JoinHandle;
+
+type CacheResult = Arc<Result<Arc<Vec<RecordBatch>>, DataFusionError>>;
+type CacheFuture = Shared<BoxFuture<'static, CacheResult>>;
+type CacheHandle = Arc<OnceCell<CacheFuture>>;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -69,7 +75,7 @@ pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: PlanProperties,
-    cached_batches: Vec<Arc<OnceCell<Arc<Vec<RecordBatch>>>>>,
+    cached_batches: Vec<CacheHandle>,
 }
 
 impl BroadcastExec {
@@ -84,7 +90,7 @@ impl BroadcastExec {
 
         let cached_batches = (0..input_partition_count)
             .map(|_| Arc::new(OnceCell::new()))
-            .collect();
+            .collect::<Vec<CacheHandle>>();
 
         Self {
             input,
@@ -160,15 +166,42 @@ impl ExecutionPlan for BroadcastExec {
         // Challenges: late subscribers must replay from buffer since tokio::sync::broadcast drops old messages,
         // need proper error propagation to all consumers and backpressure handling.
         let stream = futures::stream::once(async move {
-            let batches = cache
-                .get_or_try_init(|| async {
-                    let stream = input.execute(real_partition, context)?;
-                    let batches: Vec<RecordBatch> =
-                        futures::TryStreamExt::try_collect(stream).await?;
-                    Ok::<_, datafusion::error::DataFusionError>(Arc::new(batches))
+            // Initialized the cache immediately with a shared future. Actual execution runs on a
+            // background tasks that will not be cancelled in the event that the consumer task is
+            // cancelled (like a TopK). This way, any consumer that reuses the same results will
+            // still see fetch from the cache even if the the first consumer was cancelled.
+            let cached = cache
+                .get_or_init(|| {
+                    let input = Arc::clone(&input);
+                    let context = Arc::clone(&context);
+                    let handle: JoinHandle<Result<Arc<Vec<RecordBatch>>, DataFusionError>> =
+                        tokio::spawn(async move {
+                            let stream = input.execute(real_partition, context)?;
+                            let batches: Vec<RecordBatch> =
+                                futures::TryStreamExt::try_collect(stream).await?;
+                            Ok(Arc::new(batches))
+                        });
+                    let cache_future: CacheFuture = async move {
+                        match handle.await {
+                            Ok(result) => Arc::new(result),
+                            Err(err) => Arc::new(Err(DataFusionError::Execution(format!(
+                                "BroadcastExec cache task failed: {err}"
+                            )))),
+                        }
+                    }
+                    .boxed()
+                    .shared();
+                    ready(cache_future)
                 })
-                .await?;
-            let batches = Arc::clone(batches);
+                .await
+                .clone();
+
+            let result = cached.await;
+            let batches: Arc<Vec<RecordBatch>> = match result.as_ref() {
+                Ok(batches) => Arc::clone(batches),
+                Err(err) => return Err(DataFusionError::Execution(err.to_string())),
+            };
+
             let batches_vec: Vec<RecordBatch> = batches.iter().cloned().collect();
             Ok::<_, datafusion::error::DataFusionError>(stream::iter(
                 batches_vec.into_iter().map(Ok),
