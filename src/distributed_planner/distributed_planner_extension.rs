@@ -13,14 +13,14 @@ use std::sync::Arc;
 /// [ExecutionPlan]s. Typically used for handling custom user defined [ExecutionPlan]s in a
 /// distributed context.
 pub trait DistributedPlannerExtension {
-    /// Signals the distributed planner that the provided node must not be distributed, and that it
-    /// must run in exactly one task.
+    /// Signals the distributed planner that the provided node must run in at most N tasks.
+    /// Returning Some(1) effectively tells the planner that the node cannot be distributed.
     ///
     /// This is useful when users have custom nodes that cannot be executed in more than one task
     /// because of technical limitations. These nodes might still have the chance to be executed
     /// in a distributed query, but the stage that handles them will be force-limited to one task.
-    fn force_one_task(&self, _plan: &Arc<dyn ExecutionPlan>, _cfg: &ConfigOptions) -> bool {
-        false
+    fn max_tasks(&self, _plan: &Arc<dyn ExecutionPlan>, _cfg: &ConfigOptions) -> Option<usize> {
+        None
     }
 
     /// Once the distributed planner has decided how many tasks should be used in each stage, it
@@ -39,7 +39,7 @@ pub trait DistributedPlannerExtension {
 impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension> {
     delegate! {
         to self.as_ref() {
-            fn force_one_task(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> bool;
+            fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
         }
     }
@@ -48,7 +48,7 @@ impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension> {
 impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension + Send + Sync> {
     delegate! {
         to self.as_ref() {
-            fn force_one_task(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> bool;
+            fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
         }
     }
@@ -121,13 +121,13 @@ pub(crate) struct CombinedDistributedPlannerExtension {
 }
 
 impl DistributedPlannerExtension for CombinedDistributedPlannerExtension {
-    fn force_one_task(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> bool {
+    fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize> {
         for estimator in &self.user_provided {
-            if estimator.force_one_task(plan, cfg) {
-                return true;
+            if let Some(max_tasks) = estimator.max_tasks(plan, cfg) {
+                return Some(max_tasks);
             }
         }
-        false
+        None
     }
 
     fn scale_up_leaf_node(
