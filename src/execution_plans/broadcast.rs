@@ -69,15 +69,22 @@ use tokio::sync::Notify;
 /// for a single "real" partition.
 #[derive(Debug)]
 struct CacheEntry {
+    /// Shared data for producer and consumers.
     state: Mutex<EntryState>,
+    /// Notifies consumers when state changes.
     notify: Notify,
 }
 
+/// Shared state for a cache entry.
 #[derive(Debug)]
 struct EntryState {
+    /// Buffered [RecordBatch]es produced thus far.
     buffer: Vec<Arc<RecordBatch>>,
+    /// Whether execution for this partition has begun.
     started: bool,
+    /// Whether execution for this partition has completed.
     done: bool,
+    /// Error from the producer (if any).
     error: Option<Arc<str>>,
 }
 
@@ -96,7 +103,7 @@ impl CacheEntry {
         }
     }
 
-    /// Performs a modificaton to the [CacheEntry] internal state via the passed closure in a
+    /// Performs a modification to the [CacheEntry] internal state via the passed closure in a
     /// lock-safe manner.
     fn with_state<T>(&self, f: impl FnOnce(&mut EntryState) -> T) -> Result<T, DataFusionError> {
         let mut guard = self.state.lock().map_err(|e| {
@@ -129,7 +136,8 @@ impl CacheEntry {
         Ok(())
     }
 
-    /// Tries to start executing a input operator and populate [CacheEntry] `buffer`.
+    /// Tries to start executing an input operator and populate [CacheEntry] `buffer`.
+    /// This ensures a single producer and starts the underlying partition execution.
     fn start_if_needed(
         self: &Arc<Self>,
         input: Arc<dyn ExecutionPlan>,
@@ -170,6 +178,9 @@ impl CacheEntry {
         Ok(())
     }
 
+    /// Creates a stream of [RecordBatch]es.
+    /// Will replay any batches already cached and wait for more batches while the producer is
+    /// running.
     fn stream(self: Arc<Self>) -> impl Stream<Item = Result<RecordBatch, DataFusionError>> {
         let read_state = |entry: &CacheEntry, idx: usize| {
             entry.with_state(|s| {
@@ -314,7 +325,6 @@ impl ExecutionPlan for BroadcastExec {
         let entry = Arc::clone(&self.cached_entries[real_partition]);
         let schema = self.schema();
 
-        // Streaming cache: consumers replay buffered batches and wait for new ones as they arrive.
         // TODO: add bounded buffering/backpressure or eviction policies if memory grows too large.
         entry.start_if_needed(Arc::clone(&self.input), real_partition, context)?;
         let stream = entry.stream();
