@@ -12,42 +12,41 @@ message PingResponse {
   uint32 value = 1;
 }
 
-// Request to get progress information for all active tasks
 message GetTaskProgressRequest {}
 
-// Uniquely identifies a task within a query
 message StageKey {
-  // The query identifier
   bytes query_id = 1;
-  // The stage identifier within the query
   uint64 stage_id = 2;
-  // The task number within the stage
   uint64 task_number = 3;
 }
 
 // Progress information for a single task
 message TaskProgress {
-  // Identifies the task
   StageKey stage_key = 1;
-
-  // Total number of partitions in this task
   uint64 total_partitions = 2;
-
-  // Number of completed paritions in this task
   uint64 completed_partitions = 3;
-
-  // Current status of the task
   TaskStatus status = 4;
 }
 
-// Task execution status
 enum TaskStatus {
   TASK_STATUS_UNSPECIFIED = 0;
   TASK_STATUS_RUNNING = 1;
 }
 
-// Response containing progress for all active tasks
 message GetTaskProgressResponse {
   repeated TaskProgress tasks = 1;
 }
 
+// Console control service allows clients to register workers
+service ConsoleControlService {
+  rpc RegisterWorkers (RegisterWorkersRequest) returns (RegisterWorkersResponse);
+}
+
+message RegisterWorkersRequest {
+  repeated string worker_urls = 1;
+}
+
+message RegisterWorkersResponse {
+  uint32 workers_registered = 1;
+  string error_message = 2;
+}
