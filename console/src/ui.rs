@@ -156,7 +156,10 @@ fn render_worker_section(frame: &mut Frame, area: Rect, worker: &WorkerState) {
         .centered();
 
         frame.render_widget(disconnect_msg, inner_area);
-    } else if worker.tasks.is_empty() {
+    } else if worker.all_tasks_completed() {
+        // Show completed state (100% progress bar)
+        render_completed_state(frame, inner_area, worker);
+    } else if worker.tasks.is_empty() && !worker.has_completed_tasks() {
         // Show idle message
         let idle_msg = Paragraph::new(vec![Line::from(Span::styled(
             "No active tasks",
@@ -168,7 +171,7 @@ fn render_worker_section(frame: &mut Frame, area: Rect, worker: &WorkerState) {
 
         frame.render_widget(idle_msg, inner_area);
     } else {
-        // Show aggregated progress bar
+        // Show aggregated progress bar (running + completed)
         render_aggregated_progress(frame, inner_area, worker);
     }
 }
@@ -218,7 +221,8 @@ fn render_aggregated_progress(frame: &mut Frame, area: Rect, worker: &WorkerStat
 
 /// Render completed state for a worker
 fn render_completed_state(frame: &mut Frame, area: Rect, worker: &WorkerState) {
-    let (_completed, total) = worker.aggregate_progress();
+    let total: u64 = worker.completed_tasks.iter().map(|t| t.total_partitions).sum();
+    let task_count = worker.completed_tasks.len();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -228,9 +232,9 @@ fn render_completed_state(frame: &mut Frame, area: Rect, worker: &WorkerState) {
         ])
         .split(area);
 
-    // Label: "Tasks Completed ✓"
+    // Label: "Tasks Completed ✓ (N tasks)"
     let label = Line::from(Span::styled(
-        "Tasks Completed ✓",
+        format!("Tasks Completed ✓ ({task_count} tasks)"),
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
@@ -248,6 +252,7 @@ fn render_completed_state(frame: &mut Frame, area: Rect, worker: &WorkerState) {
                 .add_modifier(Modifier::BOLD),
         )
         .label(progress_label)
+        .use_unicode(true)
         .ratio(1.0);
 
     frame.render_widget(gauge, chunks[1]);

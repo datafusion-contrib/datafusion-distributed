@@ -90,6 +90,7 @@ async fn run_queries(
     use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use std::fs;
     use std::time::Instant;
+    use tokio::time::{Sleep, sleep, timeout};
 
     println!(
         "Running TPC-DS queries (SF={scale_factor}, partitions={parquet_partitions}) against workers: {cluster_ports:?}"
@@ -142,6 +143,9 @@ async fn run_queries(
                 continue;
             }
         };
+
+        // Add sleep to observe "completed" state in console
+        sleep(tokio::time::Duration::from_millis(1000)).await;
 
         println!("Running {query}");
 

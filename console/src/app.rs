@@ -1,4 +1,6 @@
-use datafusion_distributed::{GetTaskProgressRequest, ObservabilityServiceClient, PingRequest};
+use datafusion_distributed::{
+    GetTaskProgressRequest, ObservabilityServiceClient, ObservabilityStageKey, PingRequest,
+};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -56,6 +58,7 @@ impl App {
                 client: None,
                 connection_status: ConnectionStatus::Connecting,
                 tasks: Vec::new(),
+                completed_tasks: Vec::new(),
                 last_poll: None,
                 last_reconnect_attempt: None,
                 last_seen_query_ids: HashSet::new(),
@@ -79,9 +82,10 @@ impl App {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                 KeyCode::Char('r') => {
-                    // Reset to IDLE state (clear workers and wait for new registration)
-                    // FIX: May want this to just reset worker task progress from COMPLETED
-                    self.workers.clear();
+                    // Clear completed tasks but keep connections
+                    for worker in &mut self.workers {
+                        worker.completed_tasks.clear();
+                    }
                     self.console_state = ConsoleState::Idle;
                 }
                 _ => {}
@@ -132,19 +136,16 @@ impl App {
             .iter()
             .any(|w| matches!(w.connection_status, ConnectionStatus::Active));
 
-        let has_tasks = self.workers.iter().any(|w| !w.tasks.is_empty());
+        let has_running_tasks = self.workers.iter().any(|w| !w.tasks.is_empty());
+        let has_completed_tasks = self.workers.iter().any(|w| w.has_completed_tasks());
 
-        if has_active || has_tasks {
+        if has_active || has_running_tasks {
             self.console_state = ConsoleState::Active;
+        } else if has_completed_tasks {
+            // All tasks completed, no running tasks
+            self.console_state = ConsoleState::Completed;
         } else {
-            let all_idle = self
-                .workers
-                .iter()
-                .all(|w| matches!(w.connection_status, ConnectionStatus::Idle));
-
-            if all_idle && self.console_state == ConsoleState::Active {
-                self.console_state = ConsoleState::Completed;
-            }
+            self.console_state = ConsoleState::Idle;
         }
     }
 
@@ -187,9 +188,17 @@ pub struct WorkerState {
     pub client: Option<ObservabilityServiceClient<Channel>>,
     pub connection_status: ConnectionStatus,
     pub tasks: Vec<datafusion_distributed::TaskProgress>,
+    pub completed_tasks: Vec<CompletedTask>,
     pub last_poll: Option<Instant>,
     pub last_reconnect_attempt: Option<Instant>,
     pub last_seen_query_ids: HashSet<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompletedTask {
+    pub stage_key: ObservabilityStageKey,
+    pub total_partitions: u64,
+    pub query_id: Vec<u8>,
 }
 
 impl WorkerState {
@@ -243,8 +252,37 @@ impl WorkerState {
         if let Some(client) = &mut self.client {
             match client.get_task_progress(GetTaskProgressRequest {}).await {
                 Ok(response) => {
-                    self.tasks = response.into_inner().tasks;
+                    let new_tasks = response.into_inner().tasks;
                     self.last_poll = Some(Instant::now());
+
+                    // Detect completed tasks: tasks that were running but now disappeared
+                    for old_task in &self.tasks {
+                        if old_task.status == TaskStatus::Running as i32 {
+                            let still_exists = new_tasks.iter().any(|t| {
+                                if let (Some(old_key), Some(new_key)) = (&old_task.stage_key, &t.stage_key) {
+                                    old_key.query_id == new_key.query_id
+                                        && old_key.stage_id == new_key.stage_id
+                                        && old_key.task_number == new_key.task_number
+                                } else {
+                                    false
+                                }
+                            });
+
+                            if !still_exists {
+                                // Task disappeared - assume it completed
+                                if let Some(stage_key) = &old_task.stage_key {
+                                    self.completed_tasks.push(CompletedTask {
+                                        stage_key: stage_key.clone(),
+                                        total_partitions: old_task.total_partitions,
+                                        query_id: stage_key.query_id.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Update current tasks
+                    self.tasks = new_tasks;
 
                     // Collect query IDs from current tasks
                     let mut current_query_ids = HashSet::new();
@@ -257,6 +295,20 @@ impl WorkerState {
                             if task.status == TaskStatus::Running as i32 {
                                 has_running = true;
                             }
+                        }
+                    }
+
+                    // If new work starts, clear old completed tasks
+                    if has_running && !self.completed_tasks.is_empty() {
+                        // Check if this is a new query (different from completed tasks)
+                        let completed_query_ids: HashSet<_> = self.completed_tasks
+                            .iter()
+                            .map(|t| t.query_id.clone())
+                            .collect();
+
+                        if !current_query_ids.iter().any(|id| completed_query_ids.contains(id)) {
+                            // New query started, clear old completed tasks
+                            self.completed_tasks.clear();
                         }
                     }
 
@@ -333,8 +385,22 @@ impl WorkerState {
 
     /// Get aggregated progress across all tasks on this worker
     pub fn aggregate_progress(&self) -> (u64, u64) {
-        let total_completed: u64 = self.tasks.iter().map(|t| t.completed_partitions).sum();
-        let total_partitions: u64 = self.tasks.iter().map(|t| t.total_partitions).sum();
-        (total_completed, total_partitions)
+        let running_completed: u64 = self.tasks.iter().map(|t| t.completed_partitions).sum();
+        let running_total: u64 = self.tasks.iter().map(|t| t.total_partitions).sum();
+
+        // Add completed task partitions (all completed, so total = completed)
+        let completed_total: u64 = self.completed_tasks.iter().map(|t| t.total_partitions).sum();
+
+        (running_completed + completed_total, running_total + completed_total)
+    }
+
+    /// Check if worker has any completed tasks
+    pub fn has_completed_tasks(&self) -> bool {
+        !self.completed_tasks.is_empty()
+    }
+
+    /// Check if all tasks are completed (no running tasks, but has completed tasks)
+    pub fn all_tasks_completed(&self) -> bool {
+        self.tasks.is_empty() && !self.completed_tasks.is_empty()
     }
 }
