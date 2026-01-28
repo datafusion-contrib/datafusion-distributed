@@ -1,17 +1,21 @@
 use crate::common::require_one_child;
+use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::error::Result;
+use datafusion::common::exec_err;
+use datafusion::common::runtime::SpawnedTask;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
-use futures::stream;
+use futures::StreamExt;
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::Arc;
-use tokio::sync::OnceCell;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -69,7 +73,9 @@ pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: PlanProperties,
-    cached_batches: Vec<Arc<OnceCell<Arc<Vec<RecordBatch>>>>>,
+    tasks: Vec<OnceLock<Result<Arc<SpawnedTask<()>>, Arc<DataFusionError>>>>,
+    txs: DashMap<usize, UnboundedSender<Result<RecordBatch, Arc<DataFusionError>>>>,
+    rxs: DashMap<usize, UnboundedReceiver<Result<RecordBatch, Arc<DataFusionError>>>>,
 }
 
 impl BroadcastExec {
@@ -82,15 +88,21 @@ impl BroadcastExec {
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(output_partition_count));
 
-        let cached_batches = (0..input_partition_count)
-            .map(|_| Arc::new(OnceCell::new()))
-            .collect();
+        let txs = DashMap::with_capacity(output_partition_count);
+        let rxs = DashMap::with_capacity(output_partition_count);
+        for i in 0..input_partition_count {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            rxs.insert(i, rx);
+            txs.insert(i, tx);
+        }
 
         Self {
             input,
             consumer_task_count,
             properties,
-            cached_batches,
+            tasks: vec![OnceLock::new(); input_partition_count],
+            txs,
+            rxs,
         }
     }
 
@@ -149,35 +161,44 @@ impl ExecutionPlan for BroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let real_partition = partition % self.input_partition_count();
-        let cache = Arc::clone(&self.cached_batches[real_partition]);
-        let input = Arc::clone(&self.input);
         let schema = self.schema();
+        let Some((_, rx)) = self.rxs.remove(&partition) else {
+            return exec_err!("Partition {partition} was already executed");
+        };
 
-        // TODO: Stream batches as they're produced instead of collect-then-emit. Currently we
-        // wait for all batches before consumers receive any. Streaming would allow overlapping
-        // production with network transfer.
-        //
-        // Challenges: late subscribers must replay from buffer since tokio::sync::broadcast drops old messages,
-        // need proper error propagation to all consumers and backpressure handling.
-        let stream = futures::stream::once(async move {
-            let batches = cache
-                .get_or_try_init(|| async {
-                    let stream = input.execute(real_partition, context)?;
-                    let batches: Vec<RecordBatch> =
-                        futures::TryStreamExt::try_collect(stream).await?;
-                    Ok::<_, datafusion::error::DataFusionError>(Arc::new(batches))
-                })
-                .await?;
-            let batches = Arc::clone(batches);
-            let batches_vec: Vec<RecordBatch> = batches.iter().cloned().collect();
-            Ok::<_, datafusion::error::DataFusionError>(stream::iter(
-                batches_vec.into_iter().map(Ok),
-            ))
+        let task = self.tasks[real_partition].get_or_init(|| {
+            let mut txs = Vec::with_capacity(self.consumer_task_count);
+            for off in 0..self.consumer_task_count {
+                let p = real_partition + off * self.input_partition_count();
+                let Some((_, tx)) = self.txs.remove(&p) else {
+                    return exec_err!("Partition {p} is already being produced").map_err(Arc::new);
+                };
+                txs.push(tx);
+            }
+            let input = Arc::clone(&self.input);
+            let mut stream = input.execute(real_partition, context)?;
+            Ok(Arc::new(SpawnedTask::spawn(async move {
+                while let Some(msg) = stream.next().await {
+                    let msg = msg.map_err(Arc::new);
+                    for tx in &txs {
+                        if tx.send(msg.clone()).is_err() {
+                            return; // Channel closed, this is fine
+                        }
+                    }
+                }
+            })))
         });
+        let task = match task {
+            Ok(task) => Arc::clone(task),
+            Err(err) => return Err(DataFusionError::Shared(Arc::clone(err))),
+        };
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
-            futures::TryStreamExt::try_flatten(stream),
+            UnboundedReceiverStream::new(rx).map(move |msg| {
+                let _ = &task; // keep the task alive as long as this stream is alive.
+                msg.map_err(DataFusionError::Shared)
+            }),
         )))
     }
 
