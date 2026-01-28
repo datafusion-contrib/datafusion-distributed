@@ -5,5 +5,9 @@ pub use generated::observability::observability_service_client::ObservabilitySer
 pub use generated::observability::observability_service_server::{
     ObservabilityService, ObservabilityServiceServer,
 };
-pub use generated::observability::{PingRequest, PingResponse};
+
+pub use generated::observability::{
+    GetTaskProgressRequest, GetTaskProgressResponse, PingRequest, PingResponse, StageKey,
+    TaskProgress, TaskStatus,
+};
 pub use service::ObservabilityServiceImpl;
