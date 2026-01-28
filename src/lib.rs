@@ -40,6 +40,7 @@ pub use stage::{
 };
 
 pub use observability::{
-    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceImpl,
-    ObservabilityServiceServer, PingRequest, PingResponse,
+    GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
+    ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
+    PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
 };
