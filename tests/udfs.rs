@@ -67,10 +67,14 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
           │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │   EmptyExec
+          │   [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
+            │   EmptyExec
+            └──────────────────────────────────────────────────
         ",
         );
 
