@@ -3,12 +3,25 @@ name = "datafusion-distributed-console"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+tpcds = ["datafusion-distributed/tpcds"]
+
 [dependencies]
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
+futures = "0.3.31"
+hex = "0.4"
 ratatui = "0.30.0"
 tokio = { version = "1.49.0", features = ["full"] }
 tonic = "0.14.2"
 datafusion-distributed = { path = "..", features = ["integration"] }
 arrow-flight = "57.2.0"
 structopt = "0.3.26"
+url = "2.5.7"
+
+[dev-dependencies]
+arrow = "57.2.0"
+async-trait = "0.1.89"
+datafusion = "52.0.0"
+futures = "0.3.31"
+url = "2.5.7"

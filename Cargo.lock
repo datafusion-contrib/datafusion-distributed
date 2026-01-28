@@ -2094,14 +2094,20 @@ dependencies = [
 name = "datafusion-distributed-console"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "arrow-flight",
+ "async-trait",
  "color-eyre",
  "crossterm",
+ "datafusion",
  "datafusion-distributed",
+ "futures",
+ "hex",
  "ratatui",
  "structopt",
  "tokio",
  "tonic",
+ "url",
 ]
 
 [[package]]

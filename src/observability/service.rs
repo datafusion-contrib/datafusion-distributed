@@ -14,8 +14,6 @@ use super::{
     },
 };
 
-const BUFFER_SIZE: usize = 100;
-
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
 }
