@@ -132,8 +132,8 @@ class DataFusionRunner implements BenchmarkRunner {
 
 function getCurrentBranch(): string {
     try {
-        // Try to get current git branch
-        return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+        // Try to get current git branch. For branches with a slash prefix, keep the last entry.
+        return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim().split("/").slice(-1)[0];
     } catch {
         // Fallback if git command fails
         return 'unknown';
