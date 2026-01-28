@@ -90,7 +90,7 @@ impl BroadcastExec {
 
         let txs = DashMap::with_capacity(output_partition_count);
         let rxs = DashMap::with_capacity(output_partition_count);
-        for i in 0..input_partition_count {
+        for i in 0..output_partition_count {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             rxs.insert(i, rx);
             txs.insert(i, tx);
@@ -176,14 +176,28 @@ impl ExecutionPlan for BroadcastExec {
                 txs.push(tx);
             }
             let input = Arc::clone(&self.input);
-            let mut stream = input.execute(real_partition, context)?;
+            let ctx = Arc::clone(&context);
             Ok(Arc::new(SpawnedTask::spawn(async move {
+                let mut stream = match input.execute(real_partition, ctx) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let err = Arc::new(e);
+                        for tx in &txs {
+                            let _ = tx.send(Err(Arc::clone(&err)));
+                        }
+                        return;
+                    }
+                };
                 while let Some(msg) = stream.next().await {
                     let msg = msg.map_err(Arc::new);
+                    let mut all_closed = true;
                     for tx in &txs {
-                        if tx.send(msg.clone()).is_err() {
-                            return; // Channel closed, this is fine
+                        if tx.send(msg.clone()).is_ok() {
+                            all_closed = false;
                         }
+                    }
+                    if all_closed {
+                        return; // All consumers cancelled
                     }
                 }
             })))
