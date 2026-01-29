@@ -81,8 +81,9 @@ impl ConsoleControlService for ConsoleControlServiceImpl {
             .into_inner()
             .worker_urls
             .iter()
-            .map(|u| Url::parse(u).unwrap())
-            .collect();
+            .map(|u| Url::parse(u))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Status::invalid_argument(format!("Invalid worker URL: {e}")))?;
 
         let urls_len = urls.len() as u32;
 
