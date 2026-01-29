@@ -289,6 +289,11 @@ where
         buckets[index as usize].clear();
         time.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// Returns an iterator over key-value pairs currently stored in the map
+    pub fn iter(&self) -> impl Iterator<Item = dashmap::mapref::multiple::RefMulti<'_, K, V>> + '_ {
+        self.data.iter()
+    }
 }
 
 #[cfg(test)]
