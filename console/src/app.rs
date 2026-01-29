@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tonic::transport::Channel;
 use url::Url;
 
+/// App holds the main application state.
 pub struct App {
     pub workers: Vec<WorkerState>,
     pub should_quit: bool,
@@ -14,6 +15,7 @@ pub struct App {
     worker_registration_rx: mpsc::UnboundedReceiver<Vec<Url>>,
 }
 
+/// Represents overall state of the console application.
 #[derive(Clone, PartialEq)]
 pub enum ConsoleState {
     Idle,
@@ -21,6 +23,7 @@ pub enum ConsoleState {
     Completed,
 }
 
+/// Tracks individual worker conneciton states.
 #[derive(Clone)]
 pub enum ConnectionStatus {
     Connecting,
@@ -30,7 +33,7 @@ pub enum ConnectionStatus {
 }
 
 impl App {
-    /// Create a new App in IDLE state (no workers initially)
+    /// Create a new App in IDLE state.
     pub fn new() -> (Self, mpsc::UnboundedSender<Vec<Url>>) {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -44,6 +47,8 @@ impl App {
         (app, tx)
     }
 
+    /// Called when new workers are registered via the ConsoleControlService.RegisterWorkers gRPC
+    /// service.
     async fn register_workers(&mut self, worker_urls: Vec<Url>) {
         // Clear existing workers if switching to new query
         if !self.workers.is_empty() {
@@ -51,10 +56,8 @@ impl App {
         }
 
         for url in worker_urls {
-            let port = url.port().unwrap_or(80);
             let mut worker = WorkerState {
                 url,
-                port,
                 client: None,
                 connection_status: ConnectionStatus::Connecting,
                 tasks: Vec::new(),
@@ -93,7 +96,7 @@ impl App {
         }
     }
 
-    /// Poll all workers for task progress
+    /// Poll all workers for task progress.
     pub async fn tick(&mut self) {
         // Check for new worker registrations
         if let Ok(worker_urls) = self.worker_registration_rx.try_recv() {
@@ -124,7 +127,7 @@ impl App {
         self.update_console_state();
     }
 
-    /// Update overall console state based on worker states
+    /// Update overall console state based on worker states.
     fn update_console_state(&mut self) {
         if self.workers.is_empty() {
             self.console_state = ConsoleState::Idle;
@@ -149,12 +152,12 @@ impl App {
         }
     }
 
-    /// Get cluster-wide statistics
+    /// Get cluster-wide statistics.
     pub fn cluster_stats(&self) -> ClusterStats {
         let mut stats = ClusterStats {
             active_count: 0,
             idle_count: 0,
-            completed_count: 0,
+            completed: 0,
             disconnected_count: 0,
             total_tasks: 0,
         };
@@ -173,18 +176,18 @@ impl App {
     }
 }
 
-/// Cluster-wide statistics
+/// Cluster-wide statistics for display in the UI.
 pub struct ClusterStats {
     pub active_count: usize,
     pub idle_count: usize,
-    pub completed_count: usize,
+    pub completed: usize,
     pub disconnected_count: usize,
     pub total_tasks: usize,
 }
 
+/// Tracks state for a single worker.
 pub struct WorkerState {
     pub url: Url,
-    pub port: u16,
     pub client: Option<ObservabilityServiceClient<Channel>>,
     pub connection_status: ConnectionStatus,
     pub tasks: Vec<datafusion_distributed::TaskProgress>,
@@ -194,15 +197,17 @@ pub struct WorkerState {
     pub last_seen_query_ids: HashSet<Vec<u8>>,
 }
 
+/// Stores information about completed tasks for progress display after they are removed from the
+/// TTL Map.
 #[derive(Clone, Debug)]
 pub struct CompletedTask {
-    pub stage_key: ObservabilityStageKey,
+    pub _stage_key: ObservabilityStageKey,
     pub total_partitions: u64,
     pub query_id: Vec<u8>,
 }
 
 impl WorkerState {
-    /// Try to establish connection to worker
+    /// Attempts to establish a gRPC connection to a worker.
     async fn try_connect(&mut self) {
         self.last_reconnect_attempt = Some(Instant::now());
 
@@ -229,7 +234,8 @@ impl WorkerState {
         }
     }
 
-    /// Check if we should retry connection (every 5 seconds)
+    /// Returns true if the worker is disconnecteed and it's been at least 5 seconds since the last
+    /// reconnection attempt.
     fn should_retry_connection(&self) -> bool {
         if matches!(
             self.connection_status,
@@ -238,6 +244,7 @@ impl WorkerState {
             if let Some(last_attempt) = self.last_reconnect_attempt {
                 last_attempt.elapsed() >= Duration::from_secs(5)
             } else {
+                // handles case where worker is Disconnected but last_reconnect_attempt is None
                 true
             }
         } else {
@@ -245,7 +252,7 @@ impl WorkerState {
         }
     }
 
-    /// Poll worker for task progress
+    /// Queriees a worker for task progress.
     async fn poll(&mut self) {
         use datafusion_distributed::TaskStatus;
 
@@ -255,11 +262,14 @@ impl WorkerState {
                     let new_tasks = response.into_inner().tasks;
                     self.last_poll = Some(Instant::now());
 
-                    // Detect completed tasks: tasks that were running but now disappeared
+                    // Detect completed tasks: tasks that were running but now have completed and
+                    // been removed from the TTL Map.
                     for old_task in &self.tasks {
                         if old_task.status == TaskStatus::Running as i32 {
                             let still_exists = new_tasks.iter().any(|t| {
-                                if let (Some(old_key), Some(new_key)) = (&old_task.stage_key, &t.stage_key) {
+                                if let (Some(old_key), Some(new_key)) =
+                                    (&old_task.stage_key, &t.stage_key)
+                                {
                                     old_key.query_id == new_key.query_id
                                         && old_key.stage_id == new_key.stage_id
                                         && old_key.task_number == new_key.task_number
@@ -268,11 +278,11 @@ impl WorkerState {
                                 }
                             });
 
+                            // Assume completion
                             if !still_exists {
-                                // Task disappeared - assume it completed
                                 if let Some(stage_key) = &old_task.stage_key {
                                     self.completed_tasks.push(CompletedTask {
-                                        stage_key: stage_key.clone(),
+                                        _stage_key: stage_key.clone(),
                                         total_partitions: old_task.total_partitions,
                                         query_id: stage_key.query_id.clone(),
                                     });
@@ -300,13 +310,17 @@ impl WorkerState {
 
                     // If new work starts, clear old completed tasks
                     if has_running && !self.completed_tasks.is_empty() {
-                        // Check if this is a new query (different from completed tasks)
-                        let completed_query_ids: HashSet<_> = self.completed_tasks
+                        // Check if this is a new query
+                        let completed_query_ids: HashSet<_> = self
+                            .completed_tasks
                             .iter()
                             .map(|t| t.query_id.clone())
                             .collect();
 
-                        if !current_query_ids.iter().any(|id| completed_query_ids.contains(id)) {
+                        if !current_query_ids
+                            .iter()
+                            .any(|id| completed_query_ids.contains(id))
+                        {
                             // New query started, clear old completed tasks
                             self.completed_tasks.clear();
                         }
@@ -345,7 +359,7 @@ impl WorkerState {
                     self.client = None;
                     self.tasks.clear();
                     self.connection_status = ConnectionStatus::Disconnected {
-                        reason: format!("Poll failed: {}", e),
+                        reason: format!("Poll failed: {e}"),
                     };
                     self.last_seen_query_ids.clear();
                 }
@@ -353,7 +367,7 @@ impl WorkerState {
         }
     }
 
-    /// Get status text for display
+    /// Returns string representation of connection status.
     pub fn status_text(&self) -> String {
         match &self.connection_status {
             ConnectionStatus::Connecting => "CONNECTING".to_string(),
@@ -363,7 +377,7 @@ impl WorkerState {
         }
     }
 
-    /// Get status color for display
+    /// Returns color for UI display based on status.
     pub fn status_color(&self) -> ratatui::style::Color {
         use ratatui::style::Color;
         match self.connection_status {
@@ -374,7 +388,7 @@ impl WorkerState {
         }
     }
 
-    /// Get disconnection reason if applicable
+    /// Extracts disconnection reason if applicable.
     pub fn disconnect_reason(&self) -> Option<&str> {
         if let ConnectionStatus::Disconnected { reason } = &self.connection_status {
             Some(reason)
@@ -383,23 +397,30 @@ impl WorkerState {
         }
     }
 
-    /// Get aggregated progress across all tasks on this worker
+    /// Get aggregated progress across all tasks on this worker.
     pub fn aggregate_progress(&self) -> (u64, u64) {
         let running_completed: u64 = self.tasks.iter().map(|t| t.completed_partitions).sum();
         let running_total: u64 = self.tasks.iter().map(|t| t.total_partitions).sum();
 
         // Add completed task partitions (all completed, so total = completed)
-        let completed_total: u64 = self.completed_tasks.iter().map(|t| t.total_partitions).sum();
+        let completed_total: u64 = self
+            .completed_tasks
+            .iter()
+            .map(|t| t.total_partitions)
+            .sum();
 
-        (running_completed + completed_total, running_total + completed_total)
+        (
+            running_completed + completed_total,
+            running_total + completed_total,
+        )
     }
 
-    /// Check if worker has any completed tasks
+    /// Check if worker has any completed tasks.
     pub fn has_completed_tasks(&self) -> bool {
         !self.completed_tasks.is_empty()
     }
 
-    /// Check if all tasks are completed (no running tasks, but has completed tasks)
+    /// Check if all tasks are completed.
     pub fn all_tasks_completed(&self) -> bool {
         self.tasks.is_empty() && !self.completed_tasks.is_empty()
     }

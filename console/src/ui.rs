@@ -76,6 +76,13 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(", "),
+        Span::styled(
+            format!("{} COMPLETED", stats.completed),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     ])];
 
     let header = Paragraph::new(header_text).block(
@@ -221,7 +228,11 @@ fn render_aggregated_progress(frame: &mut Frame, area: Rect, worker: &WorkerStat
 
 /// Render completed state for a worker
 fn render_completed_state(frame: &mut Frame, area: Rect, worker: &WorkerState) {
-    let total: u64 = worker.completed_tasks.iter().map(|t| t.total_partitions).sum();
+    let total: u64 = worker
+        .completed_tasks
+        .iter()
+        .map(|t| t.total_partitions)
+        .sum();
     let task_count = worker.completed_tasks.len();
 
     let chunks = Layout::default()
