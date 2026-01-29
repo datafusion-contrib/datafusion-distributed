@@ -80,7 +80,6 @@ async fn register_with_console(
     Ok(response.workers_registered)
 }
 
-#[cfg(feature = "tpcds")]
 async fn run_queries(
     cluster_ports: Vec<u16>,
     scale_factor: f64,
@@ -90,7 +89,7 @@ async fn run_queries(
     use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use std::fs;
     use std::time::Instant;
-    use tokio::time::{Sleep, sleep, timeout};
+    use tokio::time::sleep;
 
     println!(
         "Running TPC-DS queries (SF={scale_factor}, partitions={parquet_partitions}) against workers: {cluster_ports:?}"
@@ -170,7 +169,6 @@ async fn run_queries(
     Ok(())
 }
 
-#[cfg(feature = "tpcds")]
 async fn run_single_query(
     ctx: &SessionContext,
     query_sql: &str,
@@ -188,12 +186,10 @@ async fn run_single_query(
 }
 
 #[derive(Clone)]
-#[cfg(feature = "tpcds")]
 struct LocalhostWorkerResolver {
     ports: Vec<u16>,
 }
 
-#[cfg(feature = "tpcds")]
 #[async_trait]
 impl WorkerResolver for LocalhostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
