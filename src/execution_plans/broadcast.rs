@@ -1,6 +1,7 @@
 use crate::common::require_one_child;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -10,7 +11,7 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt, stream};
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::Notify;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
@@ -85,7 +86,9 @@ struct EntryState {
     /// Whether execution for this partition has completed.
     done: bool,
     /// Error from the producer (if any).
-    error: Option<Arc<str>>,
+    error: Option<Arc<DataFusionError>>,
+    /// Producer task handle (if started).
+    task: Option<SpawnedTask<()>>,
 }
 
 impl CacheEntry {
@@ -95,6 +98,7 @@ impl CacheEntry {
             started: false,
             done: false,
             error: None,
+            task: None,
         });
 
         Self {
@@ -127,9 +131,9 @@ impl CacheEntry {
     }
 
     /// Sets field `err` to the passed error, `done` to true and notifies all consumers.
-    fn finish_err(&self, err: DataFusionError) -> Result<(), DataFusionError> {
+    fn finish_err(&self, err: Arc<DataFusionError>) -> Result<(), DataFusionError> {
         self.with_state(|s| {
-            s.error = Some(Arc::from(err.to_string()));
+            s.error = Some(err);
             s.done = true;
         })?;
         self.notify.notify_waiters();
@@ -157,23 +161,31 @@ impl CacheEntry {
             return Ok(());
         }
 
-        let entry = Arc::clone(self);
-        tokio::spawn(async move {
+        let entry = Arc::downgrade(self);
+        let task = SpawnedTask::spawn(async move {
             let result: Result<(), DataFusionError> = async {
                 let mut stream = input.execute(partition, ctx)?;
                 while let Some(next) = stream.next().await {
                     let batch = next?;
+                    let Some(entry) = Weak::upgrade(&entry) else {
+                        return Ok(());
+                    };
                     entry.push_batch(Arc::new(batch))?;
                 }
-                entry.finish_ok()?;
+                if let Some(entry) = Weak::upgrade(&entry) {
+                    entry.finish_ok()?;
+                }
                 Ok(())
             }
             .await;
 
             if let Err(err) = result {
-                let _ = entry.finish_err(err);
+                if let Some(entry) = Weak::upgrade(&entry) {
+                    let _ = entry.finish_err(Arc::new(err));
+                }
             }
         });
+        self.with_state(|s| s.task = Some(task))?;
 
         Ok(())
     }
@@ -222,7 +234,7 @@ impl CacheEntry {
                         if done {
                             if let Some(err) = err_opt {
                                 return Some((
-                                    Err(DataFusionError::Execution(err.to_string())),
+                                    Err(DataFusionError::Shared(Arc::clone(&err))),
                                     StreamState::Done,
                                 ));
                             }
