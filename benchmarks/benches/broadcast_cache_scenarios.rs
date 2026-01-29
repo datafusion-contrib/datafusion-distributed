@@ -259,7 +259,7 @@ fn all_fast_consumers(output_partitions: usize) -> Vec<ConsumerSpec> {
 }
 
 fn scenario_matrix() -> Vec<Scenario> {
-    let input_partitions = 1;
+    let input_partitions = 16;
     let consumer_tasks = 4;
     let output_partitions = input_partitions * consumer_tasks;
 
@@ -331,8 +331,8 @@ fn scenario_matrix() -> Vec<Scenario> {
         name: "many_consumers",
         input_partitions,
         consumer_tasks: many_consumers,
-        rows_per_batch: 100_000,
-        num_batches: 50,
+        rows_per_batch: 8192,
+        num_batches: 100,
         consumers: all_fast_consumers(many_output),
     });
 
