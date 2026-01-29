@@ -196,7 +196,7 @@ impl ExecutionPlan for BroadcastExec {
                             all_closed = false;
                         }
                     }
-                    if all_closed {
+                    if all_closed || msg.is_err() {
                         return; // All consumers cancelled
                     }
                 }
