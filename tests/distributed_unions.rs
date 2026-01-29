@@ -50,7 +50,7 @@ mod tests {
           │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
           │       FilterExec: MaxTemp@0 < 30
-          │         PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0] 
+          │         PartitionIsolatorExec: t0:[p0,p1,__] t1:[__,__,p0]
           │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
           └──────────────────────────────────────────────────
         ",
