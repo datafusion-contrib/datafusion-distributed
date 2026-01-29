@@ -190,14 +190,17 @@ impl ExecutionPlan for BroadcastExec {
                 };
                 while let Some(msg) = stream.next().await {
                     let msg = msg.map_err(Arc::new);
-                    let mut all_closed = true;
-                    for tx in &txs {
+                    let mut any_open = false;
+                    txs.retain(|tx| {
                         if tx.send(msg.clone()).is_ok() {
-                            all_closed = false;
+                            any_open = true;
+                            true
+                        } else {
+                            false
                         }
-                    }
-                    if all_closed || msg.is_err() {
-                        return; // All consumers cancelled
+                    });
+                    if !any_open || msg.is_err() {
+                        return;
                     }
                 }
             })))
@@ -224,19 +227,15 @@ impl ExecutionPlan for BroadcastExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::Array;
+    use crate::test_utils::mock_exec::MockExec;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
-    use datafusion::common::Statistics;
-    use datafusion::error::DataFusionError;
-    use datafusion::physical_expr::EquivalenceProperties;
-    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::prelude::SessionContext;
     use futures::StreamExt;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::Notify;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{Duration, sleep, timeout};
 
     fn assert_int32_batch_values(batch: &RecordBatch, expected: &[i32]) {
         let values = batch
@@ -254,11 +253,14 @@ mod tests {
     async fn broadcast_exec_reuses_cache_for_virtual_partitions() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let counts = Arc::new(vec![AtomicUsize::new(0)]);
-        let input = Arc::new(CountingExec::new(
+        let batch = RecordBatch::try_new(
             Arc::clone(&schema),
-            1,
-            Arc::clone(&counts),
-        ));
+            vec![Arc::new(Int32Array::from(vec![0]))],
+        )?;
+        let input = Arc::new(
+            MockExec::new_partitioned(vec![vec![Ok(batch)]], Arc::clone(&schema))
+                .with_execute_counts(Arc::clone(&counts)),
+        );
         let broadcast = Arc::new(BroadcastExec::new(input, 2));
 
         let ctx = SessionContext::new();
@@ -286,11 +288,21 @@ mod tests {
     async fn broadcast_exec_maps_partitions_by_modulo() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let counts = Arc::new(vec![AtomicUsize::new(0), AtomicUsize::new(0)]);
-        let input = Arc::new(CountingExec::new(
+        let batch0 = RecordBatch::try_new(
             Arc::clone(&schema),
-            2,
-            Arc::clone(&counts),
-        ));
+            vec![Arc::new(Int32Array::from(vec![0]))],
+        )?;
+        let batch1 = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )?;
+        let input = Arc::new(
+            MockExec::new_partitioned(
+                vec![vec![Ok(batch0)], vec![Ok(batch1)]],
+                Arc::clone(&schema),
+            )
+            .with_execute_counts(Arc::clone(&counts)),
+        );
         let broadcast = Arc::new(BroadcastExec::new(input, 2));
 
         let ctx = SessionContext::new();
@@ -330,19 +342,21 @@ mod tests {
     #[tokio::test]
     async fn broadcast_exec_cache_survives_cancellation() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let execute_count = Arc::new(AtomicUsize::new(0));
+        let execute_counts = Arc::new(vec![AtomicUsize::new(0)]);
         let start_notify = Arc::new(Notify::new());
         let permit_open = Arc::new(AtomicBool::new(false));
         let permit_notify = Arc::new(Notify::new());
 
-        let input = Arc::new(BlockingExec::new(
+        let batch = RecordBatch::try_new(
             Arc::clone(&schema),
-            1,
-            Arc::clone(&execute_count),
-            Arc::clone(&start_notify),
-            Arc::clone(&permit_open),
-            Arc::clone(&permit_notify),
-        ));
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )?;
+        let input = Arc::new(
+            MockExec::new_partitioned(vec![vec![Ok(batch)]], Arc::clone(&schema))
+                .with_execute_counts(Arc::clone(&execute_counts))
+                .with_start_notify(Arc::clone(&start_notify))
+                .with_gate(Arc::clone(&permit_open), Arc::clone(&permit_notify)),
+        );
 
         // Has two consumers that will execute the same real partition
         let broadcast = Arc::new(BroadcastExec::new(input, 2));
@@ -358,7 +372,7 @@ mod tests {
         timeout(Duration::from_secs(5), start_notify.notified())
             .await
             .expect("execute did not start");
-        assert_eq!(execute_count.load(Ordering::SeqCst), 1);
+        assert_eq!(execute_counts[0].load(Ordering::SeqCst), 1);
 
         // Cancel this consumer (simulates a cancellation like a TopK)
         handle.abort();
@@ -376,213 +390,94 @@ mod tests {
 
         // Partition should only be executed a single time, second stream should've pull from
         // cache
-        assert_eq!(execute_count.load(Ordering::SeqCst), 1);
+        assert_eq!(execute_counts[0].load(Ordering::SeqCst), 1);
 
         Ok(())
     }
 
-    #[derive(Debug)]
-    struct CountingExec {
-        schema: SchemaRef,
-        // Should never be > 1 since partitions should not be reexecuted
-        execute_counts: Arc<Vec<AtomicUsize>>,
-        properties: PlanProperties,
+    #[tokio::test]
+    async fn broadcast_exec_continues_after_consumer_cancel() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batches = vec![
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![0]))],
+            )?),
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?),
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![2]))],
+            )?),
+        ];
+        let input = Arc::new(
+            MockExec::new_partitioned(vec![batches], Arc::clone(&schema))
+                .with_delay_between_batches(Duration::from_millis(10)),
+        );
+        let broadcast = Arc::new(BroadcastExec::new(input, 2));
+
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+
+        let mut stream1 = broadcast.execute(0, task_ctx.clone())?;
+        let stream2 = broadcast.execute(1, task_ctx)?;
+
+        let first = stream1.next().await.transpose()?.expect("first batch");
+        assert_int32_batch_values(&first, &[0]);
+        drop(stream1);
+
+        let batches: Vec<RecordBatch> = datafusion::physical_plan::common::collect(stream2).await?;
+        assert_eq!(batches.len(), 3);
+        assert_int32_batch_values(&batches[0], &[0]);
+        assert_int32_batch_values(&batches[1], &[1]);
+        assert_int32_batch_values(&batches[2], &[2]);
+
+        Ok(())
     }
 
-    impl CountingExec {
-        fn new(
-            schema: SchemaRef,
-            partitions: usize,
-            execute_counts: Arc<Vec<AtomicUsize>>,
-        ) -> Self {
-            let properties = PlanProperties::new(
-                EquivalenceProperties::new(Arc::clone(&schema)),
-                Partitioning::UnknownPartitioning(partitions),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            );
-            Self {
-                schema,
-                execute_counts,
-                properties,
-            }
-        }
-    }
+    #[tokio::test]
+    async fn broadcast_exec_replay_for_late_consumer() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batches = vec![
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![0]))],
+            )?),
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?),
+            Ok(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![2]))],
+            )?),
+        ];
+        let input = Arc::new(
+            MockExec::new_partitioned(vec![batches], Arc::clone(&schema))
+                .with_delay_between_batches(Duration::from_millis(10)),
+        );
+        let broadcast = Arc::new(BroadcastExec::new(input, 2));
 
-    impl DisplayAs for CountingExec {
-        fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-            match t {
-                DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                    write!(f, "CountingExec")
-                }
-                DisplayFormatType::TreeRender => write!(f, ""),
-            }
-        }
-    }
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
 
-    impl ExecutionPlan for CountingExec {
-        fn name(&self) -> &str {
-            "CountingExec"
-        }
+        let mut stream0 = broadcast.execute(0, task_ctx.clone())?;
+        let batch0 = stream0.next().await.transpose()?.expect("batch 0");
+        assert_int32_batch_values(&batch0, &[0]);
+        let batch1 = stream0.next().await.transpose()?.expect("batch 1");
+        assert_int32_batch_values(&batch1, &[1]);
 
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
+        // Late consumer joins after producer has already emitted some batches.
+        sleep(Duration::from_millis(5)).await;
+        let stream1 = broadcast.execute(1, task_ctx)?;
+        let batches: Vec<RecordBatch> = datafusion::physical_plan::common::collect(stream1).await?;
+        assert_eq!(batches.len(), 3);
+        assert_int32_batch_values(&batches[0], &[0]);
+        assert_int32_batch_values(&batches[1], &[1]);
+        assert_int32_batch_values(&batches[2], &[2]);
 
-        fn properties(&self) -> &PlanProperties {
-            &self.properties
-        }
-
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![]
-        }
-
-        fn with_new_children(
-            self: Arc<Self>,
-            _children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> Result<Arc<dyn ExecutionPlan>> {
-            unimplemented!()
-        }
-
-        fn execute(
-            &self,
-            partition: usize,
-            _context: Arc<TaskContext>,
-        ) -> Result<SendableRecordBatchStream> {
-            self.execute_counts[partition].fetch_add(1, Ordering::SeqCst);
-
-            let batch = RecordBatch::try_new(
-                Arc::clone(&self.schema),
-                vec![Arc::new(Int32Array::from(vec![partition as i32]))],
-            )?;
-            let stream = futures::stream::iter(vec![Ok(batch)]);
-            Ok(Box::pin(RecordBatchStreamAdapter::new(
-                Arc::clone(&self.schema),
-                stream,
-            )))
-        }
-
-        fn statistics(&self) -> Result<Statistics> {
-            Ok(Statistics::new_unknown(&self.schema))
-        }
-
-        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-            Ok(Statistics::new_unknown(&self.schema))
-        }
-    }
-
-    #[derive(Debug)]
-    struct BlockingExec {
-        schema: SchemaRef,
-        partitions: usize,
-        // Should never be > 1 since partitions should not be reexecuted
-        execute_count: Arc<AtomicUsize>,
-        // Informs the test that we have started blocking
-        start_notify: Arc<Notify>,
-        // If false, the stream will wait
-        permit_open: Arc<AtomicBool>,
-        // When permit_open flips to true, this is called and allows stream to continue.
-        permit_notify: Arc<Notify>,
-        properties: PlanProperties,
-    }
-
-    impl BlockingExec {
-        fn new(
-            schema: SchemaRef,
-            partitions: usize,
-            execute_count: Arc<AtomicUsize>,
-            start_notify: Arc<Notify>,
-            permit_open: Arc<AtomicBool>,
-            permit_notify: Arc<Notify>,
-        ) -> Self {
-            let properties = PlanProperties::new(
-                EquivalenceProperties::new(Arc::clone(&schema)),
-                Partitioning::UnknownPartitioning(partitions),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            );
-            Self {
-                schema,
-                partitions,
-                execute_count,
-                start_notify,
-                permit_open,
-                permit_notify,
-                properties,
-            }
-        }
-    }
-
-    impl DisplayAs for BlockingExec {
-        fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-            match t {
-                DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                    write!(f, "BlockingExec")
-                }
-                DisplayFormatType::TreeRender => write!(f, ""),
-            }
-        }
-    }
-
-    impl ExecutionPlan for BlockingExec {
-        fn name(&self) -> &str {
-            "BlockingExec"
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn properties(&self) -> &PlanProperties {
-            &self.properties
-        }
-
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![]
-        }
-
-        fn with_new_children(
-            self: Arc<Self>,
-            _children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> Result<Arc<dyn ExecutionPlan>> {
-            unimplemented!()
-        }
-
-        fn execute(
-            &self,
-            partition: usize,
-            _context: Arc<TaskContext>,
-        ) -> Result<SendableRecordBatchStream> {
-            assert!(partition < self.partitions);
-            self.execute_count.fetch_add(1, Ordering::SeqCst);
-            // Notify we started executing the BlockingExec to we can cancel consumer.
-            self.start_notify.notify_waiters();
-
-            let schema = Arc::clone(&self.schema);
-            let stream_schema = Arc::clone(&schema);
-            let permit_open = Arc::clone(&self.permit_open);
-            let permit_notify = Arc::clone(&self.permit_notify);
-
-            let stream = futures::stream::once(async move {
-                while !permit_open.load(Ordering::SeqCst) {
-                    permit_notify.notified().await;
-                }
-                let batch = RecordBatch::try_new(
-                    Arc::clone(&stream_schema),
-                    vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-                )?;
-                Ok::<_, DataFusionError>(batch)
-            });
-
-            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-        }
-
-        fn statistics(&self) -> Result<Statistics> {
-            Ok(Statistics::new_unknown(&self.schema))
-        }
-
-        fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-            Ok(Statistics::new_unknown(&self.schema))
-        }
+        Ok(())
     }
 }

@@ -7,8 +7,14 @@ use datafusion::physical_plan::common::compute_record_batch_statistics;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use futures::{Stream, stream};
 use std::any::Any;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::sleep;
 // Copied from https://github.com/apache/datafusion/blob/4b9a468cc1949062cf3cd8685ba8ced377fd212e/datafusion/physical-plan/src/test/exec.rs#L121
 
 /// A Mock ExecutionPlan that can be used for writing tests of other
@@ -16,11 +22,17 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct MockExec {
     /// the results to send back
-    data: Vec<datafusion::common::Result<RecordBatch>>,
+    data: Vec<Vec<datafusion::common::Result<RecordBatch>>>,
     schema: SchemaRef,
+    partitions: usize,
     /// if true (the default), sends data using a separate task to ensure the
     /// batches are not available without this stream yielding first
     use_task: bool,
+    delay: Option<Duration>,
+    start_notify: Option<Arc<Notify>>,
+    permit_open: Option<Arc<AtomicBool>>,
+    permit_notify: Option<Arc<Notify>>,
+    execute_counts: Option<Arc<Vec<AtomicUsize>>>,
     cache: PlanProperties,
 }
 
@@ -33,11 +45,38 @@ impl MockExec {
     /// ensure any poll loops are correct. This behavior can be
     /// changed with `with_use_task`
     pub fn new(data: Vec<datafusion::common::Result<RecordBatch>>, schema: SchemaRef) -> Self {
-        let cache = Self::compute_properties(Arc::clone(&schema));
+        let cache = Self::compute_properties(Arc::clone(&schema), 1);
+        Self {
+            data: vec![data],
+            schema,
+            partitions: 1,
+            use_task: true,
+            delay: None,
+            start_notify: None,
+            permit_open: None,
+            permit_notify: None,
+            execute_counts: None,
+            cache,
+        }
+    }
+
+    /// Create a new `MockExec` with per-partition data.
+    pub fn new_partitioned(
+        data: Vec<Vec<datafusion::common::Result<RecordBatch>>>,
+        schema: SchemaRef,
+    ) -> Self {
+        let partitions = data.len().max(1);
+        let cache = Self::compute_properties(Arc::clone(&schema), partitions);
         Self {
             data,
             schema,
+            partitions,
             use_task: true,
+            delay: None,
+            start_notify: None,
+            permit_open: None,
+            permit_notify: None,
+            execute_counts: None,
             cache,
         }
     }
@@ -50,11 +89,36 @@ impl MockExec {
         self
     }
 
+    /// Adds a delay between emitted batches (simulates a slow producer).
+    pub fn with_delay_between_batches(mut self, delay: Duration) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Notify when execute is called (before emitting any batches).
+    pub fn with_start_notify(mut self, start_notify: Arc<Notify>) -> Self {
+        self.start_notify = Some(start_notify);
+        self
+    }
+
+    /// Block emission until `permit_open` is true (use with `permit_notify`).
+    pub fn with_gate(mut self, permit_open: Arc<AtomicBool>, permit_notify: Arc<Notify>) -> Self {
+        self.permit_open = Some(permit_open);
+        self.permit_notify = Some(permit_notify);
+        self
+    }
+
+    /// Track execute calls per partition (for replay/once-only assertions).
+    pub fn with_execute_counts(mut self, execute_counts: Arc<Vec<AtomicUsize>>) -> Self {
+        self.execute_counts = Some(execute_counts);
+        self
+    }
+
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
-    fn compute_properties(schema: SchemaRef) -> PlanProperties {
+    fn compute_properties(schema: SchemaRef, partitions: usize) -> PlanProperties {
         PlanProperties::new(
             EquivalenceProperties::new(schema),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
         )
@@ -105,11 +169,21 @@ impl ExecutionPlan for MockExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        assert_eq!(partition, 0);
+        assert!(partition < self.partitions);
+
+        if let Some(counts) = &self.execute_counts {
+            counts[partition].fetch_add(1, Ordering::SeqCst);
+        }
+
+        if let Some(start_notify) = &self.start_notify {
+            start_notify.notify_waiters();
+        }
 
         // Result doesn't implement clone, so do it ourself
         let data: Vec<_> = self
             .data
+            .get(partition)
+            .expect("partition data")
             .iter()
             .map(|r| match r {
                 Ok(batch) => Ok(batch.clone()),
@@ -123,8 +197,22 @@ impl ExecutionPlan for MockExec {
             // the batches are not available without the stream
             // yielding).
             let tx = builder.tx();
+            let delay = self.delay;
+            let permit_open = self.permit_open.clone();
+            let permit_notify = self.permit_notify.clone();
             builder.spawn(async move {
+                if let Some(open) = permit_open {
+                    let notify = permit_notify.expect("permit_notify");
+                    while !open.load(Ordering::SeqCst) {
+                        notify.notified().await;
+                    }
+                }
                 for batch in data {
+                    if let Some(delay) = delay {
+                        if delay > Duration::ZERO {
+                            sleep(delay).await;
+                        }
+                    }
                     // println!("Sending batch via delayed stream");
                     if let Err(e) = tx.send(batch).await {
                         println!("ERROR batch via delayed stream: {e}");
@@ -136,8 +224,42 @@ impl ExecutionPlan for MockExec {
             // returned stream simply reads off the rx stream
             Ok(builder.build())
         } else {
-            // make an input that will error
-            let stream = futures::stream::iter(data);
+            let delay = self.delay;
+            let permit_open = self.permit_open.clone();
+            let permit_notify = self.permit_notify.clone();
+            let stream: Pin<
+                Box<dyn Stream<Item = datafusion::common::Result<RecordBatch>> + Send>,
+            > = if delay.is_some() || permit_open.is_some() {
+                Box::pin(stream::unfold(
+                    (data.into_iter(), false),
+                    move |(mut iter, mut gate_done)| {
+                        let permit_open = permit_open.clone();
+                        let permit_notify = permit_notify.clone();
+                        async move {
+                            if !gate_done {
+                                if let Some(open) = permit_open {
+                                    let notify = permit_notify.expect("permit_notify");
+                                    while !open.load(Ordering::SeqCst) {
+                                        notify.notified().await;
+                                    }
+                                }
+                                gate_done = true;
+                            }
+                            let Some(batch) = iter.next() else {
+                                return None;
+                            };
+                            if let Some(delay) = delay {
+                                if delay > Duration::ZERO {
+                                    sleep(delay).await;
+                                }
+                            }
+                            Some((batch, (iter, gate_done)))
+                        }
+                    },
+                ))
+            } else {
+                Box::pin(stream::iter(data))
+            };
             Ok(Box::pin(RecordBatchStreamAdapter::new(
                 self.schema(),
                 stream,
@@ -157,18 +279,23 @@ impl ExecutionPlan for MockExec {
         if partition.is_some() {
             return Ok(Statistics::new_unknown(&self.schema));
         }
-        let data: datafusion::common::Result<Vec<_>> = self
+        let data: datafusion::common::Result<Vec<Vec<RecordBatch>>> = self
             .data
             .iter()
-            .map(|r| match r {
-                Ok(batch) => Ok(batch.clone()),
-                Err(e) => Err(clone_error(e)),
+            .map(|partition_data| {
+                partition_data
+                    .iter()
+                    .map(|r| match r {
+                        Ok(batch) => Ok(batch.clone()),
+                        Err(e) => Err(clone_error(e)),
+                    })
+                    .collect()
             })
             .collect();
 
         let data = data?;
 
-        Ok(compute_record_batch_statistics(&[data], &self.schema, None))
+        Ok(compute_record_batch_statistics(&data, &self.schema, None))
     }
 }
 
