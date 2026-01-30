@@ -176,7 +176,7 @@ impl ExecutionPlan for MockExec {
         }
 
         if let Some(start_notify) = &self.start_notify {
-            start_notify.notify_waiters();
+            start_notify.notify_one();
         }
 
         // Result doesn't implement clone, so do it ourself

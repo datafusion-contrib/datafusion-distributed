@@ -172,17 +172,24 @@ impl ExecutionPlan for BroadcastExec {
                 txs.push(tx);
                 rxs.push(rx);
             }
-            let mut stream = self.input.execute(real_partition, context)?;
+            let mut stream = self
+                .input
+                .execute(real_partition, context)
+                .map_err(Arc::new)?;
 
             let task = SpawnedTask::spawn(async move {
                 while let Some(msg) = stream.next().await {
                     let msg = msg.map_err(Arc::new);
-                    for tx in &txs {
-                        if tx.send(msg.clone()).is_err() {
-                            return;
+                    let mut any_open = false;
+                    txs.retain(|tx| {
+                        if tx.send(msg.clone()).is_ok() {
+                            any_open = true;
+                            true
+                        } else {
+                            false
                         }
-                    }
-                    if msg.is_err() {
+                    });
+                    if !any_open || msg.is_err() {
                         return;
                     }
                 }
