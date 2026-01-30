@@ -1,4 +1,4 @@
-use crate::execution_plans::{DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec};
+use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::HashMap;
@@ -814,38 +814,10 @@ fn display_inter_task_edges(
             if node.input_stage().num != input_stage.num {
                 continue;
             }
-            // draw the edges to this node pulling data up from its child.
-            //
-            // NetworkCoalesceExec supports multiple consumer tasks. Each consumer task reads
-            // from a contiguous group of input tasks, and exposes partitions laid out as:
-            //
-            //   [input_task_offset 0 partitions][input_task_offset 1 partitions]...[padding]
-            //
-            // where padding (missing input tasks) is rendered as absent edges.
+            // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            let consumer_tasks = stage.tasks.len().max(1);
-            let child_task_count = input_stage.tasks.len();
-            let max_child_tasks_per_consumer = child_task_count.div_ceil(consumer_tasks).max(1);
-            let child_partitions_per_task = output_partitions / max_child_tasks_per_consumer;
-
-            // Determine which input-task group this consumer task reads.
-            let base_child_tasks_per_consumer = child_task_count / consumer_tasks;
-            let consumers_with_extra_child_task = child_task_count % consumer_tasks;
-            let group_len = base_child_tasks_per_consumer
-                + usize::from(task_i < consumers_with_extra_child_task);
-            let start_task = (task_i * base_child_tasks_per_consumer)
-                + task_i.min(consumers_with_extra_child_task);
-
-            if child_partitions_per_task == 0
-                || input_task_i < start_task
-                || input_task_i >= (start_task + group_len)
-            {
-                continue;
-            }
-
-            let child_task_offset = input_task_i - start_task;
-            for p in 0..child_partitions_per_task {
-                let dest_partition = p + (child_task_offset * child_partitions_per_task);
+            let input_partitions_per_task = output_partitions / input_stage.tasks.len();
+            for p in 0..input_partitions_per_task {
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
@@ -858,7 +830,7 @@ fn display_inter_task_edges(
                     stage.num,
                     task_i,
                     index,
-                    dest_partition,
+                    p + (input_task_i * input_partitions_per_task),
                     p % NUM_COLORS + 1
                 )?;
             }
@@ -887,18 +859,6 @@ fn build_partition_group(task_i: usize, partitions: usize) -> Vec<usize> {
 
 fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     let mut result = vec![];
-    if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-        result.push(node.input_stage());
-        return result;
-    }
-    if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-        result.push(node.input_stage());
-        return result;
-    }
-    if let Some(node) = plan.as_any().downcast_ref::<NetworkBroadcastExec>() {
-        result.push(node.input_stage());
-        return result;
-    }
     for child in plan.children() {
         if let Some(plan) = child.as_network_boundary() {
             result.push(plan.input_stage());
