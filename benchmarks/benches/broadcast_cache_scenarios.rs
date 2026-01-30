@@ -96,11 +96,7 @@ struct SyntheticExec {
 }
 
 impl SyntheticExec {
-    fn new(
-        schema: SchemaRef,
-        partitions: usize,
-        batches: Arc<Vec<Arc<RecordBatch>>>,
-    ) -> Self {
+    fn new(schema: SchemaRef, partitions: usize, batches: Arc<Vec<Arc<RecordBatch>>>) -> Self {
         let properties = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(partitions),
