@@ -29,7 +29,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -133,9 +133,18 @@ impl WorkerConnection {
         // Stuff for collecting metrics.
         let curr_mem_used = Arc::new(AtomicUsize::new(0));
         let curr_mem_used_clone = Arc::clone(&curr_mem_used);
+
+        // Track the maximum memory used to buffer recieved messages.
         let mut curr_max_mem = 0;
         let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
+        // Track the total encoded size of all recieved messages.
         let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
+        // Track the time between when the worker emits the first message and when it is received.
+        let first_message_network_latency = Time::new();
+        MetricBuilder::new(metrics).build(MetricValue::Time {
+            name: "first_message_network_latency".into(),
+            time: first_message_network_latency.clone(),
+        });
         let elapsed_compute = Time::new();
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
@@ -201,10 +210,13 @@ impl WorkerConnection {
                     return fanout(&per_partition_tx, datafusion_error_to_tonic_status(&err));
                 }
             };
+
             let mut interleaved_stream = match client.do_get(ticket).await {
                 Ok(v) => v.into_inner(),
                 Err(err) => return fanout(&per_partition_tx, err),
             };
+
+            let mut first_message_network_latency_recorded = false;
 
             let consumer = MemoryConsumer::new("WorkerConnection");
 
@@ -222,6 +234,9 @@ impl WorkerConnection {
                     }
                 };
 
+                // Earliest time at which the msg was received.
+                let msg_received_time = SystemTime::now();
+
                 let flight_metadata = match FlightAppMetadata::decode(msg.app_metadata.as_ref()) {
                     Ok(v) => v,
                     Err(err) => {
@@ -229,6 +244,13 @@ impl WorkerConnection {
                     }
                 };
 
+                if !first_message_network_latency_recorded {
+                    first_message_network_latency_recorded = record_first_message_network_latency(
+                        &first_message_network_latency,
+                        &flight_metadata,
+                        msg_received_time,
+                    );
+                }
                 let partition = flight_metadata.partition as usize;
                 // the `per_partition_tx` variable is using a normal `Vec` for storing the
                 // channel transmitters, so we need to subtract the `target_partition_range.start`
@@ -327,6 +349,28 @@ impl WorkerConnection {
 fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
     for o_tx in o_txs {
         let _ = o_tx.send(Err(err.clone()));
+    }
+}
+
+// Records the time from when the message was created to when it was received. Returns false
+// if we could not record this latency.
+fn record_first_message_network_latency(
+    first_message_network_latency: &Time, // Has interior mutability
+    flight_metadata: &FlightAppMetadata,
+    message_recieved_time: SystemTime,
+) -> bool {
+    if flight_metadata.created_timestamp_unix_millis == 0 {
+        return false;
+    }
+
+    let sent_time =
+        UNIX_EPOCH + Duration::from_millis(flight_metadata.created_timestamp_unix_millis);
+    match message_recieved_time.duration_since(sent_time) {
+        Ok(delta) => {
+            first_message_network_latency.add_duration(delta);
+            true
+        }
+        Err(_) => false,
     }
 }
 
@@ -462,6 +506,7 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use futures::stream::unfold;
 
     #[tokio::test]
     async fn elapsed_compute_future() {
@@ -493,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn elapsed_compute_stream() {
         fn cheap() -> impl Stream<Item = i64> {
-            futures::stream::unfold(0i64, |state| async move {
+            unfold(0i64, |state| async move {
                 if state < 10 {
                     tokio::time::sleep(Duration::from_micros(10)).await;
                     Some((state, state + 1))
@@ -504,7 +549,7 @@ mod tests {
         }
 
         fn expensive() -> impl Stream<Item = i64> {
-            futures::stream::unfold(0i64, |state| async move {
+            unfold(0i64, |state| async move {
                 if state < 10 {
                     // Simulate expensive computation
                     let mut _count = 0f64;
@@ -534,5 +579,25 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[test]
+    fn first_message_network_latency_uses_timestamps() {
+        let first_message_network_latency = Time::new();
+
+        let sent = UNIX_EPOCH + Duration::from_secs(5);
+        let received = UNIX_EPOCH + Duration::from_secs(8);
+        let mut flight_metadata = FlightAppMetadata::new(0);
+        flight_metadata.created_timestamp_unix_millis =
+            sent.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+
+        let recorded = record_first_message_network_latency(
+            &first_message_network_latency,
+            &flight_metadata,
+            received,
+        );
+
+        assert!(recorded);
+        assert_eq!(first_message_network_latency.value(), 3_000_000_000);
     }
 }
