@@ -91,8 +91,7 @@ impl PeakRssSampler {
 struct SyntheticExec {
     schema: SchemaRef,
     partitions: usize,
-    rows_per_batch: usize,
-    num_batches: usize,
+    batches: Arc<Vec<Arc<RecordBatch>>>,
     properties: PlanProperties,
 }
 
@@ -100,8 +99,7 @@ impl SyntheticExec {
     fn new(
         schema: SchemaRef,
         partitions: usize,
-        rows_per_batch: usize,
-        num_batches: usize,
+        batches: Arc<Vec<Arc<RecordBatch>>>,
     ) -> Self {
         let properties = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -112,8 +110,7 @@ impl SyntheticExec {
         Self {
             schema,
             partitions,
-            rows_per_batch,
-            num_batches,
+            batches,
             properties,
         }
     }
@@ -159,15 +156,12 @@ impl ExecutionPlan for SyntheticExec {
     ) -> Result<SendableRecordBatchStream> {
         assert!(partition < self.partitions);
         let schema = Arc::clone(&self.schema);
-        let rows = self.rows_per_batch;
-        let batches = self.num_batches;
-        let batch_schema = Arc::clone(&schema);
+        let batches = Arc::clone(&self.batches);
+        let len = batches.len();
 
-        let stream = stream::iter((0..batches).map(move |_| {
-            let data = vec![0u8; rows];
-            let array = UInt8Array::from(data);
-            let batch = RecordBatch::try_new(Arc::clone(&batch_schema), vec![Arc::new(array)])?;
-            Ok(batch)
+        let stream = stream::iter((0..len).map(move |idx| {
+            let batch = &batches[idx];
+            Ok(batch.as_ref().clone())
         }));
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
@@ -206,27 +200,25 @@ async fn consume_partition(
     Ok(())
 }
 
-async fn run_scenario(scenario: &Scenario) -> Result<(Duration, u64)> {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "bytes",
-        DataType::UInt8,
-        false,
-    )]));
+async fn run_scenario(
+    scenario: &Scenario,
+    schema: Arc<Schema>,
+    batches: Arc<Vec<Arc<RecordBatch>>>,
+    task_ctx: Arc<TaskContext>,
+    sample_rss: bool,
+) -> Result<(Duration, u64)> {
     let input: Arc<dyn ExecutionPlan> = Arc::new(SyntheticExec::new(
         Arc::clone(&schema),
         scenario.input_partitions,
-        scenario.rows_per_batch,
-        scenario.num_batches,
+        batches,
     ));
 
     let broadcast = Arc::new(BroadcastExec::new(
         Arc::clone(&input),
         scenario.consumer_tasks,
     ));
-    let ctx = SessionContext::new();
-    let task_ctx = ctx.task_ctx();
 
-    let sampler = PeakRssSampler::start(Duration::from_millis(25));
+    let sampler = sample_rss.then(|| PeakRssSampler::start(Duration::from_millis(25)));
     let start = Instant::now();
 
     let mut join_set = tokio::task::JoinSet::new();
@@ -245,7 +237,7 @@ async fn run_scenario(scenario: &Scenario) -> Result<(Duration, u64)> {
     }
 
     let elapsed = start.elapsed();
-    let peak_kb = sampler.stop();
+    let peak_kb = sampler.map(|s| s.stop()).unwrap_or(0);
     Ok((elapsed, peak_kb))
 }
 
@@ -349,25 +341,68 @@ fn verbose_enabled() -> bool {
     }
 }
 
+fn rss_enabled() -> bool {
+    match std::env::var("BROADCAST_BENCH_RSS") {
+        Ok(val) => {
+            let val = val.to_ascii_lowercase();
+            val == "1" || val == "true" || val == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+fn runtime_threads() -> Option<usize> {
+    std::env::var("BROADCAST_BENCH_THREADS")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+}
+
 fn bench_broadcast_cache(c: &mut Criterion) {
-    let rt = RuntimeBuilder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let mut rt_builder = RuntimeBuilder::new_multi_thread();
+    if let Some(threads) = runtime_threads() {
+        rt_builder.worker_threads(threads);
+    }
+    let rt = rt_builder.enable_all().build().expect("tokio runtime");
 
     let mut group = c.benchmark_group("broadcast_cache_scenarios");
     group.sample_size(10);
     let verbose = verbose_enabled();
+    let sample_rss = rss_enabled();
+    let task_ctx = SessionContext::new().task_ctx();
 
     for scenario in scenario_matrix() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "bytes",
+            DataType::UInt8,
+            false,
+        )]));
+        let batches = (0..scenario.num_batches)
+            .map(|_| {
+                let data = vec![0u8; scenario.rows_per_batch];
+                let array = UInt8Array::from(data);
+                let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)])
+                    .expect("batch");
+                Arc::new(batch)
+            })
+            .collect::<Vec<_>>();
+        let batches = Arc::new(batches);
+
         group.bench_function(BenchmarkId::new("scenario", scenario.name), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 let mut peaks = Vec::with_capacity(iters as usize);
                 for i in 0..iters {
-                    let (elapsed, peak_kb) =
-                        rt.block_on(run_scenario(&scenario)).expect("scenario");
-                    if verbose {
+                    let (elapsed, peak_kb) = rt
+                        .block_on(run_scenario(
+                            &scenario,
+                            Arc::clone(&schema),
+                            Arc::clone(&batches),
+                            Arc::clone(&task_ctx),
+                            sample_rss,
+                        ))
+                        .expect("scenario");
+                    if verbose || sample_rss {
                         eprintln!(
                             "scenario={} iter={} peak_rss_kb={} elapsed_ms={}",
                             scenario.name,
@@ -379,7 +414,7 @@ fn bench_broadcast_cache(c: &mut Criterion) {
                     peaks.push(peak_kb);
                     total += elapsed;
                 }
-                if !peaks.is_empty() {
+                if sample_rss && !peaks.is_empty() {
                     peaks.sort_unstable();
                     let min = peaks[0];
                     let max = peaks[peaks.len() - 1];
