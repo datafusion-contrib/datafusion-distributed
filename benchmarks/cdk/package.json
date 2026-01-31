@@ -14,7 +14,8 @@
     "datafusion-bench": "npx ts-node bin/datafusion-bench.ts",
     "trino-bench": "npx ts-node bin/trino-bench.ts",
     "spark-bench": "npx ts-node bin/spark-bench.ts",
-    "fast-deploy": "npx ts-node lib/fastDeploy.ts"
+    "fast-deploy": "npx ts-node bin/fast-deploy.ts",
+    "send-command": "npx ts-node bin/send-command.ts"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
