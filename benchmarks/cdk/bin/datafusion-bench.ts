@@ -1,7 +1,7 @@
-import {Command} from "commander";
-import {z} from 'zod';
-import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
-import {execSync} from "child_process";
+import { Command } from "commander";
+import { z } from 'zod';
+import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
+import { execSync } from "child_process";
 
 // Remember to port-forward a worker with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
@@ -12,23 +12,23 @@ async function main() {
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--files-per-task <number>', 'Files per task', '8')
-        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
+        .option('--bytes-processed-per-partition <number>', 'How many bytes each partition is expected to process', '8388608') // 8 Mb default
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
-        .option('--broadcast-joins <number>', 'Use broadcast joins', 'false')
+        .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks')
         .parse(process.argv);
 
     const options = program.opts();
 
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
-    const filesPerTask = parseInt(options.filesPerTask);
-    const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+    const bytesProcessedPerPartition = parseInt(options.bytesProcessedPerPartition)
     const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const compression = options.compression;
@@ -36,10 +36,11 @@ async function main() {
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
+    const debug = options.debug === 'true' || options.debug === 1
+    const warmup = options.warmup === 'true' || options.debug === 1
 
     const runner = new DataFusionRunner({
-        filesPerTask,
-        cardinalityTaskSf,
+        bytesProcessedPerPartition,
         batchSize,
         shuffleBatchSize,
         collectMetrics,
@@ -53,6 +54,8 @@ async function main() {
         engine: `datafusion-distributed-${getCurrentBranch()}`,
         iterations,
         queries,
+        debug,
+        warmup
     });
 }
 
@@ -66,8 +69,7 @@ class DataFusionRunner implements BenchmarkRunner {
     private url = 'http://localhost:9000';
 
     constructor(private readonly options: {
-        filesPerTask: number;
-        cardinalityTaskSf: number;
+        bytesProcessedPerPartition: number;
         batchSize: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
@@ -77,7 +79,7 @@ class DataFusionRunner implements BenchmarkRunner {
     }) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number }> {
+    async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
         let response
         if (sql.includes("create view")) {
             // This is query 15
@@ -89,7 +91,7 @@ class DataFusionRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count };
+        return { rowCount: response.count, plan: response.plan };
     }
 
     private async query(sql: string): Promise<QueryResponse> {
@@ -118,8 +120,7 @@ class DataFusionRunner implements BenchmarkRunner {
         }
         await this.query(stmt);
         await this.query(`
-      SET distributed.files_per_task=${this.options.filesPerTask};
-      SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
+      SET distributed.bytes_processed_per_partition=${this.options.bytesProcessedPerPartition};
       SET datafusion.execution.batch_size=${this.options.batchSize};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};

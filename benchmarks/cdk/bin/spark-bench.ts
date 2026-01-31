@@ -1,6 +1,6 @@
-import {Command} from "commander";
-import {z} from 'zod';
-import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
+import { Command } from "commander";
+import { z } from 'zod';
+import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
 
 // Remember to port-forward the Spark HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"
@@ -12,6 +12,8 @@ async function main() {
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks')
         .parse(process.argv);
 
     const options = program.opts();
@@ -19,6 +21,8 @@ async function main() {
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
     const queries = options.queries?.split(",") ?? []
+    const debug = options.debug === 'true' || options.debug === 1
+    const warmup = options.warmup === 'true' || options.debug === 1
 
     const runner = new SparkRunner({});
 
@@ -27,6 +31,8 @@ async function main() {
         engine: 'spark',
         iterations,
         queries,
+        debug,
+        warmup
     });
 }
 
@@ -41,7 +47,7 @@ class SparkRunner implements BenchmarkRunner {
     constructor(private readonly options: {}) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number }> {
+    async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
         // Fix TPCH query 4: Add DATE prefix to date literals
         sql = sql.replace(/(?<!date\s)('[\d]{4}-[\d]{2}-[\d]{2}')/gi, 'DATE $1');
 
@@ -59,7 +65,7 @@ class SparkRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count };
+        return { rowCount: response.count, plan: "" }; // plans not yet supported in Spark.
     }
 
     private async query(sql: string): Promise<QueryResponse> {

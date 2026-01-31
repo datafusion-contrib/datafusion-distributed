@@ -42,7 +42,8 @@ mod tests {
                 .build())
         }
 
-        let (ctx_distributed, _guard, _) = start_localhost_context(3, build_state).await;
+        let (mut ctx_distributed, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx_distributed.set_distributed_bytes_processed_per_partition(1000)?;
         register_parquet_tables(&ctx_distributed).await?;
 
         let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 20.0 ORDER BY "MinTemp" DESC"#;

@@ -5,7 +5,7 @@ use crate::protobuf::StageKey;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 #[cfg(test)]
-use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
+use crate::{DistributedConfig, DistributedPlannerExtension};
 #[cfg(test)]
 use datafusion::config::ConfigOptions;
 use datafusion::{
@@ -107,7 +107,14 @@ pub async fn sql_to_physical_plan(
     let ctx = SessionContext::new_with_state(state);
     register_parquet_tables(&ctx).await.unwrap();
 
-    let df = ctx.sql(query).await.unwrap();
+    let mut queries = query.split(';').collect::<Vec<_>>();
+    let last_query = queries.pop().unwrap();
+
+    for query in queries {
+        ctx.sql(query).await.unwrap();
+    }
+
+    let df = ctx.sql(last_query).await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
 
     format!("{}", displayable(physical_plan.as_ref()).indent(true))
@@ -174,15 +181,11 @@ pub(crate) async fn context_with_query(
 
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct BuildSideOneTaskEstimator;
+pub(crate) struct BuildSideOneDistributedPlannerExtension;
 
 #[cfg(test)]
-impl TaskEstimator for BuildSideOneTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
+impl DistributedPlannerExtension for BuildSideOneDistributedPlannerExtension {
+    fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, _: &ConfigOptions) -> Option<usize> {
         if !plan.children().is_empty() {
             return None;
         }
@@ -190,10 +193,9 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
         let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
         if has_min_temp && !has_max_temp {
-            Some(TaskEstimation::maximum(1))
-        } else {
-            None
+            return Some(1);
         }
+        None
     }
 
     fn scale_up_leaf_node(

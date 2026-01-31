@@ -7,8 +7,8 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec,
-        display_plan_ascii, rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
+        NetworkShuffleExec, display_plan_ascii, rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -20,7 +20,8 @@ mod tests {
     async fn test_metrics_collection_in_aggregation(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -47,7 +48,8 @@ mod tests {
     async fn test_metrics_collection_in_join(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         WITH a AS (
@@ -97,7 +99,8 @@ mod tests {
     async fn test_metrics_collection_in_union(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query = r#"
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
@@ -135,7 +138,8 @@ mod tests {
     async fn test_metric_collection_network_boundaries(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
@@ -234,5 +238,71 @@ mod tests {
             "Sum of metric values is 0. Either the metric {metric_name} is not present or the test is too trivial"
         );
         summed
+    }
+
+    /// Test that verifies metrics are displayed correctly in the plan output.
+    ///
+    /// This test catches bugs where metrics might be collected but not properly
+    /// propagated to child stages during the rewriting phase. The display_plan_ascii
+    /// function traverses stages via find_input_stages (which uses as_network_boundary),
+    /// so this test ensures that path shows metrics correctly.
+    #[test_case(DistributedMetricsFormat::Aggregated ; "aggregated_metrics")]
+    #[test_case(DistributedMetricsFormat::PerTask ; "per_task_metrics")]
+    #[tokio::test]
+    async fn test_metrics_displayed_in_all_stages(
+        format: DistributedMetricsFormat,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        register_parquet_tables(&d_ctx).await?;
+
+        let d_df = d_ctx.sql(query).await?;
+        let d_physical = d_df.create_physical_plan().await?;
+        execute_stream(d_physical.clone(), d_ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        let plan_output = display_plan_ascii(d_physical.as_ref(), true);
+
+        println!("Plan output:\n{plan_output}");
+
+        // Count stages in the output (each stage starts with "Stage N")
+        let stage_count = plan_output.matches("Stage").count();
+        assert!(
+            stage_count >= 1,
+            "Expected at least one child stage in the distributed plan"
+        );
+
+        // Check that DataSourceExec in any stage has actual metrics (not just "metrics=[]")
+        // The DataSourceExec should have output_rows metric populated
+        let lines: Vec<&str> = plan_output.lines().collect();
+        let mut found_data_source_with_metrics = false;
+
+        for line in &lines {
+            if line.contains("DataSourceExec") && line.contains("metrics=") {
+                // Check that it's not just "metrics=[]"
+                if !line.contains("metrics=[]") {
+                    found_data_source_with_metrics = true;
+                    // Verify it contains output_rows
+                    assert!(
+                        line.contains("output_rows"),
+                        "DataSourceExec should have output_rows metric, but got: {line}"
+                    );
+                }
+            }
+        }
+
+        assert!(
+            found_data_source_with_metrics,
+            "Expected to find DataSourceExec with non-empty metrics in the plan output.\n\
+             This indicates that metrics are not being propagated to child stages during rewriting.\n\
+             Plan output:\n{plan_output}"
+        );
+
+        Ok(())
     }
 }
