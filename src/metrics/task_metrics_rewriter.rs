@@ -246,6 +246,31 @@ pub fn stage_metrics_rewriter(
 
         node_idx += 1;
 
+        // If the plan is a network boundary, we need to recursively rewrite the child stage
+        // with metrics as well. Network boundaries don't have ExecutionPlan children, so
+        // transform_down won't traverse into them automatically.
+        if let Some(network_boundary) = plan.as_network_boundary() {
+            let child_stage = network_boundary.input_stage();
+            // Recursively rewrite the child stage with metrics
+            let child_plan_with_metrics =
+                stage_metrics_rewriter(child_stage, metrics_collection.clone(), format)?;
+            // Create a new network boundary with the rewritten child stage
+            let new_network_boundary = network_boundary.with_input_stage(Stage::new(
+                child_stage.query_id,
+                child_stage.num,
+                child_plan_with_metrics,
+                child_stage.tasks.len(),
+            ))?;
+            // Wrap the new network boundary with metrics
+            let wrapped_plan_node: Arc<dyn ExecutionPlan> =
+                Arc::new(MetricsWrapperExec::new(new_network_boundary, stage_metrics));
+            return Ok(Transformed::new(
+                wrapped_plan_node,
+                true,
+                TreeNodeRecursion::Jump,
+            ));
+        }
+
         let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
             plan.clone(),
             stage_metrics,
@@ -253,11 +278,7 @@ pub fn stage_metrics_rewriter(
         Ok(Transformed::new(
             wrapped_plan_node,
             true,
-            if plan.is_network_boundary() {
-                TreeNodeRecursion::Jump
-            } else {
-                TreeNodeRecursion::Continue
-            }
+            TreeNodeRecursion::Continue,
         ))
     }).map(|v| v.data)
 }
