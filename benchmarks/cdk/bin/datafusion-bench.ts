@@ -17,7 +17,7 @@ async function main() {
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
-        .option('--broadcast-joins <number>', 'Use broadcast joins', 'false')
+        .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
