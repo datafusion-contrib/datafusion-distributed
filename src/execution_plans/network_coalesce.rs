@@ -35,11 +35,7 @@ struct TaskGroup {
 }
 
 /// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
-fn task_group(
-    input_task_count: usize,
-    task_index: usize,
-    task_count: usize,
-) -> TaskGroup {
+fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
     if task_count == 0 {
         return TaskGroup {
             start_task: 0,
@@ -55,8 +51,7 @@ fn task_group(
     let groups_with_extra_task = input_task_count % task_count;
 
     let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
-    let start_task =
-        (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
+    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
     let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
 
     TaskGroup {
@@ -142,9 +137,7 @@ impl NetworkCoalesceExec {
         // smaller groups.
         let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
         Ok(Self {
-            properties: scale_partitioning_props(input.properties(), |p| {
-                p * max_input_task_count
-            }),
+            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
             input_stage: Stage {
                 query_id,
                 num,
@@ -323,12 +316,13 @@ mod tests {
         // Configure this test task as consumer task 1/2, which has fewer input tasks (2) than the
         // max group size (3) for INPUT_TASK_COUNT=5, CONSUMER_TASK_COUNT=2.
         let ctx = SessionContext::new();
-        ctx.state_ref().write().config_mut().set_extension(Arc::new(
-            DistributedTaskContext {
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .set_extension(Arc::new(DistributedTaskContext {
                 task_index: CONSUMER_TASK_IDX,
                 task_count: CONSUMER_TASK_COUNT,
-            },
-        ));
+            }));
 
         // Pick a "padding" partition (child_task_offset == group.len) that should produce an
         // empty stream without attempting any network calls.
