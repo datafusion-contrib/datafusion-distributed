@@ -45,7 +45,7 @@ Options:
   --batch-size <number>                     Standard Batch coalescing size (number of rows) (default: "32768")
   --shuffle-batch-size <number>             Shuffle batch coalescing size (number of rows) (default: "32768")
   --children-isolator-unions <number>       Use children isolator unions (default: "true")
-  --broadcast-joins <number>                Use broadcast joins (default: "false")
+  --broadcast-joins <boolean>               Use broadcast joins (default: "false")
   --collect-metrics <boolean>               Propagates metric collection (default: "true")
   --compression <string>                    Compression algo to use within workers (lz4, zstd, none) (default: "lz4")
   --queries <string>                        Specific queries to run
