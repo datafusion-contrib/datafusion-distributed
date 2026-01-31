@@ -12,17 +12,60 @@ use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
+};
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// [ExecutionPlan] that coalesces partitions from multiple tasks into a single task without
+#[derive(Debug, Clone, Copy)]
+struct TaskGroup {
+    /// The first input task index in this group.
+    start_task: usize,
+    /// The number of input tasks in this group.
+    len: usize,
+    /// The maximum possible group size across all groups.
+    ///
+    /// When groups are uneven (input_tasks % task_count != 0), some groups are shorter. We still
+    /// size the output partitioning based on this max and return empty streams for the extra
+    /// partitions in smaller groups.
+    max_len: usize,
+}
+
+/// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
+fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
+    if task_count == 0 {
+        return TaskGroup {
+            start_task: 0,
+            len: 0,
+            max_len: 0,
+        };
+    }
+
+    // Split `input_task_count` into `task_count` contiguous groups.
+    // - base_tasks_per_group: floor(input_task_count / task_count)
+    // - groups_with_extra_task: first N groups that get one extra task (remainder)
+    let base_tasks_per_group = input_task_count / task_count;
+    let groups_with_extra_task = input_task_count % task_count;
+
+    let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
+    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
+    let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
+
+    TaskGroup {
+        start_task,
+        len,
+        max_len,
+    }
+}
+
+/// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
 /// performing any repartition, and maintaining the same partitioning scheme.
 ///
 /// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
-/// into one.
+/// between distributed stages.
 ///
 /// ```text
 ///                                ┌───────────────────────────┐                                   ■
@@ -44,9 +87,11 @@ use uuid::Uuid;
 ///
 /// The communication between two stages across a [NetworkCoalesceExec] has two implications:
 ///
-/// - Stage N+1 must have exactly 1 task. The distributed planner ensures this is true.
-/// - The number of partitions in the single task of Stage N+1 is equal to the total number of
-///   partitions across all tasks in Stage N (e.g. (1,2,3,4,5,6,7,8,9) = (1,2,3)+(4,5,6)+(7,8,9) )
+/// - Stage N+1 may have one or more tasks. Each consumer task reads a contiguous group of upstream
+///   tasks from Stage N.
+/// - Output partitioning for Stage N+1 is sized based on the maximum upstream-group size. When
+///   groups are uneven, consumer tasks with smaller groups return empty streams for the “extra”
+///   partitions.
 ///
 /// This node has two variants.
 /// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
@@ -83,13 +128,16 @@ impl NetworkCoalesceExec {
         task_count: usize,
         input_task_count: usize,
     ) -> Result<Self> {
-        if task_count > 1 {
-            return plan_err!(
-                "NetworkCoalesceExec cannot be executed in more than one task, {task_count} were passed."
-            );
+        if task_count == 0 {
+            return plan_err!("NetworkCoalesceExec cannot be executed with task_count=0");
         }
+
+        // Each output task coalesces a group of input tasks. We size the output partition count
+        // per output task based on the maximum group size, returning empty streams for tasks with
+        // smaller groups.
+        let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
         Ok(Self {
-            properties: scale_partitioning_props(input.properties(), |p| p * input_task_count),
+            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
             input_stage: Stage {
                 query_id,
                 num,
@@ -161,15 +209,45 @@ impl ExecutionPlan for NetworkCoalesceExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        if task_context.task_index > 0 {
-            return exec_err!("NetworkCoalesceExec cannot be executed in more than one task");
+        if task_context.task_index >= task_context.task_count {
+            return exec_err!(
+                "NetworkCoalesceExec invalid task context: task_index={} >= task_count={}",
+                task_context.task_index,
+                task_context.task_count
+            );
         }
 
-        let partitions_per_task =
-            self.properties().partitioning.partition_count() / self.input_stage.tasks.len();
+        let partitions_per_task = self
+            .properties()
+            .partitioning
+            .partition_count()
+            .checked_div(
+                self.input_stage
+                    .tasks
+                    .len()
+                    .div_ceil(task_context.task_count)
+                    .max(1),
+            )
+            .unwrap_or(0);
+        if partitions_per_task == 0 {
+            return exec_err!("NetworkCoalesceExec has 0 partitions per input task");
+        }
 
-        let target_task = partition / partitions_per_task;
+        let input_task_count = self.input_stage.tasks.len();
+        let group = task_group(
+            input_task_count,
+            task_context.task_index,
+            task_context.task_count,
+        );
+
+        let input_task_offset = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
+
+        if input_task_offset >= group.max_len || input_task_offset >= group.len {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        }
+
+        let target_task = group.start_task + input_task_offset;
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
             &self.input_stage,
@@ -198,5 +276,72 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::prelude::SessionContext;
+    use futures::TryStreamExt;
+
+    #[tokio::test]
+    async fn supports_multiple_output_tasks_with_padding_partitions() -> Result<()> {
+        const INPUT_TASK_COUNT: usize = 5;
+        const CONSUMER_TASK_COUNT: usize = 2;
+        const CONSUMER_TASK_IDX: usize = 1;
+        const STAGE_NUM: usize = 1;
+
+        // Child plan used only for properties/schema (we won't reach network codepaths).
+        let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let child_partitions = child.properties().partitioning.partition_count();
+
+        let exec = NetworkCoalesceExec::try_new(
+            Arc::clone(&child),
+            Uuid::nil(),
+            STAGE_NUM,
+            CONSUMER_TASK_COUNT,
+            INPUT_TASK_COUNT,
+        )?;
+
+        // `try_new` should scale output partitions based on the maximum group size.
+        let max_input_task_count = INPUT_TASK_COUNT.div_ceil(CONSUMER_TASK_COUNT).max(1);
+        assert_eq!(
+            exec.properties().partitioning.partition_count(),
+            child_partitions * max_input_task_count
+        );
+
+        // Configure this test task as consumer task 1/2, which has fewer input tasks (2) than the
+        // max group size (3) for INPUT_TASK_COUNT=5, CONSUMER_TASK_COUNT=2.
+        let ctx = SessionContext::new();
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .set_extension(Arc::new(DistributedTaskContext {
+                task_index: CONSUMER_TASK_IDX,
+                task_count: CONSUMER_TASK_COUNT,
+            }));
+
+        // Pick a "padding" partition (child_task_offset == group.len) that should produce an
+        // empty stream without attempting any network calls.
+        let group = task_group(INPUT_TASK_COUNT, CONSUMER_TASK_IDX, CONSUMER_TASK_COUNT);
+        let partitions_per_task = exec
+            .properties()
+            .partitioning
+            .partition_count()
+            .checked_div(group.max_len)
+            .unwrap_or(0);
+        assert!(partitions_per_task > 0);
+
+        let padding_partition = group.len * partitions_per_task;
+        let batches = exec
+            .execute(padding_partition, ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert!(batches.is_empty());
+
+        Ok(())
     }
 }
