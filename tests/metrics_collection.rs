@@ -283,7 +283,8 @@ mod tests {
     async fn test_metrics_displayed_in_all_stages(
         format: DistributedMetricsFormat,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_bytes_processed_per_partition(1000)?;
 
         let query =
             r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
