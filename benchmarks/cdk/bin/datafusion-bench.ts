@@ -49,8 +49,7 @@ async function main() {
         collectMetrics,
         childrenIsolatorUnions,
         compression,
-        broadcastJoins,
-        debug
+        broadcastJoins
     });
 
     await runBenchmark(runner, {
@@ -81,7 +80,6 @@ class DataFusionRunner implements BenchmarkRunner {
         compression: string;
         childrenIsolatorUnions: boolean;
         broadcastJoins: boolean;
-        debug: boolean;
     }) {
     }
 
@@ -95,9 +93,6 @@ class DataFusionRunner implements BenchmarkRunner {
             await this.query(dropView);
         } else {
             response = await this.query(sql)
-        }
-        if (this.options.debug) {
-            console.log(response.plan)
         }
 
         return { rowCount: response.count, plan: response.plan };
