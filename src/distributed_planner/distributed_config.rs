@@ -38,7 +38,7 @@ extensions_options! {
         /// partitions are suitable to be used for driving the query forward. If the result of the
         /// calculation is that more partitions than `datafusion.execution.target_partitions` are
         /// needed, the query will use more workers.
-        pub bytes_processed_per_partition: usize, default = 128 * 1024 * 1024
+        pub bytes_processed_per_partition: usize, default = 8 * 1024 * 1024
         /// Collection of [DistributedPlannerExtension]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_distributed_planner_extension: CombinedDistributedPlannerExtension, default = CombinedDistributedPlannerExtension::default()

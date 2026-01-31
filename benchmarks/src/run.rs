@@ -76,7 +76,7 @@ pub struct RunOpt {
     threads: Option<usize>,
 
     /// Number of bytes each partition is expected to process.
-    #[structopt(long, default_value = "128 * 1024 * 1024")]
+    #[structopt(long, default_value = "8388608")] // 8 Mb
     bytes_processed_per_partition: usize,
 
     /// Use children isolator UNIONs for distributing UNION operations.
