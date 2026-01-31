@@ -21,6 +21,7 @@ async function main() {
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
         .parse(process.argv);
 
     const options = program.opts();
@@ -36,6 +37,7 @@ async function main() {
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
+    const debug = !!options.debug
 
     const runner = new DataFusionRunner({
         filesPerTask,
@@ -45,7 +47,8 @@ async function main() {
         collectMetrics,
         childrenIsolatorUnions,
         compression,
-        broadcastJoins
+        broadcastJoins,
+        debug
     });
 
     await runBenchmark(runner, {
@@ -74,6 +77,7 @@ class DataFusionRunner implements BenchmarkRunner {
         compression: string;
         childrenIsolatorUnions: boolean;
         broadcastJoins: boolean;
+        debug: boolean;
     }) {
     }
 
@@ -87,6 +91,9 @@ class DataFusionRunner implements BenchmarkRunner {
             await this.query(dropView);
         } else {
             response = await this.query(sql)
+        }
+        if (this.options.debug) {
+            console.log(response.plan)
         }
 
         return { rowCount: response.count };
