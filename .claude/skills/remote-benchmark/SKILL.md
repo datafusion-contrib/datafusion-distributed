@@ -68,3 +68,13 @@ The user provided the following arguments: $ARGUMENTS
 parse those and make sure you parse them correctly, for example `tpch_sf100 q1,q2,q4` means 
 `--dataset tpch_sf100 --queries q1,q2,q4`. Note that the user might also give natural language instructions in the 
 arguments, be smart while parsing those.
+
+### analyzing results
+
+results for individual queries will be dumped in the respective dataset folders, for example:
+
+`benchmarks/data/tpch_sf10/.results-remote/datafusion-distributed-main/q1.json`
+or
+`benchmarks/data/tpch_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
+
+You can inspect the results and the plan by reading the JSONs. Tip: use jq for printing nice results.
