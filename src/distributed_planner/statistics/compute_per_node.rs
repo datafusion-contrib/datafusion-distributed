@@ -1,10 +1,12 @@
 use crate::BroadcastExec;
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::physical_plan::expressions::Column;
+use datafusion::physical_plan::expressions::{BinaryExpr, Column, LikeExpr};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{
     CrossJoinExec, HashJoinExec, NestedLoopJoinExec, SortMergeJoinExec, SymmetricHashJoinExec,
@@ -161,8 +163,9 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
 
     // FilterExec: evaluates predicate expression per row
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/filter.rs
-    if any.is::<FilterExec>() {
-        return ComputeCost::M;
+    // Cost depends on predicate complexity - LIKE/Regex operations are expensive
+    if let Some(filter) = any.downcast_ref::<FilterExec>() {
+        return compute_filter_cost(filter.predicate());
     }
 
     // ProjectionExec: cost depends on whether it's simple columns or expressions
@@ -311,4 +314,47 @@ fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCost {
         3..=5 => ComputeCost::M, // Several computed expressions
         _ => ComputeCost::L,     // Many computed expressions
     }
+}
+
+/// Computes the cost of a filter based on its predicate.
+/// LIKE and Regex operations are significantly more expensive than simple comparisons.
+fn compute_filter_cost(predicate: &Arc<dyn PhysicalExpr>) -> ComputeCost {
+    if predicate_contains_like_or_regex(predicate) {
+        ComputeCost::XL // 1.6 factor for expensive string matching
+    } else {
+        ComputeCost::M // 1.0 factor for simple predicates
+    }
+}
+
+/// Recursively checks if a predicate contains LIKE or Regex operations.
+fn predicate_contains_like_or_regex(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    let any = expr.as_any();
+
+    // Check for LikeExpr (handles LIKE, ILIKE, NOT LIKE, NOT ILIKE)
+    if any.is::<LikeExpr>() {
+        return true;
+    }
+
+    // Check for BinaryExpr with Regex operators
+    if let Some(binary) = any.downcast_ref::<BinaryExpr>() {
+        match binary.op() {
+            Operator::RegexMatch
+            | Operator::RegexIMatch
+            | Operator::RegexNotMatch
+            | Operator::RegexNotIMatch => return true,
+            _ => {}
+        }
+        // Recursively check children
+        return predicate_contains_like_or_regex(binary.left())
+            || predicate_contains_like_or_regex(binary.right());
+    }
+
+    // Check nested expressions (AND, OR, NOT)
+    for child in expr.children() {
+        if predicate_contains_like_or_regex(child) {
+            return true;
+        }
+    }
+
+    false
 }
