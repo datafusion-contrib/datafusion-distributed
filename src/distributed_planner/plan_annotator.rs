@@ -493,7 +493,7 @@ mod tests {
         SELECT * FROM weather
         "#;
         let annotated = sql_to_annotated(query).await;
-        assert_snapshot!(annotated, @"DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=95892")
+        assert_snapshot!(annotated, @"DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=67124 output_bytes=95892")
     }
 
     #[tokio::test]
@@ -510,9 +510,9 @@ mod tests {
                 ProjectionExec: task_count=Some(4) output_rows=184 cost_class=XS accumulated_cost=8611 output_bytes=6440
                   AggregateExec: task_count=Some(4) output_rows=184 cost_class=L accumulated_cost=6219 output_bytes=4784
                     [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=184
-                      RepartitionExec: task_count=Some(3) output_rows=184 cost_class=S accumulated_cost=11436 output_bytes=4784
-                        AggregateExec: task_count=Some(3) output_rows=184 cost_class=L accumulated_cost=8088 output_bytes=4784
-                          DataSourceExec: task_count=Some(3) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=6222
+                      RepartitionExec: task_count=Some(4) output_rows=184 cost_class=S accumulated_cost=15791 output_bytes=4784
+                        AggregateExec: task_count=Some(4) output_rows=184 cost_class=L accumulated_cost=12443 output_bytes=4784
+                          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=4355 output_bytes=6222
         ")
     }
 
@@ -523,10 +523,10 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
-          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
-            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=46627 output_bytes=6588
+          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=9515 output_bytes=9516
+            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -563,19 +563,19 @@ mod tests {
               ProjectionExec: task_count=Some(1) output_rows=2 cost_class=XS accumulated_cost=117 output_bytes=52
                 AggregateExec: task_count=Some(1) output_rows=2 cost_class=L accumulated_cost=91 output_bytes=52
                   [NetworkBoundary] Shuffle: task_count=Some(1) output_rows=2
-                    RepartitionExec: task_count=Some(4) output_rows=2 cost_class=S accumulated_cost=23723 output_bytes=70
-                      AggregateExec: task_count=Some(4) output_rows=2 cost_class=L accumulated_cost=23674 output_bytes=70
-                        FilterExec: task_count=Some(4) output_rows=2 cost_class=M accumulated_cost=23607 output_bytes=52
-                          RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=7869 output_bytes=15738
-                            DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=15738
+                    RepartitionExec: task_count=Some(4) output_rows=2 cost_class=S accumulated_cost=34739 output_bytes=70
+                      AggregateExec: task_count=Some(4) output_rows=2 cost_class=L accumulated_cost=34690 output_bytes=70
+                        FilterExec: task_count=Some(4) output_rows=2 cost_class=M accumulated_cost=34623 output_bytes=52
+                          RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=18885 output_bytes=15738
+                            DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=11016 output_bytes=15738
           ProjectionExec: task_count=Some(1) output_rows=2 cost_class=XS accumulated_cost=117 output_bytes=52
             AggregateExec: task_count=Some(1) output_rows=2 cost_class=L accumulated_cost=91 output_bytes=52
               [NetworkBoundary] Shuffle: task_count=Some(1) output_rows=2
-                RepartitionExec: task_count=Some(4) output_rows=2 cost_class=S accumulated_cost=23723 output_bytes=70
-                  AggregateExec: task_count=Some(4) output_rows=2 cost_class=L accumulated_cost=23674 output_bytes=70
-                    FilterExec: task_count=Some(4) output_rows=2 cost_class=M accumulated_cost=23607 output_bytes=52
-                      RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=7869 output_bytes=15738
-                        DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=15738
+                RepartitionExec: task_count=Some(4) output_rows=2 cost_class=S accumulated_cost=34739 output_bytes=70
+                  AggregateExec: task_count=Some(4) output_rows=2 cost_class=L accumulated_cost=34690 output_bytes=70
+                    FilterExec: task_count=Some(4) output_rows=2 cost_class=M accumulated_cost=34623 output_bytes=52
+                      RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=18885 output_bytes=15738
+                        DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=11016 output_bytes=15738
         ")
     }
 
@@ -588,10 +588,10 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
-          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
-            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=46627 output_bytes=6588
+          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=9515 output_bytes=9516
+            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -604,9 +604,9 @@ mod tests {
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Some(2) output_rows=184 cost_class=L accumulated_cost=4066 output_bytes=3128
           [NetworkBoundary] Shuffle: task_count=Some(2) output_rows=184
-            RepartitionExec: task_count=Some(3) output_rows=184 cost_class=S accumulated_cost=10277 output_bytes=3128
-              AggregateExec: task_count=Some(3) output_rows=184 cost_class=L accumulated_cost=8088 output_bytes=3128
-                DataSourceExec: task_count=Some(3) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=6222
+            RepartitionExec: task_count=Some(4) output_rows=184 cost_class=S accumulated_cost=14632 output_bytes=3128
+              AggregateExec: task_count=Some(4) output_rows=184 cost_class=L accumulated_cost=12443 output_bytes=3128
+                DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=4355 output_bytes=6222
         ")
     }
 
@@ -619,14 +619,14 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=4 cost_class=M accumulated_cost=28593 output_bytes=36
-          FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=14274 output_bytes=18
-            RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=4758 output_bytes=9516
-              DataSourceExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          ProjectionExec: task_count=Some(2) output_rows=2 cost_class=XS accumulated_cost=14283 output_bytes=18
-            FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=14274 output_bytes=18
-              RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=4758 output_bytes=9516
-                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=4 cost_class=M accumulated_cost=41915 output_bytes=36
+          FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=20935 output_bytes=18
+            RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=11419 output_bytes=9516
+              DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          ProjectionExec: task_count=Some(2) output_rows=2 cost_class=XS accumulated_cost=20944 output_bytes=18
+            FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=20935 output_bytes=18
+              RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=11419 output_bytes=9516
+                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -639,9 +639,9 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        FilterExec: task_count=Some(4) output_rows=1 cost_class=M accumulated_cost=19215 output_bytes=18
-          RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=6405 output_bytes=12810
-            DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=12810
+        FilterExec: task_count=Some(4) output_rows=1 cost_class=M accumulated_cost=28182 output_bytes=18
+          RepartitionExec: task_count=Some(4) output_rows=366 cost_class=XS accumulated_cost=15372 output_bytes=12810
+            DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=8967 output_bytes=12810
         ")
     }
 
@@ -657,8 +657,8 @@ mod tests {
           BoundedWindowAggExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=30450 output_bytes=12810
             SortExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=15225 output_bytes=9516
               [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366
-                RepartitionExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
-                  DataSourceExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+                RepartitionExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=13322 output_bytes=9516
+                  DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -674,18 +674,18 @@ mod tests {
         "#;
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=6 cost_class=M accumulated_cost=42894 output_bytes=54
-          FilterExec: task_count=Some(1) output_rows=2 cost_class=M accumulated_cost=14274 output_bytes=18
-            RepartitionExec: task_count=Some(1) output_rows=366 cost_class=XS accumulated_cost=4758 output_bytes=9516
-              DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          ProjectionExec: task_count=Some(1) output_rows=2 cost_class=XS accumulated_cost=14283 output_bytes=18
-            FilterExec: task_count=Some(1) output_rows=2 cost_class=M accumulated_cost=14274 output_bytes=18
-              RepartitionExec: task_count=Some(1) output_rows=366 cost_class=XS accumulated_cost=4758 output_bytes=9516
-                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          ProjectionExec: task_count=Some(2) output_rows=2 cost_class=XS accumulated_cost=14283 output_bytes=18
-            FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=14274 output_bytes=18
-              RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=4758 output_bytes=9516
-                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=6 cost_class=M accumulated_cost=62877 output_bytes=54
+          FilterExec: task_count=Some(1) output_rows=2 cost_class=M accumulated_cost=20935 output_bytes=18
+            RepartitionExec: task_count=Some(1) output_rows=366 cost_class=XS accumulated_cost=11419 output_bytes=9516
+              DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          ProjectionExec: task_count=Some(1) output_rows=2 cost_class=XS accumulated_cost=20944 output_bytes=18
+            FilterExec: task_count=Some(1) output_rows=2 cost_class=M accumulated_cost=20935 output_bytes=18
+              RepartitionExec: task_count=Some(1) output_rows=366 cost_class=XS accumulated_cost=11419 output_bytes=9516
+                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          ProjectionExec: task_count=Some(2) output_rows=2 cost_class=XS accumulated_cost=20944 output_bytes=18
+            FilterExec: task_count=Some(2) output_rows=2 cost_class=M accumulated_cost=20935 output_bytes=18
+              RepartitionExec: task_count=Some(2) output_rows=366 cost_class=XS accumulated_cost=11419 output_bytes=9516
+                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -698,12 +698,12 @@ mod tests {
         "#;
         let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
             [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366
-              BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+              BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -728,12 +728,12 @@ mod tests {
         let annotated = sql_to_annotated_broadcast(query, 1, 4, true).await;
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
             [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366
-              BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+              BroadcastExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ");
     }
 
@@ -751,12 +751,12 @@ mod tests {
         )
         .await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(3) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+        HashJoinExec: task_count=Some(3) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(3) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
             [NetworkBoundary] Broadcast: task_count=Some(3) output_rows=366
-              BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(3) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+              BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(3) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ");
     }
 
@@ -771,12 +771,12 @@ mod tests {
             sql_to_annotated_broadcast_with_estimator(query, 3, BroadcastBuildCoalesceMaxEstimator)
                 .await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
             [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366
-              BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+              BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ");
     }
 
@@ -791,10 +791,10 @@ mod tests {
         // With broadcast disabled, no broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
-          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
-            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+        HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=46627 output_bytes=6588
+          CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=9515 output_bytes=9516
+            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -808,17 +808,17 @@ mod tests {
         "#;
         let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=39564 output_bytes=9882
+        HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=46225 output_bytes=9882
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 cost_class=XXS accumulated_cost=3843 output_bytes=12810
             [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366
-              BroadcastExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=33305 output_bytes=12810
-                HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=12810
+              BroadcastExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=39966 output_bytes=12810
+                HashJoinExec: task_count=Some(4) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=12810
                   CoalescePartitionsExec: task_count=Some(4) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
                     [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366
-                      BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                        DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                  DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+                      BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                        DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+                  DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          DataSourceExec: task_count=Some(4) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ")
     }
 
@@ -843,25 +843,25 @@ mod tests {
         // With ChildrenIsolatorUnionExec, each broadcast task_count should be limited to their
         // context.
         assert_snapshot!(annotated, @r"
-        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=1098 cost_class=M accumulated_cost=119679 output_bytes=19764
-          HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+        ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=1098 cost_class=M accumulated_cost=139662 output_bytes=19764
+          HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
               [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366
-                BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                  DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+                BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                  DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          HashJoinExec: task_count=Some(1) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(1) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
               [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366
-                BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                  DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-          HashJoinExec: task_count=Some(2) output_rows=366 cost_class=XL accumulated_cost=33305 output_bytes=6588
+                BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                  DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+            DataSourceExec: task_count=Some(1) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+          HashJoinExec: task_count=Some(2) output_rows=366 cost_class=XL accumulated_cost=39966 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(2) output_rows=366 cost_class=XXS accumulated_cost=2854 output_bytes=9516
               [NetworkBoundary] Broadcast: task_count=Some(2) output_rows=366
-                BroadcastExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-                  DataSourceExec: task_count=Some(1) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
-            DataSourceExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=0 output_bytes=9516
+                BroadcastExec: task_count=Some(2) output_rows=366 cost_class=Zero accumulated_cost=6661 output_bytes=9516
+                  DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
+            DataSourceExec: task_count=Some(2) output_rows=366 cost_class=S accumulated_cost=6661 output_bytes=9516
         ");
     }
 

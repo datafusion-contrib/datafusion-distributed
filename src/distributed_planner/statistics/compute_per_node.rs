@@ -195,6 +195,11 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
         };
     }
 
+    // DataSourceExec: I/O-bound mainly, but also some CPU for decoding.
+    if any.is::<DataSourceExec>() {
+        return ComputeCost::S;
+    }
+
     // === XS: Simple memory operations ===
 
     // CoalesceBatchesExec: concatenates batches via concat_batches (memory copy)
@@ -221,12 +226,6 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
 
     // BroadcastExec: This node does not do any computation, does not even read the data.
     if any.is::<BroadcastExec>() {
-        return ComputeCost::Zero;
-    }
-
-    // DataSourceExec: I/O-bound, CPU just receives decoded data
-    // The actual decoding is done by the storage layer
-    if any.is::<DataSourceExec>() {
         return ComputeCost::Zero;
     }
 
