@@ -1,7 +1,10 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlanProperties;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::{
     error::Result,
     execution::SendableRecordBatchStream,
@@ -10,6 +13,7 @@ use datafusion::{
         PlanProperties,
     },
 };
+use futures::TryStreamExt;
 use std::{fmt::Formatter, sync::Arc};
 
 /// This is a simple [ExecutionPlan] that isolates a set of N partitions from an input
@@ -52,6 +56,7 @@ pub struct PartitionIsolatorExec {
     pub(crate) input: Arc<dyn ExecutionPlan>,
     pub(crate) properties: PlanProperties,
     pub(crate) n_tasks: usize,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
 impl PartitionIsolatorExec {
@@ -69,6 +74,7 @@ impl PartitionIsolatorExec {
             input: input.clone(),
             properties,
             n_tasks,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -150,6 +156,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
     ) -> Result<SendableRecordBatchStream> {
         let task_context = DistributedTaskContext::from_ctx(&context);
 
+        let metric = MetricBuilder::new(&self.metrics).output_rows(partition);
         let input_partitions = self.input.output_partitioning().partition_count();
 
         let partition_group = Self::partition_group(
@@ -169,12 +176,21 @@ impl ExecutionPlan for PartitionIsolatorExec {
                     Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
                         as SendableRecordBatchStream)
                 } else {
-                    self.input.execute(*actual_partition_number, context)
+                    Ok(Box::pin(RecordBatchStreamAdapter::new(
+                        self.schema(),
+                        self.input
+                            .execute(*actual_partition_number, context)?
+                            .inspect_ok(move |v| metric.add(v.num_rows())),
+                    )))
                 }
             }
             None => Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
                 as SendableRecordBatchStream),
         }
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 

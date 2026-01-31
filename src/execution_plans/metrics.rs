@@ -15,18 +15,11 @@ pub(crate) struct MetricsWrapperExec {
     inner: Arc<dyn ExecutionPlan>,
     /// metrics for this plan node.
     metrics: MetricsSet,
-    /// children is initially None. When used by the [TaskMetricsRewriter], the children will be updated
-    /// to point at other wrapped nodes.
-    children: Option<Vec<Arc<dyn ExecutionPlan>>>,
 }
 
 impl MetricsWrapperExec {
     pub(crate) fn new(inner: Arc<dyn ExecutionPlan>, metrics: MetricsSet) -> Self {
-        Self {
-            inner,
-            metrics,
-            children: None,
-        }
+        Self { inner, metrics }
     }
 }
 
@@ -53,12 +46,8 @@ impl ExecutionPlan for MetricsWrapperExec {
         }
     }
 
-    /// Retrusn
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.children {
-            Some(children) => children.iter().collect(),
-            None => self.inner.children(),
-        }
+        self.inner.children()
     }
 
     fn with_new_children(
@@ -66,9 +55,8 @@ impl ExecutionPlan for MetricsWrapperExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(MetricsWrapperExec {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner).with_new_children(children.clone())?,
             metrics: self.metrics.clone(),
-            children: Some(children),
         }))
     }
 
