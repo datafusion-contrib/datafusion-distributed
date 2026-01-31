@@ -9,7 +9,7 @@ There's a package.json file in `benchmarks/cdk/package.json` with relevant comma
 
 All the commands in this skill need to be prefixed with whatever the user declared in `./claude/settings.local.json`
 in the `aws-commands-prefix` key, typically for providing the commands with the correct permissions.
-(e.g., `$aws-commands-prefix npm run deploy` or `$aws-commands-prexfix aws ssm ...`)
+(e.g., `$aws-commands-prefix npm run cdk deploy` or `$aws-commands-prexfix aws ssm ...`)
 
 Running `npm run cdk deploy` will provision the cluster with the resources specified in `benchmarks/cdk/lib/`.
 This takes a while typically (~5 mins). If the user data of the EC2 machines was changed, and you want those changes
@@ -45,5 +45,18 @@ it's necessary to perform the following steps for the following engines:
 2. You can issue curl queries to `http://localhost:9003/health` and `http://localhost:9003/query` to double-check that
    everything is consistent with what's expected from `benchmarks/cdk/lib/spark.ts`
 
+## Ballista
+
+1. Port forward the 9002 port in a background terminal:
+   `aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9002,localPortNumber=9002"`
+2. Verify that there are in fact the expected workers connected to the scheduler. For this, all workers need to
+   have the appropriate instance IP configured in their launch command, which might not have been done by default,
+   because this happens in a post cloud-init command that might not run because of timeout.
+3. Verify with systemctl in each remote machine that all workers are running successfully. One thing that happens
+   very often is that `--external-host` is incorrectly set to localhost rather than the actual scheduler EC2 private IP
+
 Remember that for running port forward commands in the background, they take like 5 secs until the
 "waiting for connections" message appears. Until then, the port is still not forwarded.
+
+If at some point you need to run a command in all machines and get its output, you can do it
+with `npm run send-command your custom command`

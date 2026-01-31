@@ -4,6 +4,7 @@ import {CdkStack} from '../lib/cdk-stack';
 import {DATAFUSION_DISTRIBUTED_ENGINE} from "../lib/datafusion-distributed";
 import {TRINO_ENGINE} from "../lib/trino";
 import {SPARK_ENGINE} from "../lib/spark";
+import { BALLISTA_ENGINE } from "../lib/ballista";
 
 const app = new cdk.App();
 
@@ -14,6 +15,7 @@ const config = {
         DATAFUSION_DISTRIBUTED_ENGINE,
         SPARK_ENGINE,
         TRINO_ENGINE,
+        BALLISTA_ENGINE
     ]
 };
 
