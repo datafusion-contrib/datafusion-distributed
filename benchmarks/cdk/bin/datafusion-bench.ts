@@ -12,7 +12,7 @@ async function main() {
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--bytes-processed-per-partition <number>', 'How many bytes each partition is expected to process', '134217728'/*128 * 1024 * 1024*/)
+        .option('--bytes-processed-per-partition <number>', 'How many bytes each partition is expected to process', '8388608') // 8 Mb default
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
