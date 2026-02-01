@@ -1,7 +1,7 @@
 use datafusion::arrow::datatypes::DataType;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, plan_err};
+use datafusion::common::{ColumnStatistics, JoinType, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExprRef;
@@ -337,6 +337,7 @@ pub(crate) fn calculate_row_stats(
             &input_rows_per_children[0],
             &input_rows_per_children[1],
             join.on(),
+            *join.join_type(),
         ));
     }
 
@@ -346,6 +347,7 @@ pub(crate) fn calculate_row_stats(
             &input_rows_per_children[0],
             &input_rows_per_children[1],
             join.on(),
+            join.join_type(),
         ));
     }
 
@@ -355,15 +357,17 @@ pub(crate) fn calculate_row_stats(
             &input_rows_per_children[0],
             &input_rows_per_children[1],
             join.on(),
+            *join.join_type(),
         ));
     }
 
     // NestedLoopJoinExec: can have arbitrary join conditions
-    if any.is::<NestedLoopJoinExec>() {
-        // Conservative: assume some filtering but not as selective as equi-join
-        let cross =
-            compute_cross_join_stats(&input_rows_per_children[0], &input_rows_per_children[1]);
-        return Ok(cross.apply_selectivity(INEQUALITY_SELECTIVITY));
+    if let Some(join) = any.downcast_ref::<NestedLoopJoinExec>() {
+        return Ok(estimate_nested_loop_join_stats(
+            &input_rows_per_children[0],
+            &input_rows_per_children[1],
+            *join.join_type(),
+        ));
     }
 
     // --- Operators that combine/increase row count ---
@@ -614,30 +618,52 @@ fn compute_cross_join_stats(left: &RowStats, right: &RowStats) -> RowStats {
     RowStats::new(output_count, output_ndv)
 }
 
-/// Estimates statistics for an equi-join using NDV.
+/// Estimates statistics for an equi-join using NDV, accounting for different join types.
 ///
-/// Following Trino's approach:
-///   selectivity = 1 / max(leftNDV, rightNDV) for each join key
-///   outputRows = leftRows * rightRows * product(selectivity for each key)
+/// Join type semantics:
+/// - Inner: Returns only matching rows from both sides
+/// - Left/Right: Returns all rows from one side, matching rows from the other (NULLs for non-matches)
+/// - Full: Returns all rows from both sides (NULLs for non-matches)
+/// - LeftSemi/RightSemi: Returns rows from one side that have at least one match
+/// - LeftAnti/RightAnti: Returns rows from one side that have NO match
+/// - LeftMark/RightMark: Returns all rows from one side with a boolean "match exists" column
 ///
-/// NDV for join key columns becomes min(leftNDV, rightNDV).
-/// NDV for other columns is scaled proportionally.
-///
-/// Reference: Trino's JoinStatsRule.java:134-146 and ComparisonStatsCalculator.java:171-207
-/// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/JoinStatsRule.java#L134-L146
-/// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/ComparisonStatsCalculator.java#L171-L207
+/// Reference: Trino's JoinStatsRule.java (INNER, LEFT, RIGHT, FULL only)
+/// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/JoinStatsRule.java
+/// Note: Trino doesn't handle SEMI/ANTI joins in JoinStatsRule - they convert them to other forms.
+/// Our implementation extends the approach for SEMI/ANTI based on join semantics.
 fn estimate_equi_join_stats(
     left: &RowStats,
     right: &RowStats,
     join_keys: &[(PhysicalExprRef, PhysicalExprRef)],
+    join_type: JoinType,
 ) -> RowStats {
     use datafusion::physical_plan::expressions::Column;
 
-    if left.count == 0 || right.count == 0 {
-        return RowStats::zero(left.ndv.len() + right.ndv.len());
+    // Handle empty inputs
+    if left.count == 0 {
+        return match join_type {
+            JoinType::Right | JoinType::RightSemi | JoinType::Full => {
+                // Right/Full joins preserve right rows even with empty left
+                right.clone()
+            }
+            _ => RowStats::zero(output_column_count(left, right, join_type)),
+        };
+    }
+    if right.count == 0 {
+        return match join_type {
+            JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark
+            | JoinType::Full => {
+                // Left/Full joins preserve left rows even with empty right
+                // LeftAnti returns ALL left rows when right is empty (no matches possible)
+                left.clone()
+            }
+            _ => RowStats::zero(output_column_count(left, right, join_type)),
+        };
     }
 
-    // Calculate selectivity based on join key NDVs
+    // Calculate match selectivity based on join key NDVs
+    // selectivity = probability that a random (left, right) pair matches
     let mut selectivity = 1.0;
     for (left_expr, right_expr) in join_keys {
         let left_ndv = left_expr
@@ -656,75 +682,259 @@ fn estimate_equi_join_stats(
         selectivity *= 1.0 / max_ndv as f64;
     }
 
-    let output_count = ((left.count as f64 * right.count as f64 * selectivity).ceil() as usize)
-        .min(left.count.max(right.count)); // Can't exceed larger input for inner join
+    // Estimate inner join row count (used as base for other join types)
+    // Formula: left_rows * right_rows / max(left_ndv, right_ndv)
+    let inner_count =
+        ((left.count as f64 * right.count as f64 * selectivity).ceil() as usize).max(1);
 
-    // Compute output NDV for each column
-    let mut output_ndv = Vec::with_capacity(left.ndv.len() + right.ndv.len());
+    // Calculate output row count based on join type
+    //
+    // For Semi/Anti joins, we follow DataFusion's approach: return the outer side's
+    // row count as a conservative estimate. Without histogram statistics to estimate
+    // key overlap between sides, we can't accurately predict how many rows will match.
+    //
+    // Reference: DataFusion's estimate_join_cardinality in joins/utils.rs
+    // https://github.com/apache/datafusion/blob/main/datafusion/physical-plan/src/joins/utils.rs
+    let output_count = match join_type {
+        // Inner: only matching pairs
+        JoinType::Inner => inner_count.min(left.count.saturating_mul(right.count)),
 
-    // Left columns: scale by output/left ratio, but join keys use min(left, right)
-    let left_ratio = output_count as f64 / left.count.max(1) as f64;
-    for (i, &ndv) in left.ndv.iter().enumerate() {
-        let is_join_key = join_keys.iter().any(|(l, _)| {
-            l.as_any()
-                .downcast_ref::<Column>()
-                .is_some_and(|c| c.index() == i)
-        });
-        let new_ndv = if is_join_key {
-            // For join keys, NDV = min of both sides, capped at output
-            let right_key_ndv = join_keys
+        // Left outer: all left rows preserved, plus matched right columns
+        JoinType::Left => inner_count.max(left.count),
+
+        // Right outer: all right rows preserved, plus matched left columns
+        JoinType::Right => inner_count.max(right.count),
+
+        // Full outer: all rows from both sides
+        // Approximation: inner + (left - min(left, inner)) + (right - min(right, inner))
+        JoinType::Full => {
+            let left_unmatched = left.count.saturating_sub(left.count.min(inner_count));
+            let right_unmatched = right.count.saturating_sub(right.count.min(inner_count));
+            inner_count
+                .saturating_add(left_unmatched)
+                .saturating_add(right_unmatched)
+        }
+
+        // Semi/Anti joins: conservative estimate returns outer side row count
+        // We don't have histogram stats to estimate key overlap, so we assume:
+        // - Semi: all outer rows might match (return outer count)
+        // - Anti: no outer rows might match (return outer count)
+        // Both are conservative upper bounds for resource planning.
+        JoinType::LeftSemi | JoinType::LeftAnti => left.count,
+        JoinType::RightSemi | JoinType::RightAnti => right.count,
+
+        // Mark joins: return all rows from one side with a boolean column
+        JoinType::LeftMark => left.count,
+        JoinType::RightMark => right.count,
+    };
+
+    // Ensure at least 1 row for non-empty inputs (avoid division by zero downstream)
+    let output_count = output_count.max(1);
+
+    // Build output NDV based on join type
+    let output_ndv = compute_join_output_ndv(left, right, join_keys, join_type, output_count);
+
+    RowStats::new(output_count, output_ndv)
+}
+
+/// Returns the number of output columns for a join based on join type.
+fn output_column_count(left: &RowStats, right: &RowStats, join_type: JoinType) -> usize {
+    match join_type {
+        // Semi/Anti joins only return columns from one side
+        JoinType::LeftSemi | JoinType::LeftAnti => left.ndv.len(),
+        JoinType::RightSemi | JoinType::RightAnti => right.ndv.len(),
+        // Mark joins add one boolean column
+        JoinType::LeftMark => left.ndv.len() + 1,
+        JoinType::RightMark => right.ndv.len() + 1,
+        // Other joins return columns from both sides
+        _ => left.ndv.len() + right.ndv.len(),
+    }
+}
+
+/// Computes output NDV for join columns based on join type.
+fn compute_join_output_ndv(
+    left: &RowStats,
+    right: &RowStats,
+    join_keys: &[(PhysicalExprRef, PhysicalExprRef)],
+    join_type: JoinType,
+    output_count: usize,
+) -> Vec<usize> {
+    use datafusion::physical_plan::expressions::Column;
+
+    match join_type {
+        // Semi/Anti joins only return columns from one side
+        JoinType::LeftSemi | JoinType::LeftAnti => {
+            left.ndv.iter().map(|&n| n.min(output_count).max(1)).collect()
+        }
+        JoinType::RightSemi | JoinType::RightAnti => {
+            right.ndv.iter().map(|&n| n.min(output_count).max(1)).collect()
+        }
+        // Mark joins: columns from one side plus a boolean (NDV=2) mark column
+        JoinType::LeftMark => {
+            let mut ndv: Vec<_> = left.ndv.iter().map(|&n| n.min(output_count).max(1)).collect();
+            ndv.push(2); // Boolean mark column
+            ndv
+        }
+        JoinType::RightMark => {
+            let mut ndv: Vec<_> = right
+                .ndv
                 .iter()
-                .find_map(|(l, r)| {
-                    if l.as_any()
+                .map(|&n| n.min(output_count).max(1))
+                .collect();
+            ndv.push(2); // Boolean mark column
+            ndv
+        }
+        // Other joins return columns from both sides
+        _ => {
+            let mut output_ndv = Vec::with_capacity(left.ndv.len() + right.ndv.len());
+
+            // Left columns: scale NDV proportionally, join keys use min(left, right)
+            let left_ratio = output_count as f64 / left.count.max(1) as f64;
+            for (i, &ndv) in left.ndv.iter().enumerate() {
+                let is_join_key = join_keys.iter().any(|(l, _)| {
+                    l.as_any()
                         .downcast_ref::<Column>()
                         .is_some_and(|c| c.index() == i)
-                    {
-                        r.as_any()
-                            .downcast_ref::<Column>()
-                            .and_then(|c| right.ndv.get(c.index()).copied())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(right.count);
-            ndv.min(right_key_ndv).min(output_count)
-        } else {
-            ((ndv as f64 * left_ratio).ceil() as usize).min(output_count)
-        };
-        output_ndv.push(new_ndv.max(1));
-    }
+                });
+                let new_ndv = if is_join_key {
+                    let right_key_ndv = join_keys
+                        .iter()
+                        .find_map(|(l, r)| {
+                            if l.as_any()
+                                .downcast_ref::<Column>()
+                                .is_some_and(|c| c.index() == i)
+                            {
+                                r.as_any()
+                                    .downcast_ref::<Column>()
+                                    .and_then(|c| right.ndv.get(c.index()).copied())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(right.count);
+                    ndv.min(right_key_ndv).min(output_count)
+                } else {
+                    ((ndv as f64 * left_ratio).ceil() as usize).min(output_count)
+                };
+                output_ndv.push(new_ndv.max(1));
+            }
 
-    // Right columns: scale by output/right ratio
-    let right_ratio = output_count as f64 / right.count.max(1) as f64;
-    for (i, &ndv) in right.ndv.iter().enumerate() {
-        let is_join_key = join_keys.iter().any(|(_, r)| {
-            r.as_any()
-                .downcast_ref::<Column>()
-                .is_some_and(|c| c.index() == i)
-        });
-        let new_ndv = if is_join_key {
-            // Already handled on left side, use same logic
-            let left_key_ndv = join_keys
-                .iter()
-                .find_map(|(l, r)| {
-                    if r.as_any()
+            // Right columns: scale NDV proportionally
+            let right_ratio = output_count as f64 / right.count.max(1) as f64;
+            for (i, &ndv) in right.ndv.iter().enumerate() {
+                let is_join_key = join_keys.iter().any(|(_, r)| {
+                    r.as_any()
                         .downcast_ref::<Column>()
                         .is_some_and(|c| c.index() == i)
-                    {
-                        l.as_any()
-                            .downcast_ref::<Column>()
-                            .and_then(|c| left.ndv.get(c.index()).copied())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(left.count);
-            ndv.min(left_key_ndv).min(output_count)
-        } else {
-            ((ndv as f64 * right_ratio).ceil() as usize).min(output_count)
-        };
-        output_ndv.push(new_ndv.max(1));
+                });
+                let new_ndv = if is_join_key {
+                    let left_key_ndv = join_keys
+                        .iter()
+                        .find_map(|(l, r)| {
+                            if r.as_any()
+                                .downcast_ref::<Column>()
+                                .is_some_and(|c| c.index() == i)
+                            {
+                                l.as_any()
+                                    .downcast_ref::<Column>()
+                                    .and_then(|c| left.ndv.get(c.index()).copied())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(left.count);
+                    ndv.min(left_key_ndv).min(output_count)
+                } else {
+                    ((ndv as f64 * right_ratio).ceil() as usize).min(output_count)
+                };
+                output_ndv.push(new_ndv.max(1));
+            }
+
+            output_ndv
+        }
     }
+}
+
+/// Estimates statistics for a nested loop join (non-equi join conditions).
+///
+/// Nested loop joins can have arbitrary join conditions (inequalities, complex predicates).
+/// We use conservative estimates based on join type:
+/// - For inner/semi/anti: assume ~50% selectivity on the cross product or input
+/// - For outer: ensure we return at least all rows from the preserved side
+fn estimate_nested_loop_join_stats(
+    left: &RowStats,
+    right: &RowStats,
+    join_type: JoinType,
+) -> RowStats {
+    // For nested loop joins with filter conditions, assume moderate selectivity
+    let filter_selectivity = INEQUALITY_SELECTIVITY; // 0.5
+
+    let output_count = match join_type {
+        JoinType::Inner => {
+            // Cross product with filter
+            let cross = left.count.saturating_mul(right.count);
+            ((cross as f64 * filter_selectivity).ceil() as usize).max(1)
+        }
+        JoinType::Left => {
+            // All left rows, some matched with right
+            let cross = left.count.saturating_mul(right.count);
+            let inner = ((cross as f64 * filter_selectivity).ceil() as usize).max(1);
+            inner.max(left.count)
+        }
+        JoinType::Right => {
+            let cross = left.count.saturating_mul(right.count);
+            let inner = ((cross as f64 * filter_selectivity).ceil() as usize).max(1);
+            inner.max(right.count)
+        }
+        JoinType::Full => {
+            let cross = left.count.saturating_mul(right.count);
+            let inner = ((cross as f64 * filter_selectivity).ceil() as usize).max(1);
+            // Rough estimate: inner + some unmatched from both sides
+            inner.saturating_add(left.count / 2).saturating_add(right.count / 2)
+        }
+        JoinType::LeftSemi => {
+            // Left rows that have at least one match
+            ((left.count as f64 * filter_selectivity).ceil() as usize).max(1)
+        }
+        JoinType::RightSemi => {
+            ((right.count as f64 * filter_selectivity).ceil() as usize).max(1)
+        }
+        JoinType::LeftAnti => {
+            // Left rows that have no match
+            ((left.count as f64 * (1.0 - filter_selectivity)).ceil() as usize).max(1)
+        }
+        JoinType::RightAnti => {
+            ((right.count as f64 * (1.0 - filter_selectivity)).ceil() as usize).max(1)
+        }
+        JoinType::LeftMark => left.count,
+        JoinType::RightMark => right.count,
+    };
+
+    // Build output NDV based on join type
+    let output_ndv = match join_type {
+        JoinType::LeftSemi | JoinType::LeftAnti => {
+            left.ndv.iter().map(|&n| n.min(output_count).max(1)).collect()
+        }
+        JoinType::RightSemi | JoinType::RightAnti => {
+            right.ndv.iter().map(|&n| n.min(output_count).max(1)).collect()
+        }
+        JoinType::LeftMark => {
+            let mut ndv: Vec<_> = left.ndv.iter().map(|&n| n.min(output_count).max(1)).collect();
+            ndv.push(2);
+            ndv
+        }
+        JoinType::RightMark => {
+            let mut ndv: Vec<_> = right.ndv.iter().map(|&n| n.min(output_count).max(1)).collect();
+            ndv.push(2);
+            ndv
+        }
+        _ => {
+            let mut output_ndv = Vec::with_capacity(left.ndv.len() + right.ndv.len());
+            output_ndv.extend(left.ndv.iter().map(|&n| n.min(output_count).max(1)));
+            output_ndv.extend(right.ndv.iter().map(|&n| n.min(output_count).max(1)));
+            output_ndv
+        }
+    };
 
     RowStats::new(output_count, output_ndv)
 }
@@ -1057,9 +1267,27 @@ fn is_boolean_operator(op: &Operator) -> bool {
     )
 }
 
+/// Multiplier for estimating expression NDV from IN list size when the expression
+/// type is unknown (e.g., function calls like `substr(col, 1, 2)`).
+///
+/// When someone writes `IN (v1, v2, ..., vN)`, the expression is typically categorical
+/// with limited cardinality - otherwise an IN list would be impractical. We estimate
+/// the total NDV as `list_size * multiplier`.
+///
+/// A multiplier of 5 means: if there are 7 values in the IN list, assume ~35 total
+/// distinct values, giving selectivity of 7/35 = 20%. This works well for:
+/// - Country codes: ~25 values, 7 in list → actual ~28%
+/// - Status codes: ~10 values, 3 in list → actual ~30%
+/// - Category codes: ~50 values, 10 in list → actual ~20%
+const IN_LIST_NDV_MULTIPLIER: usize = 5;
+
 /// Estimates selectivity for an IN list predicate.
 ///
 /// Selectivity = list_size / NDV of the expression.
+///
+/// Special handling for unknown expressions (function calls, etc.): when the expression
+/// NDV would fall back to row count, we use a heuristic based on the IN list size,
+/// since IN lists are typically used with categorical/low-cardinality expressions.
 ///
 /// Reference: Trino's FilterStatsCalculator.java:263-280
 /// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/FilterStatsCalculator.java#L263-L280
@@ -1076,8 +1304,18 @@ fn estimate_in_list_selectivity(in_list: &InListExpr, input: &RowStats) -> f64 {
     // Count the number of values in the list
     let list_size = list.len();
 
+    // If expr_ndv equals input.count, the expression type is unknown (fell through
+    // to the default case in get_expression_ndv). Apply heuristic based on list size.
+    let effective_ndv = if expr_ndv == input.count && list_size > 0 {
+        // Cap NDV at list_size * multiplier for unknown expressions
+        // This assumes IN lists are used with categorical data
+        (list_size * IN_LIST_NDV_MULTIPLIER).min(expr_ndv)
+    } else {
+        expr_ndv
+    };
+
     // Selectivity = list_size / NDV, capped at 1.0
-    let selectivity = (list_size as f64 / expr_ndv.max(1) as f64).min(1.0);
+    let selectivity = (list_size as f64 / effective_ndv.max(1) as f64).min(1.0);
 
     if is_negated {
         1.0 - selectivity
