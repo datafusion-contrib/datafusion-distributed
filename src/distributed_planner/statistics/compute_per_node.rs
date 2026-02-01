@@ -174,6 +174,11 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
         return compute_projection_cost(proj);
     }
 
+    // DataSourceExec: I/O-bound mainly, but also some CPU for decoding.
+    if any.is::<DataSourceExec>() {
+        return ComputeCost::M;
+    }
+
     // === S: Light per-row computation ===
 
     // RepartitionExec with Hash: computes hash per row + take_arrays
@@ -193,11 +198,6 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
             // UnknownPartitioning: conservative estimate
             Partitioning::UnknownPartitioning(_) => ComputeCost::S,
         };
-    }
-
-    // DataSourceExec: I/O-bound mainly, but also some CPU for decoding.
-    if any.is::<DataSourceExec>() {
-        return ComputeCost::S;
     }
 
     // === XS: Simple memory operations ===
