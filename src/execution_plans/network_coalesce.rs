@@ -202,7 +202,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let input_task_offset = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
 
-        if input_task_offset >= group.max_len || input_task_offset >= group.len {
+        if input_task_offset >= group.len {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         }
 
