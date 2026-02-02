@@ -51,6 +51,23 @@ use uuid::Uuid;
 /// - Output partitioning for Stage N+1 is sized based on the maximum upstream-group size. When
 ///   groups are uneven, consumer tasks with smaller groups return empty streams for the “extra”
 ///   partitions.
+/// ```text
+///                    ┌───────────────────────────┐        ┌───────────────────────────┐          ■
+///                    │    NetworkCoalesceExec    │        │    NetworkCoalesceExec    │          │
+///                    │         (task 1)          │        │         (task 2)          │          │
+///                    └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬─────────┘        └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬─────────┘       Stage N+1
+///                     │1││2││3││4││5││6│                   │7││8││9││_││_││_│                    │
+///                     └─┘└─┘└─┘└─┘└─┘└─┘                   └─┘└─┘└─┘└─┘└─┘└─┘                    │
+///                      ▲  ▲  ▲  ▲  ▲  ▲                     ▲  ▲  ▲                              ■
+///   ┌──┬──┬────────────┴──┴──┘  └──┴──┴─────┬──┬──┐         └──┴──┴────────────────┬──┬──┐
+///   │  │  │                                 │  │  │                                │  │  │       ■
+///  ┌─┐┌─┐┌─┐                               ┌─┐┌─┐┌─┐                              ┌─┐┌─┐┌─┐      │
+///  │1││2││3│                               │4││5││6│                              │7││8││9│      │
+/// ┌┴─┴┴─┴┴─┴──────────────────┐  ┌─────────┴─┴┴─┴┴─┴─────────┐ ┌──────────────────┴─┴┴─┴┴─┴┐  Stage N
+/// │  Arc<dyn ExecutionPlan>   │  │  Arc<dyn ExecutionPlan>   │ │  Arc<dyn ExecutionPlan>   │     │
+/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
+/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
+/// ```
 ///
 /// This node has two variants.
 /// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
