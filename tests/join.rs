@@ -137,11 +137,11 @@ mod tests {
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan,
         @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
           │ ProjectionExec: expr=[f_dkey@5 as f_dkey, timestamp@3 as timestamp, value@4 as value, env@0 as env, service@1 as service, host@2 as host]
           │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[env@0, service@1, host@2, timestamp@4, value@5, f_dkey@6]
           │     FilterExec: service@1 = log
@@ -215,11 +215,11 @@ mod tests {
         // Ensure the distributed plan matches our target plan, registering
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan, @r#"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
           │ ProjectionExec: expr=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]
           │   AggregateExec: mode=SinglePartitioned, gby=[f_dkey@0 as f_dkey, date_bin(IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }, timestamp@2) as date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp), env@1 as env], aggr=[max(j.value)], ordering_mode=PartiallySorted([0, 1])
           │     ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
@@ -291,11 +291,11 @@ mod tests {
         // Ensure the distributed plan matches our target plan, registering
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan, @r#"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
           │ SortExec: expr=[env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[env@0 as env, time_bin@1 as time_bin, avg(a.max_bin_value)@2 as avg_max_value]
           │     AggregateExec: mode=FinalPartitioned, gby=[env@0 as env, time_bin@1 as time_bin], aggr=[avg(a.max_bin_value)]

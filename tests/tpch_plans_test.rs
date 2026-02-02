@@ -46,17 +46,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST]
-        │   [Stage 10] => NetworkCoalesceExec: output_partitions=24, input_tasks=4
+        │   [Stage 11] => NetworkCoalesceExec: output_partitions=24, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 10 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+          ┌───── Stage 11 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
           │ SortExec: expr=[s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[s_acctbal@5 as s_acctbal, s_name@2 as s_name, n_name@7 as n_name, p_partkey@0 as p_partkey, p_mfgr@1 as p_mfgr, s_address@3 as s_address, s_phone@4 as s_phone, s_comment@6 as s_comment]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@1), (ps_supplycost@7, min(partsupp.ps_supplycost)@0)], projection=[p_partkey@0, p_mfgr@1, s_name@2, s_address@3, s_phone@4, s_acctbal@5, s_comment@6, n_name@8]
           │       [Stage 5] => NetworkShuffleExec: output_partitions=6, input_tasks=4
-          │       RepartitionExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 6), input_partitions=6
-          │         ProjectionExec: expr=[min(partsupp.ps_supplycost)@1 as min(partsupp.ps_supplycost), ps_partkey@0 as ps_partkey]
-          │           AggregateExec: mode=FinalPartitioned, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
-          │             [Stage 9] => NetworkShuffleExec: output_partitions=6, input_tasks=4
+          │       [Stage 10] => NetworkShuffleExec: output_partitions=6, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── Tasks: t0:[p0..p23] t1:[p0..p23] t2:[p0..p23] t3:[p0..p23] 
             │ RepartitionExec: partitioning=Hash([p_partkey@0, ps_supplycost@7], 24), input_partitions=6
@@ -99,39 +96,45 @@ mod tests {
               │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,p4,p5,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4]
               │       DataSourceExec: file_groups={21 groups: [[/testdata/tpch/correctness_sf1/part/1.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/part/10.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/part/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/part/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/part/12.parquet:<int>..<int>], ...]}, projection=[p_partkey, p_mfgr, p_type, p_size], file_type=parquet, predicate=p_size@5 = 15 AND p_type@4 LIKE %BRASS, pruning_predicate=p_size_null_count@2 != row_count@3 AND p_size_min@0 <= 15 AND 15 <= p_size_max@1, required_guarantees=[p_size in (15)]
               └──────────────────────────────────────────────────
-            ┌───── Stage 9 ── Tasks: t0:[p0..p23] t1:[p0..p23] t2:[p0..p23] t3:[p0..p23] 
-            │ RepartitionExec: partitioning=Hash([ps_partkey@0], 24), input_partitions=6
-            │   AggregateExec: mode=Partial, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
-            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@2)], projection=[ps_partkey@1, ps_supplycost@2]
-            │       CoalescePartitionsExec
-            │         [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
-            │       ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_supplycost@2 as ps_supplycost, n_regionkey@0 as n_regionkey]
-            │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@2)], projection=[n_regionkey@1, ps_partkey@2, ps_supplycost@3]
-            │           CoalescePartitionsExec
-            │             [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
-            │           ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_supplycost@2 as ps_supplycost, s_nationkey@0 as s_nationkey]
-            │             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(s_suppkey@0, ps_suppkey@1)], projection=[s_nationkey@1, ps_partkey@2, ps_supplycost@4]
-            │               CoalescePartitionsExec
-            │                 [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
-            │               PartitionIsolatorExec: t0:[p0,p1,p2,p3,p4,p5,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4]
-            │                 DataSourceExec: file_groups={21 groups: [[/testdata/tpch/correctness_sf1/partsupp/1.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/10.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/12.parquet:<int>..<int>], ...]}, projection=[ps_partkey, ps_suppkey, ps_supplycost], file_type=parquet, predicate=DynamicFilter [ empty ]
+            ┌───── Stage 10 ── Tasks: t0:[p0..p23] t1:[p0..p23] t2:[p0..p23] 
+            │ RepartitionExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 24), input_partitions=6
+            │   ProjectionExec: expr=[min(partsupp.ps_supplycost)@1 as min(partsupp.ps_supplycost), ps_partkey@0 as ps_partkey]
+            │     AggregateExec: mode=FinalPartitioned, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
+            │       [Stage 9] => NetworkShuffleExec: output_partitions=6, input_tasks=4
             └──────────────────────────────────────────────────
-              ┌───── Stage 6 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
-              │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
-              │   FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
-              │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
-              │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/region/1.parquet], [/testdata/tpch/correctness_sf1/region/10.parquet], [/testdata/tpch/correctness_sf1/region/11.parquet], [/testdata/tpch/correctness_sf1/region/12.parquet], [/testdata/tpch/correctness_sf1/region/13.parquet], ...]}, projection=[r_regionkey, r_name], file_type=parquet, predicate=r_name@1 = EUROPE, pruning_predicate=r_name_null_count@2 != row_count@3 AND r_name_min@0 <= EUROPE AND EUROPE <= r_name_max@1, required_guarantees=[r_name in (EUROPE)]
+              ┌───── Stage 9 ── Tasks: t0:[p0..p17] t1:[p0..p17] t2:[p0..p17] t3:[p0..p17] 
+              │ RepartitionExec: partitioning=Hash([ps_partkey@0], 18), input_partitions=6
+              │   AggregateExec: mode=Partial, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
+              │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@2)], projection=[ps_partkey@1, ps_supplycost@2]
+              │       CoalescePartitionsExec
+              │         [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
+              │       ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_supplycost@2 as ps_supplycost, n_regionkey@0 as n_regionkey]
+              │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@2)], projection=[n_regionkey@1, ps_partkey@2, ps_supplycost@3]
+              │           CoalescePartitionsExec
+              │             [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
+              │           ProjectionExec: expr=[ps_partkey@1 as ps_partkey, ps_supplycost@2 as ps_supplycost, s_nationkey@0 as s_nationkey]
+              │             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(s_suppkey@0, ps_suppkey@1)], projection=[s_nationkey@1, ps_partkey@2, ps_supplycost@4]
+              │               CoalescePartitionsExec
+              │                 [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
+              │               PartitionIsolatorExec: t0:[p0,p1,p2,p3,p4,p5,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4]
+              │                 DataSourceExec: file_groups={21 groups: [[/testdata/tpch/correctness_sf1/partsupp/1.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/10.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/11.parquet:<int>..<int>], [/testdata/tpch/correctness_sf1/partsupp/12.parquet:<int>..<int>], ...]}, projection=[ps_partkey, ps_suppkey, ps_supplycost], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
-              ┌───── Stage 7 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
-              │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
-              │   PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
-              │     DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/nation/1.parquet], [/testdata/tpch/correctness_sf1/nation/10.parquet], [/testdata/tpch/correctness_sf1/nation/11.parquet], [/testdata/tpch/correctness_sf1/nation/12.parquet], [/testdata/tpch/correctness_sf1/nation/13.parquet], ...]}, projection=[n_nationkey, n_regionkey], file_type=parquet, predicate=DynamicFilter [ empty ]
-              └──────────────────────────────────────────────────
-              ┌───── Stage 8 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
-              │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
-              │   PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
-              │     DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/supplier/1.parquet], [/testdata/tpch/correctness_sf1/supplier/10.parquet], [/testdata/tpch/correctness_sf1/supplier/11.parquet], [/testdata/tpch/correctness_sf1/supplier/12.parquet], [/testdata/tpch/correctness_sf1/supplier/13.parquet], ...]}, projection=[s_suppkey, s_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ]
-              └──────────────────────────────────────────────────
+                ┌───── Stage 6 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+                │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
+                │   FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
+                │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
+                │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/region/1.parquet], [/testdata/tpch/correctness_sf1/region/10.parquet], [/testdata/tpch/correctness_sf1/region/11.parquet], [/testdata/tpch/correctness_sf1/region/12.parquet], [/testdata/tpch/correctness_sf1/region/13.parquet], ...]}, projection=[r_regionkey, r_name], file_type=parquet, predicate=r_name@1 = EUROPE, pruning_predicate=r_name_null_count@2 != row_count@3 AND r_name_min@0 <= EUROPE AND EUROPE <= r_name_max@1, required_guarantees=[r_name in (EUROPE)]
+                └──────────────────────────────────────────────────
+                ┌───── Stage 7 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+                │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
+                │   PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
+                │     DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/nation/1.parquet], [/testdata/tpch/correctness_sf1/nation/10.parquet], [/testdata/tpch/correctness_sf1/nation/11.parquet], [/testdata/tpch/correctness_sf1/nation/12.parquet], [/testdata/tpch/correctness_sf1/nation/13.parquet], ...]}, projection=[n_nationkey, n_regionkey], file_type=parquet, predicate=DynamicFilter [ empty ]
+                └──────────────────────────────────────────────────
+                ┌───── Stage 8 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+                │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
+                │   PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
+                │     DataSourceExec: file_groups={16 groups: [[/testdata/tpch/correctness_sf1/supplier/1.parquet], [/testdata/tpch/correctness_sf1/supplier/10.parquet], [/testdata/tpch/correctness_sf1/supplier/11.parquet], [/testdata/tpch/correctness_sf1/supplier/12.parquet], [/testdata/tpch/correctness_sf1/supplier/13.parquet], ...]}, projection=[s_suppkey, s_nationkey], file_type=parquet, predicate=DynamicFilter [ empty ]
+                └──────────────────────────────────────────────────
         ");
         Ok(())
     }
