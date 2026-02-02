@@ -40,7 +40,7 @@ bytes = "1.11"
 pin-project = "1.1.10"
 tokio-stream = "0.1.17"
 tokio-util = "0.7"
-moka = { version = "0.12", features = ["sync"] }
+moka = { version = "0.12", features = ["sync", "future"] }
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
