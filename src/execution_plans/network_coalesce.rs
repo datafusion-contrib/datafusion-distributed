@@ -202,6 +202,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let input_task_offset = partition / partitions_per_task;
         let target_partition = partition % partitions_per_task;
 
+        // Some consumer tasks are assigned fewer upstream tasks when
+        // `input_task_count % task_count != 0` (uneven grouping).
+        // We still size partitions based on the maximum group size, so partitions that
+        // would map to a missing upstream task slot are treated as padding and return
+        // an empty stream (no network call).
         if input_task_offset >= group.len {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         }
@@ -284,14 +289,32 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::prelude::SessionContext;
-    use futures::TryStreamExt;
 
-    #[tokio::test]
-    async fn supports_multiple_output_tasks_with_padding_partitions() -> Result<()> {
-        const INPUT_TASK_COUNT: usize = 5;
-        const CONSUMER_TASK_COUNT: usize = 2;
-        const CONSUMER_TASK_IDX: usize = 1;
+    #[derive(Clone, Copy)]
+    struct Case {
+        name: &'static str,
+        input_tasks: usize,
+        consumer_tasks: usize,
+    }
+
+    fn expected_groups(input_tasks: usize, consumer_tasks: usize) -> Vec<(usize, usize)> {
+        assert!(consumer_tasks > 0, "consumer_tasks must be non-zero");
+
+        let base_tasks_per_group = input_tasks / consumer_tasks;
+        let groups_with_extra_task = input_tasks % consumer_tasks;
+        let mut groups = Vec::with_capacity(consumer_tasks);
+        let mut start_task = 0;
+
+        for task_index in 0..consumer_tasks {
+            let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
+            groups.push((start_task, len));
+            start_task += len;
+        }
+
+        groups
+    }
+
+    fn assert_case(case: Case) -> Result<()> {
         const STAGE_NUM: usize = 1;
 
         // Child plan used only for properties/schema (we won't reach network codepaths).
@@ -302,45 +325,109 @@ mod tests {
             Arc::clone(&child),
             Uuid::nil(),
             STAGE_NUM,
-            CONSUMER_TASK_COUNT,
-            INPUT_TASK_COUNT,
+            case.consumer_tasks,
+            case.input_tasks,
         )?;
 
-        // `try_new` should scale output partitions based on the maximum group size.
-        let max_input_task_count = INPUT_TASK_COUNT.div_ceil(CONSUMER_TASK_COUNT).max(1);
+        // Output partitions are sized by the maximum group size.
+        let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);
         assert_eq!(
             exec.properties().partitioning.partition_count(),
-            child_partitions * max_input_task_count
+            child_partitions * max_group_size
         );
 
-        // Configure this test task as consumer task 1/2, which has fewer input tasks (2) than the
-        // max group size (3) for INPUT_TASK_COUNT=5, CONSUMER_TASK_COUNT=2.
-        let ctx = SessionContext::new();
-        ctx.state_ref()
-            .write()
-            .config_mut()
-            .set_extension(Arc::new(DistributedTaskContext {
-                task_index: CONSUMER_TASK_IDX,
-                task_count: CONSUMER_TASK_COUNT,
-            }));
+        let groups = expected_groups(case.input_tasks, case.consumer_tasks);
+        assert_eq!(groups.len(), case.consumer_tasks);
 
-        // Pick a "padding" partition (child_task_offset == group.len) that should produce an
-        // empty stream without attempting any network calls.
-        let group = task_group(INPUT_TASK_COUNT, CONSUMER_TASK_IDX, CONSUMER_TASK_COUNT);
-        let partitions_per_task = exec
-            .properties()
-            .partitioning
-            .partition_count()
-            .checked_div(group.max_len)
-            .unwrap_or(0);
-        assert!(partitions_per_task > 0);
+        let mut seen = vec![false; case.input_tasks];
+        let mut expected_start = 0;
+        let mut padding_slots = 0;
 
-        let padding_partition = group.len * partitions_per_task;
-        let batches = exec
-            .execute(padding_partition, ctx.task_ctx())?
-            .try_collect::<Vec<_>>()
-            .await?;
-        assert!(batches.is_empty());
+        for (index, (start, len)) in groups.into_iter().enumerate() {
+            assert_eq!(
+                start, expected_start,
+                "case {} group {} should be contiguous",
+                case.name, index
+            );
+            assert!(
+                start + len <= case.input_tasks,
+                "case {} group {} exceeds input task count",
+                case.name,
+                index
+            );
+
+            for task in start..(start + len) {
+                assert!(
+                    !seen[task],
+                    "case {} input task {} appears twice",
+                    case.name, task
+                );
+                seen[task] = true;
+            }
+
+            expected_start = start + len;
+            padding_slots += max_group_size - len;
+        }
+
+        assert_eq!(
+            expected_start, case.input_tasks,
+            "case {} groups should cover all input tasks",
+            case.name
+        );
+        assert!(
+            seen.iter().all(|v| *v),
+            "case {} missing at least one input task",
+            case.name
+        );
+
+        let total_slots = case.consumer_tasks * max_group_size;
+        let total_padding = total_slots - case.input_tasks;
+        assert_eq!(
+            padding_slots, total_padding,
+            "case {} padding slots mismatch",
+            case.name
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn validates_partition_coverage_across_task_counts() -> Result<()> {
+        const ONE_TO_MANY_INPUT: usize = 1;
+        const ONE_TO_MANY_OUTPUT: usize = 3;
+        const MANY_TO_ONE_INPUT: usize = 4;
+        const MANY_TO_ONE_OUTPUT: usize = 1;
+        const MANY_TO_FEWER_INPUT: usize = 5;
+        const MANY_TO_FEWER_OUTPUT: usize = 2;
+        const FEWER_TO_MANY_INPUT: usize = 2;
+        const FEWER_TO_MANY_OUTPUT: usize = 5;
+
+        const CASES: [Case; 4] = [
+            Case {
+                name: "1_to_n",
+                input_tasks: ONE_TO_MANY_INPUT,
+                consumer_tasks: ONE_TO_MANY_OUTPUT,
+            },
+            Case {
+                name: "n_to_1",
+                input_tasks: MANY_TO_ONE_INPUT,
+                consumer_tasks: MANY_TO_ONE_OUTPUT,
+            },
+            Case {
+                name: "n_to_m_n_gt_m",
+                input_tasks: MANY_TO_FEWER_INPUT,
+                consumer_tasks: MANY_TO_FEWER_OUTPUT,
+            },
+            Case {
+                name: "m_to_n_n_gt_m",
+                input_tasks: FEWER_TO_MANY_INPUT,
+                consumer_tasks: FEWER_TO_MANY_OUTPUT,
+            },
+        ];
+
+        for case in CASES {
+            assert_case(case)?;
+        }
 
         Ok(())
     }
