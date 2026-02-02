@@ -148,6 +148,7 @@ impl CacheEntry {
         partition: usize,
         ctx: Arc<TaskContext>,
     ) -> Result<(), DataFusionError> {
+        // NOTE: producer is started once per real partition
         let should_start = self.with_state(|s| {
             if s.started {
                 false
@@ -161,6 +162,8 @@ impl CacheEntry {
             return Ok(());
         }
 
+        // Use Weak to avoid a ref-cycle (CacheEntry -> task -> CacheEntry) and
+        // allow cleanup when all consumers drop.
         let entry = Arc::downgrade(self);
         let task = SpawnedTask::spawn(async move {
             let result: Result<(), DataFusionError> = async {
@@ -179,10 +182,10 @@ impl CacheEntry {
             }
             .await;
 
-            if let Err(err) = result {
-                if let Some(entry) = Weak::upgrade(&entry) {
-                    let _ = entry.finish_err(Arc::new(err));
-                }
+            if let Err(err) = result
+                && let Some(entry) = Weak::upgrade(&entry)
+            {
+                let _ = entry.finish_err(Arc::new(err));
             }
         });
         self.with_state(|s| s.task = Some(task))?;
@@ -193,6 +196,8 @@ impl CacheEntry {
     /// Creates a stream of [RecordBatch]es.
     /// Will replay any batches already cached and wait for more batches while the producer is
     /// running.
+    /// Each consumer has its own index into the shared buffer and waits on `notify` when no new
+    /// batches are available yet.
     fn stream(self: Arc<Self>) -> impl Stream<Item = Result<RecordBatch, DataFusionError>> {
         let read_state = |entry: &CacheEntry, idx: usize| {
             entry.with_state(|s| {
