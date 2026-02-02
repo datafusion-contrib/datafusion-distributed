@@ -208,10 +208,10 @@ impl ExecutionPlan for MockExec {
                     }
                 }
                 for batch in data {
-                    if let Some(delay) = delay {
-                        if delay > Duration::ZERO {
-                            sleep(delay).await;
-                        }
+                    if let Some(delay) = delay
+                        && delay > Duration::ZERO
+                    {
+                        sleep(delay).await;
                     }
                     // println!("Sending batch via delayed stream");
                     if let Err(e) = tx.send(batch).await {
@@ -245,13 +245,11 @@ impl ExecutionPlan for MockExec {
                                 }
                                 gate_done = true;
                             }
-                            let Some(batch) = iter.next() else {
-                                return None;
-                            };
-                            if let Some(delay) = delay {
-                                if delay > Duration::ZERO {
-                                    sleep(delay).await;
-                                }
+                            let batch = iter.next()?;
+                            if let Some(delay) = delay
+                                && delay > Duration::ZERO
+                            {
+                                sleep(delay).await;
                             }
                             Some((batch, (iter, gate_done)))
                         }
