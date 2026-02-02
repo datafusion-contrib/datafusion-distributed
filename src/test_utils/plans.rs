@@ -4,10 +4,18 @@ use crate::execution_plans::DistributedExec;
 use crate::protobuf::StageKey;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-#[cfg(test)]
-use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
-#[cfg(test)]
+#[cfg(any(feature = "integration", test))]
+use crate::{DistributedConfig, StagePartitioning, TaskEstimation, TaskEstimator};
+#[cfg(any(feature = "integration", test))]
+use datafusion::catalog::memory::DataSourceExec;
+#[cfg(any(feature = "integration", test))]
 use datafusion::config::ConfigOptions;
+#[cfg(any(feature = "integration", test))]
+use datafusion::datasource::physical_plan::FileScanConfig;
+#[cfg(any(feature = "integration", test))]
+use datafusion::physical_expr::PhysicalExpr;
+#[cfg(any(feature = "integration", test))]
+use datafusion::physical_expr::expressions::Column;
 use datafusion::{
     common::{HashMap, HashSet},
     execution::{SessionStateBuilder, context::SessionContext},
@@ -194,6 +202,171 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         } else {
             None
         }
+    }
+
+    fn scale_up_leaf_node(
+        &self,
+        _: &Arc<dyn ExecutionPlan>,
+        _: usize,
+        _: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        None
+    }
+}
+
+#[cfg(any(feature = "integration", test))]
+#[derive(Clone, Debug)]
+pub struct StagePartitioningEstimator {
+    columns: Vec<String>,
+}
+
+#[cfg(any(feature = "integration", test))]
+impl StagePartitioningEstimator {
+    pub fn new<I, S>(columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            columns: columns.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    pub fn from_comma_separated(value: &str) -> Option<Self> {
+        let columns = value
+            .split(',')
+            .map(|col| col.trim())
+            .filter(|col| !col.is_empty())
+            .map(|col| col.to_string())
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            None
+        } else {
+            Some(Self::new(columns))
+        }
+    }
+}
+
+#[cfg(any(feature = "integration", test))]
+impl TaskEstimator for StagePartitioningEstimator {
+    fn task_estimation(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Option<TaskEstimation> {
+        if !plan.children().is_empty() {
+            return None;
+        }
+
+        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
+
+        let schema = plan.schema();
+        let mut keys = Vec::with_capacity(self.columns.len());
+        for name in &self.columns {
+            let idx = schema.index_of(name).ok()?;
+            let field = schema.field(idx);
+            let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
+            keys.push(expr);
+        }
+
+        let mut partitioned_files: usize = 0;
+        for file_group in &file_scan.file_groups {
+            partitioned_files += file_group.len();
+        }
+        let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
+
+        Some(TaskEstimation::desired_with_stage_partitioning(
+            task_count,
+            StagePartitioning::Hash(keys),
+        ))
+    }
+
+    fn scale_up_leaf_node(
+        &self,
+        _: &Arc<dyn ExecutionPlan>,
+        _: usize,
+        _: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        None
+    }
+}
+
+#[cfg(any(feature = "integration", test))]
+type StagePartitioningExprBuilder = dyn Fn(
+        &datafusion::arrow::datatypes::SchemaRef,
+        &ConfigOptions,
+    ) -> Option<Vec<Arc<dyn PhysicalExpr>>>
+    + Send
+    + Sync;
+
+#[cfg(any(feature = "integration", test))]
+#[derive(Clone)]
+struct StagePartitioningBuilder(Arc<StagePartitioningExprBuilder>);
+
+#[cfg(any(feature = "integration", test))]
+impl std::fmt::Debug for StagePartitioningBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StagePartitioningBuilder")
+    }
+}
+
+#[cfg(any(feature = "integration", test))]
+#[derive(Clone, Debug)]
+pub struct StagePartitioningExprEstimator {
+    builder: StagePartitioningBuilder,
+}
+
+#[cfg(any(feature = "integration", test))]
+impl StagePartitioningExprEstimator {
+    pub fn with_exprs(exprs: Vec<Arc<dyn PhysicalExpr>>) -> Self {
+        Self::with_expr_builder(move |_schema, _cfg| Some(exprs.clone()))
+    }
+
+    pub fn with_expr_builder<F>(builder: F) -> Self
+    where
+        F: Fn(
+                &datafusion::arrow::datatypes::SchemaRef,
+                &ConfigOptions,
+            ) -> Option<Vec<Arc<dyn PhysicalExpr>>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            builder: StagePartitioningBuilder(Arc::new(builder)),
+        }
+    }
+}
+
+#[cfg(any(feature = "integration", test))]
+impl TaskEstimator for StagePartitioningExprEstimator {
+    fn task_estimation(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Option<TaskEstimation> {
+        if !plan.children().is_empty() {
+            return None;
+        }
+
+        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
+
+        let keys = (self.builder.0)(&plan.schema(), cfg)?;
+
+        let mut partitioned_files: usize = 0;
+        for file_group in &file_scan.file_groups {
+            partitioned_files += file_group.len();
+        }
+        let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
+
+        Some(TaskEstimation::desired_with_stage_partitioning(
+            task_count,
+            StagePartitioning::Hash(keys),
+        ))
     }
 
     fn scale_up_leaf_node(

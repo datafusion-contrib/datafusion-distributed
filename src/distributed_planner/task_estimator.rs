@@ -3,7 +3,8 @@ use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
 use std::fmt::Debug;
@@ -44,6 +45,51 @@ impl TaskCountAnnotation {
     }
 }
 
+/// The keys (if any) which each stage is partitioned by, rather than within each task which
+/// single-node DataFusion provides with a distribution requirement.
+#[derive(Debug, Clone)]
+pub enum StagePartitioning {
+    /// No distribution specified.
+    Unspecified,
+    /// There is only a single task, thus it's trivially disjoint.
+    Single,
+    /// Tasks are partitioned by the given keys.
+    Hash(Vec<Arc<dyn PhysicalExpr>>),
+}
+
+impl Default for StagePartitioning {
+    fn default() -> Self {
+        Self::Unspecified
+    }
+}
+
+impl StagePartitioning {
+    pub fn as_distribution(&self) -> datafusion::physical_expr::Distribution {
+        match self {
+            StagePartitioning::Unspecified => {
+                datafusion::physical_expr::Distribution::UnspecifiedDistribution
+            }
+            StagePartitioning::Single => datafusion::physical_expr::Distribution::SinglePartition,
+            StagePartitioning::Hash(keys) => {
+                datafusion::physical_expr::Distribution::HashPartitioned(keys.clone())
+            }
+        }
+    }
+
+    pub fn as_partitioning(&self) -> Option<datafusion::physical_expr::Partitioning> {
+        match self {
+            StagePartitioning::Unspecified => None,
+            StagePartitioning::Single => {
+                Some(datafusion::physical_expr::Partitioning::UnknownPartitioning(1))
+            }
+            StagePartitioning::Hash(keys) => Some(datafusion::physical_expr::Partitioning::Hash(
+                keys.clone(),
+                1,
+            )),
+        }
+    }
+}
+
 /// Result of running a [TaskEstimator] on a leaf node. It tells the distributed planner hints
 /// about how many tasks should be used in [Stage]s that contain leaf nodes.
 pub struct TaskEstimation {
@@ -56,6 +102,9 @@ pub struct TaskEstimation {
     /// - If there are less available workers than this number, the number of available workers
     ///   is chosen.
     pub task_count: TaskCountAnnotation,
+    /// The distribution of the data across tasks at the leaf nodes. This will be propagated,
+    /// modified, and used throughout the rest of the stages as well.
+    pub stage_partitioning: StagePartitioning,
 }
 
 impl TaskEstimation {
@@ -70,6 +119,17 @@ impl TaskEstimation {
     pub fn maximum(value: usize) -> Self {
         TaskEstimation {
             task_count: TaskCountAnnotation::Maximum(value),
+            stage_partitioning: StagePartitioning::Unspecified,
+        }
+    }
+
+    pub fn maximum_with_stage_partitioning(
+        value: usize,
+        stage_partitioning: StagePartitioning,
+    ) -> Self {
+        TaskEstimation {
+            task_count: TaskCountAnnotation::Maximum(value),
+            stage_partitioning,
         }
     }
 
@@ -82,6 +142,17 @@ impl TaskEstimation {
     pub fn desired(value: usize) -> Self {
         TaskEstimation {
             task_count: TaskCountAnnotation::Desired(value),
+            stage_partitioning: StagePartitioning::Unspecified,
+        }
+    }
+
+    pub fn desired_with_stage_partitioning(
+        value: usize,
+        stage_partitioning: StagePartitioning,
+    ) -> Self {
+        TaskEstimation {
+            task_count: TaskCountAnnotation::Desired(value),
+            stage_partitioning,
         }
     }
 }
@@ -130,9 +201,7 @@ impl TaskEstimator for usize {
         _: &ConfigOptions,
     ) -> Option<TaskEstimation> {
         if inputs.children().is_empty() {
-            Some(TaskEstimation {
-                task_count: TaskCountAnnotation::Desired(*self),
-            })
+            Some(TaskEstimation::desired(*self))
         } else {
             None
         }
@@ -217,9 +286,23 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         // how many tasks should be used, without surpassing the number of available workers.
         let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
 
-        Some(TaskEstimation {
-            task_count: TaskCountAnnotation::Desired(task_count),
-        })
+        // If the scan already exposes hash partitioning, seed stage partitioning from it.
+        // Skip this when a user-provided estimator exists so manual partitioning wins.
+        let stage_partitioning = if d_cfg.__private_task_estimator.user_provided.is_empty() {
+            match plan.output_partitioning() {
+                datafusion::physical_expr::Partitioning::Hash(keys, _) if !keys.is_empty() => {
+                    StagePartitioning::Hash(keys.clone())
+                }
+                _ => StagePartitioning::Unspecified,
+            }
+        } else {
+            StagePartitioning::Unspecified
+        };
+
+        Some(TaskEstimation::desired_with_stage_partitioning(
+            task_count,
+            stage_partitioning,
+        ))
     }
 
     fn scale_up_leaf_node(
