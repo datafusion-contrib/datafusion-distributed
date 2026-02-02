@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::instant::Instant;
 use datafusion::error::Result;
 use datafusion::logical_expr::select_expr::SelectExpr;
@@ -24,6 +24,7 @@ use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use structopt::StructOpt;
 
 /// Prepare TPCH parquet files for benchmarks
@@ -56,10 +57,11 @@ impl PrepareTpchOpt {
             let start = Instant::now();
             let schema = get_tpch_table_schema(table);
             let key_column_name = schema.fields()[0].name();
+            let csv_schema = tpch_csv_schema_with_padding(&schema);
 
             let input_path = format!("{input_path}/{table}.tbl");
             let options = CsvReadOptions::new()
-                .schema(&schema)
+                .schema(&csv_schema)
                 .has_header(false)
                 .delimiter(b'|')
                 .file_extension(".tbl");
@@ -80,7 +82,7 @@ impl PrepareTpchOpt {
             let selection = csv
                 .schema()
                 .iter()
-                .take(schema.fields.len() - 1)
+                .take(schema.fields().len())
                 .map(Expr::from)
                 .map(SelectExpr::from)
                 .collect::<Vec<_>>();
@@ -211,4 +213,10 @@ pub fn get_tpch_table_schema(table: &str) -> datafusion::arrow::datatypes::Schem
 
         _ => unimplemented!(),
     }
+}
+
+fn tpch_csv_schema_with_padding(schema: &Schema) -> Schema {
+    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new("__padding", DataType::Utf8, true)));
+    Schema::new(fields)
 }

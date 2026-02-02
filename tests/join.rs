@@ -107,7 +107,7 @@ mod tests {
         // Ensure the distributed plan matches our target plan, registering
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan,
-        @"
+        @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
@@ -116,9 +116,9 @@ mod tests {
           │ ProjectionExec: expr=[f_dkey@5 as f_dkey, timestamp@3 as timestamp, value@4 as value, env@0 as env, service@1 as service, host@2 as host]
           │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)], projection=[env@0, service@1, host@2, timestamp@4, value@5, f_dkey@6]
           │     FilterExec: service@1 = log
-          │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │         DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, host, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │     PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │     PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │       DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ]
           └──────────────────────────────────────────────────
         ");
@@ -196,9 +196,9 @@ mod tests {
           │     ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
           │       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
           │         FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
-          │           PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │           PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │             DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │           DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ]
           └──────────────────────────────────────────────────
         "#);
@@ -277,9 +277,9 @@ mod tests {
           │         ProjectionExec: expr=[f_dkey@3 as f_dkey, env@0 as env, timestamp@1 as timestamp, value@2 as value]
           │           HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3, f_dkey@4]
           │             FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
-          │               PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │               PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │                 DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
-          │             PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1] 
+          │             PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
           │               DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], output_ordering=[f_dkey@2 ASC NULLS LAST, timestamp@0 ASC NULLS LAST], file_type=parquet, predicate=DynamicFilter [ empty ]
           └──────────────────────────────────────────────────
         "#);
