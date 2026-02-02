@@ -20,47 +20,6 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy)]
-struct TaskGroup {
-    /// The first input task index in this group.
-    start_task: usize,
-    /// The number of input tasks in this group.
-    len: usize,
-    /// The maximum possible group size across all groups.
-    ///
-    /// When groups are uneven (input_tasks % task_count != 0), some groups are shorter. We still
-    /// size the output partitioning based on this max and return empty streams for the extra
-    /// partitions in smaller groups.
-    max_len: usize,
-}
-
-/// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
-fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
-    if task_count == 0 {
-        return TaskGroup {
-            start_task: 0,
-            len: 0,
-            max_len: 0,
-        };
-    }
-
-    // Split `input_task_count` into `task_count` contiguous groups.
-    // - base_tasks_per_group: floor(input_task_count / task_count)
-    // - groups_with_extra_task: first N groups that get one extra task (remainder)
-    let base_tasks_per_group = input_task_count / task_count;
-    let groups_with_extra_task = input_task_count % task_count;
-
-    let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
-    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
-    let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
-
-    TaskGroup {
-        start_task,
-        len,
-        max_len,
-    }
-}
-
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
 /// performing any repartition, and maintaining the same partitioning scheme.
 ///
@@ -276,6 +235,47 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaskGroup {
+    /// The first input task index in this group.
+    start_task: usize,
+    /// The number of input tasks in this group.
+    len: usize,
+    /// The maximum possible group size across all groups.
+    ///
+    /// When groups are uneven (input_tasks % task_count != 0), some groups are shorter. We still
+    /// size the output partitioning based on this max and return empty streams for the extra
+    /// partitions in smaller groups.
+    max_len: usize,
+}
+
+/// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
+fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
+    if task_count == 0 {
+        return TaskGroup {
+            start_task: 0,
+            len: 0,
+            max_len: 0,
+        };
+    }
+
+    // Split `input_task_count` into `task_count` contiguous groups.
+    // - base_tasks_per_group: floor(input_task_count / task_count)
+    // - groups_with_extra_task: first N groups that get one extra task (remainder)
+    let base_tasks_per_group = input_task_count / task_count;
+    let groups_with_extra_task = input_task_count % task_count;
+
+    let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
+    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
+    let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
+
+    TaskGroup {
+        start_task,
+        len,
+        max_len,
     }
 }
 
