@@ -1,8 +1,9 @@
-use crate::common::require_one_child;
+use crate::common::{on_drop_stream, require_one_child};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -11,7 +12,8 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt, stream};
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::Notify;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
@@ -65,201 +67,12 @@ use tokio::sync::Notify;
 /// the operator below the [BroadCastExec] and populates each cache index with the respective
 /// partition. Subsequent consumer tasks, rather than executing the same partitions, read the
 /// data from the cache for each partition.
-///
-/// Represents a single cache entry in the [BroadcastExec] cache. This entry will hold the results
-/// for a single "real" partition.
-#[derive(Debug)]
-struct CacheEntry {
-    /// Shared data for producer and consumers.
-    state: Mutex<EntryState>,
-    /// Notifies consumers when state changes.
-    notify: Notify,
-}
-
-/// Shared state for a cache entry.
-#[derive(Debug)]
-struct EntryState {
-    /// Buffered [RecordBatch]es produced thus far.
-    buffer: Vec<Arc<RecordBatch>>,
-    /// Whether execution for this partition has begun.
-    started: bool,
-    /// Whether execution for this partition has completed.
-    done: bool,
-    /// Error from the producer (if any).
-    error: Option<Arc<DataFusionError>>,
-    /// Producer task handle (if started).
-    task: Option<SpawnedTask<()>>,
-}
-
-impl CacheEntry {
-    fn new() -> Self {
-        let state = Mutex::new(EntryState {
-            buffer: Vec::new(),
-            started: false,
-            done: false,
-            error: None,
-            task: None,
-        });
-
-        Self {
-            state,
-            notify: Notify::new(),
-        }
-    }
-
-    /// Performs a modification to the [CacheEntry] internal state via the passed closure in a
-    /// lock-safe manner.
-    fn with_state<T>(&self, f: impl FnOnce(&mut EntryState) -> T) -> Result<T, DataFusionError> {
-        let mut guard = self.state.lock().map_err(|e| {
-            DataFusionError::Execution(format!("broadcast cache lock poisoned: {e}"))
-        })?;
-        Ok(f(&mut guard))
-    }
-
-    /// Pushes a [RecordBatch] onto the buffer and notifies all consumers.
-    fn push_batch(&self, batch: Arc<RecordBatch>) -> Result<(), DataFusionError> {
-        self.with_state(|s| s.buffer.push(batch))?;
-        self.notify.notify_waiters();
-        Ok(())
-    }
-
-    /// Sets field `done` to true and notifies all consumers.
-    fn finish_ok(&self) -> Result<(), DataFusionError> {
-        self.with_state(|s| s.done = true)?;
-        self.notify.notify_waiters();
-        Ok(())
-    }
-
-    /// Sets field `err` to the passed error, `done` to true and notifies all consumers.
-    fn finish_err(&self, err: Arc<DataFusionError>) -> Result<(), DataFusionError> {
-        self.with_state(|s| {
-            s.error = Some(err);
-            s.done = true;
-        })?;
-        self.notify.notify_waiters();
-        Ok(())
-    }
-
-    /// Tries to start executing an input operator and populate [CacheEntry] `buffer`.
-    /// This ensures a single producer and starts the underlying partition execution.
-    fn start_if_needed(
-        self: &Arc<Self>,
-        input: Arc<dyn ExecutionPlan>,
-        partition: usize,
-        ctx: Arc<TaskContext>,
-    ) -> Result<(), DataFusionError> {
-        // NOTE: producer is started once per real partition
-        let should_start = self.with_state(|s| {
-            if s.started {
-                false
-            } else {
-                s.started = true;
-                true
-            }
-        })?;
-
-        if !should_start {
-            return Ok(());
-        }
-
-        // Use Weak to avoid a ref-cycle (CacheEntry -> task -> CacheEntry) and
-        // allow cleanup when all consumers drop.
-        let entry = Arc::downgrade(self);
-        let task = SpawnedTask::spawn(async move {
-            let result: Result<(), DataFusionError> = async {
-                let mut stream = input.execute(partition, ctx)?;
-                while let Some(next) = stream.next().await {
-                    let batch = next?;
-                    let Some(entry) = Weak::upgrade(&entry) else {
-                        return Ok(());
-                    };
-                    entry.push_batch(Arc::new(batch))?;
-                }
-                if let Some(entry) = Weak::upgrade(&entry) {
-                    entry.finish_ok()?;
-                }
-                Ok(())
-            }
-            .await;
-
-            if let Err(err) = result
-                && let Some(entry) = Weak::upgrade(&entry)
-            {
-                let _ = entry.finish_err(Arc::new(err));
-            }
-        });
-        self.with_state(|s| s.task = Some(task))?;
-
-        Ok(())
-    }
-
-    /// Creates a stream of [RecordBatch]es.
-    /// Will replay any batches already cached and wait for more batches while the producer is
-    /// running.
-    /// Each consumer has its own index into the shared buffer and waits on `notify` when no new
-    /// batches are available yet.
-    fn stream(self: Arc<Self>) -> impl Stream<Item = Result<RecordBatch, DataFusionError>> {
-        let read_state = |entry: &CacheEntry, idx: usize| {
-            entry.with_state(|s| {
-                if idx < s.buffer.len() {
-                    (Some(Arc::clone(&s.buffer[idx])), false, None)
-                } else {
-                    (None, s.done, s.error.clone())
-                }
-            })
-        };
-
-        enum StreamState {
-            Active { entry: Arc<CacheEntry>, idx: usize },
-            Done,
-        }
-
-        stream::unfold(
-            StreamState::Active {
-                entry: self,
-                idx: 0,
-            },
-            move |state| async move {
-                match state {
-                    StreamState::Done => None,
-                    StreamState::Active { entry, mut idx } => loop {
-                        let (batch_opt, done, err_opt) = match read_state(&entry, idx) {
-                            Ok(v) => v,
-                            Err(err) => return Some((Err(err), StreamState::Done)),
-                        };
-
-                        if let Some(batch) = batch_opt {
-                            idx += 1;
-                            return Some((
-                                Ok(batch.as_ref().clone()),
-                                StreamState::Active { entry, idx },
-                            ));
-                        }
-
-                        if done {
-                            if let Some(err) = err_opt {
-                                return Some((
-                                    Err(DataFusionError::Shared(Arc::clone(&err))),
-                                    StreamState::Done,
-                                ));
-                            }
-                            return None;
-                        }
-
-                        entry.notify.notified().await;
-                    },
-                }
-            },
-        )
-    }
-}
-
 #[derive(Debug)]
 pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: PlanProperties,
-    cached_entries: Vec<Arc<CacheEntry>>,
+    queue_entries: Vec<OnceLock<Arc<BroadcastQueueEntry>>>,
 }
 
 impl BroadcastExec {
@@ -272,15 +85,15 @@ impl BroadcastExec {
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(output_partition_count));
 
-        let cached_entries = (0..input_partition_count)
-            .map(|_| Arc::new(CacheEntry::new()))
-            .collect::<Vec<Arc<CacheEntry>>>();
+        let queue_entries = (0..input_partition_count)
+            .map(|_| OnceLock::new())
+            .collect();
 
         Self {
             input,
             consumer_task_count,
             properties,
-            cached_entries,
+            queue_entries,
         }
     }
 
@@ -290,6 +103,20 @@ impl BroadcastExec {
 
     pub fn consumer_task_count(&self) -> usize {
         self.consumer_task_count
+    }
+
+    /// Gets or initializes the broadcast queue entry for the given partition.
+    fn get_or_init_entry(
+        &self,
+        partition: usize,
+        ctx: &Arc<TaskContext>,
+    ) -> Arc<BroadcastQueueEntry> {
+        let expected_consumers = self.consumer_task_count;
+        Arc::clone(self.queue_entries[partition].get_or_init(|| {
+            let consumer = MemoryConsumer::new("BroadcastExec");
+            let reservation = consumer.register(ctx.memory_pool());
+            Arc::new(BroadcastQueueEntry::new(reservation, expected_consumers))
+        }))
     }
 }
 
@@ -339,10 +166,9 @@ impl ExecutionPlan for BroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let real_partition = partition % self.input_partition_count();
-        let entry = Arc::clone(&self.cached_entries[real_partition]);
+        let entry = self.get_or_init_entry(real_partition, &context);
         let schema = self.schema();
 
-        // TODO: add bounded buffering/backpressure or eviction policies if memory grows too large.
         entry.start_if_needed(Arc::clone(&self.input), real_partition, context)?;
         let stream = entry.stream();
 
@@ -351,6 +177,257 @@ impl ExecutionPlan for BroadcastExec {
 
     fn schema(&self) -> SchemaRef {
         self.input.schema()
+    }
+}
+
+/// A single entry in the broadcast queue, holding results for one "real" partition.
+/// This entry is produced by one task and consumed by multiple consumer tasks.
+struct BroadcastQueueEntry {
+    /// Shared state for producer and consumers.
+    state: Mutex<BroadcastQueueState>,
+    /// Notifies consumers when state changes.
+    notify: Notify,
+    /// Whether execution for this partition has begun.
+    started: AtomicBool,
+    /// Number of consumers that have completed.
+    completed_consumers: AtomicUsize,
+    /// Expected number of consumers.
+    expected_consumers: usize,
+}
+
+impl std::fmt::Debug for BroadcastQueueEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BroadcastQueueEntry")
+            .field("state", &self.state)
+            .field("started", &self.started.load(Ordering::SeqCst))
+            .field(
+                "completed_consumers",
+                &self.completed_consumers.load(Ordering::SeqCst),
+            )
+            .field("expected_consumers", &self.expected_consumers)
+            .finish()
+    }
+}
+
+/// Shared state for a broadcast queue entry.
+struct BroadcastQueueState {
+    /// Buffered [RecordBatch]es produced thus far.
+    buffer: Vec<RecordBatch>,
+    /// Whether execution for this partition has completed.
+    done: bool,
+    /// Error from the producer (if any).
+    error: Option<Arc<DataFusionError>>,
+    /// Producer task handle.
+    task: Option<SpawnedTask<()>>,
+    /// Memory reservation tracking buffer size.
+    reservation: MemoryReservation,
+}
+
+impl std::fmt::Debug for BroadcastQueueState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BroadcastQueueState")
+            .field("buffer_len", &self.buffer.len())
+            .field("done", &self.done)
+            .field("error", &self.error)
+            .field("task", &self.task.is_some())
+            .field("reservation_size", &self.reservation.size())
+            .finish()
+    }
+}
+
+impl BroadcastQueueEntry {
+    fn new(reservation: MemoryReservation, expected_consumers: usize) -> Self {
+        let state = Mutex::new(BroadcastQueueState {
+            buffer: Vec::new(),
+            done: false,
+            error: None,
+            task: None,
+            reservation,
+        });
+
+        Self {
+            state,
+            notify: Notify::new(),
+            started: AtomicBool::new(false),
+            completed_consumers: AtomicUsize::new(0),
+            expected_consumers,
+        }
+    }
+
+    /// Performs a modification to the internal state via the passed closure in a lock-safe manner.
+    fn with_state<T>(
+        &self,
+        f: impl FnOnce(&mut BroadcastQueueState) -> T,
+    ) -> Result<T, DataFusionError> {
+        let mut guard = self.state.lock().map_err(|e| {
+            DataFusionError::Execution(format!("broadcast queue lock poisoned: {e}"))
+        })?;
+        Ok(f(&mut guard))
+    }
+
+    /// Pushes a [RecordBatch] onto the buffer and notifies all consumers.
+    fn push_batch(&self, batch: RecordBatch) -> Result<(), DataFusionError> {
+        self.with_state(|s| {
+            s.reservation.grow(batch.get_array_memory_size());
+            s.buffer.push(batch);
+        })?;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Sets field `done` to true and notifies all consumers.
+    fn finish_ok(&self) -> Result<(), DataFusionError> {
+        self.with_state(|s| s.done = true)?;
+        self.notify.notify_waiters();
+        self.try_release_buffer();
+        Ok(())
+    }
+
+    /// Sets field `err` to the passed error, `done` to true and notifies all consumers.
+    fn finish_err(&self, err: Arc<DataFusionError>) -> Result<(), DataFusionError> {
+        self.with_state(|s| {
+            s.error = Some(err);
+            s.done = true;
+        })?;
+        self.notify.notify_waiters();
+        self.try_release_buffer();
+        Ok(())
+    }
+
+    /// Attempts to release the buffer memory if both production is complete and all expected
+    /// consumers have finished. 
+    fn try_release_buffer(&self) {
+        let completed = self.completed_consumers.load(Ordering::SeqCst);
+        if completed == self.expected_consumers {
+            let _ = self.with_state(|s| {
+                if s.done && !s.buffer.is_empty() {
+                    let freed: usize = s.buffer.iter().map(|b| b.get_array_memory_size()).sum();
+                    s.buffer.clear();
+                    s.reservation.shrink(freed);
+                }
+            });
+        }
+    }
+
+    /// Tries to start executing an input operator and populate the buffer.
+    fn start_if_needed(
+        self: &Arc<Self>,
+        input: Arc<dyn ExecutionPlan>,
+        partition: usize,
+        ctx: Arc<TaskContext>,
+    ) -> Result<(), DataFusionError> {
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        // Use Weak to avoid a ref-cycle (BroadcastQueueEntry -> task -> BroadcastQueueEntry)
+        // and allow cleanup when all consumers drop.
+        let entry = Arc::downgrade(self);
+        let task = SpawnedTask::spawn(async move {
+            let result: Result<(), DataFusionError> = async {
+                let mut stream = input.execute(partition, ctx)?;
+                while let Some(next) = stream.next().await {
+                    let batch = next?;
+                    let Some(entry) = Weak::upgrade(&entry) else {
+                        return Ok(());
+                    };
+                    entry.push_batch(batch)?;
+                }
+                if let Some(entry) = Weak::upgrade(&entry) {
+                    entry.finish_ok()?;
+                }
+                Ok(())
+            }
+            .await;
+
+            if let Err(err) = result
+                && let Some(entry) = Weak::upgrade(&entry)
+            {
+                let _ = entry.finish_err(Arc::new(err));
+            }
+        });
+
+        // Store task handle to keep it alive (SpawnedTask aborts on drop)
+        self.with_state(|s| s.task = Some(task))?;
+
+        Ok(())
+    }
+
+    /// Reads the batch at the given index, or returns done/error status.
+    fn read_at_index(
+        &self,
+        idx: usize,
+    ) -> Result<(Option<RecordBatch>, bool, Option<Arc<DataFusionError>>), DataFusionError> {
+        self.with_state(|s| {
+            if idx < s.buffer.len() {
+                (Some(s.buffer[idx].clone()), false, None)
+            } else {
+                (None, s.done, s.error.clone())
+            }
+        })
+    }
+
+    /// Called when a consumer stream is dropped.
+    fn on_consumer_done(&self) {
+        self.completed_consumers.fetch_add(1, Ordering::SeqCst);
+        self.try_release_buffer();
+    }
+
+    /// Creates a stream of [RecordBatch]es.
+    /// Will replay any batches already buffered and wait for more batches while the producer is
+    /// running. Each consumer has its own index into the shared buffer and waits on `notify`
+    /// when no new batches are available yet.
+    fn stream(self: Arc<Self>) -> impl Stream<Item = Result<RecordBatch, DataFusionError>> {
+        enum StreamState {
+            Active {
+                entry: Arc<BroadcastQueueEntry>,
+                idx: usize,
+            },
+            Done,
+        }
+
+        let entry_for_drop = Arc::clone(&self);
+
+        let stream = stream::unfold(
+            StreamState::Active {
+                entry: self,
+                idx: 0,
+            },
+            move |state| async move {
+                match state {
+                    StreamState::Done => None,
+                    StreamState::Active { entry, mut idx } => loop {
+                        let (batch_opt, done, err_opt) = match entry.read_at_index(idx) {
+                            Ok(v) => v,
+                            Err(err) => return Some((Err(err), StreamState::Done)),
+                        };
+
+                        if let Some(batch) = batch_opt {
+                            idx += 1;
+                            return Some((Ok(batch), StreamState::Active { entry, idx }));
+                        }
+
+                        if done {
+                            if let Some(err) = err_opt {
+                                return Some((
+                                    Err(DataFusionError::Shared(Arc::clone(&err))),
+                                    StreamState::Done,
+                                ));
+                            }
+                            return None;
+                        }
+
+                        entry.notify.notified().await;
+                    },
+                }
+            },
+        );
+
+        on_drop_stream(stream, move || entry_for_drop.on_consumer_done())
     }
 }
 
@@ -380,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_exec_reuses_cache_for_virtual_partitions() -> Result<()> {
+    async fn broadcast_exec_reuses_queue_for_virtual_partitions() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let counts = Arc::new(vec![AtomicUsize::new(0)]);
         let batch = RecordBatch::try_new(
@@ -402,7 +479,7 @@ mod tests {
         let batches1 =
             datafusion::physical_plan::common::collect(broadcast.execute(1, task_ctx)?).await?;
 
-        // Only executes the partition once, second batch is read from the cache
+        // Only executes the partition once, second batch is read from the queue
         assert_eq!(counts[0].load(Ordering::SeqCst), 1);
         assert_eq!(batches0.len(), 1);
         assert_eq!(batches1.len(), 1);
@@ -470,7 +547,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_exec_cache_survives_cancellation() -> Result<()> {
+    async fn broadcast_exec_queue_survives_cancellation() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let execute_counts = Arc::new(vec![AtomicUsize::new(0)]);
         let start_notify = Arc::new(Notify::new());
@@ -518,8 +595,8 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_int32_batch_values(&batches[0], &[1, 2, 3]);
 
-        // Partition should only be executed a single time, second stream should've pull from
-        // cache
+        // Partition should only be executed a single time, second stream should've pulled from
+        // queue
         assert_eq!(execute_counts[0].load(Ordering::SeqCst), 1);
 
         Ok(())
