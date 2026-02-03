@@ -228,6 +228,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         }
 
+        // This should never happen.
+        if input_task_offset >= group.max_len {
+            return internal_err!("NetworkCoalesceExec input_task_offset={} >= group.max_len={}", input_task_offset, group.max_len);
+        }
+
         let target_task = group.start_task + input_task_offset;
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
