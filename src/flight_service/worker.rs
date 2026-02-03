@@ -39,7 +39,7 @@ pub struct Worker {
 impl Default for Worker {
     fn default() -> Self {
         let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60))
+            .time_to_idle(Duration::from_secs(60))
             .build();
         Self {
             runtime: Arc::new(RuntimeEnv::default()),
