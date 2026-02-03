@@ -235,6 +235,13 @@ impl std::fmt::Debug for BroadcastQueueState {
     }
 }
 
+/// Result from reading at a buffer index.
+struct ReadResult {
+    batch: Option<RecordBatch>,
+    done: bool,
+    error: Option<Arc<DataFusionError>>,
+}
+
 impl BroadcastQueueEntry {
     fn new(reservation: MemoryReservation, expected_consumers: usize) -> Self {
         let state = Mutex::new(BroadcastQueueState {
@@ -295,7 +302,7 @@ impl BroadcastQueueEntry {
     }
 
     /// Attempts to release the buffer memory if both production is complete and all expected
-    /// consumers have finished. 
+    /// consumers have finished.
     fn try_release_buffer(&self) {
         let completed = self.completed_consumers.load(Ordering::SeqCst);
         if completed == self.expected_consumers {
@@ -358,15 +365,20 @@ impl BroadcastQueueEntry {
     }
 
     /// Reads the batch at the given index, or returns done/error status.
-    fn read_at_index(
-        &self,
-        idx: usize,
-    ) -> Result<(Option<RecordBatch>, bool, Option<Arc<DataFusionError>>), DataFusionError> {
+    fn read_at_index(&self, idx: usize) -> Result<ReadResult, DataFusionError> {
         self.with_state(|s| {
             if idx < s.buffer.len() {
-                (Some(s.buffer[idx].clone()), false, None)
+                ReadResult {
+                    batch: Some(s.buffer[idx].clone()),
+                    done: false,
+                    error: None,
+                }
             } else {
-                (None, s.done, s.error.clone())
+                ReadResult {
+                    batch: None,
+                    done: s.done,
+                    error: s.error.clone(),
+                }
             }
         })
     }
@@ -401,27 +413,30 @@ impl BroadcastQueueEntry {
                 match state {
                     StreamState::Done => None,
                     StreamState::Active { entry, mut idx } => loop {
-                        let (batch_opt, done, err_opt) = match entry.read_at_index(idx) {
-                            Ok(v) => v,
+                        let entry_for_notify = Arc::clone(&entry);
+                        let notified = entry_for_notify.notify.notified();
+
+                        let result = match entry.read_at_index(idx) {
+                            Ok(r) => r,
                             Err(err) => return Some((Err(err), StreamState::Done)),
                         };
 
-                        if let Some(batch) = batch_opt {
+                        if let Some(batch) = result.batch {
                             idx += 1;
                             return Some((Ok(batch), StreamState::Active { entry, idx }));
                         }
 
-                        if done {
-                            if let Some(err) = err_opt {
+                        if result.done {
+                            if let Some(err) = result.error {
                                 return Some((
-                                    Err(DataFusionError::Shared(Arc::clone(&err))),
+                                    Err(DataFusionError::Shared(err)),
                                     StreamState::Done,
                                 ));
                             }
                             return None;
                         }
 
-                        entry.notify.notified().await;
+                        notified.await;
                     },
                 }
             },
