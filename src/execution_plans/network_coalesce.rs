@@ -14,6 +14,7 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
+    internal_err,
 };
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
@@ -230,7 +231,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
         // This should never happen.
         if input_task_offset >= group.max_len {
-            return internal_err!("NetworkCoalesceExec input_task_offset={} >= group.max_len={}", input_task_offset, group.max_len);
+            return internal_err!(
+                "NetworkCoalesceExec input_task_offset={} >= group.max_len={}",
+                input_task_offset,
+                group.max_len
+            );
         }
 
         let target_task = group.start_task + input_task_offset;
@@ -378,13 +383,14 @@ mod tests {
                 index
             );
 
-            for task in start..(start + len) {
+            for (offset, seen_task) in seen.iter_mut().skip(start).take(len).enumerate() {
+                let task = start + offset;
                 assert!(
-                    !seen[task],
+                    !*seen_task,
                     "case {} input task {} appears twice",
                     case.name, task
                 );
-                seen[task] = true;
+                *seen_task = true;
             }
 
             expected_start = start + len;
@@ -413,44 +419,48 @@ mod tests {
         Ok(())
     }
 
+    const ONE_TO_MANY_INPUT: usize = 1;
+    const ONE_TO_MANY_OUTPUT: usize = 3;
+    const MANY_TO_ONE_INPUT: usize = 4;
+    const MANY_TO_ONE_OUTPUT: usize = 1;
+    const MANY_TO_FEWER_INPUT: usize = 5;
+    const MANY_TO_FEWER_OUTPUT: usize = 2;
+    const FEWER_TO_MANY_INPUT: usize = 2;
+    const FEWER_TO_MANY_OUTPUT: usize = 5;
+
     #[test]
-    fn validates_partition_coverage_across_task_counts() -> Result<()> {
-        const ONE_TO_MANY_INPUT: usize = 1;
-        const ONE_TO_MANY_OUTPUT: usize = 3;
-        const MANY_TO_ONE_INPUT: usize = 4;
-        const MANY_TO_ONE_OUTPUT: usize = 1;
-        const MANY_TO_FEWER_INPUT: usize = 5;
-        const MANY_TO_FEWER_OUTPUT: usize = 2;
-        const FEWER_TO_MANY_INPUT: usize = 2;
-        const FEWER_TO_MANY_OUTPUT: usize = 5;
+    fn validates_partition_coverage_one_to_many() -> Result<()> {
+        assert_case(Case {
+            name: "1_to_n",
+            input_tasks: ONE_TO_MANY_INPUT,
+            consumer_tasks: ONE_TO_MANY_OUTPUT,
+        })
+    }
 
-        const CASES: [Case; 4] = [
-            Case {
-                name: "1_to_n",
-                input_tasks: ONE_TO_MANY_INPUT,
-                consumer_tasks: ONE_TO_MANY_OUTPUT,
-            },
-            Case {
-                name: "n_to_1",
-                input_tasks: MANY_TO_ONE_INPUT,
-                consumer_tasks: MANY_TO_ONE_OUTPUT,
-            },
-            Case {
-                name: "n_to_m_n_gt_m",
-                input_tasks: MANY_TO_FEWER_INPUT,
-                consumer_tasks: MANY_TO_FEWER_OUTPUT,
-            },
-            Case {
-                name: "m_to_n_n_gt_m",
-                input_tasks: FEWER_TO_MANY_INPUT,
-                consumer_tasks: FEWER_TO_MANY_OUTPUT,
-            },
-        ];
+    #[test]
+    fn validates_partition_coverage_many_to_one() -> Result<()> {
+        assert_case(Case {
+            name: "n_to_1",
+            input_tasks: MANY_TO_ONE_INPUT,
+            consumer_tasks: MANY_TO_ONE_OUTPUT,
+        })
+    }
 
-        for case in CASES {
-            assert_case(case)?;
-        }
+    #[test]
+    fn validates_partition_coverage_many_to_fewer() -> Result<()> {
+        assert_case(Case {
+            name: "n_to_m_n_gt_m",
+            input_tasks: MANY_TO_FEWER_INPUT,
+            consumer_tasks: MANY_TO_FEWER_OUTPUT,
+        })
+    }
 
-        Ok(())
+    #[test]
+    fn validates_partition_coverage_fewer_to_many() -> Result<()> {
+        assert_case(Case {
+            name: "m_to_n_n_gt_m",
+            input_tasks: FEWER_TO_MANY_INPUT,
+            consumer_tasks: FEWER_TO_MANY_OUTPUT,
+        })
     }
 }
