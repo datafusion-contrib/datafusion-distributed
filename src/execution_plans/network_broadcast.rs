@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -262,5 +263,9 @@ impl ExecutionPlan for NetworkBroadcastExec {
             self.schema(),
             futures::stream::select_all(streams),
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.worker_connections.metrics.clone_inner())
     }
 }
