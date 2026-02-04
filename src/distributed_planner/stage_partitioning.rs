@@ -14,7 +14,141 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use std::borrow::Cow;
 use std::sync::Arc;
-
+/// Stage partitioning is the same core concept as partitioning in single-node DataFusion: some
+/// subset of data that is distributed in a defined fashion.
+///
+/// Stage partitioning comes in three variants:
+///     1. Unspecified: The distirbution is unknown.
+///     2. Single: There is one task in the stage, thus it is partitioned by all the keys in the
+///        data.
+///     3. Hash(Vec<Arc<dyn PhysicalExpr>>): Each task in this stage contains a disjoint set of the
+///        provides keys.
+///
+/// Stage partitioning enables several optimizations by eliminating unnecessary network shuffles
+/// shuffles when data is already partitioned correctly across tasks.
+///
+/// ## 1. Aggregation with Pre-Partitioned Data
+///
+/// When a DataSource exposes hash partitioning and an aggregate operation requires the same or
+/// a superset of those keys, the shuffle can be avoided. The example at the bottom of this doc
+/// demonstrates this: DataSource partitioned by `[a]`, aggregation groups by `[a]`. Since all
+/// rows with the same `a` value are in the same task, the RepartitionExec does not need to
+/// insert a shuffle.
+///
+/// This also works with subset matching: if data is partitioned by `[a]` and aggregation
+/// groups by `[a, b]`, the shuffle can still be skipped since all rows with the same
+/// `a` are already co-located in the same task.
+///
+/// ## 2. Multiple Sequential Aggregations
+///
+/// When performing multiple aggregations on the same keys, stage partitioning prevents redundant
+/// shuffles. After the first aggregation by `[a]` establishes `Hash([a])` stage
+/// partitioning, a second aggregation by `[a]` sees the data is already partitioned
+/// correctly and skips the shuffle entirely.
+///
+/// ## 3. Join Optimizations
+///
+/// ### Inner Join
+/// When both join inputs are already partitioned by their join keys (e.g., left has
+/// `Hash([a])` and right has `Hash([a])`), an inner join on `a` maintains
+/// the partitioning. Both sides are already co-located, so the output maintains `Hash([a])`
+/// and subsequent operations on `a` can skip shuffles.
+///
+/// ### Semi/Anti Joins
+/// For semi and anti joins, only the filtered side's partitioning matters. A left semi join
+/// preserves the left side's partitioning, and a right semi join preserves the right side's
+/// partitioning. This is useful when one side acts as a filter and doesn't need full co-location.
+///
+/// ### Broadcast Joins (CollectLeft)
+/// When the left side is broadcast to all tasks, the right side maintains its partitioning and
+/// the output inherits the right side's stage partitioning. This is useful for dimension table
+/// joins where the large fact table stays partitioned.
+///
+/// ### Full Outer Joins
+/// Full outer joins cannot preserve partitioning because unmatched rows from either side are
+/// NULL-padded, breaking the hash partitioning guarantee. NULL values don't belong to any
+/// specific hash partition.
+///
+/// ## 4. Projection and Filter Passthrough
+///
+/// Operators that don't change row-to-task assignment preserve stage partitioning:
+/// - **Projections**: If partition keys remain in the output (with possibly remapped column
+///   indices), partitioning is preserved. If keys are dropped, partitioning becomes Unspecified.
+/// - **Filters**: Row filtering doesn't change which task rows belong to.
+/// - **Sorts**: Sorting within each task doesn't affect cross-task distribution.
+/// - **Limits**: Local and global limits preserve partitioning guarantees.
+///
+/// ## 5. Aggregate Subset Matching vs Partitioned Hash Joins
+///
+/// Stage partitioning allows subset matching for aggregates but requires exact matching for
+/// partitioned hash joins:
+/// - **Aggregates**: Stage partitioned by `Hash([a])` satisfies requirement `Hash([a, b])`
+///   because all rows with the same `a` are co-located, making `(a, b)` grouping safe.
+/// - **Partitioned Hash Joins**: Require exact matching on all join keys because both sides
+///   must align precisely to ensure correct co-location and join semantics.
+///
+/// ## 6. Expression-Based Partitioning
+///
+/// Stage partitioning tracks complex expressions, not just column references. If a DataSource
+/// is partitioned by `[a + b]` and an aggregate groups by `[a + b]`, the
+/// shuffle can be elided if the expressions match exactly (after normalization via equivalence
+/// properties).
+///
+/// ```text
+///                ┌───────────────────────────┐
+///                │      DistributedExec      │
+///                │┌─────────────────────────┐│
+///                ││                         ││
+///                ││   CoalescePartitions    ││
+///                ││                         ││
+///                │└────────────▲────────────┘│
+///                │             │             │
+///                │┌────────────┴────────────┐│
+///                ││                         ││
+///                ││     NetworkCoalesce     ││
+///                ││                         ││
+///                │└────────▲───────▲────────┘│
+///                └─────────┼───────┼─────────┘
+///                          │       │
+///               ┌──────────┘       └───────────┐
+/// ┌─────────────┼──────────────────────────────┼─────────────┐
+/// │             │           Stage 1            │             │
+/// │             │  stage_partitoning=Hash(a)   │             │
+/// │                                                          │
+/// │         Worker 0                       Worker 1          │
+/// │                                                          │
+/// │┌─────────────────────────┐    ┌─────────────────────────┐│
+/// ││                         │    │                         ││
+/// ││       Projection        │    │       Projection        ││
+/// ││                         │    │                         ││
+/// │└────────────▲────────────┘    └────────────▲────────────┘│
+/// │             │                              │             │
+/// │┌────────────┴────────────┐    ┌────────────┴────────────┐│
+/// ││   Aggregation (Final)   │    │   Aggregation (Final)   ││
+/// ││          gby=a          │    │          gby=a          ││
+/// ││                         │    │                         ││
+/// │└─────▲──────▲──────▲─────┘    └─────▲──────▲──────▲─────┘│
+/// │      │      │      │                │      │      │      │
+/// │┌─────┴──────┴──────┴─────┐    ┌─────┴──────┴──────┴─────┐│
+/// ││       Repartition       │    │       Repartition       ││
+/// ││   partitoning=Hash(a)   │    │   partitoning=Hash(a)   ││
+/// ││                         │    │                         ││
+/// │└─────▲──────▲──────▲─────┘    └─────▲──────▲──────▲─────┘│
+/// │      │      │      │                │      │      │      │
+/// │┌─────┴──────┴──────┴─────┐    ┌─────┴──────┴──────┴─────┐│
+/// ││  Aggregation (Partial)  │    │  Aggregation (Partial)  ││
+/// ││          gby=a          │    │          gby=a          ││
+/// ││                         │    │                         ││
+/// │└─────▲──────▲──────▲─────┘    └─────▲──────▲──────▲─────┘│
+/// │      │      │      │                │      │      │      │
+/// │┌─────┴──────┴──────┴─────┐    ┌─────┴──────┴──────┴─────┐│
+/// ││       DataSource        │    │       DataSource        ││
+/// ││ouput_partitoning=Hash(a)│    │ouput_partitoning=Hash(a)││
+/// ││                         │    │                         ││
+/// │└─────────────────────────┘    └─────────────────────────┘│
+/// └──────────────────────────────────────────────────────────┘
+/// ```
+///
 pub(super) fn stage_partitioning_for_plan(
     plan: &Arc<dyn ExecutionPlan>,
     children: &[StagePartitioning],
