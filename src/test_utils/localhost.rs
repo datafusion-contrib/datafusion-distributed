@@ -24,7 +24,7 @@ use url::Url;
 pub async fn start_localhost_context<B>(
     num_workers: usize,
     session_builder: B,
-) -> (SessionContext, JoinSet<()>)
+) -> (SessionContext, JoinSet<()>, Vec<Worker>)
 where
     B: WorkerSessionBuilder + Send + Sync + 'static,
     B: Clone,
@@ -48,10 +48,18 @@ where
         .collect();
 
     let mut join_set = JoinSet::new();
+    let mut workers = vec![];
     for listener in listeners {
         let session_builder = session_builder.clone();
+        let worker = Worker::from_session_builder(session_builder);
+        workers.push(worker.clone());
+
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
         join_set.spawn(async move {
-            spawn_flight_service(session_builder, listener)
+            Server::builder()
+                .add_service(worker.into_flight_server())
+                .serve_with_incoming(incoming)
                 .await
                 .unwrap();
         });
@@ -71,7 +79,7 @@ where
         .unwrap();
     state.config_mut().options_mut().execution.target_partitions = 3;
 
-    (SessionContext::from(state), join_set)
+    (SessionContext::from(state), join_set, workers)
 }
 
 #[derive(Clone)]

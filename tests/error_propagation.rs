@@ -31,7 +31,7 @@ mod tests {
                 .build())
         }
 
-        let (ctx, _guard) = start_localhost_context(3, build_state).await;
+        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
 
         let query = r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#;
 

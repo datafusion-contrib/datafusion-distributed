@@ -1,6 +1,6 @@
-use crate::common::ttl_map::TTLMap;
 use crate::flight_service::TaskData;
 use crate::protobuf::StageKey;
+use moka::future::Cache;
 use std::sync::Arc;
 use tokio::sync::{OnceCell, mpsc};
 use tonic::{Request, Response, Status};
@@ -15,11 +15,11 @@ use super::{
 };
 
 pub struct ObservabilityServiceImpl {
-    task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>,
+    task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>,
 }
 
 impl ObservabilityServiceImpl {
-    pub fn new(task_data_entries: Arc<TTLMap<StageKey, Arc<OnceCell<TaskData>>>>) -> Self {
+    pub fn new(task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>) -> Self {
         Self { task_data_entries }
     }
 }
@@ -37,8 +37,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
         let mut tasks = Vec::new();
 
         for entry in self.task_data_entries.iter() {
-            let internal_key = entry.key();
-            let task_data_cell = entry.value();
+            let (internal_key, task_data_cell) = entry;
 
             // Only include initialized tasks
             if let Some(task_data) = task_data_cell.get() {
@@ -47,7 +46,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let completed_partitions = total_partitions.saturating_sub(remaining);
 
                 tasks.push(TaskProgress {
-                    stage_key: Some(convert_stage_key(internal_key)),
+                    stage_key: Some(convert_stage_key(&internal_key)),
                     total_partitions,
                     completed_partitions,
                     status: TaskStatus::Running as i32,

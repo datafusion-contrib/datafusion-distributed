@@ -33,7 +33,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_config_extension() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx = SessionStateBuilder::from(ctx.state())
             .with_distributed_option_extension(CustomExtension {
                 foo: "foo".to_string(),
@@ -70,7 +70,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_config_extension_runtime_change() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut ctx, _guard) = start_localhost_context(3, build_state).await;
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx = SessionStateBuilder::from(ctx.state())
             .with_distributed_option_extension(CustomExtension {
                 throw_err: true,

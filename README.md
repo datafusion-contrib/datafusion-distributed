@@ -2,6 +2,9 @@
 
 Library that brings distributed execution capabilities to [Apache DataFusion](https://github.com/apache/datafusion).
 
+> [!NOTE]  
+> This is project is not part of Apache DataFusion
+
 ## What can you do with this crate?
 
 This crate is a toolkit that extends [Apache DataFusion](https://github.com/apache/datafusion) with distributed
@@ -22,7 +25,17 @@ capabilities with minimal changes.
 
 # Benchmarks
 
-![dist-df-vs-df-vs-trino.png](docs/source/_static/images/dist-df-vs-df-vs-trino.png)
+The benchmarking code is public an open for anyone to easily reproduce. It uses AWS CDK for automating the creation
+of the benchmarking cluster so that anyone can reproduce the same results in their own AWS account. The code can
+be found in the [benchmarks/cdk](./benchmarks/cdk) directory.
+
+### TPC-H SF1
+
+![benchmarks_sf1.png](https://github.com/user-attachments/assets/2f922066-7382-4c31-9e76-74b1ca053bfc)
+
+### TPC-H SF10
+
+![benchmarks_sf10.png](https://github.com/user-attachments/assets/08fd3090-92bf-43fd-b80c-12e3a127e724)
 
 # Docs
 

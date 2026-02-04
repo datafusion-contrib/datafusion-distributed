@@ -307,7 +307,12 @@ fn display_inner_ascii(
     };
 
     let node_str = displayable(plan.as_ref()).one_line().to_string();
-    writeln!(f, "{} {node_str}{metrics_str}", " ".repeat(indent))?;
+    writeln!(
+        f,
+        "{} {}{metrics_str}",
+        " ".repeat(indent),
+        node_str.trim_end() // remove trailing newline
+    )?;
 
     if plan.is_network_boundary() {
         return Ok(());

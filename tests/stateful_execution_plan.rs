@@ -42,7 +42,7 @@ mod tests {
                 .build())
         }
 
-        let (ctx_distributed, _guard) = start_localhost_context(3, build_state).await;
+        let (ctx_distributed, _guard, _) = start_localhost_context(3, build_state).await;
         register_parquet_tables(&ctx_distributed).await?;
 
         let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 20.0 ORDER BY "MinTemp" DESC"#;
@@ -71,7 +71,7 @@ mod tests {
           ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
           │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
           │   FilterExec: MinTemp@0 > 20
-          │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0] 
+          │     PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
           │       StatefulPassThroughExec
           │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 20, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 20, required_guarantees=[]
           └──────────────────────────────────────────────────

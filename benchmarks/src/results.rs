@@ -1,10 +1,11 @@
-use crate::{DATA_PATH, RESULTS_DIR, built_info};
+use crate::{DATA_PATH, RESULTS_DIR};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 /// A single iteration of a benchmark query
@@ -118,8 +119,17 @@ impl BenchmarkRun {
 }
 
 fn get_current_branch() -> String {
-    let head_ref = built_info::GIT_HEAD_REF.expect("GIT_HEAD_REF not set");
-    head_ref.split("/").last().unwrap().to_string()
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .expect("failed to execute git command");
+
+    let branch_name = String::from_utf8(output.stdout)
+        .expect("git output is not valid UTF-8")
+        .trim()
+        .to_string();
+
+    branch_name.split("/").last().unwrap().to_string()
 }
 
 impl BenchResult {

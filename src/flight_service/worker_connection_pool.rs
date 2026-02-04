@@ -1,4 +1,5 @@
 use crate::Stage;
+use crate::common::on_drop_stream;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::networking::get_distributed_channel_resolver;
@@ -32,6 +33,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
 
@@ -109,6 +111,8 @@ type WorkerMsg = Result<(FlightData, FlightAppMetadata, MemoryReservation), Stat
 /// needs to be sent over the wire on every gRPC call, so the less gRPC calls we do the better.
 pub(crate) struct WorkerConnection {
     task: Arc<SpawnedTask<()>>,
+    not_consumed_streams: Arc<AtomicUsize>,
+    cancel_token: CancellationToken,
     per_partition_rx: DashMap<usize, UnboundedReceiver<WorkerMsg>>,
 
     // Metrics collection stuff.
@@ -182,6 +186,11 @@ impl WorkerConnection {
         // for them in the memory pool.
         let memory_pool = Arc::clone(ctx.memory_pool());
 
+        // Cancellation token allows us to stop the background task promptly when all partition
+        // streams are dropped (e.g., when the query is cancelled).
+        let cancel_token = CancellationToken::new();
+        let cancel = cancel_token.clone();
+
         // This task will pull data from all the partitions in `target_partition_range`, and will
         // fan them out to the appropriate `per_partition_rx` based on the "partition" declared
         // in each individual record batch flight metadata.
@@ -199,11 +208,20 @@ impl WorkerConnection {
 
             let consumer = MemoryConsumer::new("WorkerConnection");
 
-            while let Some(msg) = interleaved_stream.next().await {
-                let msg = match msg {
-                    Ok(v) => v,
-                    Err(err) => return fanout(&per_partition_tx, err),
+            loop {
+                // Check for cancellation while waiting for the next message.
+                let msg = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    msg = interleaved_stream.next() => {
+                        match msg {
+                            Some(Ok(v)) => v,
+                            Some(Err(err)) => return fanout(&per_partition_tx, err),
+                            None => return, // Stream exhausted
+                        }
+                    }
                 };
+
                 let flight_metadata = match FlightAppMetadata::decode(msg.app_metadata.as_ref()) {
                     Ok(v) => v,
                     Err(err) => {
@@ -248,6 +266,8 @@ impl WorkerConnection {
 
         Ok(Self {
             task: Arc::new(task),
+            cancel_token,
+            not_consumed_streams: Arc::new(AtomicUsize::new(per_partition_rx.len())),
             per_partition_rx,
 
             // metrics stuff
@@ -263,6 +283,9 @@ impl WorkerConnection {
     /// partitions passed in `target_partition_range`. This method just streams all the record
     /// batches belonging to the provided `partition` from an in-memory queue, but what populates
     /// this queue is [WorkerConnection::init].
+    ///
+    /// When the returned stream is dropped (e.g., due to query cancellation), the background task
+    /// pulling from the Flight stream will be cancelled promptly.
     pub(crate) fn stream_partition(
         &self,
         partition: usize,
@@ -274,6 +297,7 @@ impl WorkerConnection {
             );
         };
         let task = Arc::clone(&self.task);
+        let cancel_token = self.cancel_token.clone();
         let curr_mem_used = Arc::clone(&self.curr_mem_used);
 
         let stream = UnboundedReceiverStream::new(partition_receiver);
@@ -287,7 +311,16 @@ impl WorkerConnection {
         });
         let stream = FlightRecordBatchStream::new_from_flight_data(stream);
         let stream = stream.map_err(map_flight_to_datafusion_error);
-        Ok(stream.with_elapsed_compute(self.elapsed_compute.clone()))
+        let stream = stream.with_elapsed_compute(self.elapsed_compute.clone());
+
+        // When the stream is dropped, cancel the background task to ensure prompt cleanup.
+        let not_consumed_streams = Arc::clone(&self.not_consumed_streams);
+        Ok(on_drop_stream(stream, move || {
+            let remaining_streams = not_consumed_streams.fetch_sub(1, Ordering::SeqCst) - 1;
+            if remaining_streams == 0 {
+                cancel_token.cancel();
+            }
+        }))
     }
 }
 

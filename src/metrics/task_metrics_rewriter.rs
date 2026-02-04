@@ -264,7 +264,7 @@ pub fn stage_metrics_rewriter(
 
 #[cfg(test)]
 mod tests {
-    use crate::PartitionIsolatorExec;
+    use crate::Stage;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::proto::{
         MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
@@ -281,7 +281,6 @@ mod tests {
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
-    use crate::{NetworkBoundaryExt, Stage};
     use bytes::Bytes;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -556,21 +555,10 @@ mod tests {
 
     // Assert every plan node has at least one metric except partition isolators, network boundary nodes, and the root DistributedExec node.
     fn assert_metrics_present_in_plan(plan: &Arc<dyn ExecutionPlan>) {
-        // Check if this is a PartitionIsolatorExec (possibly wrapped in MetricsWrapperExec)
-        // For MetricsWrapperExec, we check the name() which delegates to the inner plan
-        let is_partition_isolator = plan.name() == PartitionIsolatorExec::static_name();
-
         if let Some(metrics) = plan.metrics() {
-            // PartitionIsolatorExec nodes are allowed to have empty metrics
-            if !is_partition_isolator {
-                assert!(metrics.iter().count() > 0);
-            }
+            assert!(metrics.iter().count() > 0);
         } else {
-            assert!(
-                plan.is_network_boundary()
-                    || is_partition_isolator
-                    || plan.as_any().is::<DistributedExec>()
-            );
+            assert!(plan.as_any().is::<DistributedExec>());
         }
         for child in plan.children() {
             assert_metrics_present_in_plan(child);
