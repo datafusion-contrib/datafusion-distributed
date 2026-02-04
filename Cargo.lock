@@ -2044,6 +2044,7 @@ dependencies = [
  "prost",
  "rand 0.9.2",
  "reqwest",
+ "sketches-ddsketch",
  "structopt",
  "test-case",
  "tokio",
@@ -5462,6 +5463,12 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+
+[[package]]
+name = "sketches-ddsketch"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1e9a774a6c28142ac54bb25d25562e6bcf957493a184f15ad4eebccb23e410a"
 
 [[package]]
 name = "slab"
