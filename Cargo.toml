@@ -38,7 +38,7 @@ rand = "0.9"
 object_store = "0.12.4"
 bytes = "1.11"
 pin-project = "1.1.10"
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 tokio-util = "0.7"
 moka = { version = "0.12", features = ["sync"] }
 crossbeam-queue = "0.3"
@@ -80,7 +80,7 @@ tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a91
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 parquet = "57.1.0"
 arrow = "57.1.0"
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 reqwest = "0.12"

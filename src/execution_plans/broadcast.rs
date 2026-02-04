@@ -13,10 +13,10 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use std::any::Any;
 use std::fmt::Formatter;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
-use tokio::sync::futures::OwnedNotified;
+use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -175,9 +175,19 @@ impl ExecutionPlan for BroadcastExec {
             let mut stream = input.execute(real_partition, context).map_err(Arc::new)?;
             let task = SpawnedTask::spawn(async move {
                 while let Some(msg) = stream.next().await {
-                    let msg = msg.inspect(|v| mem_reservation.grow(v.get_array_memory_size()));
-                    queue.push(msg.map_err(Arc::new));
+                    match msg {
+                        Ok(batch) => {
+                            mem_reservation.grow(batch.get_array_memory_size());
+                            queue.push(Ok(batch));
+                        }
+                        Err(err) => {
+                            queue.push(Err(Arc::new(err)));
+                            queue.close();
+                            return;
+                        }
+                    }
                 }
+                queue.close();
             });
 
             Ok::<_, Arc<DataFusionError>>((consumers, Arc::new(task)))
@@ -202,42 +212,65 @@ impl ExecutionPlan for BroadcastExec {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BroadcastState {
+    len: usize,
+    closed: bool,
+}
+
 #[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
     entries: Arc<Mutex<Vec<T>>>,
-    notify: Arc<tokio::sync::Notify>,
-    is_closed: Arc<AtomicBool>,
+    state_tx: watch::Sender<BroadcastState>,
 }
 
 impl<T: Clone> BroadcastQueue<T> {
     fn new() -> Self {
+        let (state_tx, _state_rx) = watch::channel(BroadcastState {
+            len: 0,
+            closed: false,
+        });
         Self {
             entries: Arc::new(Mutex::new(vec![])),
-            notify: Arc::new(tokio::sync::Notify::new()),
-            is_closed: Arc::new(AtomicBool::new(false)),
+            state_tx,
         }
     }
 
     fn new_consumer(&self) -> BroadcastConsumer<T> {
+        let state_rx = self.state_tx.subscribe();
+        let state = *state_rx.borrow();
         BroadcastConsumer {
             index: 0,
             entries: Arc::clone(&self.entries),
-            notify: Arc::clone(&self.notify),
-            is_closed: Arc::clone(&self.is_closed),
-            pending_notified: None,
+            state,
+            state_stream: WatchStream::new(state_rx),
         }
     }
 
     fn push(&self, entry: T) {
-        self.entries.lock().unwrap().push(entry);
-        self.notify.notify_waiters();
+        let len = {
+            let mut entries = self.entries.lock().unwrap();
+            entries.push(entry);
+            entries.len()
+        };
+        let mut state = *self.state_tx.borrow();
+        state.len = len;
+        let _ = self.state_tx.send(state);
+    }
+
+    fn close(&self) {
+        let mut state = *self.state_tx.borrow();
+        if state.closed {
+            return;
+        }
+        state.closed = true;
+        let _ = self.state_tx.send(state);
     }
 }
 
 impl<T: Clone> Drop for BroadcastQueue<T> {
     fn drop(&mut self) {
-        self.is_closed.store(true, Ordering::Release);
-        self.notify.notify_waiters();
+        self.close();
     }
 }
 
@@ -245,9 +278,8 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
 struct BroadcastConsumer<T> {
     index: usize,
     entries: Arc<Mutex<Vec<T>>>,
-    notify: Arc<tokio::sync::Notify>,
-    is_closed: Arc<AtomicBool>,
-    pending_notified: Option<Pin<Box<OwnedNotified>>>,
+    state: BroadcastState,
+    state_stream: WatchStream<BroadcastState>,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
@@ -255,32 +287,26 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if let Some(notified) = self.pending_notified.as_mut() {
-                match notified.as_mut().poll(cx) {
-                    Poll::Ready(()) => {
-                        self.pending_notified = None;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
-            // Register for notification BEFORE checking data to avoid missing
-            // notifications (notify_waiters is a no-op if no one is waiting).
-            let notified = Arc::clone(&self.notify).notified_owned();
-
-            let entry = self.entries.lock().unwrap().get(self.index).cloned();
-
-            match entry {
-                Some(v) => {
+            if self.index < self.state.len {
+                let entry = self.entries.lock().unwrap().get(self.index).cloned();
+                if let Some(v) = entry {
                     self.index += 1;
                     return Poll::Ready(Some(v));
                 }
-                None => {
-                    if self.is_closed.load(Ordering::Acquire) {
-                        return Poll::Ready(None);
-                    }
-                    self.pending_notified = Some(Box::pin(notified));
+            }
+
+            if self.state.closed {
+                return Poll::Ready(None);
+            }
+
+            match Pin::new(&mut self.state_stream).poll_next(cx) {
+                Poll::Ready(Some(state)) => {
+                    self.state = state;
                 }
+                Poll::Ready(None) => {
+                    self.state.closed = true;
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
