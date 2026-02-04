@@ -40,8 +40,9 @@ bytes = "1.11"
 pin-project = "1.1.10"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tokio-util = "0.7"
-moka = { version = "0.12", features = ["sync"] }
+moka = { version = "0.12", features = ["sync", "future"] }
 crossbeam-queue = "0.3"
+sketches-ddsketch = "0.3.0"
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
