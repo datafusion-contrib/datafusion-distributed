@@ -1,4 +1,3 @@
-use crate::passthrough_headers::get_passthrough_headers;
 use datafusion::common::{DataFusionError, internal_datafusion_err};
 use datafusion::config::ConfigExtension;
 use datafusion::prelude::SessionConfig;
@@ -87,13 +86,15 @@ pub(crate) fn get_config_extension_propagation_headers(
     fn parse_err(err: impl Error) -> DataFusionError {
         DataFusionError::Internal(format!("Failed to add config extension: {err}"))
     }
-
-    let mut headers = HeaderMap::new();
-
-    // Add config extension headers
     let prefixes_to_send = cfg
         .get_extension::<ConfigExtensionPropagationContext>()
         .unwrap_or_default();
+
+    if prefixes_to_send.prefixes.is_empty() {
+        return Ok(HeaderMap::new());
+    }
+
+    let mut headers = HeaderMap::new();
 
     for (prefix, extension) in cfg.options().extensions.iter() {
         if !prefixes_to_send.prefixes.contains(&prefix) {
@@ -112,10 +113,6 @@ pub(crate) fn get_config_extension_propagation_headers(
             );
         }
     }
-
-    // Include passthrough headers (validated to not use the reserved config prefix)
-    headers.extend(get_passthrough_headers(cfg));
-
     Ok(headers)
 }
 
@@ -125,7 +122,6 @@ mod tests {
         ConfigExtensionPropagationContext, get_config_extension_propagation_headers,
         set_distributed_option_extension, set_distributed_option_extension_from_headers,
     };
-    use crate::passthrough_headers::set_passthrough_headers;
     use datafusion::common::extensions_options;
     use datafusion::config::ConfigExtension;
     use datafusion::prelude::SessionConfig;
@@ -383,60 +379,5 @@ mod tests {
 
     fn get_ext<T: ConfigExtension>(cfg: &SessionConfig) -> &T {
         cfg.options().extensions.get::<T>().unwrap()
-    }
-
-    #[test]
-    fn test_passthrough_headers_included_in_propagation() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut config = SessionConfig::new();
-
-        // Set up a config extension
-        let opt = CustomExtension {
-            foo: "test".to_string(),
-            ..Default::default()
-        };
-        set_distributed_option_extension(&mut config, opt);
-
-        // Set up passthrough headers
-        let mut passthrough = HeaderMap::new();
-        passthrough.insert(
-            HeaderName::from_static("x-custom-passthrough"),
-            HeaderValue::from_static("passthrough-value"),
-        );
-        set_passthrough_headers(&mut config, passthrough)?;
-
-        // Get propagation headers
-        let headers = get_config_extension_propagation_headers(&config)?;
-
-        // Verify both config extension headers and passthrough headers are present
-        assert!(headers.contains_key("x-datafusion-distributed-config-custom.foo"));
-        assert!(headers.contains_key("x-custom-passthrough"));
-        assert_eq!(
-            headers.get("x-custom-passthrough").unwrap(),
-            "passthrough-value"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_passthrough_headers_without_config_extensions() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut config = SessionConfig::new();
-
-        // Only set passthrough headers, no config extensions
-        let mut passthrough = HeaderMap::new();
-        passthrough.insert(
-            HeaderName::from_static("x-only-passthrough"),
-            HeaderValue::from_static("value"),
-        );
-        set_passthrough_headers(&mut config, passthrough)?;
-
-        let headers = get_config_extension_propagation_headers(&config)?;
-
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers.get("x-only-passthrough").unwrap(), "value");
-
-        Ok(())
     }
 }
