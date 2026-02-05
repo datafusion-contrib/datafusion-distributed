@@ -3,6 +3,7 @@ use crate::config_extension_ext::{
 };
 use crate::distributed_planner::set_distributed_task_estimator;
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
+use crate::passthrough_headers::set_passthrough_headers;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
 use arrow_ipc::CompressionType;
@@ -487,6 +488,38 @@ pub trait DistributedExt: Sized {
         &mut self,
         batch_size: usize,
     ) -> Result<(), DataFusionError>;
+
+    /// Sets arbitrary HTTP headers that will be forwarded unchanged to worker nodes.
+    /// These headers are included in outgoing Arrow Flight requests to workers.
+    ///
+    /// Returns an error if any header name starts with the reserved prefix
+    /// `x-datafusion-distributed-config-`, which is used internally.
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion_distributed::DistributedExt;
+    /// # use http::HeaderMap;
+    ///
+    /// let mut passthrough = HeaderMap::new();
+    /// passthrough.insert("x-custom-priority", "high".parse().unwrap());
+    ///
+    /// let state = SessionStateBuilder::new()
+    ///     .with_distributed_passthrough_headers(passthrough)
+    ///     .unwrap()
+    ///     .build();
+    /// ```
+    fn with_distributed_passthrough_headers(
+        self,
+        headers: HeaderMap,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_passthrough_headers] but with an in-place mutation.
+    fn set_distributed_passthrough_headers(
+        &mut self,
+        headers: HeaderMap,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -592,6 +625,13 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_passthrough_headers(
+        &mut self,
+        headers: HeaderMap,
+    ) -> Result<(), DataFusionError> {
+        set_passthrough_headers(self, headers)
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -649,6 +689,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_shuffle_batch_size)]
             #[expr($?;Ok(self))]
             fn with_distributed_shuffle_batch_size(mut self, batch_size: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_passthrough_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -725,6 +769,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_shuffle_batch_size)]
             #[expr($?;Ok(self))]
             fn with_distributed_shuffle_batch_size(mut self, batch_size: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_passthrough_headers(&mut self, headers: HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_passthrough_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -801,6 +850,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_shuffle_batch_size)]
             #[expr($?;Ok(self))]
             fn with_distributed_shuffle_batch_size(mut self, batch_size: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_passthrough_headers(&mut self, headers: HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_passthrough_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -877,6 +931,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_shuffle_batch_size)]
             #[expr($?;Ok(self))]
             fn with_distributed_shuffle_batch_size(self, batch_size: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_passthrough_headers(&mut self, headers: HeaderMap) -> Result<(), DataFusionError>;
+            #[call(set_distributed_passthrough_headers)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_passthrough_headers(self, headers: HeaderMap) -> Result<Self, DataFusionError>;
         }
     }
 }
