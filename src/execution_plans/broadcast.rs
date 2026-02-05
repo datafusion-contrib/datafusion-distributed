@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
-use tokio_stream::wrappers::WatchStream;
+use tokio_stream::wrappers::BroadcastStream;
 
 /// [ExecutionPlan] that scales up partitions for network broadcasting.
 ///
@@ -215,7 +215,7 @@ impl ExecutionPlan for BroadcastExec {
 #[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
     entries: Arc<Mutex<Vec<T>>>,
-    notify: tokio::sync::watch::Sender<()>,
+    notify: tokio::sync::broadcast::Sender<()>,
     is_closed: Arc<AtomicBool>,
 }
 
@@ -223,7 +223,7 @@ impl<T: Clone> BroadcastQueue<T> {
     fn new() -> Self {
         Self {
             entries: Arc::new(Mutex::new(vec![])),
-            notify: tokio::sync::watch::channel(()).0,
+            notify: tokio::sync::broadcast::channel(1).0,
             is_closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -232,7 +232,7 @@ impl<T: Clone> BroadcastQueue<T> {
         BroadcastConsumer {
             index: 0,
             entries: Arc::clone(&self.entries),
-            notify: WatchStream::new(self.notify.subscribe()),
+            notify: BroadcastStream::new(self.notify.subscribe()),
             is_closed: Arc::clone(&self.is_closed),
             has_more: false,
         }
@@ -255,7 +255,7 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
 struct BroadcastConsumer<T> {
     index: usize,
     entries: Arc<Mutex<Vec<T>>>,
-    notify: WatchStream<()>,
+    notify: BroadcastStream<()>,
     is_closed: Arc<AtomicBool>,
     has_more: bool,
 }
