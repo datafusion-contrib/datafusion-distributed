@@ -4,9 +4,7 @@ mod tests {
     use datafusion::common::{extensions_options, internal_datafusion_err, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::{
-        SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext,
-    };
+    use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
     use datafusion::physical_expr::EquivalenceProperties;
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::{
@@ -34,15 +32,13 @@ mod tests {
     #[tokio::test]
     async fn custom_config_extension() -> Result<(), Box<dyn std::error::Error>> {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
-        ctx = SessionStateBuilder::from(ctx.state())
-            .with_distributed_option_extension(CustomExtension {
-                foo: "foo".to_string(),
-                bar: 1,
-                baz: true,
-                throw_err: false,
-            })
-            .build()
-            .into();
+        ctx.set_distributed_user_codec(CustomConfigExtensionRequiredExecCodec);
+        ctx.set_distributed_option_extension(CustomExtension {
+            foo: "foo".to_string(),
+            bar: 1,
+            baz: true,
+            throw_err: false,
+        });
 
         let query = r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#;
 
@@ -71,13 +67,11 @@ mod tests {
     #[tokio::test]
     async fn custom_config_extension_runtime_change() -> Result<(), Box<dyn std::error::Error>> {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
-        ctx = SessionStateBuilder::from(ctx.state())
-            .with_distributed_option_extension(CustomExtension {
-                throw_err: true,
-                ..Default::default()
-            })
-            .build()
-            .into();
+        ctx.set_distributed_user_codec(CustomConfigExtensionRequiredExecCodec);
+        ctx.set_distributed_option_extension(CustomExtension {
+            throw_err: true,
+            ..Default::default()
+        });
 
         let query = r#"SELECT "MinTemp" FROM weather WHERE "MinTemp" > 20.0"#;
 

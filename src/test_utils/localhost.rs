@@ -1,6 +1,5 @@
 use crate::{
-    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerQueryContext, WorkerResolver,
-    WorkerSessionBuilder,
+    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver, WorkerSessionBuilder,
 };
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -67,16 +66,11 @@ where
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let worker_resolver = LocalHostWorkerResolver::new(ports);
-    let mut state = session_builder
-        .build_session_state(WorkerQueryContext {
-            builder: SessionStateBuilder::new()
-                .with_default_features()
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-                .with_distributed_worker_resolver(worker_resolver),
-            headers: Default::default(),
-        })
-        .await
-        .unwrap();
+    let mut state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_worker_resolver(worker_resolver)
+        .build();
     state.config_mut().options_mut().execution.target_partitions = 3;
 
     (SessionContext::from(state), join_set, workers)
