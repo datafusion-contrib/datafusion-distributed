@@ -4,6 +4,7 @@ use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::metrics::latency_tracker::LatencyTracker;
 use crate::networking::get_distributed_channel_resolver;
+use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{
     FlightAppMetadata, StageKey, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
 };
@@ -148,7 +149,8 @@ impl WorkerConnection {
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
         // Building the actual request that will be sent to the worker.
-        let headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        headers.extend(get_passthrough_headers(ctx.session_config()));
         let ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),

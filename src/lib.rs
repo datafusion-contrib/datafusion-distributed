@@ -6,6 +6,7 @@ mod distributed_ext;
 mod execution_plans;
 mod flight_service;
 mod metrics;
+mod passthrough_headers;
 mod stage;
 
 mod distributed_planner;
