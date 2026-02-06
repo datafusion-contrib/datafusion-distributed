@@ -78,3 +78,8 @@ or
 `benchmarks/data/tpch_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
 
 You can inspect the results and the plan by reading the JSONs. Tip: use jq for printing nice results.
+
+As the results of previous branches are already stored in disk, they usually can be analyzed without re-running them
+again, that can be done by either:
+- Just looking at the latencies and plans in the output folders.
+- Running the `npm run datafusion-bench -- compare --dataset tpch_sfX datafusion-distributed-<base branch> datafusion-distributed-<compare branch>`
