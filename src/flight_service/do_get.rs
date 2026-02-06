@@ -201,6 +201,9 @@ impl Worker {
 
             let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
             let task_data_entries = Arc::clone(&self.task_data_entries);
+            // When the stream is dropped before fully consumed (e.g. LIMIT on the client side),
+            // metrics piggybacked on the last FlightData message are lost.
+            // See https://github.com/datafusion-contrib/datafusion-distributed/issues/187
             let stream = on_drop_stream(stream, move || {
                 if !fully_finished_cloned.load(Ordering::SeqCst) {
                     // If the stream was not fully consumed, but it was dropped (abandoned), we
