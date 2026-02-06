@@ -162,12 +162,12 @@ pub(super) fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
-    _annotate_plan(plan, None, cfg, true)
+    _annotate_plan(plan, &mut vec![], cfg, true)
 }
 
 fn _annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
-    parent: Option<&Arc<dyn ExecutionPlan>>,
+    parent_stack: &mut Vec<Arc<dyn ExecutionPlan>>,
     cfg: &ConfigOptions,
     root: bool,
 ) -> Result<AnnotatedPlan, DataFusionError> {
@@ -176,11 +176,13 @@ fn _annotate_plan(
     let estimator = &d_cfg.__private_task_estimator;
     let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
 
+    parent_stack.push(Arc::clone(&plan));
     let annotated_children = plan
         .children()
         .iter()
-        .map(|child| _annotate_plan(Arc::clone(child), Some(&plan), cfg, false))
+        .map(|child| _annotate_plan(Arc::clone(child), parent_stack, cfg, false))
         .collect::<Result<Vec<_>, _>>()?;
+    parent_stack.pop();
 
     if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
@@ -255,7 +257,13 @@ fn _annotate_plan(
                 task_count,
             };
         }
-    } else if let Some(parent) = parent
+    } else if let Some(_b_exec) = plan.as_any().downcast_ref::<BroadcastExec>() {
+        annotation = AnnotatedPlan {
+            plan_or_nb: PlanOrNetworkBoundary::Broadcast,
+            children: vec![annotation],
+            task_count,
+        };
+    } else if let Some(parent) = parent_stack.last()
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
         // we don't want to do it.
         && !plan.children().is_empty()
@@ -264,14 +272,15 @@ fn _annotate_plan(
         && (parent.as_any().is::<CoalescePartitionsExec>()
             || parent.as_any().is::<SortPreservingMergeExec>())
     {
-        // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
-        if plan.as_any().is::<BroadcastExec>() {
-            annotation = AnnotatedPlan {
-                plan_or_nb: PlanOrNetworkBoundary::Broadcast,
-                children: vec![annotation],
-                task_count,
-            };
-        } else {
+        // If the node above the CoalescePartitionsExec or SortPreservingMergeExec is a
+        // BroadcastExec, then we don't need to insert a network boundary, because we are in the
+        // situation where a broadcast join will happen.
+        if !parent_stack
+            .iter()
+            .rev()
+            .take(2)
+            .any(|plan| plan.as_any().is::<BroadcastExec>())
+        {
             annotation = AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Coalesce,
                 children: vec![annotation],
@@ -690,9 +699,9 @@ mod tests {
         let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            [NetworkBoundary] Broadcast: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
+          [NetworkBoundary] Broadcast: task_count=Desired(3)
+            BroadcastExec: task_count=Desired(3)
+              CoalescePartitionsExec: task_count=Desired(3)
                 DataSourceExec: task_count=Desired(3)
           DataSourceExec: task_count=Desired(3)
         ")
@@ -720,10 +729,9 @@ mod tests {
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            [NetworkBoundary] Broadcast: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
+          [NetworkBoundary] Broadcast: task_count=Desired(3)
+            BroadcastExec: task_count=Desired(3)
+              DataSourceExec: task_count=Desired(3)
           DataSourceExec: task_count=Desired(3)
         ");
     }
@@ -739,9 +747,9 @@ mod tests {
             sql_to_annotated_broadcast_with_estimator(query, 3, BuildSideOneTaskEstimator).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            [NetworkBoundary] Broadcast: task_count=Desired(3)
-              BroadcastExec: task_count=Maximum(1)
+          [NetworkBoundary] Broadcast: task_count=Desired(3)
+            BroadcastExec: task_count=Maximum(1)
+              CoalescePartitionsExec: task_count=Maximum(1)
                 DataSourceExec: task_count=Maximum(1)
           DataSourceExec: task_count=Desired(3)
         ");
@@ -758,12 +766,12 @@ mod tests {
             sql_to_annotated_broadcast_with_estimator(query, 3, BroadcastBuildCoalesceMaxEstimator)
                 .await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Maximum(1)
-          CoalescePartitionsExec: task_count=Maximum(1)
-            [NetworkBoundary] Broadcast: task_count=Maximum(1)
-              BroadcastExec: task_count=Desired(1)
-                DataSourceExec: task_count=Desired(1)
-          DataSourceExec: task_count=Maximum(1)
+        HashJoinExec: task_count=Desired(3)
+          [NetworkBoundary] Broadcast: task_count=Desired(3)
+            BroadcastExec: task_count=Desired(3)
+              CoalescePartitionsExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+          DataSourceExec: task_count=Desired(3)
         ");
     }
 
@@ -796,13 +804,13 @@ mod tests {
         let annotated = sql_to_annotated_broadcast(query, 4, 4, true).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            [NetworkBoundary] Broadcast: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
+          [NetworkBoundary] Broadcast: task_count=Desired(3)
+            BroadcastExec: task_count=Desired(3)
+              CoalescePartitionsExec: task_count=Desired(3)
                 HashJoinExec: task_count=Desired(3)
-                  CoalescePartitionsExec: task_count=Desired(3)
-                    [NetworkBoundary] Broadcast: task_count=Desired(3)
-                      BroadcastExec: task_count=Desired(3)
+                  [NetworkBoundary] Broadcast: task_count=Desired(3)
+                    BroadcastExec: task_count=Desired(3)
+                      CoalescePartitionsExec: task_count=Desired(3)
                         DataSourceExec: task_count=Desired(3)
                   DataSourceExec: task_count=Desired(3)
           DataSourceExec: task_count=Desired(3)
@@ -831,21 +839,21 @@ mod tests {
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              [NetworkBoundary] Broadcast: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(1)
+            [NetworkBoundary] Broadcast: task_count=Maximum(1)
+              BroadcastExec: task_count=Desired(1)
+                CoalescePartitionsExec: task_count=Desired(1)
                   DataSourceExec: task_count=Desired(1)
             DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              [NetworkBoundary] Broadcast: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(1)
+            [NetworkBoundary] Broadcast: task_count=Maximum(1)
+              BroadcastExec: task_count=Desired(1)
+                CoalescePartitionsExec: task_count=Desired(1)
                   DataSourceExec: task_count=Desired(1)
             DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(2)
-            CoalescePartitionsExec: task_count=Maximum(2)
-              [NetworkBoundary] Broadcast: task_count=Maximum(2)
-                BroadcastExec: task_count=Desired(2)
+            [NetworkBoundary] Broadcast: task_count=Maximum(2)
+              BroadcastExec: task_count=Desired(2)
+                CoalescePartitionsExec: task_count=Desired(2)
                   DataSourceExec: task_count=Desired(2)
             DataSourceExec: task_count=Maximum(2)
         ");
