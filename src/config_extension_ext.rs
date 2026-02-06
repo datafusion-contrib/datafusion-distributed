@@ -6,7 +6,7 @@ use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
 
-const FLIGHT_METADATA_CONFIG_PREFIX: &str = "x-datafusion-distributed-config-";
+pub(crate) const FLIGHT_METADATA_CONFIG_PREFIX: &str = "x-datafusion-distributed-config-";
 
 pub(crate) fn set_distributed_option_extension<T: ConfigExtension + Default>(
     cfg: &mut SessionConfig,

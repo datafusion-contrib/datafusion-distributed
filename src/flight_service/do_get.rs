@@ -100,7 +100,8 @@ impl Worker {
         let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let once = self
             .task_data_entries
-            .get_or_init(key.clone(), Default::default);
+            .get_with(key.clone(), async { Default::default() })
+            .await;
 
         let stage_data = once
             .get_or_try_init(|| async {
@@ -176,9 +177,13 @@ impl Worker {
 
                 if last_msg_in_stream {
                     // If it's the last message from the last partition, clean up the entry from
-                    // the TTLMap and send the collected metrics.
+                    // the cache and send the collected metrics.
                     if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                        task_data_entries.remove(key.clone());
+                        let entries = Arc::clone(&task_data_entries);
+                        let k = key.clone();
+                        tokio::spawn(async move {
+                            entries.invalidate(&k).await;
+                        });
                         if send_metrics {
                             // Last message of the last partition. This is the moment to send
                             // the metrics back.
@@ -198,11 +203,17 @@ impl Worker {
             let task_data_entries = Arc::clone(&self.task_data_entries);
             let stream = on_drop_stream(stream, move || {
                 if !fully_finished_cloned.load(Ordering::SeqCst) {
-                    // If the stream was not fully consumed, but it ws dropped (abandoned), we
+                    // If the stream was not fully consumed, but it was dropped (abandoned), we
                     // still need to remove the entry from `task_data_entries`, otherwise we
-                    // might leak memory until it gets automatically released due to a TTL.
+                    // might leak memory until the cache automatically evicts it after the TTL expires.
                     if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                        task_data_entries.remove(key_clone);
+                        let entries = Arc::clone(&task_data_entries);
+                        let k = key_clone.clone();
+                        // Fire-and-forget background tokio task to handle async
+                        // invalidate() within synchronous on_drop_stream.
+                        tokio::spawn(async move {
+                            entries.invalidate(&k).await;
+                        });
                     }
                 }
             });
@@ -420,13 +431,20 @@ mod tests {
         assert_eq!(plans_received.load(Ordering::SeqCst), task_keys.len());
 
         // Check that the endpoint has not evicted any task states.
-        assert_eq!(endpoint.task_data_entries.len(), num_tasks as usize);
+        assert_eq!(
+            endpoint.task_data_entries.iter().count(),
+            num_tasks as usize
+        );
 
         // Run the last partition of task 0. Any partition number works. Verify that the task state
         // is evicted because all partitions have been processed.
         let result = do_get(2, 0, task_keys[0].clone()).await;
         assert!(result.is_ok());
-        let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
+        let stored_stage_keys = endpoint
+            .task_data_entries
+            .iter()
+            .map(|(k, _)| (*k).clone())
+            .collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 2);
         assert!(stored_stage_keys.contains(&task_keys[1]));
         assert!(stored_stage_keys.contains(&task_keys[2]));
@@ -434,14 +452,22 @@ mod tests {
         // Run the last partition of task 1.
         let result = do_get(2, 1, task_keys[1].clone()).await;
         assert!(result.is_ok());
-        let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
+        let stored_stage_keys = endpoint
+            .task_data_entries
+            .iter()
+            .map(|(k, _)| (*k).clone())
+            .collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 1);
         assert!(stored_stage_keys.contains(&task_keys[2]));
 
         // Run the last partition of the last task.
         let result = do_get(2, 2, task_keys[2].clone()).await;
         assert!(result.is_ok());
-        let stored_stage_keys = endpoint.task_data_entries.keys().collect::<Vec<StageKey>>();
+        let stored_stage_keys = endpoint
+            .task_data_entries
+            .iter()
+            .map(|(k, _)| (*k).clone())
+            .collect::<Vec<StageKey>>();
         assert_eq!(stored_stage_keys.len(), 0);
     }
 

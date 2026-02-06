@@ -26,7 +26,7 @@ mod tests {
         run_tpch_query(d_ctx, "q1").await?;
 
         for (i, worker) in workers.iter().enumerate() {
-            let tasks_running = worker.tasks_running();
+            let tasks_running = worker.tasks_running().await;
             assert_eq!(
                 tasks_running, 0,
                 "Expected Worker {i} to have 0 tasks running, but got {tasks_running}"
@@ -49,7 +49,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             tasks_running = 0;
             for worker in &workers {
-                tasks_running += worker.tasks_running();
+                tasks_running += worker.tasks_running().await;
             }
             if tasks_running == 0 {
                 return Ok(());

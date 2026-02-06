@@ -4,7 +4,7 @@ mod tests {
     use arrow::util::pretty::pretty_format_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::SessionState;
+    use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     };
@@ -27,14 +27,15 @@ mod tests {
     #[tokio::test]
     async fn test_udf_in_partitioning_field() -> Result<(), Box<dyn Error>> {
         async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
-            Ok(ctx
-                .builder
-                .with_scalar_functions(vec![udf()])
-                .with_distributed_task_estimator(2)
-                .build())
+            Ok(ctx.builder.with_scalar_functions(vec![udf()]).build())
         }
 
-        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx = SessionStateBuilder::from(ctx.state())
+            .with_distributed_task_estimator(2)
+            .with_scalar_functions(vec![udf()])
+            .build()
+            .into();
 
         let wrap = |input: Arc<dyn ExecutionPlan>| -> Arc<dyn ExecutionPlan> {
             Arc::new(

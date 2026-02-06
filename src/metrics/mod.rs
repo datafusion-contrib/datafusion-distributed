@@ -1,3 +1,4 @@
+pub(crate) mod latency_tracker;
 pub(crate) mod proto;
 mod task_metrics_collector;
 mod task_metrics_rewriter;
