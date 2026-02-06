@@ -39,6 +39,10 @@ extensions_options! {
         /// calculation is that more partitions than `datafusion.execution.target_partitions` are
         /// needed, the query will use more workers.
         pub bytes_processed_per_partition: usize, default = 8 * 1024 * 1024
+        /// Distributed DataFusion relies on row count estimation in order to infer how many workers
+        /// should be used in serving the query. Some plans might not implement any kind of row count
+        /// estimation, and this parameter sets the default estimated row count for those plans.
+        pub default_estimated_row_count: Option<usize>, default = Some(0)
         /// Collection of [DistributedPlannerExtension]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_distributed_planner_extension: CombinedDistributedPlannerExtension, default = CombinedDistributedPlannerExtension::default()
