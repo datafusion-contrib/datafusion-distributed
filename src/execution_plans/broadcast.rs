@@ -13,7 +13,6 @@ use futures::{Stream, StreamExt};
 use std::any::Any;
 use std::fmt::Formatter;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::WatchStream;
@@ -178,15 +177,17 @@ impl ExecutionPlan for BroadcastExec {
                 let mem_consumer = MemoryConsumer::new(format!("BroadcastExec[{real_partition}]"));
 
                 while let Some(msg) = stream.next().await {
-                    let msg = match msg {
+                    match msg {
                         Ok(record_batch) => {
                             let mut reservation = mem_consumer.clone_with_new_id().register(&pool);
                             reservation.grow(record_batch.get_array_memory_size());
-                            Ok((record_batch, Arc::new(reservation)))
+                            queue.push(Ok((record_batch, Arc::new(reservation))));
                         }
-                        Err(err) => Err(Arc::new(err)),
-                    };
-                    queue.push(msg);
+                        Err(err) => {
+                            queue.push(Err(Arc::new(err)));
+                            break;
+                        }
+                    }
                 }
             });
 
@@ -212,42 +213,58 @@ impl ExecutionPlan for BroadcastExec {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BroadcastState {
+    len: usize,
+    closed: bool,
+}
+
 #[derive(Debug)]
 struct BroadcastQueue<T: Clone> {
     entries: Arc<Mutex<Vec<T>>>,
-    notify: tokio::sync::watch::Sender<()>,
-    is_closed: Arc<AtomicBool>,
+    notify: tokio::sync::watch::Sender<BroadcastState>,
 }
 
 impl<T: Clone> BroadcastQueue<T> {
     fn new() -> Self {
+        let (notify, _rx) = tokio::sync::watch::channel(BroadcastState {
+            len: 0,
+            closed: false,
+        });
         Self {
             entries: Arc::new(Mutex::new(vec![])),
-            notify: tokio::sync::watch::channel(()).0,
-            is_closed: Arc::new(AtomicBool::new(false)),
+            notify,
         }
     }
 
     fn new_consumer(&self) -> BroadcastConsumer<T> {
+        let rx = self.notify.subscribe();
+        let state = *rx.borrow();
         BroadcastConsumer {
             index: 0,
             entries: Arc::clone(&self.entries),
-            notify: WatchStream::new(self.notify.subscribe()),
-            is_closed: Arc::clone(&self.is_closed),
-            has_more: false,
+            notify: WatchStream::new(rx),
+            state,
         }
     }
 
     fn push(&self, entry: T) {
-        self.entries.lock().unwrap().push(entry);
-        let _ = self.notify.send(());
+        let len = {
+            let mut entries = self.entries.lock().unwrap();
+            entries.push(entry);
+            entries.len()
+        };
+        let mut state = *self.notify.borrow();
+        state.len = len;
+        let _ = self.notify.send(state);
     }
 }
 
 impl<T: Clone> Drop for BroadcastQueue<T> {
     fn drop(&mut self) {
-        self.is_closed.store(true, Ordering::Release);
-        let _ = self.notify.send(());
+        let mut state = *self.notify.borrow();
+        state.closed = true;
+        let _ = self.notify.send(state);
     }
 }
 
@@ -255,9 +272,8 @@ impl<T: Clone> Drop for BroadcastQueue<T> {
 struct BroadcastConsumer<T> {
     index: usize,
     entries: Arc<Mutex<Vec<T>>>,
-    notify: WatchStream<()>,
-    is_closed: Arc<AtomicBool>,
-    has_more: bool,
+    notify: WatchStream<BroadcastState>,
+    state: BroadcastState,
 }
 
 impl<T: Clone> Stream for BroadcastConsumer<T> {
@@ -265,24 +281,26 @@ impl<T: Clone> Stream for BroadcastConsumer<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if !self.has_more && self.notify.poll_next_unpin(cx).is_pending() {
-                return Poll::Pending;
-            }
-
-            let entry = self.entries.lock().unwrap().get(self.index).cloned();
-
-            match entry {
-                Some(v) => {
+            if self.index < self.state.len {
+                let entry = self.entries.lock().unwrap().get(self.index).cloned();
+                if let Some(v) = entry {
                     self.index += 1;
-                    self.has_more = true;
                     return Poll::Ready(Some(v));
                 }
-                None => {
-                    if self.is_closed.load(Ordering::Acquire) {
-                        return Poll::Ready(None);
-                    }
-                    self.has_more = false;
+            }
+
+            if self.state.closed {
+                return Poll::Ready(None);
+            }
+
+            match Pin::new(&mut self.notify).poll_next(cx) {
+                Poll::Ready(Some(state)) => {
+                    self.state = state;
                 }
+                Poll::Ready(None) => {
+                    self.state.closed = true;
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
