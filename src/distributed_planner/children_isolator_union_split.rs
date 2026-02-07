@@ -1,6 +1,6 @@
 use crate::DistributedTaskContext;
 use crate::distributed_planner::plan_annotator::AnnotatedPlan;
-use datafusion::common::{DataFusionError, internal_err};
+use datafusion::common::{Result, internal_err};
 
 /// Given a list of children with a different compute cost each, and a restriction about the maximum
 /// tasks in which they are allowed to run, it assigns tasks counts to them so that the following
@@ -57,7 +57,6 @@ pub(super) fn children_isolator_union_split(
             /* Distributed task ctx for the child */ DistributedTaskContext,
         )>,
     >,
-    DataFusionError,
 > {
     if task_count_budget == 0 {
         return internal_err!(
@@ -190,12 +189,12 @@ pub(super) fn children_isolator_union_split(
 
 /// private trait just for testability purposes.
 pub(super) trait CostChild {
-    fn cost(&self) -> Result<usize, DataFusionError>;
+    fn cost(&self) -> Result<usize>;
     fn max_tasks(&self) -> Option<usize>;
 }
 
 impl CostChild for AnnotatedPlan {
-    fn cost(&self) -> Result<usize, DataFusionError> {
+    fn cost(&self) -> Result<usize> {
         self.cost_aggregated_until_network_boundary()
     }
 
@@ -209,7 +208,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn children_split_all_1_task() -> Result<(), Box<dyn std::error::Error>> {
+    fn children_split_all_1_task() -> Result<()> {
         assert_eq!(
             children_isolator_union_split(&[(1, None), (1, None), (1, None)], 3)?,
             vec![
@@ -230,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn children_isolator_union_split_different_tasks() -> Result<(), Box<dyn std::error::Error>> {
+    fn children_isolator_union_split_different_tasks() -> Result<()> {
         assert_eq!(
             children_isolator_union_split(&[(1, None), (2, None), (3, None)], 6)?,
             vec![
@@ -283,7 +282,7 @@ mod tests {
     /// Tests the doc example: expensive child with max_tasks=1 restriction.
     /// Even though child 0 has cost=4 (would ideally get 2 tasks), it's capped at 1.
     #[test]
-    fn expensive_child_with_max_tasks_restriction() -> Result<(), Box<dyn std::error::Error>> {
+    fn expensive_child_with_max_tasks_restriction() -> Result<()> {
         // From doc: [{cost: 4, max: Some(1)}, {cost: 1, max: None}, {cost: 1, max: None}]
         // With budget=3, child 0 is forced to 1 task despite high cost.
         assert_eq!(
@@ -299,7 +298,7 @@ mod tests {
 
     /// Tests that max_tasks caps expansion when budget exceeds what children can use.
     #[test]
-    fn max_tasks_prevents_over_expansion() -> Result<(), Box<dyn std::error::Error>> {
+    fn max_tasks_prevents_over_expansion() -> Result<()> {
         // All children capped at 1 task each, but budget is 5.
         // Should result in 3 used tasks with 2 empty ones.
         assert_eq!(
@@ -316,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_child_absorbs_budget() -> Result<(), Box<dyn std::error::Error>> {
+    fn unbounded_child_absorbs_budget() -> Result<()> {
         // Children 0,1,2 are capped at 1 task each. Child 3 is expensive and unbounded.
         // With budget=6, child 3 should expand to fill the remaining 3 tasks.
         assert_eq!(
@@ -341,7 +340,7 @@ mod tests {
     /// One could argue that the correct thing to do here is to actually try to spread
     /// the last child across tasks, but this algorithm doesn't.
     #[test]
-    fn unbounded_expensive_child_just_uses_1_task() -> Result<(), Box<dyn std::error::Error>> {
+    fn unbounded_expensive_child_just_uses_1_task() -> Result<()> {
         assert_eq!(
             children_isolator_union_split(
                 &[(1, Some(1)), (1, Some(1)), (1, Some(1)), (10, None)],
@@ -357,6 +356,18 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn many_free_children_does_not_prevent_expensive_one_from_being_distributed() -> Result<()> {
+        assert_eq!(
+            children_isolator_union_split(&[(0, None), (0, None), (0, None), (10, None)], 2)?,
+            vec![
+                vec![(0, ctx(0, 1)), (1, ctx(0, 1))],
+                vec![(2, ctx(0, 1)), (3, ctx(0, 1))],
+            ]
+        );
+        Ok(())
+    }
+
     fn ctx(task_index: usize, task_count: usize) -> DistributedTaskContext {
         DistributedTaskContext {
             task_index,
@@ -365,7 +376,7 @@ mod tests {
     }
 
     impl CostChild for (usize, Option<usize>) {
-        fn cost(&self) -> Result<usize, DataFusionError> {
+        fn cost(&self) -> Result<usize> {
             Ok(self.0)
         }
 
