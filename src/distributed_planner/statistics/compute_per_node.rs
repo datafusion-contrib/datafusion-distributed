@@ -21,17 +21,22 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
 
-/// Represents the relative CPU/compute cost of an execution plan node.
+/// Represents how compute intensive a node is. There are different predefined classes for this,
+/// each one with a f64 value associated to it.
 ///
-/// This is a granular classification focused on actual computational work,
-/// not I/O or memory bandwidth. The levels are ordered from least to most
-/// compute-intensive.
+/// The f64 value associated to each class aims to model the "amount of compute" the node
+/// contributes per byte. For example:
 ///
-/// Note: This intentionally separates compute cost from I/O cost. For example,
-/// TableScan is Zero compute cost because it's I/O-bound, not CPU-bound.
+/// Based on statistics, we can estimate that:
+/// 1) 1000 rows are going to flow through a node.
+/// 2) Each row will have an estimated average size of 5 bytes.
+/// 3) The node will process 1000 x 5 = 5000 bytes
+///
+/// The [ComputeCostClass] applies a factor to this 5000 bytes number that accounts for how compute
+/// hungry is the node expected to be.
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ComputeCost {
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub enum ComputeCostClass {
     /// No compute - pure passthrough or I/O-bound operators.
     /// Examples: Union, Empty, Interleave, DataSourceExec (I/O-bound).
     Zero,
@@ -64,31 +69,35 @@ pub enum ComputeCost {
     /// Examples: NestedLoopJoin (O(n*m)), CrossJoin, aggregation with many
     /// group-by columns and complex aggregate functions.
     XXL,
+
+    /// Custom user provided compute cost.
+    Custom(f64),
 }
 
-impl ComputeCost {
+impl ComputeCostClass {
     pub(crate) fn factor(&self) -> f64 {
         match self {
-            ComputeCost::Zero => 0.0,
-            ComputeCost::XXS => 0.3,
-            ComputeCost::XS => 0.5,
-            ComputeCost::S => 0.7,
-            ComputeCost::M => 1.0,
-            ComputeCost::L => 1.3,
-            ComputeCost::XL => 1.6,
-            ComputeCost::XXL => 2.0,
+            ComputeCostClass::Zero => 0.0,
+            ComputeCostClass::XXS => 0.3,
+            ComputeCostClass::XS => 0.5,
+            ComputeCostClass::S => 0.7,
+            ComputeCostClass::M => 1.0,
+            ComputeCostClass::L => 1.3,
+            ComputeCostClass::XL => 1.6,
+            ComputeCostClass::XXL => 2.0,
+            ComputeCostClass::Custom(factor) => *factor,
         }
     }
 }
 
-/// Returns the estimated [`ComputeCost`] for the given execution plan node.
+/// Returns the estimated [`ComputeCostClass`] for the given execution plan node.
 ///
 /// Cost estimation is based on the actual computational work performed by each
 /// DataFusion operator, intentionally separating compute cost from I/O cost.
 ///
 /// Reference: DataFusion physical-plan implementations:
 /// <https://github.com/apache/datafusion/tree/branch-52/datafusion/physical-plan/src>
-pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCost {
+pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCostClass {
     let any = node.as_any();
 
     // === XXL: Very heavy computation (O(n*m) or worse) ===
@@ -96,13 +105,13 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // NestedLoopJoinExec: O(n*m) - evaluates join condition for each pair of rows
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/nested_loop_join.rs
     if any.is::<NestedLoopJoinExec>() {
-        return ComputeCost::XXL;
+        return ComputeCostClass::XXL;
     }
 
     // CrossJoinExec: O(n*m) - produces Cartesian product of all row pairs
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/cross_join.rs
     if any.is::<CrossJoinExec>() {
-        return ComputeCost::XXL;
+        return ComputeCostClass::XXL;
     }
 
     // === XL: Heavy accumulating operators (O(n log n) or hash-based) ===
@@ -110,7 +119,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // SortExec: O(n log n) - uses lexsort_to_indices, may spill to disk
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/sorts/sort.rs
     if any.is::<SortExec>() {
-        return ComputeCost::XL;
+        return ComputeCostClass::XL;
     }
 
     // HashJoinExec: hash table build (O(n)) + probe (O(m))
@@ -120,22 +129,22 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
         let num_keys = join.on().len();
         let has_filter = join.filter().is_some();
         return match (num_keys, has_filter) {
-            (_, true) => ComputeCost::XXL, // Filter adds per-match evaluation
-            (n, _) if n > 3 => ComputeCost::XXL, // Many keys = expensive hashing
-            _ => ComputeCost::XL,
+            (_, true) => ComputeCostClass::XXL, // Filter adds per-match evaluation
+            (n, _) if n > 3 => ComputeCostClass::XXL, // Many keys = expensive hashing
+            _ => ComputeCostClass::XL,
         };
     }
 
     // SortMergeJoinExec: merge of sorted streams with comparisons
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/sort_merge_join/exec.rs
     if any.is::<SortMergeJoinExec>() {
-        return ComputeCost::XL;
+        return ComputeCostClass::XL;
     }
 
     // SymmetricHashJoinExec: streaming join with hash tables on both sides
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/symmetric_hash_join.rs
     if any.is::<SymmetricHashJoinExec>() {
-        return ComputeCost::XL;
+        return ComputeCostClass::XL;
     }
 
     // Aggregation: cost varies by grouping complexity and aggregate functions
@@ -147,7 +156,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // Window functions: buffer partitions, compute aggregates over windows
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/windows/window_agg_exec.rs
     if any.is::<WindowAggExec>() || any.is::<BoundedWindowAggExec>() {
-        return ComputeCost::XL;
+        return ComputeCostClass::XL;
     }
 
     // === L: Significant per-row computation ===
@@ -156,7 +165,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/sorts/sort_preserving_merge.rs
     // Lighter than full sort but still does comparisons for each output row
     if any.is::<SortPreservingMergeExec>() {
-        return ComputeCost::L;
+        return ComputeCostClass::L;
     }
 
     // === M: Moderate per-row computation ===
@@ -176,7 +185,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
 
     // DataSourceExec: I/O-bound mainly, but also some CPU for decoding.
     if any.is::<DataSourceExec>() {
-        return ComputeCost::M;
+        return ComputeCostClass::M;
     }
 
     // === S: Light per-row computation ===
@@ -188,15 +197,15 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
             // Hash partitioning: create_hashes (line 575) + take_arrays (line 606)
             Partitioning::Hash(exprs, _) => {
                 if exprs.len() > 2 {
-                    ComputeCost::M // Many hash columns = more compute
+                    ComputeCostClass::M // Many hash columns = more compute
                 } else {
-                    ComputeCost::S
+                    ComputeCostClass::S
                 }
             }
             // RoundRobin: just distributes whole batches, no per-row work
-            Partitioning::RoundRobinBatch(_) => ComputeCost::XS,
+            Partitioning::RoundRobinBatch(_) => ComputeCostClass::XS,
             // UnknownPartitioning: conservative estimate
-            Partitioning::UnknownPartitioning(_) => ComputeCost::S,
+            Partitioning::UnknownPartitioning(_) => ComputeCostClass::S,
         };
     }
 
@@ -205,7 +214,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // CoalesceBatchesExec: concatenates batches via concat_batches (memory copy)
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/coalesce_batches.rs
     if any.is::<CoalesceBatchesExec>() {
-        return ComputeCost::XS;
+        return ComputeCostClass::XS;
     }
 
     // === XXS: Minimal bookkeeping ===
@@ -213,42 +222,42 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
     // Limit: just counts rows and stops early
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/limit.rs
     if any.is::<GlobalLimitExec>() || any.is::<LocalLimitExec>() {
-        return ComputeCost::XXS;
+        return ComputeCostClass::XXS;
     }
 
     // CoalescePartitionsExec: receives batches from partitions, no transformation
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/coalesce_partitions.rs
     if any.is::<CoalescePartitionsExec>() {
-        return ComputeCost::XXS;
+        return ComputeCostClass::XXS;
     }
 
     // === Zero: No compute (passthrough or I/O-bound) ===
 
     // BroadcastExec: This node does not do any computation, does not even read the data.
     if any.is::<BroadcastExec>() {
-        return ComputeCost::Zero;
+        return ComputeCostClass::Zero;
     }
 
     // UnionExec: combines multiple input streams, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
     if any.is::<UnionExec>() {
-        return ComputeCost::Zero;
+        return ComputeCostClass::Zero;
     }
 
     // InterleaveExec: round-robin merging of inputs, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
     if any.is::<InterleaveExec>() {
-        return ComputeCost::Zero;
+        return ComputeCostClass::Zero;
     }
 
     // EmptyExec: produces no data
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/empty.rs
     if any.is::<EmptyExec>() {
-        return ComputeCost::Zero;
+        return ComputeCostClass::Zero;
     }
 
     // For unknown node types, default to M as a conservative estimate.
-    ComputeCost::M
+    ComputeCostClass::M
 }
 
 /// Computes the cost for an aggregation based on its complexity.
@@ -257,7 +266,7 @@ pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCo
 /// - Number of group-by columns (more = more hashing work)
 /// - Number of aggregate expressions
 /// - Whether it's a simple aggregation (e.g., COUNT(*)) vs complex
-fn compute_aggregation_cost(agg: &AggregateExec) -> ComputeCost {
+fn compute_aggregation_cost(agg: &AggregateExec) -> ComputeCostClass {
     let group_by = agg.group_expr();
     let num_group_cols = group_by.expr().len();
     let num_aggr_exprs = agg.aggr_expr().len();
@@ -266,23 +275,23 @@ fn compute_aggregation_cost(agg: &AggregateExec) -> ComputeCost {
     // No grouping (e.g., SELECT COUNT(*) FROM t) - just accumulates values
     if num_group_cols == 0 && !has_grouping_set {
         return if num_aggr_exprs <= 2 {
-            ComputeCost::L // Simple: COUNT(*), SUM(x)
+            ComputeCostClass::L // Simple: COUNT(*), SUM(x)
         } else {
-            ComputeCost::XL // Multiple aggregates
+            ComputeCostClass::XL // Multiple aggregates
         };
     }
 
     // GROUPING SETS/CUBE/ROLLUP - very expensive, multiple groupings
     if has_grouping_set {
-        return ComputeCost::XXL;
+        return ComputeCostClass::XXL;
     }
 
     // Regular GROUP BY - cost based on number of group columns and aggregates
     let complexity = num_group_cols + num_aggr_exprs;
     match complexity {
-        0..=2 => ComputeCost::L,  // Simple: GROUP BY a with COUNT(*)
-        3..=5 => ComputeCost::XL, // Moderate: GROUP BY a, b with SUM, AVG
-        _ => ComputeCost::XXL,    // Complex: many columns/aggregates
+        0..=2 => ComputeCostClass::L,  // Simple: GROUP BY a with COUNT(*)
+        3..=5 => ComputeCostClass::XL, // Moderate: GROUP BY a, b with SUM, AVG
+        _ => ComputeCostClass::XXL,    // Complex: many columns/aggregates
     }
 }
 
@@ -290,7 +299,7 @@ fn compute_aggregation_cost(agg: &AggregateExec) -> ComputeCost {
 ///
 /// Simple column references are nearly free (just pointer manipulation),
 /// while computed expressions require evaluation per row.
-fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCost {
+fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCostClass {
     let exprs = proj.expr();
 
     // Check if all expressions are simple column references
@@ -298,7 +307,7 @@ fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCost {
 
     if all_columns {
         // Simple column projection - just reordering/selecting columns
-        return ComputeCost::XS;
+        return ComputeCostClass::XS;
     }
 
     // Has computed expressions - cost depends on number of non-column exprs
@@ -308,20 +317,20 @@ fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCost {
         .count();
 
     match num_computed {
-        0 => ComputeCost::XS,    // All columns (shouldn't reach here)
-        1..=2 => ComputeCost::S, // Few computed expressions
-        3..=5 => ComputeCost::M, // Several computed expressions
-        _ => ComputeCost::L,     // Many computed expressions
+        0 => ComputeCostClass::XS,    // All columns (shouldn't reach here)
+        1..=2 => ComputeCostClass::S, // Few computed expressions
+        3..=5 => ComputeCostClass::M, // Several computed expressions
+        _ => ComputeCostClass::L,     // Many computed expressions
     }
 }
 
 /// Computes the cost of a filter based on its predicate.
 /// LIKE and Regex operations are significantly more expensive than simple comparisons.
-fn compute_filter_cost(predicate: &Arc<dyn PhysicalExpr>) -> ComputeCost {
+fn compute_filter_cost(predicate: &Arc<dyn PhysicalExpr>) -> ComputeCostClass {
     if predicate_contains_like_or_regex(predicate) {
-        ComputeCost::XL // 1.6 factor for expensive string matching
+        ComputeCostClass::XL // 1.6 factor for expensive string matching
     } else {
-        ComputeCost::M // 1.0 factor for simple predicates
+        ComputeCostClass::M // 1.0 factor for simple predicates
     }
 }
 

@@ -2049,32 +2049,32 @@ mod tests {
         │   SortExec: TopK(fetch=100), expr=[ext_price@4 DESC, brand@1 ASC NULLS LAST, brand_id@0 ASC NULLS LAST, i_manufact_id@2 ASC NULLS LAST, i_manufact@3 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[i_brand_id@1 as brand_id, i_brand@0 as brand, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact, sum(store_sales.ss_ext_sales_price)@4 as ext_price]
         │       AggregateExec: mode=FinalPartitioned, gby=[i_brand@0 as i_brand, i_brand_id@1 as i_brand_id, i_manufact_id@2 as i_manufact_id, i_manufact@3 as i_manufact], aggr=[sum(store_sales.ss_ext_sales_price)]
-        │         [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+        │         [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          ┌───── Stage 7 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
           │ RepartitionExec: partitioning=Hash([i_brand@0, i_brand_id@1, i_manufact_id@2, i_manufact@3], 3), input_partitions=3
           │   AggregateExec: mode=Partial, gby=[i_brand@2 as i_brand, i_brand_id@1 as i_brand_id, i_manufact_id@3 as i_manufact_id, i_manufact@4 as i_manufact], aggr=[sum(store_sales.ss_ext_sales_price)]
           │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(store.s_store_sk AS Float64)@2, ss_store_sk@0)], filter=substr(ca_zip@0, 1, 5) != substr(s_zip@1, 1, 5), projection=[ss_ext_sales_price@4, i_brand_id@5, i_brand@6, i_manufact_id@7, i_manufact@8]
           │       CoalescePartitionsExec
-          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=1
+          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=6, input_tasks=1
           │       ProjectionExec: expr=[ss_store_sk@1 as ss_store_sk, ss_ext_sales_price@2 as ss_ext_sales_price, i_brand_id@3 as i_brand_id, i_brand@4 as i_brand, i_manufact_id@5 as i_manufact_id, i_manufact@6 as i_manufact, ca_zip@0 as ca_zip]
           │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ca_address_sk@0, c_current_addr_sk@6)], projection=[ca_zip@1, ss_store_sk@2, ss_ext_sales_price@3, i_brand_id@4, i_brand@5, i_manufact_id@6, i_manufact@7]
           │           CoalescePartitionsExec
-          │             [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=1
+          │             [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=6, input_tasks=1
           │           HashJoinExec: mode=Partitioned, join_type=Inner, on=[(ss_customer_sk@0, CAST(customer.c_customer_sk AS Float64)@2)], projection=[ss_store_sk@1, ss_ext_sales_price@2, i_brand_id@3, i_brand@4, i_manufact_id@5, i_manufact@6, c_current_addr_sk@8]
           │             [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           │             [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=1
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] 
+            │ BroadcastExec: input_partitions=2, consumer_tasks=3, output_partitions=6
             │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/store/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/store/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/store/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/store/part-3.parquet]]}, projection=[s_store_sk, s_zip, CAST(s_store_sk@0 AS Float64) as CAST(store.s_store_sk AS Float64)], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p3] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
+            ┌───── Stage 2 ── Tasks: t0:[p0..p5] 
+            │ BroadcastExec: input_partitions=2, consumer_tasks=3, output_partitions=6
             │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_address/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer_address/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-3.parquet]]}, projection=[ca_address_sk, ca_zip], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 5 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([ss_customer_sk@0], 6), input_partitions=3
+            ┌───── Stage 5 ── Tasks: t0:[p0..p8] t1:[p0..p8] 
+            │ RepartitionExec: partitioning=Hash([ss_customer_sk@0], 9), input_partitions=3
             │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ss_item_sk@0, i_item_sk@0)], projection=[ss_customer_sk@1, ss_store_sk@2, ss_ext_sales_price@3, i_brand_id@5, i_brand@6, i_manufact_id@7, i_manufact@8]
             │     CoalescePartitionsExec
             │       [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=4
@@ -2098,8 +2098,8 @@ mod tests {
                 │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
                 │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_moy@8 = 11 AND d_year@6 = 1998, pruning_predicate=d_moy_null_count@2 != row_count@3 AND d_moy_min@0 <= 11 AND 11 <= d_moy_max@1 AND d_year_null_count@6 != row_count@3 AND d_year_min@4 <= 1998 AND 1998 <= d_year_max@5, required_guarantees=[d_moy in (11), d_year in (1998)]
                 └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── Tasks: t0:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([CAST(customer.c_customer_sk AS Float64)@2], 6), input_partitions=3
+            ┌───── Stage 6 ── Tasks: t0:[p0..p8] 
+            │ RepartitionExec: partitioning=Hash([CAST(customer.c_customer_sk AS Float64)@2], 9), input_partitions=3
             │   ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, c_current_addr_sk@1 as c_current_addr_sk, CAST(c_customer_sk@0 AS Float64) as CAST(customer.c_customer_sk AS Float64)]
             │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
             │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer/part-3.parquet]]}, projection=[c_customer_sk, c_current_addr_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
@@ -3572,92 +3572,95 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [ca_state@0 ASC, cd_gender@1 ASC, cd_marital_status@2 ASC, cd_dep_count@3 ASC, cd_dep_employed_count@8 ASC, cd_dep_college_count@13 ASC], fetch=100
-        │   SortExec: TopK(fetch=100), expr=[ca_state@0 ASC, cd_gender@1 ASC, cd_marital_status@2 ASC, cd_dep_count@3 ASC, cd_dep_employed_count@8 ASC, cd_dep_college_count@13 ASC], preserve_partitioning=[true]
-        │     ProjectionExec: expr=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, count(Int64(1))@6 as cnt1, min(customer_demographics.cd_dep_count)@7 as min1, max(customer_demographics.cd_dep_count)@8 as max1, avg(customer_demographics.cd_dep_count)@9 as avg1, cd_dep_employed_count@4 as cd_dep_employed_count, count(Int64(1))@6 as cnt2, min(customer_demographics.cd_dep_employed_count)@10 as min2, max(customer_demographics.cd_dep_employed_count)@11 as max2, avg(customer_demographics.cd_dep_employed_count)@12 as avg2, cd_dep_college_count@5 as cd_dep_college_count, count(Int64(1))@6 as cnt3, min(customer_demographics.cd_dep_college_count)@13 as min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count)@14 as max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)@15 as avg(customer_demographics.cd_dep_college_count)]
-        │       AggregateExec: mode=FinalPartitioned, gby=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, cd_dep_employed_count@4 as cd_dep_employed_count, cd_dep_college_count@5 as cd_dep_college_count], aggr=[count(Int64(1)), min(customer_demographics.cd_dep_count), max(customer_demographics.cd_dep_count), avg(customer_demographics.cd_dep_count), min(customer_demographics.cd_dep_employed_count), max(customer_demographics.cd_dep_employed_count), avg(customer_demographics.cd_dep_employed_count), min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)]
-        │         [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 9 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([ca_state@0, cd_gender@1, cd_marital_status@2, cd_dep_count@3, cd_dep_employed_count@4, cd_dep_college_count@5], 3), input_partitions=2
-          │   AggregateExec: mode=Partial, gby=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, cd_dep_employed_count@4 as cd_dep_employed_count, cd_dep_college_count@5 as cd_dep_college_count], aggr=[count(Int64(1)), min(customer_demographics.cd_dep_count), max(customer_demographics.cd_dep_count), avg(customer_demographics.cd_dep_count), min(customer_demographics.cd_dep_employed_count), max(customer_demographics.cd_dep_employed_count), avg(customer_demographics.cd_dep_employed_count), min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)]
-          │     FilterExec: mark@6 OR mark@7, projection=[ca_state@0, cd_gender@1, cd_marital_status@2, cd_dep_count@3, cd_dep_employed_count@4, cd_dep_college_count@5]
-          │       HashJoinExec: mode=CollectLeft, join_type=RightMark, on=[(cs_ship_customer_sk@0, CAST(c.c_customer_sk AS Float64)@8)], projection=[ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6, mark@7, mark@9]
-          │         CoalescePartitionsExec
-          │           [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │         ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, mark@7 as mark, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │           HashJoinExec: mode=CollectLeft, join_type=RightMark, on=[(ws_bill_customer_sk@0, CAST(c.c_customer_sk AS Float64)@7)], projection=[c_customer_sk@0, ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6, mark@8]
-          │             CoalescePartitionsExec
-          │               [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │             ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │               HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(ss_customer_sk@0, CAST(c.c_customer_sk AS Float64)@7)], projection=[c_customer_sk@0, ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6]
-          │                 CoalescePartitionsExec
-          │                   [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │                 ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │                   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_current_cdemo_sk@1, CAST(customer_demographics.cd_demo_sk AS Float64)@6)], projection=[c_customer_sk@0, ca_state@2, cd_gender@4, cd_marital_status@5, cd_dep_count@6, cd_dep_employed_count@7, cd_dep_college_count@8]
-          │                     CoalescePartitionsExec
-          │                       [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=3
-          │                     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │                       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], ...]}, projection=[cd_demo_sk, cd_gender, cd_marital_status, cd_dep_count, cd_dep_employed_count, cd_dep_college_count, CAST(cd_demo_sk@0 AS Float64) as CAST(customer_demographics.cd_demo_sk AS Float64)], file_type=parquet, predicate=DynamicFilter [ empty ]
+          ┌───── Stage 10 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ SortExec: TopK(fetch=100), expr=[ca_state@0 ASC, cd_gender@1 ASC, cd_marital_status@2 ASC, cd_dep_count@3 ASC, cd_dep_employed_count@8 ASC, cd_dep_college_count@13 ASC], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, count(Int64(1))@6 as cnt1, min(customer_demographics.cd_dep_count)@7 as min1, max(customer_demographics.cd_dep_count)@8 as max1, avg(customer_demographics.cd_dep_count)@9 as avg1, cd_dep_employed_count@4 as cd_dep_employed_count, count(Int64(1))@6 as cnt2, min(customer_demographics.cd_dep_employed_count)@10 as min2, max(customer_demographics.cd_dep_employed_count)@11 as max2, avg(customer_demographics.cd_dep_employed_count)@12 as avg2, cd_dep_college_count@5 as cd_dep_college_count, count(Int64(1))@6 as cnt3, min(customer_demographics.cd_dep_college_count)@13 as min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count)@14 as max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)@15 as avg(customer_demographics.cd_dep_college_count)]
+          │     AggregateExec: mode=FinalPartitioned, gby=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, cd_dep_employed_count@4 as cd_dep_employed_count, cd_dep_college_count@5 as cd_dep_college_count], aggr=[count(Int64(1)), min(customer_demographics.cd_dep_count), max(customer_demographics.cd_dep_count), avg(customer_demographics.cd_dep_count), min(customer_demographics.cd_dep_employed_count), max(customer_demographics.cd_dep_employed_count), avg(customer_demographics.cd_dep_employed_count), min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)]
+          │       [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, cs_sold_date_sk@0)], projection=[cs_ship_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_ship_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
+            ┌───── Stage 9 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([ca_state@0, cd_gender@1, cd_marital_status@2, cd_dep_count@3, cd_dep_employed_count@4, cd_dep_college_count@5], 6), input_partitions=2
+            │   AggregateExec: mode=Partial, gby=[ca_state@0 as ca_state, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_dep_count@3 as cd_dep_count, cd_dep_employed_count@4 as cd_dep_employed_count, cd_dep_college_count@5 as cd_dep_college_count], aggr=[count(Int64(1)), min(customer_demographics.cd_dep_count), max(customer_demographics.cd_dep_count), avg(customer_demographics.cd_dep_count), min(customer_demographics.cd_dep_employed_count), max(customer_demographics.cd_dep_employed_count), avg(customer_demographics.cd_dep_employed_count), min(customer_demographics.cd_dep_college_count), max(customer_demographics.cd_dep_college_count), avg(customer_demographics.cd_dep_college_count)]
+            │     FilterExec: mark@6 OR mark@7, projection=[ca_state@0, cd_gender@1, cd_marital_status@2, cd_dep_count@3, cd_dep_employed_count@4, cd_dep_college_count@5]
+            │       HashJoinExec: mode=CollectLeft, join_type=RightMark, on=[(cs_ship_customer_sk@0, CAST(c.c_customer_sk AS Float64)@8)], projection=[ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6, mark@7, mark@9]
+            │         CoalescePartitionsExec
+            │           [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │         ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, mark@7 as mark, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │           HashJoinExec: mode=CollectLeft, join_type=RightMark, on=[(ws_bill_customer_sk@0, CAST(c.c_customer_sk AS Float64)@7)], projection=[c_customer_sk@0, ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6, mark@8]
+            │             CoalescePartitionsExec
+            │               [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │             ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │               HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(ss_customer_sk@0, CAST(c.c_customer_sk AS Float64)@7)], projection=[c_customer_sk@0, ca_state@1, cd_gender@2, cd_marital_status@3, cd_dep_count@4, cd_dep_employed_count@5, cd_dep_college_count@6]
+            │                 CoalescePartitionsExec
+            │                   [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │                 ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, ca_state@1 as ca_state, cd_gender@2 as cd_gender, cd_marital_status@3 as cd_marital_status, cd_dep_count@4 as cd_dep_count, cd_dep_employed_count@5 as cd_dep_employed_count, cd_dep_college_count@6 as cd_dep_college_count, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │                   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_current_cdemo_sk@1, CAST(customer_demographics.cd_demo_sk AS Float64)@6)], projection=[c_customer_sk@0, ca_state@2, cd_gender@4, cd_marital_status@5, cd_dep_count@6, cd_dep_employed_count@7, cd_dep_college_count@8]
+            │                     CoalescePartitionsExec
+            │                       [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=3
+            │                     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │                       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], ...]}, projection=[cd_demo_sk, cd_gender, cd_marital_status, cd_dep_count, cd_dep_employed_count, cd_dep_college_count, CAST(cd_demo_sk@0 AS Float64) as CAST(customer_demographics.cd_demo_sk AS Float64)], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── Tasks: t0:[p0..p11] 
+              ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, cs_sold_date_sk@0)], projection=[cs_ship_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_ship_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
+              └──────────────────────────────────────────────────
+                ┌───── Stage 1 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ws_sold_date_sk@0)], projection=[ws_bill_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_bill_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
+              └──────────────────────────────────────────────────
+                ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ss_sold_date_sk@0)], projection=[ss_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
+              └──────────────────────────────────────────────────
+                ┌───── Stage 5 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 8 ── Tasks: t0:[p0..p11] t1:[p12..p23] t2:[p24..p35] 
               │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
+              │   ProjectionExec: expr=[c_customer_sk@1 as c_customer_sk, c_current_cdemo_sk@2 as c_current_cdemo_sk, ca_state@0 as ca_state]
+              │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ca_address_sk@0, c_current_addr_sk@2)], projection=[ca_state@1, c_customer_sk@2, c_current_cdemo_sk@3]
+              │       CoalescePartitionsExec
+              │         [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=6, input_tasks=1
               │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
+              │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,__] t2:[__,__,__,p0]
+              │           DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-3.parquet]]}, projection=[c_customer_sk, c_current_cdemo_sk, c_current_addr_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
-            ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ws_sold_date_sk@0)], projection=[ws_bill_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_bill_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
-              │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
-              └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ss_sold_date_sk@0)], projection=[ss_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 5 ── Tasks: t0:[p0..p11] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2002 AND d_qoy@2 < 4, projection=[d_date_sk@0]
-              │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet, predicate=d_year@6 = 2002 AND d_qoy@10 < 4, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2002 AND 2002 <= d_year_max@1 AND d_qoy_null_count@5 != row_count@3 AND d_qoy_min@4 < 4, required_guarantees=[d_year in (2002)]
-              └──────────────────────────────────────────────────
-            ┌───── Stage 8 ── Tasks: t0:[p0..p11] t1:[p12..p23] t2:[p24..p35] 
-            │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-            │   ProjectionExec: expr=[c_customer_sk@1 as c_customer_sk, c_current_cdemo_sk@2 as c_current_cdemo_sk, ca_state@0 as ca_state]
-            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ca_address_sk@0, c_current_addr_sk@2)], projection=[ca_state@1, c_customer_sk@2, c_current_cdemo_sk@3]
-            │       CoalescePartitionsExec
-            │         [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=6, input_tasks=1
-            │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,__] t2:[__,__,__,p0]
-            │           DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-3.parquet]]}, projection=[c_customer_sk, c_current_cdemo_sk, c_current_addr_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 7 ── Tasks: t0:[p0..p5] 
-              │ BroadcastExec: input_partitions=2, consumer_tasks=3, output_partitions=6
-              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_address/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer_address/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-3.parquet]]}, projection=[ca_address_sk, ca_state], file_type=parquet
-              └──────────────────────────────────────────────────
+                ┌───── Stage 7 ── Tasks: t0:[p0..p5] 
+                │ BroadcastExec: input_partitions=2, consumer_tasks=3, output_partitions=6
+                │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_address/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer_address/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-3.parquet]]}, projection=[ca_address_sk, ca_state], file_type=parquet
+                └──────────────────────────────────────────────────
         ");
         Ok(())
     }
@@ -5405,13 +5408,7 @@ mod tests {
         │                     AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(web_sales.ws_ext_sales_price)]
         │                       HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(d_date@2, d_date@0)], projection=[ws_ext_sales_price@0, i_item_id@1]
         │                         CoalescePartitionsExec
-        │                           ProjectionExec: expr=[ws_ext_sales_price@1 as ws_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
-        │                             HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, ws_sold_date_sk@0)], projection=[d_date@1, ws_ext_sales_price@4, i_item_id@5]
-        │                               RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 3), input_partitions=3
-        │                                 ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-        │                                   RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-        │                                     DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
-        │                               [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │                           [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         │                         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@1]
         │                           CoalescePartitionsExec
         │                             BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
@@ -5430,13 +5427,7 @@ mod tests {
         │                         AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(catalog_sales.cs_ext_sales_price)]
         │                           HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(d_date@2, d_date@0)], projection=[cs_ext_sales_price@0, i_item_id@1]
         │                             CoalescePartitionsExec
-        │                               ProjectionExec: expr=[cs_ext_sales_price@1 as cs_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
-        │                                 HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, cs_sold_date_sk@0)], projection=[d_date@1, cs_ext_sales_price@4, i_item_id@5]
-        │                                   RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 3), input_partitions=3
-        │                                     ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-        │                                       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-        │                                         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
-        │                                   [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │                               [Stage 8] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         │                             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@1]
         │                               CoalescePartitionsExec
         │                                 BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
@@ -5451,13 +5442,7 @@ mod tests {
         │                     AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(store_sales.ss_ext_sales_price)]
         │                       HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(d_date@2, d_date@0)], projection=[ss_ext_sales_price@0, i_item_id@1]
         │                         CoalescePartitionsExec
-        │                           ProjectionExec: expr=[ss_ext_sales_price@1 as ss_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
-        │                             HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, ss_sold_date_sk@0)], projection=[d_date@1, ss_ext_sales_price@4, i_item_id@5]
-        │                               RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 3), input_partitions=3
-        │                                 ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-        │                                   RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-        │                                     DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
-        │                               [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │                           [Stage 12] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         │                         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@1]
         │                           CoalescePartitionsExec
         │                             BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
@@ -5467,45 +5452,81 @@ mod tests {
         │                           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
         │                             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=DynamicFilter [ empty ]
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([ws_sold_date_sk@0], 3), input_partitions=2
-          │   ProjectionExec: expr=[ws_sold_date_sk@1 as ws_sold_date_sk, ws_ext_sales_price@2 as ws_ext_sales_price, i_item_id@0 as i_item_id]
-          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, ws_item_sk@1)], projection=[i_item_id@1, ws_sold_date_sk@2, ws_ext_sales_price@4]
-          │       CoalescePartitionsExec
-          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-          │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_item_sk, ws_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+          ┌───── Stage 4 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ ProjectionExec: expr=[ws_ext_sales_price@1 as ws_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
+          │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, ws_sold_date_sk@0)], projection=[d_date@1, ws_ext_sales_price@4, i_item_id@5]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=1
+          │     [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p7] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 6), input_partitions=3
+            │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
             └──────────────────────────────────────────────────
-          ┌───── Stage 4 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([cs_sold_date_sk@0], 3), input_partitions=2
-          │   ProjectionExec: expr=[cs_sold_date_sk@1 as cs_sold_date_sk, cs_ext_sales_price@2 as cs_ext_sales_price, i_item_id@0 as i_item_id]
-          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cs_item_sk@1)], projection=[i_item_id@1, cs_sold_date_sk@2, cs_ext_sales_price@4]
-          │       CoalescePartitionsExec
-          │         [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-          │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_item_sk, cs_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            ┌───── Stage 3 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([ws_sold_date_sk@0], 6), input_partitions=2
+            │   ProjectionExec: expr=[ws_sold_date_sk@1 as ws_sold_date_sk, ws_ext_sales_price@2 as ws_ext_sales_price, i_item_id@0 as i_item_id]
+            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, ws_item_sk@1)], projection=[i_item_id@1, ws_sold_date_sk@2, ws_ext_sales_price@4]
+            │       CoalescePartitionsExec
+            │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_item_sk, ws_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            └──────────────────────────────────────────────────
+              ┌───── Stage 2 ── Tasks: t0:[p0..p7] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+              └──────────────────────────────────────────────────
+          ┌───── Stage 8 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ ProjectionExec: expr=[cs_ext_sales_price@1 as cs_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
+          │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, cs_sold_date_sk@0)], projection=[d_date@1, cs_ext_sales_price@4, i_item_id@5]
+          │     [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=1
+          │     [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── Tasks: t0:[p0..p7] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+            ┌───── Stage 5 ── Tasks: t0:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 6), input_partitions=3
+            │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
             └──────────────────────────────────────────────────
-          ┌───── Stage 6 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([ss_sold_date_sk@0], 3), input_partitions=2
-          │   ProjectionExec: expr=[ss_sold_date_sk@1 as ss_sold_date_sk, ss_ext_sales_price@2 as ss_ext_sales_price, i_item_id@0 as i_item_id]
-          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, ss_item_sk@1)], projection=[i_item_id@1, ss_sold_date_sk@2, ss_ext_sales_price@4]
-          │       CoalescePartitionsExec
-          │         [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-          │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_item_sk, ss_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            ┌───── Stage 7 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([cs_sold_date_sk@0], 6), input_partitions=2
+            │   ProjectionExec: expr=[cs_sold_date_sk@1 as cs_sold_date_sk, cs_ext_sales_price@2 as cs_ext_sales_price, i_item_id@0 as i_item_id]
+            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cs_item_sk@1)], projection=[i_item_id@1, cs_sold_date_sk@2, cs_ext_sales_price@4]
+            │       CoalescePartitionsExec
+            │         [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_item_sk, cs_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            └──────────────────────────────────────────────────
+              ┌───── Stage 6 ── Tasks: t0:[p0..p7] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+              └──────────────────────────────────────────────────
+          ┌───── Stage 12 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ ProjectionExec: expr=[ss_ext_sales_price@1 as ss_ext_sales_price, i_item_id@2 as i_item_id, d_date@0 as d_date]
+          │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, ss_sold_date_sk@0)], projection=[d_date@1, ss_ext_sales_price@4, i_item_id@5]
+          │     [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=1
+          │     [Stage 11] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 5 ── Tasks: t0:[p0..p7] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+            ┌───── Stage 9 ── Tasks: t0:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 6), input_partitions=3
+            │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
             └──────────────────────────────────────────────────
+            ┌───── Stage 11 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([ss_sold_date_sk@0], 6), input_partitions=2
+            │   ProjectionExec: expr=[ss_sold_date_sk@1 as ss_sold_date_sk, ss_ext_sales_price@2 as ss_ext_sales_price, i_item_id@0 as i_item_id]
+            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, ss_item_sk@1)], projection=[i_item_id@1, ss_sold_date_sk@2, ss_ext_sales_price@4]
+            │       CoalescePartitionsExec
+            │         [Stage 10] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_item_sk, ss_ext_sales_price], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            └──────────────────────────────────────────────────
+              ┌───── Stage 10 ── Tasks: t0:[p0..p7] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+              └──────────────────────────────────────────────────
         ");
         Ok(())
     }
@@ -6609,92 +6630,95 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST], fetch=100
-        │   SortExec: TopK(fetch=100), expr=[cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST], preserve_partitioning=[true]
-        │     ProjectionExec: expr=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, count(Int64(1))@5 as cnt1, cd_purchase_estimate@3 as cd_purchase_estimate, count(Int64(1))@5 as cnt2, cd_credit_rating@4 as cd_credit_rating, count(Int64(1))@5 as cnt3]
-        │       AggregateExec: mode=FinalPartitioned, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
-        │         [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 9 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([cd_gender@0, cd_marital_status@1, cd_education_status@2, cd_purchase_estimate@3, cd_credit_rating@4], 3), input_partitions=2
-          │   AggregateExec: mode=Partial, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
-          │     HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(cs_ship_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
-          │       CoalescePartitionsExec
-          │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │       ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │         HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(ws_bill_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
-          │           CoalescePartitionsExec
-          │             [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │           ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │             HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(ss_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
-          │               CoalescePartitionsExec
-          │                 [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
-          │               ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
-          │                 HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_current_cdemo_sk@1, CAST(customer_demographics.cd_demo_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@3, cd_marital_status@4, cd_education_status@5, cd_purchase_estimate@6, cd_credit_rating@7]
-          │                   CoalescePartitionsExec
-          │                     [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=2
-          │                   PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │                     DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], ...]}, projection=[cd_demo_sk, cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating, CAST(cd_demo_sk@0 AS Float64) as CAST(customer_demographics.cd_demo_sk AS Float64)], file_type=parquet, predicate=DynamicFilter [ empty ]
+          ┌───── Stage 10 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ SortExec: TopK(fetch=100), expr=[cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, count(Int64(1))@5 as cnt1, cd_purchase_estimate@3 as cd_purchase_estimate, count(Int64(1))@5 as cnt2, cd_credit_rating@4 as cd_credit_rating, count(Int64(1))@5 as cnt3]
+          │     AggregateExec: mode=FinalPartitioned, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
+          │       [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, cs_sold_date_sk@0)], projection=[cs_ship_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_ship_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
+            ┌───── Stage 9 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([cd_gender@0, cd_marital_status@1, cd_education_status@2, cd_purchase_estimate@3, cd_credit_rating@4], 6), input_partitions=2
+            │   AggregateExec: mode=Partial, gby=[cd_gender@0 as cd_gender, cd_marital_status@1 as cd_marital_status, cd_education_status@2 as cd_education_status, cd_purchase_estimate@3 as cd_purchase_estimate, cd_credit_rating@4 as cd_credit_rating], aggr=[count(Int64(1))]
+            │     HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(cs_ship_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
+            │       CoalescePartitionsExec
+            │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │       ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │         HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(ws_bill_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
+            │           CoalescePartitionsExec
+            │             [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │           ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │             HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(ss_customer_sk@0, CAST(c.c_customer_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@1, cd_marital_status@2, cd_education_status@3, cd_purchase_estimate@4, cd_credit_rating@5]
+            │               CoalescePartitionsExec
+            │                 [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=4
+            │               ProjectionExec: expr=[c_customer_sk@0 as c_customer_sk, cd_gender@1 as cd_gender, cd_marital_status@2 as cd_marital_status, cd_education_status@3 as cd_education_status, cd_purchase_estimate@4 as cd_purchase_estimate, cd_credit_rating@5 as cd_credit_rating, CAST(c_customer_sk@0 AS Float64) as CAST(c.c_customer_sk AS Float64)]
+            │                 HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_current_cdemo_sk@1, CAST(customer_demographics.cd_demo_sk AS Float64)@6)], projection=[c_customer_sk@0, cd_gender@3, cd_marital_status@4, cd_education_status@5, cd_purchase_estimate@6, cd_credit_rating@7]
+            │                   CoalescePartitionsExec
+            │                     [Stage 8] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=2
+            │                   PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │                     DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], ...]}, projection=[cd_demo_sk, cd_gender, cd_marital_status, cd_education_status, cd_purchase_estimate, cd_credit_rating, CAST(cd_demo_sk@0 AS Float64) as CAST(customer_demographics.cd_demo_sk AS Float64)], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── Tasks: t0:[p0..p11] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
-              │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+              ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, cs_sold_date_sk@0)], projection=[cs_ship_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_ship_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
-            ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ws_sold_date_sk@0)], projection=[ws_bill_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_bill_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
-              │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+                ┌───── Stage 1 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ws_sold_date_sk@0)], projection=[ws_bill_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/web_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ws_sold_date_sk, ws_bill_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ss_sold_date_sk@0)], projection=[ss_customer_sk@3]
-            │     CoalescePartitionsExec
-            │       [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-            │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 5 ── Tasks: t0:[p0..p11] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-              │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
-              │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+                ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] t3:[p24..p31] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@1, ss_sold_date_sk@0)], projection=[ss_customer_sk@3]
+              │     CoalescePartitionsExec
+              │       [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+              │     PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+              │       DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_sales/part-2.parquet:<int>..<int>], ...]}, projection=[ss_sold_date_sk, ss_customer_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
-            ┌───── Stage 8 ── Tasks: t0:[p0..p11] t1:[p12..p23] 
-            │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-            │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ca_address_sk@0, c_current_addr_sk@2)], projection=[c_customer_sk@1, c_current_cdemo_sk@2]
-            │     CoalescePartitionsExec
-            │       [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
-            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
-            │         DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-3.parquet]]}, projection=[c_customer_sk, c_current_cdemo_sk, c_current_addr_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 7 ── Tasks: t0:[p0..p5] 
-              │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
-              │   FilterExec: ca_state@1 = KY OR ca_state@1 = GA OR ca_state@1 = NM, projection=[ca_address_sk@0]
+                ┌───── Stage 5 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     FilterExec: d_year@1 = 2001 AND d_moy@2 >= 4 AND d_moy@2 <= 6, projection=[d_date_sk@0]
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_moy], file_type=parquet, predicate=d_year@6 = 2001 AND d_moy@8 >= 4 AND d_moy@8 <= 6, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 2001 AND 2001 <= d_year_max@1 AND d_moy_null_count@5 != row_count@3 AND d_moy_max@4 >= 4 AND d_moy_null_count@5 != row_count@3 AND d_moy_min@6 <= 6, required_guarantees=[d_year in (2001)]
+                └──────────────────────────────────────────────────
+              ┌───── Stage 8 ── Tasks: t0:[p0..p11] t1:[p12..p23] 
+              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+              │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(ca_address_sk@0, c_current_addr_sk@2)], projection=[c_customer_sk@1, c_current_cdemo_sk@2]
+              │     CoalescePartitionsExec
+              │       [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
               │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-              │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_address/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer_address/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-3.parquet]]}, projection=[ca_address_sk, ca_state], file_type=parquet, predicate=ca_state@8 = KY OR ca_state@8 = GA OR ca_state@8 = NM, pruning_predicate=ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= KY AND KY <= ca_state_max@1 OR ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= GA AND GA <= ca_state_max@1 OR ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= NM AND NM <= ca_state_max@1, required_guarantees=[ca_state in (GA, KY, NM)]
+              │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+              │         DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer/part-3.parquet]]}, projection=[c_customer_sk, c_current_cdemo_sk, c_current_addr_sk], file_type=parquet, predicate=DynamicFilter [ empty ]
               └──────────────────────────────────────────────────
+                ┌───── Stage 7 ── Tasks: t0:[p0..p5] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
+                │   FilterExec: ca_state@1 = KY OR ca_state@1 = GA OR ca_state@1 = NM, projection=[ca_address_sk@0]
+                │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_address/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/customer_address/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/customer_address/part-3.parquet]]}, projection=[ca_address_sk, ca_state], file_type=parquet, predicate=ca_state@8 = KY OR ca_state@8 = GA OR ca_state@8 = NM, pruning_predicate=ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= KY AND KY <= ca_state_max@1 OR ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= GA AND GA <= ca_state_max@1 OR ca_state_null_count@2 != row_count@3 AND ca_state_min@0 <= NM AND NM <= ca_state_max@1, required_guarantees=[ca_state in (GA, KY, NM)]
+                └──────────────────────────────────────────────────
         ");
         Ok(())
     }
@@ -6815,46 +6839,46 @@ mod tests {
             │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
             │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(inv_date_sk@4, d_date_sk@0), (d_week_seq@8, d_week_seq@1)], projection=[cs_ship_date_sk@0, cs_item_sk@1, cs_promo_sk@2, cs_order_number@3, w_warehouse_name@5, i_item_desc@6, d_date@7, d_week_seq@8]
             │     CoalescePartitionsExec
-            │       [Stage 10] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=3
+            │       [Stage 10] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=3, input_tasks=4
             │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
             │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_week_seq], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-              ┌───── Stage 10 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
+              ┌───── Stage 10 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] t3:[p9..p11] 
               │ BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
               │   ProjectionExec: expr=[cs_ship_date_sk@2 as cs_ship_date_sk, cs_item_sk@3 as cs_item_sk, cs_promo_sk@4 as cs_promo_sk, cs_order_number@5 as cs_order_number, inv_date_sk@6 as inv_date_sk, w_warehouse_name@7 as w_warehouse_name, i_item_desc@8 as i_item_desc, d_date@0 as d_date, d_week_seq@1 as d_week_seq]
               │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(d1.d_date_sk AS Float64)@3, cs_sold_date_sk@0)], projection=[d_date@1, d_week_seq@2, cs_ship_date_sk@5, cs_item_sk@6, cs_promo_sk@7, cs_order_number@8, inv_date_sk@9, w_warehouse_name@10, i_item_desc@11]
               │       CoalescePartitionsExec
-              │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=1
+              │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
               │       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(CAST(household_demographics.hd_demo_sk AS Float64)@1, cs_bill_hdemo_sk@2)], projection=[cs_sold_date_sk@2, cs_ship_date_sk@3, cs_item_sk@5, cs_promo_sk@6, cs_order_number@7, inv_date_sk@8, w_warehouse_name@9, i_item_desc@10]
               │         CoalescePartitionsExec
-              │           [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=9, input_tasks=1
+              │           [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
               │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(customer_demographics.cd_demo_sk AS Float64)@1, cs_bill_cdemo_sk@2)], projection=[cs_sold_date_sk@2, cs_ship_date_sk@3, cs_bill_hdemo_sk@5, cs_item_sk@6, cs_promo_sk@7, cs_order_number@8, inv_date_sk@9, w_warehouse_name@10, i_item_desc@11]
               │           [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=4
               │           [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=4
               └──────────────────────────────────────────────────
-                ┌───── Stage 2 ── Tasks: t0:[p0..p8] 
-                │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9
+                ┌───── Stage 2 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
                 │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, d_week_seq@2 as d_week_seq, CAST(d_date_sk@0 AS Float64) as CAST(d1.d_date_sk AS Float64)]
                 │     FilterExec: d_year@3 = 1999, projection=[d_date_sk@0, d_date@1, d_week_seq@2]
                 │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
                 │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date, d_week_seq, d_year], file_type=parquet, predicate=d_year@6 = 1999, pruning_predicate=d_year_null_count@2 != row_count@3 AND d_year_min@0 <= 1999 AND 1999 <= d_year_max@1, required_guarantees=[d_year in (1999)]
                 └──────────────────────────────────────────────────
-                ┌───── Stage 3 ── Tasks: t0:[p0..p8] 
-                │ BroadcastExec: input_partitions=3, consumer_tasks=3, output_partitions=9
+                ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
                 │   ProjectionExec: expr=[hd_demo_sk@0 as hd_demo_sk, CAST(hd_demo_sk@0 AS Float64) as CAST(household_demographics.hd_demo_sk AS Float64)]
                 │     FilterExec: hd_buy_potential@1 = >10000, projection=[hd_demo_sk@0]
                 │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
                 │         DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/household_demographics/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/household_demographics/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/household_demographics/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/household_demographics/part-3.parquet]]}, projection=[hd_demo_sk, hd_buy_potential], file_type=parquet, predicate=hd_buy_potential@2 = >10000, pruning_predicate=hd_buy_potential_null_count@2 != row_count@3 AND hd_buy_potential_min@0 <= >10000 AND >10000 <= hd_buy_potential_max@1, required_guarantees=[hd_buy_potential in (>10000)]
                 └──────────────────────────────────────────────────
-                ┌───── Stage 4 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-                │ RepartitionExec: partitioning=Hash([CAST(customer_demographics.cd_demo_sk AS Float64)@1], 9), input_partitions=2
+                ┌───── Stage 4 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+                │ RepartitionExec: partitioning=Hash([CAST(customer_demographics.cd_demo_sk AS Float64)@1], 12), input_partitions=2
                 │   ProjectionExec: expr=[cd_demo_sk@0 as cd_demo_sk, CAST(cd_demo_sk@0 AS Float64) as CAST(customer_demographics.cd_demo_sk AS Float64)]
                 │     FilterExec: cd_marital_status@1 = D, projection=[cd_demo_sk@0]
                 │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
                 │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/customer_demographics/part-2.parquet:<int>..<int>], ...]}, projection=[cd_demo_sk, cd_marital_status], file_type=parquet, predicate=cd_marital_status@2 = D, pruning_predicate=cd_marital_status_null_count@2 != row_count@3 AND cd_marital_status_min@0 <= D AND D <= cd_marital_status_max@1, required_guarantees=[cd_marital_status in (D)]
                 └──────────────────────────────────────────────────
-                ┌───── Stage 9 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-                │ RepartitionExec: partitioning=Hash([cs_bill_cdemo_sk@2], 9), input_partitions=3
+                ┌───── Stage 9 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+                │ RepartitionExec: partitioning=Hash([cs_bill_cdemo_sk@2], 12), input_partitions=3
                 │   ProjectionExec: expr=[cs_sold_date_sk@1 as cs_sold_date_sk, cs_ship_date_sk@2 as cs_ship_date_sk, cs_bill_cdemo_sk@3 as cs_bill_cdemo_sk, cs_bill_hdemo_sk@4 as cs_bill_hdemo_sk, cs_item_sk@5 as cs_item_sk, cs_promo_sk@6 as cs_promo_sk, cs_order_number@7 as cs_order_number, inv_date_sk@8 as inv_date_sk, w_warehouse_name@9 as w_warehouse_name, i_item_desc@0 as i_item_desc]
                 │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cs_item_sk@4)], projection=[i_item_desc@1, cs_sold_date_sk@2, cs_ship_date_sk@3, cs_bill_cdemo_sk@4, cs_bill_hdemo_sk@5, cs_item_sk@6, cs_promo_sk@7, cs_order_number@8, inv_date_sk@9, w_warehouse_name@10]
                 │       CoalescePartitionsExec
@@ -7332,12 +7356,12 @@ mod tests {
         │   SortExec: TopK(fetch=100), expr=[channel@0 ASC, col_name@1 ASC, d_year@2 ASC, d_qoy@3 ASC, i_category@4 ASC], preserve_partitioning=[true]
         │     ProjectionExec: expr=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category, count(Int64(1))@5 as sales_cnt, sum(foo.ext_sales_price)@6 as sales_amt]
         │       AggregateExec: mode=FinalPartitioned, gby=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category], aggr=[count(Int64(1)), sum(foo.ext_sales_price)]
-        │         [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+        │         [Stage 8] => NetworkShuffleExec: output_partitions=3, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 8 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ RepartitionExec: partitioning=Hash([channel@0, col_name@1, d_year@2, d_qoy@3, i_category@4], 3), input_partitions=3
           │   AggregateExec: mode=Partial, gby=[channel@0 as channel, col_name@1 as col_name, d_year@2 as d_year, d_qoy@3 as d_qoy, i_category@4 as i_category], aggr=[count(Int64(1)), sum(foo.ext_sales_price)], ordering_mode=PartiallySorted([0, 1])
-          │     DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
+          │     DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2(0/2)] t3:[c2(1/2)]
           │       ProjectionExec: expr=[store as channel, ss_store_sk as col_name, d_year@0 as d_year, d_qoy@1 as d_qoy, i_category@3 as i_category, ss_ext_sales_price@2 as ext_sales_price]
           │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@3, ss_sold_date_sk@0)], projection=[d_year@1, d_qoy@2, ss_ext_sales_price@5, i_category@6]
           │           RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@3], 3), input_partitions=3
@@ -7354,11 +7378,8 @@ mod tests {
           │           [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           │       ProjectionExec: expr=[catalog as channel, cs_ship_addr_sk as col_name, d_year@0 as d_year, d_qoy@1 as d_qoy, i_category@3 as i_category, cs_ext_sales_price@2 as ext_sales_price]
           │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@3, cs_sold_date_sk@0)], projection=[d_year@1, d_qoy@2, cs_ext_sales_price@5, i_category@6]
-          │           RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@3], 3), input_partitions=3
-          │             ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_year@1 as d_year, d_qoy@2 as d_qoy, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-          │               RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-          │                 DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet
-          │           [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │           [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=1
+          │           [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
             │ RepartitionExec: partitioning=Hash([ss_sold_date_sk@0], 3), input_partitions=2
@@ -7388,17 +7409,23 @@ mod tests {
               │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
               │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_category], file_type=parquet
               └──────────────────────────────────────────────────
-            ┌───── Stage 6 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-            │ RepartitionExec: partitioning=Hash([cs_sold_date_sk@0], 3), input_partitions=2
+            ┌───── Stage 5 ── Tasks: t0:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@3], 6), input_partitions=3
+            │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_year@1 as d_year, d_qoy@2 as d_qoy, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_year, d_qoy], file_type=parquet
+            └──────────────────────────────────────────────────
+            ┌───── Stage 7 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([cs_sold_date_sk@0], 6), input_partitions=2
             │   ProjectionExec: expr=[cs_sold_date_sk@1 as cs_sold_date_sk, cs_ext_sales_price@2 as cs_ext_sales_price, i_category@0 as i_category]
             │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cs_item_sk@1)], projection=[i_category@1, cs_sold_date_sk@2, cs_ext_sales_price@4]
             │       CoalescePartitionsExec
-            │         [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │         [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
             │       FilterExec: cs_ship_addr_sk@1 IS NULL, projection=[cs_sold_date_sk@0, cs_item_sk@2, cs_ext_sales_price@3]
             │         PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
             │           DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_sales/part-2.parquet:<int>..<int>], ...]}, projection=[cs_sold_date_sk, cs_ship_addr_sk, cs_item_sk, cs_ext_sales_price], file_type=parquet, predicate=cs_ship_addr_sk@10 IS NULL AND DynamicFilter [ empty ] AND DynamicFilter [ empty ], pruning_predicate=cs_ship_addr_sk_null_count@0 > 0, required_guarantees=[]
             └──────────────────────────────────────────────────
-              ┌───── Stage 5 ── Tasks: t0:[p0..p7] 
+              ┌───── Stage 6 ── Tasks: t0:[p0..p7] 
               │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
               │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_category], file_type=parquet
               └──────────────────────────────────────────────────
@@ -8107,137 +8134,146 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [item_id@0 ASC, sr_item_qty@1 ASC], fetch=100
-        │   SortExec: TopK(fetch=100), expr=[item_id@0 ASC, sr_item_qty@1 ASC], preserve_partitioning=[true]
-        │     ProjectionExec: expr=[item_id@1 as item_id, sr_item_qty@2 as sr_item_qty, sr_item_qty@2 / __common_expr_7@0 / 3 * 100 as sr_dev, cr_item_qty@3 as cr_item_qty, cr_item_qty@3 / __common_expr_7@0 / 3 * 100 as cr_dev, wr_item_qty@4 as wr_item_qty, wr_item_qty@4 / __common_expr_7@0 / 3 * 100 as wr_dev, __common_expr_7@0 / 3 as average]
-        │       ProjectionExec: expr=[sr_item_qty@2 + cr_item_qty@3 + wr_item_qty@0 as __common_expr_7, item_id@1 as item_id, sr_item_qty@2 as sr_item_qty, cr_item_qty@3 as cr_item_qty, wr_item_qty@0 as wr_item_qty]
-        │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(item_id@0, item_id@0)], projection=[wr_item_qty@1, item_id@2, sr_item_qty@3, cr_item_qty@4]
-        │           CoalescePartitionsExec
-        │             BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-        │               ProjectionExec: expr=[i_item_id@0 as item_id, sum(web_returns.wr_return_quantity)@1 as wr_item_qty]
-        │                 AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_returns.wr_return_quantity)]
-        │                   RepartitionExec: partitioning=Hash([i_item_id@0], 3), input_partitions=3
-        │                     AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(web_returns.wr_return_quantity)]
-        │                       HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(d_date@2, d_date@0)], projection=[wr_return_quantity@0, i_item_id@1]
-        │                         CoalescePartitionsExec
-        │                           [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
-        │                         HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
-        │                           CoalescePartitionsExec
-        │                             BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-        │                               FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
-        │                                 RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-        │                                   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
-        │                           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-        │                             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
-        │           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(item_id@0, item_id@0)], projection=[item_id@0, sr_item_qty@1, cr_item_qty@3]
-        │             CoalescePartitionsExec
-        │               BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-        │                 ProjectionExec: expr=[i_item_id@0 as item_id, sum(store_returns.sr_return_quantity)@1 as sr_item_qty]
-        │                   AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_returns.sr_return_quantity)]
-        │                     [Stage 8] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-        │             ProjectionExec: expr=[i_item_id@0 as item_id, sum(catalog_returns.cr_return_quantity)@1 as cr_item_qty]
-        │               AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_returns.cr_return_quantity)]
-        │                 [Stage 12] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+        │   [Stage 15] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p3..p5] 
-          │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(wr_returned_date_sk@0, CAST(date_dim.d_date_sk AS Float64)@2)], projection=[wr_return_quantity@1, i_item_id@2, d_date@4]
-          │   CoalescePartitionsExec
-          │     [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=2
-          │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-          │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-          │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
-          │         DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
-          └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p6..p11] 
-            │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
-            │   ProjectionExec: expr=[wr_returned_date_sk@1 as wr_returned_date_sk, wr_return_quantity@2 as wr_return_quantity, i_item_id@0 as i_item_id]
-            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, wr_item_sk@1)], projection=[i_item_id@1, wr_returned_date_sk@2, wr_return_quantity@4]
-            │       CoalescePartitionsExec
-            │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=1
-            │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
-            │           DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_returns/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-3.parquet]]}, projection=[wr_returned_date_sk, wr_item_sk, wr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ]
-            └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── Tasks: t0:[p0..p3] 
-              │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
-              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
-              └──────────────────────────────────────────────────
-          ┌───── Stage 8 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([i_item_id@0], 3), input_partitions=3
-          │   AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(store_returns.sr_return_quantity)]
-          │     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_date@0, d_date@2)], projection=[sr_return_quantity@0, i_item_id@1]
-          │       CoalescePartitionsExec
-          │         [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
-          │       ProjectionExec: expr=[sr_return_quantity@1 as sr_return_quantity, i_item_id@2 as i_item_id, d_date@0 as d_date]
-          │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, sr_returned_date_sk@0)], projection=[d_date@1, sr_return_quantity@4, i_item_id@5]
-          │           [Stage 5] => NetworkShuffleExec: output_partitions=3, input_tasks=1
-          │           [Stage 7] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          ┌───── Stage 15 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ SortExec: TopK(fetch=100), expr=[item_id@0 ASC, sr_item_qty@1 ASC], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[item_id@1 as item_id, sr_item_qty@2 as sr_item_qty, sr_item_qty@2 / __common_expr_7@0 / 3 * 100 as sr_dev, cr_item_qty@3 as cr_item_qty, cr_item_qty@3 / __common_expr_7@0 / 3 * 100 as cr_dev, wr_item_qty@4 as wr_item_qty, wr_item_qty@4 / __common_expr_7@0 / 3 * 100 as wr_dev, __common_expr_7@0 / 3 as average]
+          │     ProjectionExec: expr=[sr_item_qty@2 + cr_item_qty@3 + wr_item_qty@0 as __common_expr_7, item_id@1 as item_id, sr_item_qty@2 as sr_item_qty, cr_item_qty@3 as cr_item_qty, wr_item_qty@0 as wr_item_qty]
+          │       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(item_id@0, item_id@0)], projection=[wr_item_qty@1, item_id@2, sr_item_qty@3, cr_item_qty@4]
+          │         CoalescePartitionsExec
+          │           [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
+          │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(item_id@0, item_id@0)], projection=[item_id@0, sr_item_qty@1, cr_item_qty@3]
+          │           CoalescePartitionsExec
+          │             [Stage 10] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
+          │           ProjectionExec: expr=[i_item_id@0 as item_id, sum(catalog_returns.cr_return_quantity)@1 as cr_item_qty]
+          │             AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(catalog_returns.cr_return_quantity)]
+          │               [Stage 14] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 4 ── Tasks: t0:[p0..p5] 
             │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
-            │   HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
-            │     CoalescePartitionsExec
-            │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-            │         FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
-            │           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
-            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
+            │   ProjectionExec: expr=[i_item_id@0 as item_id, sum(web_returns.wr_return_quantity)@1 as wr_item_qty]
+            │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(web_returns.wr_return_quantity)]
+            │       RepartitionExec: partitioning=Hash([i_item_id@0], 3), input_partitions=3
+            │         AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(web_returns.wr_return_quantity)]
+            │           HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(d_date@2, d_date@0)], projection=[wr_return_quantity@0, i_item_id@1]
+            │             CoalescePartitionsExec
+            │               [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+            │             HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
+            │               CoalescePartitionsExec
+            │                 BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+            │                   FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
+            │                     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │                       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
+            │               RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+            │                 DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
             └──────────────────────────────────────────────────
-            ┌───── Stage 5 ── Tasks: t0:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 6), input_partitions=3
-            │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
-            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
+              ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p3..p5] 
+              │ HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(wr_returned_date_sk@0, CAST(date_dim.d_date_sk AS Float64)@2)], projection=[wr_return_quantity@1, i_item_id@2, d_date@4]
+              │   CoalescePartitionsExec
+              │     [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=2
+              │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+              │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+              │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+              │         DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
+              └──────────────────────────────────────────────────
+                ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p6..p11] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
+                │   ProjectionExec: expr=[wr_returned_date_sk@1 as wr_returned_date_sk, wr_return_quantity@2 as wr_return_quantity, i_item_id@0 as i_item_id]
+                │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, wr_item_sk@1)], projection=[i_item_id@1, wr_returned_date_sk@2, wr_return_quantity@4]
+                │       CoalescePartitionsExec
+                │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=1
+                │       RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │         PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+                │           DataSourceExec: file_groups={4 groups: [[/testdata/tpcds/plans_sf1_partitions4/web_returns/part-0.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-2.parquet], [/testdata/tpcds/plans_sf1_partitions4/web_returns/part-3.parquet]]}, projection=[wr_returned_date_sk, wr_item_sk, wr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ]
+                └──────────────────────────────────────────────────
+                  ┌───── Stage 1 ── Tasks: t0:[p0..p3] 
+                  │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
+                  │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+                  └──────────────────────────────────────────────────
+            ┌───── Stage 10 ── Tasks: t0:[p0..p5] 
+            │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
+            │   ProjectionExec: expr=[i_item_id@0 as item_id, sum(store_returns.sr_return_quantity)@1 as sr_item_qty]
+            │     AggregateExec: mode=FinalPartitioned, gby=[i_item_id@0 as i_item_id], aggr=[sum(store_returns.sr_return_quantity)]
+            │       [Stage 9] => NetworkShuffleExec: output_partitions=3, input_tasks=2
             └──────────────────────────────────────────────────
-            ┌───── Stage 7 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([sr_returned_date_sk@0], 6), input_partitions=2
-            │   ProjectionExec: expr=[sr_returned_date_sk@1 as sr_returned_date_sk, sr_return_quantity@2 as sr_return_quantity, i_item_id@0 as i_item_id]
-            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, sr_item_sk@1)], projection=[i_item_id@1, sr_returned_date_sk@2, sr_return_quantity@4]
+              ┌───── Stage 9 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+              │ RepartitionExec: partitioning=Hash([i_item_id@0], 3), input_partitions=3
+              │   AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(store_returns.sr_return_quantity)]
+              │     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_date@0, d_date@2)], projection=[sr_return_quantity@0, i_item_id@1]
+              │       CoalescePartitionsExec
+              │         [Stage 5] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=6, input_tasks=1
+              │       ProjectionExec: expr=[sr_return_quantity@1 as sr_return_quantity, i_item_id@2 as i_item_id, d_date@0 as d_date]
+              │         HashJoinExec: mode=Partitioned, join_type=Inner, on=[(CAST(date_dim.d_date_sk AS Float64)@2, sr_returned_date_sk@0)], projection=[d_date@1, sr_return_quantity@4, i_item_id@5]
+              │           [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=1
+              │           [Stage 8] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+              └──────────────────────────────────────────────────
+                ┌───── Stage 5 ── Tasks: t0:[p0..p5] 
+                │ BroadcastExec: input_partitions=3, consumer_tasks=2, output_partitions=6
+                │   HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
+                │     CoalescePartitionsExec
+                │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+                │         FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
+                │           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
+                │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
+                └──────────────────────────────────────────────────
+                ┌───── Stage 6 ── Tasks: t0:[p0..p5] 
+                │ RepartitionExec: partitioning=Hash([CAST(date_dim.d_date_sk AS Float64)@2], 6), input_partitions=3
+                │   ProjectionExec: expr=[d_date_sk@0 as d_date_sk, d_date@1 as d_date, CAST(d_date_sk@0 AS Float64) as CAST(date_dim.d_date_sk AS Float64)]
+                │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+                │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
+                └──────────────────────────────────────────────────
+                ┌───── Stage 8 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+                │ RepartitionExec: partitioning=Hash([sr_returned_date_sk@0], 6), input_partitions=2
+                │   ProjectionExec: expr=[sr_returned_date_sk@1 as sr_returned_date_sk, sr_return_quantity@2 as sr_return_quantity, i_item_id@0 as i_item_id]
+                │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, sr_item_sk@1)], projection=[i_item_id@1, sr_returned_date_sk@2, sr_return_quantity@4]
+                │       CoalescePartitionsExec
+                │         [Stage 7] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+                │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+                │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_returns/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-2.parquet:<int>..<int>], ...]}, projection=[sr_returned_date_sk, sr_item_sk, sr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+                └──────────────────────────────────────────────────
+                  ┌───── Stage 7 ── Tasks: t0:[p0..p7] 
+                  │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+                  │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
+                  └──────────────────────────────────────────────────
+            ┌───── Stage 14 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([i_item_id@0], 6), input_partitions=2
+            │   AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(catalog_returns.cr_return_quantity)]
+            │     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_date@0, d_date@2)], projection=[cr_return_quantity@0, i_item_id@1]
             │       CoalescePartitionsExec
-            │         [Stage 6] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-            │       PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-            │         DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/store_returns/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/store_returns/part-2.parquet:<int>..<int>], ...]}, projection=[sr_returned_date_sk, sr_item_sk, sr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+            │         [Stage 11] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
+            │       ProjectionExec: expr=[cr_return_quantity@1 as cr_return_quantity, i_item_id@2 as i_item_id, d_date@0 as d_date]
+            │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_date_sk@0, cr_returned_date_sk@0)], projection=[d_date@1, cr_return_quantity@3, i_item_id@4]
+            │           CoalescePartitionsExec
+            │             [Stage 12] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │           ProjectionExec: expr=[cr_returned_date_sk@1 as cr_returned_date_sk, cr_return_quantity@2 as cr_return_quantity, i_item_id@0 as i_item_id]
+            │             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cr_item_sk@1)], projection=[i_item_id@1, cr_returned_date_sk@2, cr_return_quantity@4]
+            │               CoalescePartitionsExec
+            │                 [Stage 13] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
+            │               PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
+            │                 DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-2.parquet:<int>..<int>], ...]}, projection=[cr_returned_date_sk, cr_item_sk, cr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-              ┌───── Stage 6 ── Tasks: t0:[p0..p7] 
+              ┌───── Stage 11 ── Tasks: t0:[p0..p11] 
+              │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
+              │   HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
+              │     CoalescePartitionsExec
+              │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+              │         FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
+              │           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+              │             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
+              │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+              │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
+              └──────────────────────────────────────────────────
+              ┌───── Stage 12 ── Tasks: t0:[p0..p7] 
+              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
+              └──────────────────────────────────────────────────
+              ┌───── Stage 13 ── Tasks: t0:[p0..p7] 
               │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
               │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
               └──────────────────────────────────────────────────
-          ┌───── Stage 12 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
-          │ RepartitionExec: partitioning=Hash([i_item_id@0], 3), input_partitions=2
-          │   AggregateExec: mode=Partial, gby=[i_item_id@1 as i_item_id], aggr=[sum(catalog_returns.cr_return_quantity)]
-          │     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_date@0, d_date@2)], projection=[cr_return_quantity@0, i_item_id@1]
-          │       CoalescePartitionsExec
-          │         [Stage 9] => NetworkBroadcastExec: partitions_per_consumer=3, stage_partitions=12, input_tasks=1
-          │       ProjectionExec: expr=[cr_return_quantity@1 as cr_return_quantity, i_item_id@2 as i_item_id, d_date@0 as d_date]
-          │         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_date_sk@0, cr_returned_date_sk@0)], projection=[d_date@1, cr_return_quantity@3, i_item_id@4]
-          │           CoalescePartitionsExec
-          │             [Stage 10] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-          │           ProjectionExec: expr=[cr_returned_date_sk@1 as cr_returned_date_sk, cr_return_quantity@2 as cr_return_quantity, i_item_id@0 as i_item_id]
-          │             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(i_item_sk@0, cr_item_sk@1)], projection=[i_item_id@1, cr_returned_date_sk@2, cr_return_quantity@4]
-          │               CoalescePartitionsExec
-          │                 [Stage 11] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=1
-          │               PartitionIsolatorExec: t0:[p0,p1,__,__,__,__] t1:[__,__,p0,p1,__,__] t2:[__,__,__,__,p0,__] t3:[__,__,__,__,__,p0]
-          │                 DataSourceExec: file_groups={6 groups: [[/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-0.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-1.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-2.parquet:<int>..<int>], [/testdata/tpcds/plans_sf1_partitions4/catalog_returns/part-2.parquet:<int>..<int>], ...]}, projection=[cr_returned_date_sk, cr_item_sk, cr_return_quantity], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
-          └──────────────────────────────────────────────────
-            ┌───── Stage 9 ── Tasks: t0:[p0..p11] 
-            │ BroadcastExec: input_partitions=3, consumer_tasks=4, output_partitions=12
-            │   HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(d_week_seq@0, d_week_seq@1)], projection=[d_date@0]
-            │     CoalescePartitionsExec
-            │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-            │         FilterExec: d_date@0 = 2000-06-30 OR d_date@0 = 2000-09-27 OR d_date@0 = 2000-11-17, projection=[d_week_seq@1]
-            │           RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │             DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet, predicate=d_date@2 = 2000-06-30 OR d_date@2 = 2000-09-27 OR d_date@2 = 2000-11-17, pruning_predicate=d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-06-30 AND 2000-06-30 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-09-27 AND 2000-09-27 <= d_date_max@1 OR d_date_null_count@2 != row_count@3 AND d_date_min@0 <= 2000-11-17 AND 2000-11-17 <= d_date_max@1, required_guarantees=[d_date in (2000-06-30, 2000-09-27, 2000-11-17)]
-            │     RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-            │       DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date, d_week_seq], file_type=parquet
-            └──────────────────────────────────────────────────
-            ┌───── Stage 10 ── Tasks: t0:[p0..p7] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/date_dim/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/date_dim/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/date_dim/part-3.parquet]]}, projection=[d_date_sk, d_date], file_type=parquet
-            └──────────────────────────────────────────────────
-            ┌───── Stage 11 ── Tasks: t0:[p0..p7] 
-            │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
-            │   DataSourceExec: file_groups={2 groups: [[/testdata/tpcds/plans_sf1_partitions4/item/part-0.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-1.parquet], [/testdata/tpcds/plans_sf1_partitions4/item/part-2.parquet, /testdata/tpcds/plans_sf1_partitions4/item/part-3.parquet]]}, projection=[i_item_sk, i_item_id], file_type=parquet
-            └──────────────────────────────────────────────────
         ");
         Ok(())
     }

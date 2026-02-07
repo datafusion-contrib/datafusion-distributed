@@ -73,15 +73,15 @@ mod tests {
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.UserID)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
         │     CoalescePartitionsExec
-        │       [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │       [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(alias1)]
           │   AggregateExec: mode=FinalPartitioned, gby=[alias1@0 as alias1], aggr=[]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([alias1@0], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([alias1@0], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[UserID@0 as alias1], aggr=[]
             │     PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,p1,__] t2:[__,__,__,__,p0]
             │       DataSourceExec: file_groups={5 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[UserID], file_type=parquet
@@ -220,22 +220,22 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [u@2 DESC], fetch=10
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[u@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[MobilePhone@0 as MobilePhone, MobilePhoneModel@1 as MobilePhoneModel, count(alias1)@2 as u]
           │     AggregateExec: mode=FinalPartitioned, gby=[MobilePhone@0 as MobilePhone, MobilePhoneModel@1 as MobilePhoneModel], aggr=[count(alias1)]
-          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([MobilePhone@0, MobilePhoneModel@1], 9), input_partitions=3
+            ┌───── Stage 2 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([MobilePhone@0, MobilePhoneModel@1], 12), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[MobilePhone@0 as MobilePhone, MobilePhoneModel@1 as MobilePhoneModel], aggr=[count(alias1)]
             │     AggregateExec: mode=FinalPartitioned, gby=[MobilePhone@0 as MobilePhone, MobilePhoneModel@1 as MobilePhoneModel, alias1@2 as alias1], aggr=[]
             │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
             └──────────────────────────────────────────────────
-              ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-              │ RepartitionExec: partitioning=Hash([MobilePhone@0, MobilePhoneModel@1, alias1@2], 9), input_partitions=2
+              ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+              │ RepartitionExec: partitioning=Hash([MobilePhone@0, MobilePhoneModel@1, alias1@2], 12), input_partitions=2
               │   AggregateExec: mode=Partial, gby=[MobilePhone@1 as MobilePhone, MobilePhoneModel@2 as MobilePhoneModel, UserID@0 as alias1], aggr=[]
               │     FilterExec: MobilePhoneModel@2 !=
               │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -307,16 +307,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[c@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as c]
           │     AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([SearchEngineID@0, SearchPhrase@1], 6), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
+            │ RepartitionExec: partitioning=Hash([SearchEngineID@0, SearchPhrase@1], 9), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[SearchEngineID@0 as SearchEngineID, SearchPhrase@1 as SearchPhrase], aggr=[count(Int64(1))]
             │     FilterExec: SearchPhrase@1 !=
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -468,16 +468,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[c@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase, min(hits.URL)@1 as min(hits.URL), count(Int64(1))@2 as c]
           │     AggregateExec: mode=FinalPartitioned, gby=[SearchPhrase@0 as SearchPhrase], aggr=[min(hits.URL), count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([SearchPhrase@0], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([SearchPhrase@0], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[SearchPhrase@1 as SearchPhrase], aggr=[min(hits.URL), count(Int64(1))]
             │     FilterExec: CAST(URL@0 AS Utf8View) LIKE %google% AND SearchPhrase@1 !=
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -620,17 +620,17 @@ mod tests {
         assert_snapshot!(display, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [l@1 DESC], fetch=25
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
           │ SortExec: TopK(fetch=25), expr=[l@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as k, avg(length(hits.Referer))@1 as l, count(Int64(1))@2 as c, min(hits.Referer)@3 as min(hits.Referer)]
           │     FilterExec: count(Int64(1))@2 > 100000
           │       AggregateExec: mode=FinalPartitioned, gby=[regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0 as regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))], aggr=[avg(length(hits.Referer)), count(Int64(1)), min(hits.Referer)]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0], 6), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
+            │ RepartitionExec: partitioning=Hash([regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))@0], 9), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[regexp_replace(CAST(Referer@0 AS LargeUtf8), ^https?://(?:www\.)?([^/]+)/.*$, \1) as regexp_replace(hits.Referer,Utf8("^https?://(?:www\.)?([^/]+)/.*$"),Utf8("\1"))], aggr=[avg(length(hits.Referer)), count(Int64(1)), min(hits.Referer)]
             │     FilterExec: Referer@0 !=
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -664,16 +664,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[c@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP, count(Int64(1))@2 as c, sum(hits.IsRefresh)@3 as sum(hits.IsRefresh), avg(hits.ResolutionWidth)@4 as avg(hits.ResolutionWidth)]
           │     AggregateExec: mode=FinalPartitioned, gby=[SearchEngineID@0 as SearchEngineID, ClientIP@1 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([SearchEngineID@0, ClientIP@1], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([SearchEngineID@0, ClientIP@1], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[SearchEngineID@3 as SearchEngineID, ClientIP@0 as ClientIP], aggr=[count(Int64(1)), sum(hits.IsRefresh), avg(hits.ResolutionWidth)]
             │     FilterExec: SearchPhrase@4 != , projection=[ClientIP@0, IsRefresh@1, ResolutionWidth@2, SearchEngineID@3]
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -810,16 +810,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[pageviews@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
           │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([URL@0], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[URL@0 as URL], aggr=[count(Int64(1))]
             │     FilterExec: CounterID@1 = 62 AND CAST(EventDate@0 AS Utf8) >= 2013-07-01 AND CAST(EventDate@0 AS Utf8) <= 2013-07-31 AND DontCountHits@4 = 0 AND IsRefresh@3 = 0 AND URL@2 != , projection=[URL@2]
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -835,16 +835,16 @@ mod tests {
         assert_snapshot!(display, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=10), expr=[pageviews@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[Title@0 as Title, count(Int64(1))@1 as pageviews]
           │     AggregateExec: mode=FinalPartitioned, gby=[Title@0 as Title], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([Title@0], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([Title@0], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[Title@0 as Title], aggr=[count(Int64(1))]
             │     FilterExec: CounterID@2 = 62 AND CAST(EventDate@1 AS Utf8) >= 2013-07-01 AND CAST(EventDate@1 AS Utf8) <= 2013-07-31 AND DontCountHits@4 = 0 AND IsRefresh@3 = 0 AND Title@0 != , projection=[Title@0]
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -861,16 +861,16 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [pageviews@1 DESC], fetch=1010
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] 
           │ SortExec: TopK(fetch=1010), expr=[pageviews@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[URL@0 as URL, count(Int64(1))@1 as pageviews]
           │     AggregateExec: mode=FinalPartitioned, gby=[URL@0 as URL], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
-            │ RepartitionExec: partitioning=Hash([URL@0], 9), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([URL@0], 12), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[URL@0 as URL], aggr=[count(Int64(1))]
             │     FilterExec: CounterID@1 = 62 AND CAST(EventDate@0 AS Utf8) >= 2013-07-01 AND CAST(EventDate@0 AS Utf8) <= 2013-07-31 AND IsRefresh@3 = 0 AND IsLink@4 != 0 AND IsDownload@5 = 0, projection=[URL@2]
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
@@ -913,16 +913,16 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ GlobalLimitExec: skip=100, fetch=10
         │   SortPreservingMergeExec: [pageviews@2 DESC], fetch=110
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
           │ SortExec: TopK(fetch=110), expr=[pageviews@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[URLHash@0 as URLHash, EventDate@1 as EventDate, count(Int64(1))@2 as pageviews]
           │     AggregateExec: mode=FinalPartitioned, gby=[URLHash@0 as URLHash, EventDate@1 as EventDate], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([URLHash@0, EventDate@1], 6), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p0..p8] t2:[p0..p8] t3:[p0..p8] 
+            │ RepartitionExec: partitioning=Hash([URLHash@0, EventDate@1], 9), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[URLHash@1 as URLHash, EventDate@0 as EventDate], aggr=[count(Int64(1))]
             │     FilterExec: CounterID@1 = 62 AND CAST(EventDate@0 AS Utf8) >= 2013-07-01 AND CAST(EventDate@0 AS Utf8) <= 2013-07-31 AND IsRefresh@2 = 0 AND (TraficSourceID@3 = -1 OR TraficSourceID@3 = 6) AND RefererHash@4 = 3594120000172545465, projection=[EventDate@0, URLHash@5]
             │       PartitionIsolatorExec: t0:[p0,p1,__,__,__] t1:[__,__,p0,__,__] t2:[__,__,__,p0,__] t3:[__,__,__,__,p0]
