@@ -1,6 +1,7 @@
 use crate::common::require_one_child;
 use crossbeam_queue::SegQueue;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::Statistics;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -210,6 +211,11 @@ impl ExecutionPlan for BroadcastExec {
 
     fn schema(&self) -> SchemaRef {
         self.input.schema()
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        let real_partition = partition.map(|partition| partition % self.input_partition_count());
+        self.input.partition_statistics(real_partition)
     }
 }
 
