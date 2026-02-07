@@ -20,8 +20,8 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, DistributedPhysicalOptimizerRule, DistributedPlannerExtension,
-    NetworkBoundary, NetworkBoundaryExt,
+    ComputeCostClass, DistributedConfig, DistributedPhysicalOptimizerRule,
+    DistributedPlannerExtension, NetworkBoundary, NetworkBoundaryExt,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,

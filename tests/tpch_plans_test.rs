@@ -50,46 +50,46 @@ mod tests {
         │   SortExec: expr=[s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[s_acctbal@5 as s_acctbal, s_name@2 as s_name, n_name@7 as n_name, p_partkey@0 as p_partkey, p_mfgr@1 as p_mfgr, s_address@3 as s_address, s_phone@4 as s_phone, s_comment@6 as s_comment]
         │       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@1), (ps_supplycost@7, min(partsupp.ps_supplycost)@0)], projection=[p_partkey@0, p_mfgr@1, s_name@2, s_address@3, s_phone@4, s_acctbal@5, s_comment@6, n_name@8]
-        │         [Stage 5] => NetworkShuffleExec: output_partitions=6, input_tasks=2
+        │         [Stage 5] => NetworkShuffleExec: output_partitions=6, input_tasks=3
         │         RepartitionExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 6), input_partitions=6
         │           ProjectionExec: expr=[min(partsupp.ps_supplycost)@1 as min(partsupp.ps_supplycost), ps_partkey@0 as ps_partkey]
         │             AggregateExec: mode=FinalPartitioned, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
         │               [Stage 9] => NetworkShuffleExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 5 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
+          ┌───── Stage 5 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
           │ RepartitionExec: partitioning=Hash([p_partkey@0, ps_supplycost@7], 6), input_partitions=6
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@9)], projection=[p_partkey@1, p_mfgr@2, s_name@3, s_address@4, s_phone@5, s_acctbal@6, s_comment@7, ps_supplycost@8, n_name@9]
           │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=12, input_tasks=1
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=18, input_tasks=1
           │     ProjectionExec: expr=[p_partkey@2 as p_partkey, p_mfgr@3 as p_mfgr, s_name@4 as s_name, s_address@5 as s_address, s_phone@6 as s_phone, s_acctbal@7 as s_acctbal, s_comment@8 as s_comment, ps_supplycost@9 as ps_supplycost, n_name@0 as n_name, n_regionkey@1 as n_regionkey]
           │       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@4)], projection=[n_name@1, n_regionkey@2, p_partkey@3, p_mfgr@4, s_name@5, s_address@6, s_phone@8, s_acctbal@9, s_comment@10, ps_supplycost@11]
           │         CoalescePartitionsExec
-          │           [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=12, input_tasks=1
+          │           [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=18, input_tasks=1
           │         ProjectionExec: expr=[p_partkey@6 as p_partkey, p_mfgr@7 as p_mfgr, s_name@0 as s_name, s_address@1 as s_address, s_nationkey@2 as s_nationkey, s_phone@3 as s_phone, s_acctbal@4 as s_acctbal, s_comment@5 as s_comment, ps_supplycost@8 as ps_supplycost]
           │           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(s_suppkey@0, ps_suppkey@2)], projection=[s_name@1, s_address@2, s_nationkey@3, s_phone@4, s_acctbal@5, s_comment@6, p_partkey@7, p_mfgr@8, ps_supplycost@10]
           │             CoalescePartitionsExec
-          │               [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=12, input_tasks=1
+          │               [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=18, input_tasks=1
           │             HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p_partkey@0, ps_partkey@0)], projection=[p_partkey@0, p_mfgr@1, ps_suppkey@3, ps_supplycost@4]
           │               CoalescePartitionsExec
-          │                 [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=12, input_tasks=1
-          │               PartitionIsolatorExec: t0:[p0,p1,p2,p3,p4,p5,__,__,__,__,__] t1:[__,__,__,__,__,__,p0,p1,p2,p3,p4]
-          │                 DataSourceExec: file_groups={11 groups: [[/testdata/tpch/plan_sf0.02/partsupp/1.parquet, /testdata/tpch/plan_sf0.02/partsupp/10.parquet], [/testdata/tpch/plan_sf0.02/partsupp/11.parquet], [/testdata/tpch/plan_sf0.02/partsupp/12.parquet, /testdata/tpch/plan_sf0.02/partsupp/13.parquet], [/testdata/tpch/plan_sf0.02/partsupp/14.parquet], [/testdata/tpch/plan_sf0.02/partsupp/15.parquet, /testdata/tpch/plan_sf0.02/partsupp/16.parquet], ...]}, projection=[ps_partkey, ps_suppkey, ps_supplycost], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
+          │                 [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=6, stage_partitions=18, input_tasks=1
+          │               PartitionIsolatorExec: t0:[p0,p1,p2,p3,p4,p5,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,__,__,p0,p1,p2,p3,p4,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3,p4]
+          │                 DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/partsupp/1.parquet], [/testdata/tpch/plan_sf0.02/partsupp/10.parquet], [/testdata/tpch/plan_sf0.02/partsupp/11.parquet], [/testdata/tpch/plan_sf0.02/partsupp/12.parquet], [/testdata/tpch/plan_sf0.02/partsupp/13.parquet], ...]}, projection=[ps_partkey, ps_suppkey, ps_supplycost], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ]
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p11] 
-            │ BroadcastExec: input_partitions=6, consumer_tasks=2, output_partitions=12
+            ┌───── Stage 1 ── Tasks: t0:[p0..p17] 
+            │ BroadcastExec: input_partitions=6, consumer_tasks=3, output_partitions=18
             │   FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
             │     DataSourceExec: file_groups={6 groups: [[/testdata/tpch/plan_sf0.02/region/1.parquet, /testdata/tpch/plan_sf0.02/region/10.parquet, /testdata/tpch/plan_sf0.02/region/11.parquet], [/testdata/tpch/plan_sf0.02/region/12.parquet, /testdata/tpch/plan_sf0.02/region/13.parquet, /testdata/tpch/plan_sf0.02/region/14.parquet], [/testdata/tpch/plan_sf0.02/region/15.parquet, /testdata/tpch/plan_sf0.02/region/16.parquet, /testdata/tpch/plan_sf0.02/region/2.parquet], [/testdata/tpch/plan_sf0.02/region/3.parquet, /testdata/tpch/plan_sf0.02/region/4.parquet, /testdata/tpch/plan_sf0.02/region/5.parquet], [/testdata/tpch/plan_sf0.02/region/6.parquet, /testdata/tpch/plan_sf0.02/region/7.parquet, /testdata/tpch/plan_sf0.02/region/8.parquet], ...]}, projection=[r_regionkey, r_name], file_type=parquet, predicate=r_name@1 = EUROPE, pruning_predicate=r_name_null_count@2 != row_count@3 AND r_name_min@0 <= EUROPE AND EUROPE <= r_name_max@1, required_guarantees=[r_name in (EUROPE)]
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p11] 
-            │ BroadcastExec: input_partitions=6, consumer_tasks=2, output_partitions=12
+            ┌───── Stage 2 ── Tasks: t0:[p0..p17] 
+            │ BroadcastExec: input_partitions=6, consumer_tasks=3, output_partitions=18
             │   DataSourceExec: file_groups={6 groups: [[/testdata/tpch/plan_sf0.02/nation/1.parquet, /testdata/tpch/plan_sf0.02/nation/10.parquet, /testdata/tpch/plan_sf0.02/nation/11.parquet], [/testdata/tpch/plan_sf0.02/nation/12.parquet, /testdata/tpch/plan_sf0.02/nation/13.parquet, /testdata/tpch/plan_sf0.02/nation/14.parquet], [/testdata/tpch/plan_sf0.02/nation/15.parquet, /testdata/tpch/plan_sf0.02/nation/16.parquet, /testdata/tpch/plan_sf0.02/nation/2.parquet], [/testdata/tpch/plan_sf0.02/nation/3.parquet, /testdata/tpch/plan_sf0.02/nation/4.parquet, /testdata/tpch/plan_sf0.02/nation/5.parquet], [/testdata/tpch/plan_sf0.02/nation/6.parquet, /testdata/tpch/plan_sf0.02/nation/7.parquet, /testdata/tpch/plan_sf0.02/nation/8.parquet], ...]}, projection=[n_nationkey, n_name, n_regionkey], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-            ┌───── Stage 3 ── Tasks: t0:[p0..p11] 
-            │ BroadcastExec: input_partitions=6, consumer_tasks=2, output_partitions=12
+            ┌───── Stage 3 ── Tasks: t0:[p0..p17] 
+            │ BroadcastExec: input_partitions=6, consumer_tasks=3, output_partitions=18
             │   DataSourceExec: file_groups={6 groups: [[/testdata/tpch/plan_sf0.02/supplier/1.parquet, /testdata/tpch/plan_sf0.02/supplier/10.parquet, /testdata/tpch/plan_sf0.02/supplier/11.parquet], [/testdata/tpch/plan_sf0.02/supplier/12.parquet, /testdata/tpch/plan_sf0.02/supplier/13.parquet, /testdata/tpch/plan_sf0.02/supplier/14.parquet], [/testdata/tpch/plan_sf0.02/supplier/15.parquet, /testdata/tpch/plan_sf0.02/supplier/16.parquet, /testdata/tpch/plan_sf0.02/supplier/2.parquet], [/testdata/tpch/plan_sf0.02/supplier/3.parquet, /testdata/tpch/plan_sf0.02/supplier/4.parquet, /testdata/tpch/plan_sf0.02/supplier/5.parquet], [/testdata/tpch/plan_sf0.02/supplier/6.parquet, /testdata/tpch/plan_sf0.02/supplier/7.parquet, /testdata/tpch/plan_sf0.02/supplier/8.parquet], ...]}, projection=[s_suppkey, s_name, s_address, s_nationkey, s_phone, s_acctbal, s_comment], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-            ┌───── Stage 4 ── Tasks: t0:[p0..p11] 
-            │ BroadcastExec: input_partitions=6, consumer_tasks=2, output_partitions=12
+            ┌───── Stage 4 ── Tasks: t0:[p0..p17] 
+            │ BroadcastExec: input_partitions=6, consumer_tasks=3, output_partitions=18
             │   FilterExec: p_size@3 = 15 AND p_type@2 LIKE %BRASS, projection=[p_partkey@0, p_mfgr@1]
             │     DataSourceExec: file_groups={6 groups: [[/testdata/tpch/plan_sf0.02/part/1.parquet, /testdata/tpch/plan_sf0.02/part/10.parquet, /testdata/tpch/plan_sf0.02/part/11.parquet], [/testdata/tpch/plan_sf0.02/part/12.parquet, /testdata/tpch/plan_sf0.02/part/13.parquet, /testdata/tpch/plan_sf0.02/part/14.parquet], [/testdata/tpch/plan_sf0.02/part/15.parquet, /testdata/tpch/plan_sf0.02/part/16.parquet, /testdata/tpch/plan_sf0.02/part/2.parquet], [/testdata/tpch/plan_sf0.02/part/3.parquet, /testdata/tpch/plan_sf0.02/part/4.parquet, /testdata/tpch/plan_sf0.02/part/5.parquet], [/testdata/tpch/plan_sf0.02/part/6.parquet, /testdata/tpch/plan_sf0.02/part/7.parquet, /testdata/tpch/plan_sf0.02/part/8.parquet], ...]}, projection=[p_partkey, p_mfgr, p_type, p_size], file_type=parquet, predicate=p_size@5 = 15 AND p_type@4 LIKE %BRASS, pruning_predicate=p_size_null_count@2 != row_count@3 AND p_size_min@0 <= 15 AND 15 <= p_size_max@1, required_guarantees=[p_size in (15)]
             └──────────────────────────────────────────────────
@@ -593,26 +593,29 @@ mod tests {
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
-        │   SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
-        │     ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
-        │       AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-        │         [Stage 2] => NetworkShuffleExec: output_partitions=6, input_tasks=4
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
-          │ RepartitionExec: partitioning=Hash([l_shipmode@0], 6), input_partitions=4
-          │   AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
-          │       CoalescePartitionsExec
-          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
-          │       PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
-          │         DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/orders/1.parquet], [/testdata/tpch/plan_sf0.02/orders/10.parquet], [/testdata/tpch/plan_sf0.02/orders/11.parquet], [/testdata/tpch/plan_sf0.02/orders/12.parquet], [/testdata/tpch/plan_sf0.02/orders/13.parquet], ...]}, projection=[o_orderkey, o_orderpriority], file_type=parquet, predicate=DynamicFilter [ empty ]
+          ┌───── Stage 3 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
+          │ SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
+          │     AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+          │       [Stage 2] => NetworkShuffleExec: output_partitions=6, input_tasks=4
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
-            │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
-            │   FilterExec: (l_shipmode@4 = MAIL OR l_shipmode@4 = SHIP) AND l_receiptdate@3 > l_commitdate@2 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 1994-01-01 AND l_receiptdate@3 < 1995-01-01, projection=[l_orderkey@0, l_shipmode@4]
-            │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
-            │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/lineitem/1.parquet], [/testdata/tpch/plan_sf0.02/lineitem/10.parquet], [/testdata/tpch/plan_sf0.02/lineitem/11.parquet], [/testdata/tpch/plan_sf0.02/lineitem/12.parquet], [/testdata/tpch/plan_sf0.02/lineitem/13.parquet], ...]}, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode], file_type=parquet, predicate=(l_shipmode@14 = MAIL OR l_shipmode@14 = SHIP) AND l_receiptdate@12 > l_commitdate@11 AND l_shipdate@10 < l_commitdate@11 AND l_receiptdate@12 >= 1994-01-01 AND l_receiptdate@12 < 1995-01-01, pruning_predicate=(l_shipmode_null_count@2 != row_count@3 AND l_shipmode_min@0 <= MAIL AND MAIL <= l_shipmode_max@1 OR l_shipmode_null_count@2 != row_count@3 AND l_shipmode_min@0 <= SHIP AND SHIP <= l_shipmode_max@1) AND l_receiptdate_null_count@5 != row_count@3 AND l_receiptdate_max@4 >= 1994-01-01 AND l_receiptdate_null_count@5 != row_count@3 AND l_receiptdate_min@6 < 1995-01-01, required_guarantees=[l_shipmode in (MAIL, SHIP)]
+            ┌───── Stage 2 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] 
+            │ RepartitionExec: partitioning=Hash([l_shipmode@0], 12), input_partitions=4
+            │   AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+            │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+            │       CoalescePartitionsExec
+            │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
+            │       PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
+            │         DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/orders/1.parquet], [/testdata/tpch/plan_sf0.02/orders/10.parquet], [/testdata/tpch/plan_sf0.02/orders/11.parquet], [/testdata/tpch/plan_sf0.02/orders/12.parquet], [/testdata/tpch/plan_sf0.02/orders/13.parquet], ...]}, projection=[o_orderkey, o_orderpriority], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
+              ┌───── Stage 1 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63] 
+              │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
+              │   FilterExec: (l_shipmode@4 = MAIL OR l_shipmode@4 = SHIP) AND l_receiptdate@3 > l_commitdate@2 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 1994-01-01 AND l_receiptdate@3 < 1995-01-01, projection=[l_orderkey@0, l_shipmode@4]
+              │     PartitionIsolatorExec: t0:[p0,p1,p2,p3,__,__,__,__,__,__,__,__,__,__,__,__] t1:[__,__,__,__,p0,p1,p2,p3,__,__,__,__,__,__,__,__] t2:[__,__,__,__,__,__,__,__,p0,p1,p2,p3,__,__,__,__] t3:[__,__,__,__,__,__,__,__,__,__,__,__,p0,p1,p2,p3]
+              │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/lineitem/1.parquet], [/testdata/tpch/plan_sf0.02/lineitem/10.parquet], [/testdata/tpch/plan_sf0.02/lineitem/11.parquet], [/testdata/tpch/plan_sf0.02/lineitem/12.parquet], [/testdata/tpch/plan_sf0.02/lineitem/13.parquet], ...]}, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode], file_type=parquet, predicate=(l_shipmode@14 = MAIL OR l_shipmode@14 = SHIP) AND l_receiptdate@12 > l_commitdate@11 AND l_shipdate@10 < l_commitdate@11 AND l_receiptdate@12 >= 1994-01-01 AND l_receiptdate@12 < 1995-01-01, pruning_predicate=(l_shipmode_null_count@2 != row_count@3 AND l_shipmode_min@0 <= MAIL AND MAIL <= l_shipmode_max@1 OR l_shipmode_null_count@2 != row_count@3 AND l_shipmode_min@0 <= SHIP AND SHIP <= l_shipmode_max@1) AND l_receiptdate_null_count@5 != row_count@3 AND l_receiptdate_max@4 >= 1994-01-01 AND l_receiptdate_null_count@5 != row_count@3 AND l_receiptdate_min@6 < 1995-01-01, required_guarantees=[l_shipmode in (MAIL, SHIP)]
+              └──────────────────────────────────────────────────
         "#);
         Ok(())
     }
