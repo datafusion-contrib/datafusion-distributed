@@ -46,7 +46,7 @@ export class BenchmarkRun {
         }
     }
 
-    private loadResults(): void {
+    loadResults(): void {
         this.results = BenchResult.loadMany(this.dataset, this.engine);
     }
 
@@ -75,21 +75,46 @@ export class BenchmarkRun {
         }
     }
 
+    compare(other: BenchmarkRun): void {
+        console.log(`=== Comparing ${this.dataset} results from engine '${other.engine}' [prev] with '${this.engine}' [new] ===`);
+        let totalTimePrev = 0
+        let totalTimeNew = 0
+        for (const query of this.results) {
+            const prevQuery = other.results.find(v => v.id === query.id);
+            if (!prevQuery) {
+                continue;
+            }
+            const timePrev = prevQuery.totalTime()
+            const timeNew = query.totalTime()
+            if (timePrev && timeNew) {
+                totalTimePrev += timePrev
+                totalTimeNew += timeNew
+            }
+
+            query.compare(prevQuery);
+        }
+
+        let f, tag, emoji
+        if (totalTimeNew < totalTimePrev) {
+            f = totalTimePrev / totalTimeNew;
+            tag = "faster";
+            emoji = f > 1.2 ? "✅" : "✔";
+        } else {
+            f = totalTimeNew / totalTimePrev;
+            tag = "slower";
+            emoji = f > 1.2 ? "❌" : "✖";
+        }
+        console.log(
+            `${"TOTAL".padStart(8)}: prev=${totalTimePrev.toString()} ms, new=${totalTimeNew.toString()} ms, diff=${f.toFixed(2)} ${tag} ${emoji}`
+        );
+    }
+
     compareWithPrevious(): void {
         const previous = this.loadPrevious();
         if (!previous) {
             return;
         }
-
-        console.log(`=== Comparing ${this.dataset} results from engine '${previous.engine}' [prev] with '${this.engine}' [new] ===`);
-        for (const query of this.results) {
-            const prevQuery = previous.results.find(v => v.id === query.id);
-            if (!prevQuery) {
-                continue;
-            }
-
-            query.compare(prevQuery);
-        }
+        this.compare(previous)
     }
 }
 
@@ -114,6 +139,15 @@ export class BenchResult {
 
         const sum = this.iterations.reduce((acc, iter) => acc + iter.elapsed, 0);
         return Math.floor(sum / this.iterations.length);
+    }
+
+    totalTime(): undefined | number {
+        let totalTime = 0;
+        for (const iter of this.iterations) {
+            if (iter.error) return undefined
+            totalTime += iter.elapsed
+        }
+        return totalTime
     }
 
     compare(prevQuery: BenchResult): void {
