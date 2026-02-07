@@ -14,7 +14,7 @@ export interface TableSpec {
 export interface BenchmarkRunner {
     createTables(s3Paths: TableSpec[]): Promise<void>;
 
-    executeQuery(query: string): Promise<{ rowCount: number }>;
+    executeQuery(query: string): Promise<{ rowCount: number, plan: string }>;
 }
 
 async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
@@ -73,9 +73,11 @@ export async function runBenchmark(
         engine: string,
         iterations: number;
         queries: string[];
+        debug: boolean;
+        warmup: boolean;
     }
 ) {
-    const { dataset, engine, iterations, queries } = options;
+    const { dataset, engine, iterations, queries, warmup, debug } = options;
 
     const benchmarkRun = new BenchmarkRun(dataset, engine)
 
@@ -90,17 +92,20 @@ export async function runBenchmark(
 
         const result = new BenchResult(dataset, engine, id)
 
-        console.log(`Warming up query ${id}...`)
-        try {
-            await runner.executeQuery(sql);
-        } catch (e: any) {
-            result.iterations.push({
-                elapsed: 0,
-                rowCount: 0,
-                error: e.toString()
-            })
-            console.error(`Query ${id} failed: ${e.toString()}`)
-            continue
+        if (warmup) {
+            console.log(`Warming up query ${id}...`)
+            try {
+                await runner.executeQuery(sql);
+            } catch (e: any) {
+                result.iterations.push({
+                    elapsed: 0,
+                    rowCount: 0,
+                    error: e.toString(),
+                    plan: ""
+                })
+                console.error(`Query ${id} failed: ${e.toString()}`)
+                continue
+            }
         }
 
         for (let i = 0; i < iterations; i++) {
@@ -112,16 +117,21 @@ export async function runBenchmark(
                 result.iterations.push({
                     elapsed: 0,
                     rowCount: 0,
-                    error: e.toString()
+                    error: e.toString(),
+                    plan: ""
                 })
                 console.error(`Query ${id} failed: ${e.toString()}`)
                 break
             }
             const elapsed = Math.round(new Date().getTime() - start.getTime())
 
+            if (debug) {
+                console.log(response.plan)
+            }
             result.iterations.push({
                 elapsed,
                 rowCount: response.rowCount,
+                plan: response.plan
             })
 
             console.log(

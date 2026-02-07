@@ -1,5 +1,5 @@
 import {Command} from "commander";
-import {BenchResult} from "./@results";
+import { BenchmarkRun, BenchResult } from "./@results";
 
 async function main() {
     const program = new Command();
@@ -15,17 +15,12 @@ async function main() {
         throw new Error(`Expected exactly 2 arguments, got ${program.args.length}`)
     }
 
-    const prevResults = BenchResult.loadMany(options.dataset, program.args[0])
-    const newResults = BenchResult.loadMany(options.dataset, program.args[1])
+    const prevRun = new BenchmarkRun(options.dataset, program.args[0])
+    prevRun.loadResults()
+    const newRun = new BenchmarkRun(options.dataset, program.args[1])
+    newRun.loadResults()
 
-    console.log(`=== Comparing ${options.dataset} results from engine '${program.args[0]}' [prev] with '${program.args[1]}' [new] ===`);
-    for (const result of newResults) {
-        const prev = prevResults.find(v => v.id === result.id)
-        if (!prev) {
-            continue
-        }
-        result.compare(prev)
-    }
+    newRun.compare(prevRun)
 }
 
 main()

@@ -2,14 +2,14 @@ import { Command } from "commander";
 import { z } from 'zod';
 import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
 
-// Remember to port-forward the Spark HTTP server with
-// aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"
+// Remember to port-forward the ballista HTTP server with
+// aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9002,localPortNumber=9002"
 
 async function main() {
     const program = new Command();
 
     program
-        .requiredOption('--dataset <string>', 'Dataset to run queries on')
+        .option('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
@@ -24,11 +24,11 @@ async function main() {
     const debug = options.debug === 'true' || options.debug === 1
     const warmup = options.warmup === 'true' || options.debug === 1
 
-    const runner = new SparkRunner({});
+    const runner = new BallistaRunner({});
 
     await runBenchmark(runner, {
         dataset,
-        engine: 'spark',
+        engine: 'ballista',
         iterations,
         queries,
         debug,
@@ -37,26 +37,21 @@ async function main() {
 }
 
 const QueryResponse = z.object({
-    count: z.number()
+    count: z.number(),
+    plan: z.string()
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
-class SparkRunner implements BenchmarkRunner {
-    private url = 'http://localhost:9003';
+class BallistaRunner implements BenchmarkRunner {
+    private url = 'http://localhost:9002';
 
     constructor(private readonly options: {}) {
     }
 
     async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
-        // Fix TPCH query 4: Add DATE prefix to date literals
-        sql = sql.replace(/(?<!date\s)('[\d]{4}-[\d]{2}-[\d]{2}')/gi, 'DATE $1');
-
-        // Fix ClickBench queries: Spark uses from_unixtime
-        sql = sql.replace(/to_timestamp_seconds\(/gi, 'from_unixtime(');
-
         let response
         if (sql.includes("create view")) {
-            // Query 15
+            // This is query 15
             let [createView, query, dropView] = sql.split(";")
             await this.query(createView);
             response = await this.query(query)
@@ -65,41 +60,34 @@ class SparkRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: "" }; // plans not yet supported in Spark.
+        return { rowCount: response.count, plan: response.plan };
     }
 
     private async query(sql: string): Promise<QueryResponse> {
-        const response = await fetch(`${this.url}/query`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                query: sql.trim().replace(/;+$/, '')
-            })
-        });
+        const url = new URL(this.url);
+        url.searchParams.set('sql', sql);
+
+        const response = await fetch(url.toString());
 
         if (!response.ok) {
             const msg = await response.text();
             throw new Error(`Query failed: ${response.status} ${msg}`);
         }
 
-        return QueryResponse.parse(await response.json());
+        const unparsed = await response.json();
+        return QueryResponse.parse(unparsed);
     }
 
     async createTables(tables: TableSpec[]): Promise<void> {
+        let stmt = '';
         for (const table of tables) {
-            // Spark requires s3a:// protocol, not s3://
-            const s3aPath = table.s3Path.replace('s3://', 's3a://');
-
-            // Create temporary view from Parquet files
-            const createViewStmt = `
-                CREATE OR REPLACE TEMPORARY VIEW ${table.name}
-                USING parquet
-                OPTIONS (path '${s3aPath}')
-            `;
-            await this.query(createViewStmt);
+            // language=SQL format=false
+            stmt += `
+    DROP TABLE IF EXISTS ${table.name};
+    CREATE EXTERNAL TABLE IF NOT EXISTS ${table.name} STORED AS PARQUET LOCATION '${table.s3Path}';
+ `;
         }
+        await this.query(stmt);
     }
 
 }
