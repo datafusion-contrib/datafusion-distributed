@@ -1,4 +1,4 @@
-use crate::distributed_planner::statistics::calculate_bytes_per_row;
+use crate::distributed_planner::statistics::calculate_bytes_returned_per_row;
 use std::any::Any;
 use std::fmt::Formatter;
 
@@ -51,7 +51,7 @@ pub(crate) fn calculate_row_stats(
     // number of rows.
     if matches!(stats.total_byte_size, Precision::Absent) {
         let rows = stats.num_rows.get_value().unwrap_or(&0);
-        let bytes = rows * calculate_bytes_per_row(&node.schema());
+        let bytes = rows * calculate_bytes_returned_per_row(&node.schema());
 
         stats.total_byte_size = Precision::Inexact(bytes);
     }

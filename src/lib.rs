@@ -20,7 +20,7 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    ComputeCostClass, DistributedConfig, DistributedPhysicalOptimizerRule,
+    ComputeComplexity, DistributedConfig, DistributedPhysicalOptimizerRule,
     DistributedPlannerExtension, NetworkBoundary, NetworkBoundaryExt,
 };
 pub use execution_plans::{

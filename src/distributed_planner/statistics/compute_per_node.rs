@@ -1,12 +1,15 @@
+use super::calculate_bytes_per_row::calculate_bytes_returned_per_cell;
 use crate::BroadcastExec;
+use crate::distributed_planner::statistics::calculate_bytes_returned_per_row;
+use crate::execution_plans::ChildrenIsolatorUnionExec;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::physical_plan::expressions::{BinaryExpr, Column, LikeExpr};
+use datafusion::physical_plan::expressions::{Column, Literal};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::{
     CrossJoinExec, HashJoinExec, NestedLoopJoinExec, SortMergeJoinExec, SymmetricHashJoinExec,
@@ -19,350 +22,356 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-/// Represents how compute intensive a node is. There are different predefined classes for this,
-/// each one with a f64 value associated to it.
-///
-/// The f64 value associated to each class aims to model the "amount of compute" the node
-/// contributes per byte. For example:
-///
-/// Based on statistics, we can estimate that:
-/// 1) 1000 rows are going to flow through a node.
-/// 2) Each row will have an estimated average size of 5 bytes.
-/// 3) The node will process 1000 x 5 = 5000 bytes
-///
-/// The [ComputeCostClass] applies a factor to this 5000 bytes number that accounts for how compute
-/// hungry is the node expected to be.
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub enum ComputeCostClass {
-    /// No compute - pure passthrough or I/O-bound operators.
-    /// Examples: Union, Empty, Interleave, DataSourceExec (I/O-bound).
-    Zero,
-
-    /// Extra extra small - minimal bookkeeping only.
-    /// Examples: Limit (just counting rows), CoalescePartitions (receiving batches).
-    XXS,
-
-    /// Extra small - simple memory operations, no per-row computation.
-    /// Examples: CoalesceBatches (concat_batches), RoundRobin repartition.
-    XS,
-
-    /// Small - light per-row computation.
-    /// Examples: Simple column projection, hash computation for repartition.
-    S,
-
-    /// Medium - moderate per-row computation.
-    /// Examples: Filter with simple predicate, projection with expressions.
-    M,
-
-    /// Large - significant per-row computation or light accumulation.
-    /// Examples: SortPreservingMerge (comparisons), simple aggregation (COUNT).
-    L,
-
-    /// Extra large - heavy accumulating operators.
-    /// Examples: Sort (O(n log n)), HashJoin, complex aggregation.
-    XL,
-
-    /// Extra extra large - very heavy computation.
-    /// Examples: NestedLoopJoin (O(n*m)), CrossJoin, aggregation with many
-    /// group-by columns and complex aggregate functions.
-    XXL,
-
-    /// Custom user provided compute cost.
-    Custom(f64),
+/// The runtime big O complexity where N and M are input rows.
+pub enum ComputeComplexity {
+    Constant,
+    N(usize),
+    NLogN(usize),
+    NPlusM(usize, usize),
+    NM(usize, usize),
 }
 
-impl ComputeCostClass {
-    pub(crate) fn factor(&self) -> f64 {
+impl ComputeComplexity {
+    /// Computes the total bytes processed given per-child row counts.
+    pub(crate) fn cost(&self, rows_per_child: &[usize]) -> usize {
         match self {
-            ComputeCostClass::Zero => 0.0,
-            ComputeCostClass::XXS => 0.3,
-            ComputeCostClass::XS => 0.5,
-            ComputeCostClass::S => 0.7,
-            ComputeCostClass::M => 1.0,
-            ComputeCostClass::L => 1.3,
-            ComputeCostClass::XL => 1.6,
-            ComputeCostClass::XXL => 2.0,
-            ComputeCostClass::Custom(factor) => *factor,
+            Self::Constant => 0,
+            Self::N(n) => {
+                let total_rows: usize = rows_per_child.iter().sum();
+                n * total_rows
+            }
+            Self::NLogN(n) => {
+                let total_rows: usize = rows_per_child.iter().sum();
+                if total_rows <= 1 {
+                    return 0;
+                }
+                n * total_rows * (total_rows.ilog2() as usize)
+            }
+            Self::NPlusM(n, m) => {
+                let left = rows_per_child.first().copied().unwrap_or(0);
+                let right = rows_per_child.get(1).copied().unwrap_or(0);
+                n * left + m * right
+            }
+            Self::NM(n, m) => {
+                let left = rows_per_child.first().copied().unwrap_or(0);
+                let right = rows_per_child.get(1).copied().unwrap_or(0);
+                n * m * left * right
+            }
         }
     }
 }
 
-/// Returns the estimated [`ComputeCostClass`] for the given execution plan node.
-///
-/// Cost estimation is based on the actual computational work performed by each
-/// DataFusion operator, intentionally separating compute cost from I/O cost.
-///
-/// Reference: DataFusion physical-plan implementations:
-/// <https://github.com/apache/datafusion/tree/branch-52/datafusion/physical-plan/src>
-pub(crate) fn calculate_compute_cost(node: &Arc<dyn ExecutionPlan>) -> ComputeCostClass {
-    let any = node.as_any();
+impl Debug for ComputeComplexity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant => write!(f, "O(1)"),
+            Self::N(n) => write!(f, "O({n}*N)"),
+            Self::NLogN(n) => write!(f, "O({n}*N*LogN)"),
+            Self::NPlusM(n, m) => write!(f, "O({n}*N+{m}*M)"),
+            Self::NM(n, m) => write!(f, "O({}*N*M)", n * m),
+        }
+    }
+}
 
-    // === XXL: Very heavy computation (O(n*m) or worse) ===
+/// Calculates what's the cost, expressed as a number, per input row for each input children.
+///
+/// The Vec return has equal size to `node.children()`, and determines how many each input needs
+/// to be processed
+pub(crate) fn calculate_compute_complexity(node: &Arc<dyn ExecutionPlan>) -> ComputeComplexity {
+    let any = node.as_any();
 
     // NestedLoopJoinExec: O(n*m) - evaluates join condition for each pair of rows
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/nested_loop_join.rs
-    if any.is::<NestedLoopJoinExec>() {
-        return ComputeCostClass::XXL;
+    if let Some(node) = any.downcast_ref::<NestedLoopJoinExec>() {
+        // Assume we need to do read all input rows one by one.
+        let mut n = calculate_bytes_returned_per_row(&node.left().schema());
+        let mut m = calculate_bytes_returned_per_row(&node.right().schema());
+        if let Some(filter) = node.filter() {
+            let filter = bytes_processed_per_row(filter.expression(), filter.schema());
+            n += filter.processed;
+            m += filter.processed;
+        }
+        return ComputeComplexity::NM(n, m);
     }
 
     // CrossJoinExec: O(n*m) - produces Cartesian product of all row pairs
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/cross_join.rs
-    if any.is::<CrossJoinExec>() {
-        return ComputeCostClass::XXL;
+    if let Some(node) = any.downcast_ref::<CrossJoinExec>() {
+        // Assume we need to do read all input rows one by one.
+        let n = calculate_bytes_returned_per_row(&node.left().schema());
+        let m = calculate_bytes_returned_per_row(&node.right().schema());
+        return ComputeComplexity::NM(n, m);
     }
-
-    // === XL: Heavy accumulating operators (O(n log n) or hash-based) ===
 
     // SortExec: O(n log n) - uses lexsort_to_indices, may spill to disk
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/sorts/sort.rs
-    if any.is::<SortExec>() {
-        return ComputeCostClass::XL;
+    if let Some(node) = any.downcast_ref::<SortExec>() {
+        // All the rows will need to be copied one by one.
+        let mut n = calculate_bytes_returned_per_row(&node.input().schema());
+        // All the sort expressions need to be evaluated on every row.
+        for expr in node.expr() {
+            n += bytes_processed_per_row(&expr.expr, &node.input().schema()).processed;
+        }
+        return ComputeComplexity::NLogN(n);
     }
 
     // HashJoinExec: hash table build (O(n)) + probe (O(m))
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/hash_join/exec.rs
-    // Cost varies by number of join keys and whether there's a filter
     if let Some(join) = any.downcast_ref::<HashJoinExec>() {
-        let num_keys = join.on().len();
-        let has_filter = join.filter().is_some();
-        return match (num_keys, has_filter) {
-            (_, true) => ComputeCostClass::XXL, // Filter adds per-match evaluation
-            (n, _) if n > 3 => ComputeCostClass::XXL, // Many keys = expensive hashing
-            _ => ComputeCostClass::XL,
-        };
+        let left_schema = join.left().schema();
+        let right_schema = join.right().schema();
+        // Build side: store all left rows in hash table + hash left join keys
+        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        for (left_key, _) in join.on() {
+            n += bytes_processed_per_row(left_key, &left_schema).processed;
+        }
+        // Probe side: hash right join keys + look up matches
+        let mut m = calculate_bytes_returned_per_row(&right_schema);
+        for (_, right_key) in join.on() {
+            m += bytes_processed_per_row(right_key, &right_schema).processed;
+        }
+        // Filter adds per-match evaluation cost to both sides
+        if let Some(filter) = join.filter() {
+            let fc = bytes_processed_per_row(filter.expression(), filter.schema());
+            n += fc.processed;
+            m += fc.processed;
+        }
+        return ComputeComplexity::NPlusM(n, m);
     }
 
     // SortMergeJoinExec: merge of sorted streams with comparisons
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/sort_merge_join/exec.rs
-    if any.is::<SortMergeJoinExec>() {
-        return ComputeCostClass::XL;
+    if let Some(node) = any.downcast_ref::<SortMergeJoinExec>() {
+        let left_schema = node.left().schema();
+        let right_schema = node.right().schema();
+        // Left side: read all rows + compare join keys during merge
+        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        for (left_key, _) in node.on() {
+            n += bytes_processed_per_row(left_key, &left_schema).processed;
+        }
+        // Right side: read all rows + compare join keys during merge
+        let mut m = calculate_bytes_returned_per_row(&right_schema);
+        for (_, right_key) in node.on() {
+            m += bytes_processed_per_row(right_key, &right_schema).processed;
+        }
+        if let Some(filter) = node.filter().as_ref() {
+            let fc = bytes_processed_per_row(filter.expression(), filter.schema());
+            n += fc.processed;
+            m += fc.processed;
+        }
+        return ComputeComplexity::NPlusM(n, m);
     }
 
     // SymmetricHashJoinExec: streaming join with hash tables on both sides
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/symmetric_hash_join.rs
-    if any.is::<SymmetricHashJoinExec>() {
-        return ComputeCostClass::XL;
+    if let Some(node) = any.downcast_ref::<SymmetricHashJoinExec>() {
+        let left_schema = node.left().schema();
+        let right_schema = node.right().schema();
+        // Both sides build hash tables: store rows + hash join keys
+        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        for (left_key, _) in node.on() {
+            n += bytes_processed_per_row(left_key, &left_schema).processed;
+        }
+        let mut m = calculate_bytes_returned_per_row(&right_schema);
+        for (_, right_key) in node.on() {
+            m += bytes_processed_per_row(right_key, &right_schema).processed;
+        }
+        if let Some(filter) = node.filter() {
+            let fc = bytes_processed_per_row(filter.expression(), filter.schema());
+            n += fc.processed;
+            m += fc.processed;
+        }
+        return ComputeComplexity::NPlusM(n, m);
     }
 
-    // Aggregation: cost varies by grouping complexity and aggregate functions
+    // Aggregation: hash group-by keys + accumulate aggregate inputs
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/aggregates/mod.rs
     if let Some(agg) = any.downcast_ref::<AggregateExec>() {
-        return compute_aggregation_cost(agg);
+        let input_schema = agg.input_schema();
+        // Base: read all input columns for accumulation
+        let mut n = calculate_bytes_returned_per_row(&input_schema);
+        // Additional: evaluate and hash group-by key expressions
+        for (expr, _) in agg.group_expr().expr() {
+            n += bytes_processed_per_row(expr, &input_schema).processed;
+        }
+        // Per-aggregate filter expressions (e.g. COUNT(*) FILTER (WHERE ...))
+        for filter in agg.filter_expr().iter().flatten() {
+            n += bytes_processed_per_row(filter, &input_schema).processed;
+        }
+        return ComputeComplexity::N(n);
     }
 
     // Window functions: buffer partitions, compute aggregates over windows
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/windows/window_agg_exec.rs
-    if any.is::<WindowAggExec>() || any.is::<BoundedWindowAggExec>() {
-        return ComputeCostClass::XL;
+    if let Some(node) = any.downcast_ref::<WindowAggExec>() {
+        let input_schema = node.input().schema();
+        // Read all input data + evaluate partition key expressions
+        let mut n = calculate_bytes_returned_per_row(&input_schema);
+        for expr in node.partition_keys() {
+            n += bytes_processed_per_row(&expr, &input_schema).processed;
+        }
+        return ComputeComplexity::N(n);
     }
 
-    // === L: Significant per-row computation ===
+    if let Some(node) = any.downcast_ref::<BoundedWindowAggExec>() {
+        let input_schema = node.input().schema();
+        let mut n = calculate_bytes_returned_per_row(&input_schema);
+        for expr in node.partition_keys() {
+            n += bytes_processed_per_row(&expr, &input_schema).processed;
+        }
+        return ComputeComplexity::N(n);
+    }
 
     // SortPreservingMergeExec: merges pre-sorted streams with comparisons
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/sorts/sort_preserving_merge.rs
-    // Lighter than full sort but still does comparisons for each output row
-    if any.is::<SortPreservingMergeExec>() {
-        return ComputeCostClass::L;
+    // K-way merge: O(N log K) comparisons on sort key expressions
+    if let Some(node) = any.downcast_ref::<SortPreservingMergeExec>() {
+        // need to copy all rows...
+        let mut n = calculate_bytes_returned_per_row(&node.input().schema());
+        // and evaluate the sort expressions on all of them
+        for expr in node.expr() {
+            n += bytes_processed_per_row(&expr.expr, &node.input().schema()).processed;
+        }
+        return ComputeComplexity::N(n);
     }
-
-    // === M: Moderate per-row computation ===
 
     // FilterExec: evaluates predicate expression per row
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/filter.rs
     // Cost depends on predicate complexity - LIKE/Regex operations are expensive
-    if let Some(filter) = any.downcast_ref::<FilterExec>() {
-        return compute_filter_cost(filter.predicate());
+    if let Some(node) = any.downcast_ref::<FilterExec>() {
+        // It needs to perform a copy operation just to the output rows...
+        let mut n = calculate_bytes_returned_per_row(&node.input().schema());
+        // ...and predicate evaluation on all input rows.
+        n += bytes_processed_per_row(node.predicate(), &node.input().schema()).processed;
+        return ComputeComplexity::N(n);
     }
 
     // ProjectionExec: cost depends on whether it's simple columns or expressions
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/projection.rs
-    if let Some(proj) = any.downcast_ref::<ProjectionExec>() {
-        return compute_projection_cost(proj);
+    if let Some(node) = any.downcast_ref::<ProjectionExec>() {
+        let mut n = 0;
+        for expr in node.expr() {
+            n += bytes_processed_per_row(&expr.expr, &node.input().schema()).processed;
+        }
+        return ComputeComplexity::N(n);
     }
-
-    // DataSourceExec: I/O-bound mainly, but also some CPU for decoding.
-    if any.is::<DataSourceExec>() {
-        return ComputeCostClass::M;
-    }
-
-    // === S: Light per-row computation ===
 
     // RepartitionExec with Hash: computes hash per row + take_arrays
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/repartition/mod.rs
-    if let Some(repartition) = any.downcast_ref::<RepartitionExec>() {
-        return match repartition.partitioning() {
+    if let Some(node) = any.downcast_ref::<RepartitionExec>() {
+        // It needs to copy all the data for chunking it to the different output partitions...
+        let mut n = calculate_bytes_returned_per_row(&node.schema());
+        // And it might need to compute a hash per row based on the provided expressions.
+        match node.partitioning() {
             // Hash partitioning: create_hashes (line 575) + take_arrays (line 606)
             Partitioning::Hash(exprs, _) => {
-                if exprs.len() > 2 {
-                    ComputeCostClass::M // Many hash columns = more compute
-                } else {
-                    ComputeCostClass::S
+                for expr in exprs {
+                    n += bytes_processed_per_row(expr, &node.input().schema()).processed
                 }
             }
             // RoundRobin: just distributes whole batches, no per-row work
-            Partitioning::RoundRobinBatch(_) => ComputeCostClass::XS,
+            Partitioning::RoundRobinBatch(_) => {}
             // UnknownPartitioning: conservative estimate
-            Partitioning::UnknownPartitioning(_) => ComputeCostClass::S,
+            Partitioning::UnknownPartitioning(_) => {}
         };
+        return ComputeComplexity::N(n);
     }
 
-    // === XS: Simple memory operations ===
+    // DataSourceExec: Produces data, so assume that it's an O(N) operation where all the bytes
+    // need to get processed.
+    if any.is::<DataSourceExec>() {
+        return ComputeComplexity::N(calculate_bytes_returned_per_row(&node.schema()));
+    }
 
-    // CoalesceBatchesExec: concatenates batches via concat_batches (memory copy)
+    // CoalesceBatchesExec: concatenates batches via concat_batches (memory copy). As it copies
+    // data, it does an O(N) operation over all the input bytes.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/coalesce_batches.rs
     if any.is::<CoalesceBatchesExec>() {
-        return ComputeCostClass::XS;
+        return ComputeComplexity::N(calculate_bytes_returned_per_row(&node.schema()));
     }
 
-    // === XXS: Minimal bookkeeping ===
-
-    // Limit: just counts rows and stops early
+    // Limit: just counts rows and stops early.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/limit.rs
     if any.is::<GlobalLimitExec>() || any.is::<LocalLimitExec>() {
-        return ComputeCostClass::XXS;
+        return ComputeComplexity::Constant;
     }
 
-    // CoalescePartitionsExec: receives batches from partitions, no transformation
+    // CoalescePartitionsExec: receives batches from partitions, just passes through the record
+    // batches in a zero copy manner.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/coalesce_partitions.rs
     if any.is::<CoalescePartitionsExec>() {
-        return ComputeCostClass::XXS;
+        return ComputeComplexity::Constant;
     }
-
-    // === Zero: No compute (passthrough or I/O-bound) ===
 
     // BroadcastExec: This node does not do any computation, does not even read the data.
     if any.is::<BroadcastExec>() {
-        return ComputeCostClass::Zero;
+        return ComputeComplexity::Constant;
     }
 
     // UnionExec: combines multiple input streams, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
-    if any.is::<UnionExec>() {
-        return ComputeCostClass::Zero;
+    if any.is::<UnionExec>() || any.is::<ChildrenIsolatorUnionExec>() {
+        return ComputeComplexity::Constant;
     }
 
     // InterleaveExec: round-robin merging of inputs, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
     if any.is::<InterleaveExec>() {
-        return ComputeCostClass::Zero;
+        return ComputeComplexity::Constant;
     }
 
     // EmptyExec: produces no data
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/empty.rs
     if any.is::<EmptyExec>() {
-        return ComputeCostClass::Zero;
+        return ComputeComplexity::Constant;
     }
 
-    // For unknown node types, default to M as a conservative estimate.
-    ComputeCostClass::M
+    // For unknown node types, assume we have to do an O(N) operation over all the rows.
+    ComputeComplexity::N(calculate_bytes_returned_per_row(&node.schema()))
 }
 
-/// Computes the cost for an aggregation based on its complexity.
-///
-/// Factors considered:
-/// - Number of group-by columns (more = more hashing work)
-/// - Number of aggregate expressions
-/// - Whether it's a simple aggregation (e.g., COUNT(*)) vs complex
-fn compute_aggregation_cost(agg: &AggregateExec) -> ComputeCostClass {
-    let group_by = agg.group_expr();
-    let num_group_cols = group_by.expr().len();
-    let num_aggr_exprs = agg.aggr_expr().len();
-    let has_grouping_set = group_by.has_grouping_set();
-
-    // No grouping (e.g., SELECT COUNT(*) FROM t) - just accumulates values
-    if num_group_cols == 0 && !has_grouping_set {
-        return if num_aggr_exprs <= 2 {
-            ComputeCostClass::L // Simple: COUNT(*), SUM(x)
-        } else {
-            ComputeCostClass::XL // Multiple aggregates
-        };
-    }
-
-    // GROUPING SETS/CUBE/ROLLUP - very expensive, multiple groupings
-    if has_grouping_set {
-        return ComputeCostClass::XXL;
-    }
-
-    // Regular GROUP BY - cost based on number of group columns and aggregates
-    let complexity = num_group_cols + num_aggr_exprs;
-    match complexity {
-        0..=2 => ComputeCostClass::L,  // Simple: GROUP BY a with COUNT(*)
-        3..=5 => ComputeCostClass::XL, // Moderate: GROUP BY a, b with SUM, AVG
-        _ => ComputeCostClass::XXL,    // Complex: many columns/aggregates
-    }
+#[derive(Default)]
+struct BytesPerRow {
+    processed: usize,
+    returned: usize,
 }
 
-/// Computes the cost for a projection based on expression complexity.
-///
-/// Simple column references are nearly free (just pointer manipulation),
-/// while computed expressions require evaluation per row.
-fn compute_projection_cost(proj: &ProjectionExec) -> ComputeCostClass {
-    let exprs = proj.expr();
+fn bytes_processed_per_row(expression: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> BytesPerRow {
+    let any = expression.as_any();
 
-    // Check if all expressions are simple column references
-    let all_columns = exprs.iter().all(|e| e.expr.as_any().is::<Column>());
-
-    if all_columns {
-        // Simple column projection - just reordering/selecting columns
-        return ComputeCostClass::XS;
-    }
-
-    // Has computed expressions - cost depends on number of non-column exprs
-    let num_computed = exprs
-        .iter()
-        .filter(|e| !e.expr.as_any().is::<Column>())
-        .count();
-
-    match num_computed {
-        0 => ComputeCostClass::XS,    // All columns (shouldn't reach here)
-        1..=2 => ComputeCostClass::S, // Few computed expressions
-        3..=5 => ComputeCostClass::M, // Several computed expressions
-        _ => ComputeCostClass::L,     // Many computed expressions
-    }
-}
-
-/// Computes the cost of a filter based on its predicate.
-/// LIKE and Regex operations are significantly more expensive than simple comparisons.
-fn compute_filter_cost(predicate: &Arc<dyn PhysicalExpr>) -> ComputeCostClass {
-    if predicate_contains_like_or_regex(predicate) {
-        ComputeCostClass::XL // 1.6 factor for expensive string matching
+    if let Some(col) = any.downcast_ref::<Column>() {
+        if col.index() < schema.fields().len() {
+            return BytesPerRow {
+                processed: 0,
+                returned: calculate_bytes_returned_per_cell(schema.field(col.index()).data_type()),
+            };
+        }
+        BytesPerRow::default()
+    } else if any.is::<Literal>() {
+        BytesPerRow::default()
     } else {
-        ComputeCostClass::M // 1.0 factor for simple predicates
-    }
-}
+        // Generic handler for all other expressions: CastExpr, TryCastExpr, CaseExpr,
+        // InListExpr, IsNullExpr, IsNotNullExpr, NotExpr, NegativeExpr, LikeExpr,
+        // ScalarFunctionExpr, AsyncFuncExpr, etc.
+        let children: Vec<BytesPerRow> = expression
+            .children()
+            .iter()
+            .map(|child| bytes_processed_per_row(child, schema))
+            .collect();
 
-/// Recursively checks if a predicate contains LIKE or Regex operations.
-fn predicate_contains_like_or_regex(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    let any = expr.as_any();
+        let processed: usize = children.iter().map(|c| c.processed + c.returned).sum();
 
-    // Check for LikeExpr (handles LIKE, ILIKE, NOT LIKE, NOT ILIKE)
-    if any.is::<LikeExpr>() {
-        return true;
-    }
+        let returned = match expression.return_field(schema.as_ref()) {
+            Ok(field) => calculate_bytes_returned_per_cell(field.data_type()),
+            Err(_) => children.first().map_or(0, |c| c.returned),
+        };
 
-    // Check for BinaryExpr with Regex operators
-    if let Some(binary) = any.downcast_ref::<BinaryExpr>() {
-        match binary.op() {
-            Operator::RegexMatch
-            | Operator::RegexIMatch
-            | Operator::RegexNotMatch
-            | Operator::RegexNotIMatch => return true,
-            _ => {}
-        }
-        // Recursively check children
-        return predicate_contains_like_or_regex(binary.left())
-            || predicate_contains_like_or_regex(binary.right());
-    }
-
-    // Check nested expressions (AND, OR, NOT)
-    for child in expr.children() {
-        if predicate_contains_like_or_regex(child) {
-            return true;
+        BytesPerRow {
+            processed,
+            returned,
         }
     }
-
-    false
 }

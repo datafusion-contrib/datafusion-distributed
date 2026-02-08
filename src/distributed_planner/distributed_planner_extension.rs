@@ -1,5 +1,4 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::distributed_planner::statistics::ComputeCostClass;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
@@ -14,18 +13,6 @@ use std::sync::Arc;
 /// [ExecutionPlan]s. Typically used for handling custom user defined [ExecutionPlan]s in a
 /// distributed context.
 pub trait DistributedPlannerExtension {
-    /// Sets the compute cost of the provided [ExecutionPlan].
-    ///
-    /// This is useful when users have custom nodes, and they want to attribute a compute cost other
-    /// than the default.
-    fn compute_cost(
-        &self,
-        _plan: &Arc<dyn ExecutionPlan>,
-        _cfg: &ConfigOptions,
-    ) -> Option<ComputeCostClass> {
-        None
-    }
-
     /// Signals the distributed planner that the provided node must run in at most N tasks.
     /// Returning Some(1) effectively tells the planner that the node cannot be distributed.
     ///
@@ -52,7 +39,6 @@ pub trait DistributedPlannerExtension {
 impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension> {
     delegate! {
         to self.as_ref() {
-            fn compute_cost(&self, _plan: &Arc<dyn ExecutionPlan>, _cfg: &ConfigOptions) -> Option<ComputeCostClass>;
             fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
         }
@@ -62,7 +48,6 @@ impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension> {
 impl DistributedPlannerExtension for Arc<dyn DistributedPlannerExtension + Send + Sync> {
     delegate! {
         to self.as_ref() {
-            fn compute_cost(&self, _plan: &Arc<dyn ExecutionPlan>, _cfg: &ConfigOptions) -> Option<ComputeCostClass>;
             fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
         }
@@ -136,19 +121,6 @@ pub(crate) struct CombinedDistributedPlannerExtension {
 }
 
 impl DistributedPlannerExtension for CombinedDistributedPlannerExtension {
-    fn compute_cost(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        cfg: &ConfigOptions,
-    ) -> Option<ComputeCostClass> {
-        for estimator in &self.user_provided {
-            if let Some(compute_cost) = estimator.compute_cost(plan, cfg) {
-                return Some(compute_cost);
-            }
-        }
-        None
-    }
-
     fn max_tasks(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<usize> {
         for estimator in &self.user_provided {
             if let Some(max_tasks) = estimator.max_tasks(plan, cfg) {
