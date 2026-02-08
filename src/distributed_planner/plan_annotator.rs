@@ -94,13 +94,12 @@ impl AnnotatedPlan {
     }
 
     pub(super) fn cost_aggregated_until_network_boundary(&self) -> Result<usize, DataFusionError> {
+        if self.plan_or_nb.is_network_boundary() {
+            return self.cost();
+        }
         let mut accumulated_compute_cost = self.cost()?;
         for input_child in &self.children {
-            accumulated_compute_cost += if input_child.plan_or_nb.is_network_boundary() {
-                input_child.cost()?
-            } else {
-                input_child.cost_aggregated_until_network_boundary()?
-            }
+            accumulated_compute_cost += input_child.cost_aggregated_until_network_boundary()?;
         }
         Ok(accumulated_compute_cost)
     }
@@ -491,11 +490,11 @@ mod tests {
         assert_snapshot!(annotated, @r"
         ProjectionExec: task_count=Some(1) output_rows=366 compute_complexity=O(0*N) accumulated_cost=25620 output_bytes=6222
           SortPreservingMergeExec: task_count=Some(1) output_rows=366 compute_complexity=O(35*N) accumulated_cost=25620 output_bytes=6222
-            [NetworkBoundary] Coalesce: task_count=Some(1) output_rows=366 accumulated_cost=131028 output_bytes=6222
+            [NetworkBoundary] Coalesce: task_count=Some(1) output_rows=366 accumulated_cost=12810 output_bytes=6222
               SortExec: task_count=Some(4) output_rows=366 compute_complexity=O(35*N*LogN) accumulated_cost=118218 output_bytes=6222
                 ProjectionExec: task_count=Some(4) output_rows=366 compute_complexity=O(0*N) accumulated_cost=15738 output_bytes=6222
                   AggregateExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=15738 output_bytes=6222
-                    [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=31476 output_bytes=6222
+                    [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=9516 output_bytes=6222
                       RepartitionExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=21960 output_bytes=6222
                         AggregateExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=12444 output_bytes=6222
                           DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=6222 output_bytes=6222
@@ -545,10 +544,10 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(1) output_rows=74 compute_complexity=O(26*N+26*M) accumulated_cost=10286 output_bytes=1332
           CoalescePartitionsExec: task_count=Some(1) output_rows=74 compute_complexity=O(1) accumulated_cost=1924 output_bytes=3148
-            [NetworkBoundary] Coalesce: task_count=Some(1) output_rows=74 accumulated_cost=6438 output_bytes=3148
+            [NetworkBoundary] Coalesce: task_count=Some(1) output_rows=74 accumulated_cost=1924 output_bytes=3148
               ProjectionExec: task_count=Some(2) output_rows=74 compute_complexity=O(0*N) accumulated_cost=4514 output_bytes=3148
                 AggregateExec: task_count=Some(2) output_rows=74 compute_complexity=O(26*N) accumulated_cost=4514 output_bytes=3148
-                  [NetworkBoundary] Shuffle: task_count=Some(2) output_rows=74 accumulated_cost=60540 output_bytes=3148
+                  [NetworkBoundary] Shuffle: task_count=Some(2) output_rows=74 accumulated_cost=2590 output_bytes=3148
                     RepartitionExec: task_count=Some(4) output_rows=74 compute_complexity=O(35*N) accumulated_cost=57950 output_bytes=3148
                       AggregateExec: task_count=Some(4) output_rows=74 compute_complexity=O(26*N) accumulated_cost=55360 output_bytes=3148
                         FilterExec: task_count=Some(4) output_rows=74 compute_complexity=O(60*N) accumulated_cost=53436 output_bytes=3148
@@ -556,7 +555,7 @@ mod tests {
                             DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(43*N) accumulated_cost=15738 output_bytes=15738
           ProjectionExec: task_count=Some(1) output_rows=74 compute_complexity=O(0*N) accumulated_cost=4514 output_bytes=3148
             AggregateExec: task_count=Some(1) output_rows=74 compute_complexity=O(26*N) accumulated_cost=4514 output_bytes=3148
-              [NetworkBoundary] Shuffle: task_count=Some(1) output_rows=74 accumulated_cost=60540 output_bytes=3148
+              [NetworkBoundary] Shuffle: task_count=Some(1) output_rows=74 accumulated_cost=2590 output_bytes=3148
                 RepartitionExec: task_count=Some(4) output_rows=74 compute_complexity=O(35*N) accumulated_cost=57950 output_bytes=3148
                   AggregateExec: task_count=Some(4) output_rows=74 compute_complexity=O(26*N) accumulated_cost=55360 output_bytes=3148
                     FilterExec: task_count=Some(4) output_rows=74 compute_complexity=O(60*N) accumulated_cost=53436 output_bytes=3148
@@ -589,7 +588,7 @@ mod tests {
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=12444 output_bytes=6222
-          [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=24888 output_bytes=6222
+          [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=6222 output_bytes=6222
             RepartitionExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=18666 output_bytes=6222
               AggregateExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=12444 output_bytes=6222
                 DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(17*N) accumulated_cost=6222 output_bytes=6222
@@ -642,7 +641,7 @@ mod tests {
         ProjectionExec: task_count=Some(4) output_rows=366 compute_complexity=O(0*N) accumulated_cost=95160 output_bytes=5856
           BoundedWindowAggExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=95160 output_bytes=12810
             SortExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N*LogN) accumulated_cost=85644 output_bytes=9516
-              [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=28548 output_bytes=9516
+              [NetworkBoundary] Shuffle: task_count=Some(4) output_rows=366 accumulated_cost=9516 output_bytes=9516
                 RepartitionExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=19032 output_bytes=9516
                   DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
         ")
@@ -686,7 +685,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=19032 output_bytes=9516
+            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=9516 output_bytes=9516
               BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                 DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
@@ -716,7 +715,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=19032 output_bytes=9516
+            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=9516 output_bytes=9516
               BroadcastExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                 DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
@@ -739,7 +738,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-            [NetworkBoundary] Broadcast: task_count=Some(3) output_rows=366 accumulated_cost=19032 output_bytes=9516
+            [NetworkBoundary] Broadcast: task_count=Some(3) output_rows=366 accumulated_cost=9516 output_bytes=9516
               BroadcastExec: task_count=Some(1) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                 DataSourceExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
@@ -759,7 +758,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
           CoalescePartitionsExec: task_count=Some(1) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-            [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=19032 output_bytes=9516
+            [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=9516 output_bytes=9516
               BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                 DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           DataSourceExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
@@ -796,11 +795,11 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Some(4) output_rows=366 compute_complexity=O(35*N+26*M) accumulated_cost=44652 output_bytes=9882
           CoalescePartitionsExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=12810 output_bytes=12810
-            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=50874 output_bytes=12810
+            [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=12810 output_bytes=12810
               BroadcastExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=38064 output_bytes=12810
                 HashJoinExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=12810
                   CoalescePartitionsExec: task_count=Some(4) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-                    [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=19032 output_bytes=9516
+                    [NetworkBoundary] Broadcast: task_count=Some(4) output_rows=366 accumulated_cost=9516 output_bytes=9516
                       BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                         DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
                   DataSourceExec: task_count=Some(4) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
@@ -832,19 +831,19 @@ mod tests {
         ChildrenIsolatorUnionExec: task_count=Some(4) output_rows=1098 compute_complexity=O(1) accumulated_cost=114192 output_bytes=19764
           HashJoinExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(1) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-              [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=19032 output_bytes=9516
+              [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=9516 output_bytes=9516
                 BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                   DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
             DataSourceExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           HashJoinExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(1) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-              [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=19032 output_bytes=9516
+              [NetworkBoundary] Broadcast: task_count=Some(1) output_rows=366 accumulated_cost=9516 output_bytes=9516
                 BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                   DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
             DataSourceExec: task_count=Some(1) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
           HashJoinExec: task_count=Some(2) output_rows=366 compute_complexity=O(26*N+26*M) accumulated_cost=38064 output_bytes=6588
             CoalescePartitionsExec: task_count=Some(2) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
-              [NetworkBoundary] Broadcast: task_count=Some(2) output_rows=366 accumulated_cost=19032 output_bytes=9516
+              [NetworkBoundary] Broadcast: task_count=Some(2) output_rows=366 accumulated_cost=9516 output_bytes=9516
                 BroadcastExec: task_count=Some(3) output_rows=366 compute_complexity=O(1) accumulated_cost=9516 output_bytes=9516
                   DataSourceExec: task_count=Some(3) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
             DataSourceExec: task_count=Some(2) output_rows=366 compute_complexity=O(26*N) accumulated_cost=9516 output_bytes=9516
