@@ -72,10 +72,7 @@ pub(super) fn children_isolator_union_split(
     // Goal: distribute task_count_budget subtasks among children proportionally to their cost,
     // respecting max_tasks constraints and ensuring at least 1 subtask per child.
 
-    let costs: Vec<usize> = children
-        .iter()
-        .map(|c| c.cost())
-        .collect::<Result<_, _>>()?;
+    let costs: Vec<usize> = children.iter().map(|c| c.cost()).collect();
     let max_tasks: Vec<Option<usize>> = children.iter().map(|c| c.max_tasks()).collect();
     let total_cost: usize = costs.iter().sum();
 
@@ -189,12 +186,12 @@ pub(super) fn children_isolator_union_split(
 
 /// private trait just for testability purposes.
 pub(super) trait CostChild {
-    fn cost(&self) -> Result<usize>;
+    fn cost(&self) -> usize;
     fn max_tasks(&self) -> Option<usize>;
 }
 
 impl CostChild for AnnotatedPlan {
-    fn cost(&self) -> Result<usize> {
+    fn cost(&self) -> usize {
         self.cost_aggregated_until_network_boundary()
     }
 
@@ -376,8 +373,8 @@ mod tests {
     }
 
     impl CostChild for (usize, Option<usize>) {
-        fn cost(&self) -> Result<usize> {
-            Ok(self.0)
+        fn cost(&self) -> usize {
+            self.0
         }
 
         fn max_tasks(&self) -> Option<usize> {

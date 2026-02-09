@@ -1,8 +1,5 @@
-use crate::distributed_planner::statistics::calculate_bytes_returned_per_row;
-use std::any::Any;
-use std::fmt::Formatter;
-
 use crate::DistributedConfig;
+use crate::distributed_planner::statistics::calculate_bytes_per_row::default_bytes_for_datatype;
 use datafusion::common::stats::Precision;
 use datafusion::common::{Statistics, not_impl_err, plan_err};
 use datafusion::config::ConfigOptions;
@@ -12,6 +9,8 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use delegate::delegate;
 use itertools::Itertools;
+use std::any::Any;
+use std::fmt::Formatter;
 use std::sync::Arc;
 
 /// Uses upstream DataFusion stats system with some small overrides.
@@ -47,23 +46,35 @@ pub(crate) fn calculate_row_stats(
         stats.num_rows = Precision::Inexact(num_rows)
     }
 
-    // If bytes are absent, let's just infer them based on the schema and the
-    // number of rows.
-    if matches!(stats.total_byte_size, Precision::Absent) {
-        let rows = stats.num_rows.get_value().unwrap_or(&0);
-        let bytes = rows * calculate_bytes_returned_per_row(&node.schema());
+    let schema = node.schema();
 
-        stats.total_byte_size = Precision::Inexact(bytes);
-    }
-
-    // If some of the NDVs are not present in one of the column-level stats, assume the
-    // worst and use the same as the input number of rows.
-    for col_stats in &mut stats.column_statistics {
+    for (i, col_stats) in &mut stats.column_statistics.iter_mut().enumerate() {
         let rows = stats.num_rows.get_value().unwrap_or(&0);
 
+        // If some of the NDVs are not present in one of the column-level stats, assume the
+        // worst and use the same as the input number of rows.
         if matches!(col_stats.distinct_count, Precision::Absent) {
             col_stats.distinct_count = Precision::Inexact(*rows);
         }
+
+        // If the per-column byte size stats are not present, estimate the byte size based on the
+        // data type and the row count.
+        let Some(dt) = schema.fields.get(i).map(|v| v.data_type()) else {
+            return plan_err!("Field with index {i} not present in schema: {schema:?}");
+        };
+        if matches!(col_stats.byte_size, Precision::Absent) {
+            col_stats.byte_size = Precision::Inexact(default_bytes_for_datatype(dt) * rows)
+        }
+    }
+
+    // If bytes are absent, let's just infer them based on the schema and the
+    // number of rows.
+    if matches!(stats.total_byte_size, Precision::Absent) {
+        let mut total_byte_size = 0;
+        for col_stats in &stats.column_statistics {
+            total_byte_size += col_stats.byte_size.get_value().unwrap_or(&0);
+        }
+        stats.total_byte_size = Precision::Inexact(total_byte_size);
     }
 
     Ok(stats)

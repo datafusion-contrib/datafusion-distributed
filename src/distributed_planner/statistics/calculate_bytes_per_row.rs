@@ -1,4 +1,4 @@
-use datafusion::arrow::datatypes::{DataType, IntervalUnit, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, IntervalUnit};
 
 /// Default data size estimate for variable-width columns when no statistics are available.
 ///
@@ -23,15 +23,7 @@ const DEFAULT_DATA_SIZE_PER_COLUMN: usize = 50;
 ///
 /// Reference: Trino's PlanNodeStatsEstimate.getOutputSizeForSymbol()
 /// https://github.com/trinodb/trino/blob/458/core/trino-main/src/main/java/io/trino/cost/PlanNodeStatsEstimate.java#L89-L114
-pub(crate) fn calculate_bytes_returned_per_row(schema: &SchemaRef) -> usize {
-    schema
-        .fields()
-        .iter()
-        .map(|field| calculate_bytes_returned_per_cell(field.data_type()))
-        .sum()
-}
-
-pub(crate) fn calculate_bytes_returned_per_cell(data_type: &DataType) -> usize {
+pub(crate) fn default_bytes_for_datatype(data_type: &DataType) -> usize {
     // 1 byte for validity bitmap per row (Arrow uses 1 bit, but we round up for estimation).
     // Trino calls this the "is null" boolean array.
     // Reference: PlanNodeStatsEstimate.java:98-99
@@ -80,26 +72,25 @@ pub(crate) fn calculate_bytes_returned_per_cell(data_type: &DataType) -> usize {
 
         // Fixed-size list: fixed count * element size (Arrow-specific)
         DataType::FixedSizeList(field, size) => {
-            VALIDITY_OVERHEAD
-                + (*size as usize) * calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + (*size as usize) * default_bytes_for_datatype(field.data_type())
         }
 
         // Struct: sum of all child field sizes (Arrow-specific)
         // Trino would treat ROW types as variable-width
         DataType::Struct(fields) => fields
             .iter()
-            .map(|f| calculate_bytes_returned_per_cell(f.data_type()))
+            .map(|f| default_bytes_for_datatype(f.data_type()))
             .sum(),
 
         // Dictionary-encoded: just the key indices, values are shared across rows (Arrow-specific)
         // Trino doesn't have dictionary encoding at the type level
-        DataType::Dictionary(key_type, _value_type) => calculate_bytes_returned_per_cell(key_type),
+        DataType::Dictionary(key_type, _value_type) => default_bytes_for_datatype(key_type),
 
         // Union: type_id (1 byte) + max child size (Arrow-specific)
         DataType::Union(fields, _) => {
             let max_child_size = fields
                 .iter()
-                .map(|(_, f)| calculate_bytes_returned_per_cell(f.data_type()))
+                .map(|(_, f)| default_bytes_for_datatype(f.data_type()))
                 .max()
                 .unwrap_or(0);
             1 + max_child_size
@@ -107,7 +98,7 @@ pub(crate) fn calculate_bytes_returned_per_cell(data_type: &DataType) -> usize {
 
         // Run-end encoded: estimate as if it were the value type (Arrow-specific)
         // Actual compression depends on data distribution
-        DataType::RunEndEncoded(_, values) => calculate_bytes_returned_per_cell(values.data_type()),
+        DataType::RunEndEncoded(_, values) => default_bytes_for_datatype(values.data_type()),
 
         // Variable-width string/binary types.
         // Offset size follows Trino's Integer.BYTES (4 bytes).
@@ -128,127 +119,19 @@ pub(crate) fn calculate_bytes_returned_per_cell(data_type: &DataType) -> usize {
         // as flat variable-width with 50-byte default. We follow Spark's 1-element assumption
         // to avoid massive overestimation (e.g. Map<Int,String> was 605 bytes with 10 elements).
         DataType::List(field) => {
-            VALIDITY_OVERHEAD
-                + size_of::<i32>()
-                + calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + size_of::<i32>() + default_bytes_for_datatype(field.data_type())
         }
         DataType::LargeList(field) => {
-            VALIDITY_OVERHEAD
-                + size_of::<i64>()
-                + calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + size_of::<i64>() + default_bytes_for_datatype(field.data_type())
         }
         DataType::ListView(field) | DataType::LargeListView(field) => {
-            VALIDITY_OVERHEAD + 8 + calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + 8 + default_bytes_for_datatype(field.data_type())
         }
 
         // Map type: stored as List<Struct<key, value>> (Arrow-specific)
         // Uses same 1-element assumption as List types (following Spark).
         DataType::Map(field, _) => {
-            VALIDITY_OVERHEAD
-                + size_of::<i32>()
-                + calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + size_of::<i32>() + default_bytes_for_datatype(field.data_type())
         } // Fallback for any other types - use Trino's default
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use datafusion::arrow::datatypes::{Field, Schema};
-    use std::sync::Arc;
-
-    #[test]
-    fn test_primitive_types() {
-        // Int32: 1 byte validity + 4 bytes data = 5 bytes
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 5);
-
-        // Int64: 1 byte validity + 8 bytes data = 9 bytes
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true)]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 9);
-
-        // Float64: 1 byte validity + 8 bytes data = 9 bytes
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 9);
-
-        // Boolean: 1 byte validity + 1 byte data = 2 bytes
-        // (Arrow stores booleans as bits, but we round up for estimation)
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true)]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 2);
-    }
-
-    #[test]
-    fn test_variable_width_types() {
-        // Utf8: 1 byte validity + 4 bytes offset + 50 bytes default = 55 bytes
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 55);
-
-        // LargeUtf8: 1 byte validity + 8 bytes offset + 50 bytes default = 59 bytes
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "a",
-            DataType::LargeUtf8,
-            true,
-        )]));
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 59);
-    }
-
-    #[test]
-    fn test_multiple_columns() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-            Field::new("balance", DataType::Float64, false),
-        ]));
-        // Int32: 5 + Utf8: 55 + Float64: 9 = 69 bytes
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 69);
-    }
-
-    #[test]
-    fn test_nested_struct() {
-        let inner_fields = vec![
-            Field::new("x", DataType::Int32, false),
-            Field::new("y", DataType::Int32, false),
-        ];
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "point",
-            DataType::Struct(inner_fields.into()),
-            true,
-        )]));
-        // Struct with 2 Int32 fields: (1 + 4) + (1 + 4) = 10 bytes
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 10);
-    }
-
-    #[test]
-    fn test_dictionary_encoded() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            true,
-        )]));
-        // Dictionary with UInt16 keys: 1 byte validity + 2 bytes key = 3 bytes
-        // (value dictionary is shared, not counted per row)
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 3);
-    }
-
-    #[test]
-    fn test_fixed_size_binary() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "hash",
-            DataType::FixedSizeBinary(32),
-            false,
-        )]));
-        // FixedSizeBinary(32): 1 byte validity + 32 bytes data = 33 bytes
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 33);
-    }
-
-    #[test]
-    fn test_list_type() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "values",
-            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
-            true,
-        )]));
-        // List<Int32>: 1 byte validity + 4 bytes offset + 1 * (1 + 4) = 10 bytes
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 10);
     }
 }
