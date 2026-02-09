@@ -31,7 +31,7 @@ mod tests {
         │     CoalescePartitionsExec
         │       [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] 
           │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
           │   ProjectionExec: expr=[]
           │     FilterExec: AdvEngineID@0 != 0

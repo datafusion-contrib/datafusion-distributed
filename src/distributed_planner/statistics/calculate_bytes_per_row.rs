@@ -124,28 +124,29 @@ pub(crate) fn calculate_bytes_returned_per_cell(data_type: &DataType) -> usize {
         DataType::Utf8View | DataType::BinaryView => VALIDITY_OVERHEAD + 16,
 
         // List types (Arrow-specific adaptation)
-        // Trino doesn't have explicit array size estimation; we assume 10 elements average.
-        // This is a heuristic not from Trino.
+        // Spark assumes 1 element average for collections (SPARK-18853). Trino treats them
+        // as flat variable-width with 50-byte default. We follow Spark's 1-element assumption
+        // to avoid massive overestimation (e.g. Map<Int,String> was 605 bytes with 10 elements).
         DataType::List(field) => {
             VALIDITY_OVERHEAD
                 + size_of::<i32>()
-                + 10 * calculate_bytes_returned_per_cell(field.data_type())
+                + calculate_bytes_returned_per_cell(field.data_type())
         }
         DataType::LargeList(field) => {
             VALIDITY_OVERHEAD
                 + size_of::<i64>()
-                + 10 * calculate_bytes_returned_per_cell(field.data_type())
+                + calculate_bytes_returned_per_cell(field.data_type())
         }
         DataType::ListView(field) | DataType::LargeListView(field) => {
-            VALIDITY_OVERHEAD + 8 + 10 * calculate_bytes_returned_per_cell(field.data_type())
+            VALIDITY_OVERHEAD + 8 + calculate_bytes_returned_per_cell(field.data_type())
         }
 
         // Map type: stored as List<Struct<key, value>> (Arrow-specific)
-        // Uses same 10-element heuristic as List types.
+        // Uses same 1-element assumption as List types (following Spark).
         DataType::Map(field, _) => {
             VALIDITY_OVERHEAD
                 + size_of::<i32>()
-                + 10 * calculate_bytes_returned_per_cell(field.data_type())
+                + calculate_bytes_returned_per_cell(field.data_type())
         } // Fallback for any other types - use Trino's default
     }
 }
@@ -247,7 +248,7 @@ mod tests {
             DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
             true,
         )]));
-        // List<Int32>: 1 byte validity + 4 bytes offset + 10 * (1 + 4) = 55 bytes
-        assert_eq!(calculate_bytes_returned_per_row(&schema), 55);
+        // List<Int32>: 1 byte validity + 4 bytes offset + 1 * (1 + 4) = 10 bytes
+        assert_eq!(calculate_bytes_returned_per_row(&schema), 10);
     }
 }

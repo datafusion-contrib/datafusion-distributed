@@ -123,12 +123,14 @@ pub(crate) fn calculate_compute_complexity(node: &Arc<dyn ExecutionPlan>) -> Com
     if let Some(join) = any.downcast_ref::<HashJoinExec>() {
         let left_schema = join.left().schema();
         let right_schema = join.right().schema();
-        // Build side: store all left rows in hash table + hash left join keys
-        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        // Build side: concat_batches copies all data (2x read), plus hash table storage
+        // overhead of ~12 bytes/row (8-byte (hash, idx) entry + 4-byte next-chain).
+        // Key arrays are also materialized separately for collision checking during probe.
+        let mut n = 2 * calculate_bytes_returned_per_row(&left_schema) + 12;
         for (left_key, _) in join.on() {
             n += bytes_processed_per_row(left_key, &left_schema).processed;
         }
-        // Probe side: hash right join keys + look up matches
+        // Probe side: hash right join keys + row copies
         let mut m = calculate_bytes_returned_per_row(&right_schema);
         for (_, right_key) in join.on() {
             m += bytes_processed_per_row(right_key, &right_schema).processed;
@@ -144,18 +146,23 @@ pub(crate) fn calculate_compute_complexity(node: &Arc<dyn ExecutionPlan>) -> Com
 
     // SortMergeJoinExec: merge of sorted streams with comparisons
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/sort_merge_join/exec.rs
+    // Unlike hash join, sort-merge doesn't buffer all data or build hash tables. It streams
+    // through both sorted inputs with O(max_group_size) memory, using partial_cmp comparisons
+    // (no hashing). Per-row cost is just key comparisons + optional filter evaluation.
     if let Some(node) = any.downcast_ref::<SortMergeJoinExec>() {
         let left_schema = node.left().schema();
         let right_schema = node.right().schema();
-        // Left side: read all rows + compare join keys during merge
-        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        // Left side: compare join keys during merge (read key values + compare)
+        let mut n = 0;
         for (left_key, _) in node.on() {
-            n += bytes_processed_per_row(left_key, &left_schema).processed;
+            let key = bytes_processed_per_row(left_key, &left_schema);
+            n += key.processed + key.returned;
         }
-        // Right side: read all rows + compare join keys during merge
-        let mut m = calculate_bytes_returned_per_row(&right_schema);
+        // Right side: compare join keys during merge
+        let mut m = 0;
         for (_, right_key) in node.on() {
-            m += bytes_processed_per_row(right_key, &right_schema).processed;
+            let key = bytes_processed_per_row(right_key, &right_schema);
+            m += key.processed + key.returned;
         }
         if let Some(filter) = node.filter().as_ref() {
             let fc = bytes_processed_per_row(filter.expression(), filter.schema());
@@ -167,15 +174,18 @@ pub(crate) fn calculate_compute_complexity(node: &Arc<dyn ExecutionPlan>) -> Com
 
     // SymmetricHashJoinExec: streaming join with hash tables on both sides
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/joins/symmetric_hash_join.rs
+    // More expensive than HashJoinExec: both sides maintain hash tables, concat_batches
+    // runs on every incoming batch (not once at end), plus pruning interval computation
+    // and HashSet tracking for visited rows.
     if let Some(node) = any.downcast_ref::<SymmetricHashJoinExec>() {
         let left_schema = node.left().schema();
         let right_schema = node.right().schema();
-        // Both sides build hash tables: store rows + hash join keys
-        let mut n = calculate_bytes_returned_per_row(&left_schema);
+        // Both sides: concat_batches on every batch (2x read) + hash table (12 bytes/row)
+        let mut n = 2 * calculate_bytes_returned_per_row(&left_schema) + 12;
         for (left_key, _) in node.on() {
             n += bytes_processed_per_row(left_key, &left_schema).processed;
         }
-        let mut m = calculate_bytes_returned_per_row(&right_schema);
+        let mut m = 2 * calculate_bytes_returned_per_row(&right_schema) + 12;
         for (_, right_key) in node.on() {
             m += bytes_processed_per_row(right_key, &right_schema).processed;
         }
