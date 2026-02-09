@@ -59,15 +59,27 @@ pub enum LinearComplexity {
 
 impl Complexity {
     fn log(self, other: Self) -> Self {
-        Self::Log(Box::new(self), Box::new(other))
+        if matches!(self, Self::Constant) && matches!(other, Self::Constant) {
+            Self::Constant
+        } else {
+            Self::Log(Box::new(self), Box::new(other))
+        }
     }
 
     fn plus(self, other: Self) -> Self {
-        Self::Plus(Box::new(self), Box::new(other))
+        if matches!(self, Self::Constant) && matches!(other, Self::Constant) {
+            Self::Constant
+        } else {
+            Self::Plus(Box::new(self), Box::new(other))
+        }
     }
 
     fn multiply(self, other: Self) -> Self {
-        Self::Multiply(Box::new(self), Box::new(other))
+        if matches!(self, Self::Constant) && matches!(other, Self::Constant) {
+            Self::Constant
+        } else {
+            Self::Multiply(Box::new(self), Box::new(other))
+        }
     }
 
     /// Computes the total bytes processed given per-child row counts.
@@ -125,6 +137,12 @@ impl Complexity {
 
 impl Debug for Complexity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        fn trim_parenthesis(dbg: &Complexity) -> String {
+            format!("{dbg:?}")
+                .trim_start_matches("(")
+                .trim_end_matches(")")
+                .to_string()
+        }
         match self {
             Self::Constant => write!(f, "1"),
             Self::Linear(linear) => match linear {
@@ -138,8 +156,20 @@ impl Debug for Complexity {
                 LinearComplexity::AllOutputColumns => write!(f, "out_Cols"),
             },
             Self::Log(n, m) => write!(f, "{n:?}*Log({m:?})"),
-            Self::Plus(n, m) => write!(f, "({n:?}+{m:?})"),
-            Self::Multiply(n, m) => write!(f, "({n:?}*{m:?})"),
+            Self::Plus(n, m) => {
+                if matches!(n.as_ref(), &Self::Plus(_, _)) {
+                    write!(f, "({}+{m:?})", trim_parenthesis(m))
+                } else {
+                    write!(f, "({n:?}+{m:?})")
+                }
+            }
+            Self::Multiply(n, m) => {
+                if matches!(n.as_ref(), &Self::Multiply(_, _)) {
+                    write!(f, "({}*{m:?})", trim_parenthesis(m))
+                } else {
+                    write!(f, "({n:?}*{m:?})")
+                }
+            }
         }
     }
 }
