@@ -1,5 +1,5 @@
 use crate::DistributedConfig;
-use crate::distributed_planner::statistics::calculate_bytes_per_row::default_bytes_for_datatype;
+use crate::distributed_planner::statistics::default_bytes_for_datatype::default_bytes_for_datatype;
 use datafusion::common::stats::Precision;
 use datafusion::common::{Statistics, not_impl_err, plan_err};
 use datafusion::config::ConfigOptions;
