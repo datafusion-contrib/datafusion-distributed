@@ -13,11 +13,26 @@ use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+/// Options during the plan statistics calculation
+#[derive(Debug, Default, Clone)]
+pub struct StatisticsOptions {
+    /// In case a plan lacks a row count, this default number of rows will be used.
+    pub default_estimated_row_count: Option<usize>,
+}
+
+impl From<&DistributedConfig> for StatisticsOptions {
+    fn from(value: &DistributedConfig) -> Self {
+        Self {
+            default_estimated_row_count: value.default_estimated_row_count,
+        }
+    }
+}
+
 /// Uses upstream DataFusion stats system with some small overrides.
-pub(crate) fn calculate_row_stats(
+pub fn plan_statistics(
     node: &Arc<dyn ExecutionPlan>,
     children_stats: &[&Statistics],
-    d_cfg: &DistributedConfig,
+    opts: StatisticsOptions,
 ) -> Result<Statistics> {
     let mut stats = partition_statistics_with_children_override(node, None, children_stats)?;
 
@@ -30,7 +45,7 @@ pub(crate) fn calculate_row_stats(
             .sum1::<usize>();
         let num_rows = if let Some(num_rows) = num_rows {
             num_rows
-        } else if let Some(default) = d_cfg.default_estimated_row_count {
+        } else if let Some(default) = opts.default_estimated_row_count {
             default
         } else {
             return plan_err!(
@@ -62,9 +77,9 @@ pub(crate) fn calculate_row_stats(
         let Some(dt) = schema.fields.get(i).map(|v| v.data_type()) else {
             return plan_err!("Field with index {i} not present in schema: {schema:?}");
         };
-        if matches!(col_stats.byte_size, Precision::Absent) {
-            col_stats.byte_size = Precision::Inexact(default_bytes_for_datatype(dt) * rows)
-        }
+        // FIXME: byte size calculation upstream is really crappy. Ideally, this override
+        //  should only happen if byte_size is Absent.
+        col_stats.byte_size = Precision::Inexact(default_bytes_for_datatype(dt) * rows)
     }
 
     // If bytes are absent, let's just infer them based on the schema and the

@@ -14,4 +14,4 @@ pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
 pub use distributed_planner_extension::DistributedPlannerExtension;
 pub(crate) use distributed_planner_extension::set_distributed_planner_extension;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
-pub use statistics::{Complexity, LinearComplexity};
+pub use statistics::plan_statistics;

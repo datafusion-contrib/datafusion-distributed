@@ -1,6 +1,6 @@
 use crate::distributed_planner::children_isolator_union_split::children_isolator_union_split;
 use crate::distributed_planner::statistics::{
-    Complexity, LinearComplexity, calculate_compute_complexity, calculate_row_stats,
+    Complexity, LinearComplexity, calculate_compute_complexity, plan_statistics,
 };
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{BroadcastExec, DistributedConfig, DistributedPlannerExtension};
@@ -252,7 +252,7 @@ fn _annotate_plan(
         // this decision into account when deciding how many tasks will be actually used.
         // We could not determine how many tasks this leaf node should run on, so
         // assume it cannot be distributed and use just 1 task.
-        return Ok(match calculate_row_stats(&plan, &[], d_cfg) {
+        return Ok(match plan_statistics(&plan, &[], d_cfg.into()) {
             Ok(output_row_stats) => AnnotatedPlan {
                 stats: output_row_stats,
                 complexity: calculate_compute_complexity(&plan),
@@ -311,7 +311,7 @@ fn _annotate_plan(
     let input_row_stats = annotated_children.iter().map(|v| &v.stats).collect_vec();
     let mut annotation = AnnotatedPlan {
         plan_or_nb: PlanOrNetworkBoundary::Plan(Arc::clone(&plan)),
-        stats: calculate_row_stats(&plan, &input_row_stats, d_cfg)?,
+        stats: plan_statistics(&plan, &input_row_stats, d_cfg.into())?,
         children: annotated_children,
 
         max_task_count_restriction,

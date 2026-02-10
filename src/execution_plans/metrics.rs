@@ -1,6 +1,7 @@
 use datafusion::physical_plan::metrics::MetricsSet;
 use std::sync::Arc;
 
+use datafusion::common::Statistics;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
@@ -43,6 +44,7 @@ impl ExecutionPlan for MetricsWrapperExec {
             fn name(&self) -> &str;
             fn properties(&self) -> &PlanProperties;
             fn as_any(&self) -> &dyn Any;
+            fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics>;
         }
     }
 

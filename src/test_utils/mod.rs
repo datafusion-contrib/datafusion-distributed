@@ -9,5 +9,6 @@ pub mod parquet;
 pub mod plans;
 pub mod property_based;
 pub mod session_context;
+pub mod stats_vs_metrics;
 pub mod tpcds;
 pub mod tpch;
