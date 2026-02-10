@@ -1,23 +1,16 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use arrow::datatypes::{Field, Schema};
-    use arrow::util::pretty::pretty_format_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     };
-    use datafusion::physical_expr::expressions::lit;
-    use datafusion::physical_expr::{Partitioning, ScalarFunctionExpr};
-    use datafusion::physical_optimizer::PhysicalOptimizerRule;
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+    use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
-        display_plan_ascii,
+        DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -32,59 +25,36 @@ mod tests {
 
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx = SessionStateBuilder::from(ctx.state())
-            .with_distributed_task_estimator(2)
+            .with_distributed_bytes_processed_per_partition(100)?
             .with_scalar_functions(vec![udf()])
             .build()
             .into();
 
-        let wrap = |input: Arc<dyn ExecutionPlan>| -> Arc<dyn ExecutionPlan> {
-            Arc::new(
-                RepartitionExec::try_new(
-                    input,
-                    Partitioning::Hash(
-                        vec![Arc::new(ScalarFunctionExpr::new(
-                            "test_udf",
-                            udf(),
-                            vec![lit(1)],
-                            Arc::new(Field::new("return", DataType::Int32, false)),
-                            Default::default(),
-                        ))],
-                        1,
-                    ),
-                )
-                .unwrap(),
-            )
-        };
+        let query = r#"SELECT "MinTemp" FROM weather WHERE test_udf("MinTemp") > 20.0"#;
+        register_parquet_tables(&ctx).await?;
+        let df = ctx.sql(query).await?;
+        let plan = df.create_physical_plan().await?;
 
-        let node = wrap(wrap(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))));
+        let stream = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
+        // It should not fail.
+        stream.try_collect::<Vec<_>>().await?;
 
-        let physical_distributed =
-            DistributedPhysicalOptimizerRule.optimize(node, ctx.copied_config().options())?;
-
-        let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
+        let physical_distributed_str = display_plan_ascii(plan.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
-          │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │   EmptyExec
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          │ FilterExec: test_udf(MinTemp@0) > 20
+          │   PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
+          │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet, predicate=test_udf(MinTemp@0) > 20
           └──────────────────────────────────────────────────
         ",
         );
 
-        let batches = pretty_format_batches(
-            &execute_stream(physical_distributed, ctx.task_ctx())?
-                .try_collect::<Vec<_>>()
-                .await?,
-        )?;
-
-        assert_snapshot!(batches, @r"
-        ++
-        ++
-        ");
         Ok(())
     }
 

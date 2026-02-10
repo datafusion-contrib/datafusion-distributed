@@ -324,8 +324,9 @@ mod tests {
                 .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
+                .with_distributed_bytes_processed_per_partition(1)
+                .unwrap()
                 .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-                .with_distributed_task_estimator(2)
         }
 
         let state = builder.build();
