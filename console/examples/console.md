@@ -13,14 +13,14 @@ Usage:
 
 The TUI console will start with a message saying "Waiting for worker registration..."
 
-## Terminal 2-5: Start workers with observability
+## Terminal 2-3: Start workers with observability
 
 ```bash
   cargo run -p datafusion-distributed-console --example console_worker -- 8080
   cargo run -p datafusion-distributed-console --example console_worker -- 8081
 ```
 
-## Terminal 6: Run query with console integration
+## Terminal 4: Run query with console integration
 
 ```bash
   cargo run -p datafusion-distributed-console --example console_run -- \

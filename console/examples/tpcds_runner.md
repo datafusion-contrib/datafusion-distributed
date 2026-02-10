@@ -17,15 +17,15 @@ may take a few minutes).
 
 ## Usage
 
-### Step 1: Start Workers with Observability
+### Step 1: Start Workers with Observability (Terminals 1-4)
 
-Start 4 workers on different ports:
+Start 4 workers on different ports in different terminals:
 
 ```bash
-cargo run -p datafusion-distributed-console --example console_worker -- 8080
-cargo run -p datafusion-distributed-console --example console_worker -- 8081
-cargo run -p datafusion-distributed-console --example console_worker -- 8082
-cargo run -p datafusion-distributed-console --example console_worker -- 8083
+cargo run -p datafusion-distributed-console --example -- console_worker -- 8080
+cargo run -p datafusion-distributed-console --example -- console_worker -- 8081
+cargo run -p datafusion-distributed-console --example -- console_worker -- 8082
+cargo run -p datafusion-distributed-console --example -- console_worker -- 8083
 ```
 
 ### Step 2: Start the Console (Terminal 5)

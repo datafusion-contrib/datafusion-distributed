@@ -1,5 +1,6 @@
 use datafusion_distributed::{
     GetTaskProgressRequest, ObservabilityServiceClient, ObservabilityStageKey, PingRequest,
+    TaskStatus,
 };
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -47,8 +48,7 @@ impl App {
         (app, tx)
     }
 
-    /// Called when new workers are registered via the ConsoleControlService.RegisterWorkers gRPC
-    /// service.
+    /// Called when new workers are registered via the ConsoleControlService.RegisterWorkers gRPC service.
     async fn register_workers(&mut self, worker_urls: Vec<Url>) {
         // Clear existing workers if switching to new query
         if !self.workers.is_empty() {
@@ -198,7 +198,7 @@ pub struct WorkerState {
 }
 
 /// Stores information about completed tasks for progress display after they are removed from the
-/// TTL Map.
+/// moka TTL cache.
 #[derive(Clone, Debug)]
 pub struct CompletedTask {
     pub _stage_key: ObservabilityStageKey,
@@ -252,10 +252,8 @@ impl WorkerState {
         }
     }
 
-    /// Queriees a worker for task progress.
+    /// Queries a worker for task progress.
     async fn poll(&mut self) {
-        use datafusion_distributed::TaskStatus;
-
         if let Some(client) = &mut self.client {
             match client.get_task_progress(GetTaskProgressRequest {}).await {
                 Ok(response) => {
@@ -263,7 +261,7 @@ impl WorkerState {
                     self.last_poll = Some(Instant::now());
 
                     // Detect completed tasks: tasks that were running but now have completed and
-                    // been removed from the TTL Map.
+                    // been removed from the TTL cache.
                     for old_task in &self.tasks {
                         if old_task.status == TaskStatus::Running as i32 {
                             let still_exists = new_tasks.iter().any(|t| {
