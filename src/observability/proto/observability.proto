@@ -3,7 +3,7 @@ package observability;
 
 service ObservabilityService {
   rpc Ping (PingRequest) returns (PingResponse);
-  rpc GetTaskProgress (GetTaskProgressRequest) returns (GetTaskProgressResponse);
+  rpc GetTaskMetrics (GetTaskMetricsRequest) returns (GetTaskMetricsResponse);
 }
 
 message PingRequest {}
@@ -12,27 +12,24 @@ message PingResponse {
   uint32 value = 1;
 }
 
-message GetTaskProgressRequest {}
-
 message StageKey {
   bytes query_id = 1;
   uint64 stage_id = 2;
   uint64 task_number = 3;
 }
 
-// Progress information for a single task
-message TaskProgress {
+// Aggregate metrics for a single task across plans
+message TaskMetricsSummary {
   StageKey stage_key = 1;
-  uint64 total_partitions = 2;
-  uint64 completed_partitions = 3;
-  TaskStatus status = 4;
+  uint64 output_rows = 4;
+  uint64 elapsed_compute = 5;
+  uint64 spill_count = 6;
+  uint64 current_memory_usage = 7;
 }
 
-enum TaskStatus {
-  TASK_STATUS_UNSPECIFIED = 0;
-  TASK_STATUS_RUNNING = 1;
+message GetTaskMetricsRequest {}
+
+message GetTaskMetricsResponse {
+  repeated TaskMetricsSummary task_summaries = 1;
 }
 
-message GetTaskProgressResponse {
-  repeated TaskProgress tasks = 1;
-}

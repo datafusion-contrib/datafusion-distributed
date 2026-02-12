@@ -2,6 +2,7 @@ pub(crate) mod latency_tracker;
 pub(crate) mod proto;
 mod task_metrics_collector;
 mod task_metrics_rewriter;
+pub use proto::df_metric_to_proto;
 pub(crate) use task_metrics_collector::{MetricsCollectorResult, TaskMetricsCollector};
 pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 

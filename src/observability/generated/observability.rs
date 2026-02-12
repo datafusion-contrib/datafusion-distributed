@@ -6,8 +6,6 @@ pub struct PingResponse {
     #[prost(uint32, tag = "1")]
     pub value: u32,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetTaskProgressRequest {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StageKey {
     #[prost(bytes = "vec", tag = "1")]
@@ -17,48 +15,26 @@ pub struct StageKey {
     #[prost(uint64, tag = "3")]
     pub task_number: u64,
 }
-/// Progress information for a single task
+/// Aggregate metrics for a single task across plans
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TaskProgress {
+pub struct TaskMetricsSummary {
     #[prost(message, optional, tag = "1")]
     pub stage_key: ::core::option::Option<StageKey>,
-    #[prost(uint64, tag = "2")]
-    pub total_partitions: u64,
-    #[prost(uint64, tag = "3")]
-    pub completed_partitions: u64,
-    #[prost(enumeration = "TaskStatus", tag = "4")]
-    pub status: i32,
+    #[prost(uint64, tag = "4")]
+    pub output_rows: u64,
+    #[prost(uint64, tag = "5")]
+    pub elapsed_compute: u64,
+    #[prost(uint64, tag = "6")]
+    pub spill_count: u64,
+    #[prost(uint64, tag = "7")]
+    pub current_memory_usage: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTaskMetricsRequest {}
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetTaskProgressResponse {
+pub struct GetTaskMetricsResponse {
     #[prost(message, repeated, tag = "1")]
-    pub tasks: ::prost::alloc::vec::Vec<TaskProgress>,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum TaskStatus {
-    Unspecified = 0,
-    Running = 1,
-}
-impl TaskStatus {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "TASK_STATUS_UNSPECIFIED",
-            Self::Running => "TASK_STATUS_RUNNING",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "TASK_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
-            "TASK_STATUS_RUNNING" => Some(Self::Running),
-            _ => None,
-        }
-    }
+    pub task_summaries: ::prost::alloc::vec::Vec<TaskMetricsSummary>,
 }
 /// Generated client implementations.
 pub mod observability_service_client {
@@ -67,10 +43,10 @@ pub mod observability_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct ObservabilityServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -109,13 +85,14 @@ pub mod observability_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                    http::Request<tonic::body::Body>,
-                    Response = http::Response<
-                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                    >,
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ObservabilityServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -154,36 +131,50 @@ pub mod observability_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/observability.ObservabilityService/Ping");
-            let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "observability.ObservabilityService",
-                "Ping",
-            ));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_task_progress(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetTaskProgressRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/observability.ObservabilityService/GetTaskProgress",
+                "/observability.ObservabilityService/Ping",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "observability.ObservabilityService",
-                "GetTaskProgress",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("observability.ObservabilityService", "Ping"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_task_metrics(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTaskMetricsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTaskMetricsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/observability.ObservabilityService/GetTaskMetrics",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "observability.ObservabilityService",
+                        "GetTaskMetrics",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -195,7 +186,7 @@ pub mod observability_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ObservabilityServiceServer.
@@ -205,10 +196,13 @@ pub mod observability_service_server {
             &self,
             request: tonic::Request<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
-        async fn get_task_progress(
+        async fn get_task_metrics(
             &self,
-            request: tonic::Request<super::GetTaskProgressRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>;
+            request: tonic::Request<super::GetTaskMetricsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetTaskMetricsResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ObservabilityServiceServer<T> {
@@ -231,7 +225,10 @@ pub mod observability_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -266,7 +263,8 @@ pub mod observability_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for ObservabilityServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for ObservabilityServiceServer<T>
     where
         T: ObservabilityService,
         B: Body + std::marker::Send + 'static,
@@ -286,9 +284,14 @@ pub mod observability_service_server {
                 "/observability.ObservabilityService/Ping" => {
                     #[allow(non_camel_case_types)]
                     struct PingSvc<T: ObservabilityService>(pub Arc<T>);
-                    impl<T: ObservabilityService> tonic::server::UnaryService<super::PingRequest> for PingSvc<T> {
+                    impl<
+                        T: ObservabilityService,
+                    > tonic::server::UnaryService<super::PingRequest> for PingSvc<T> {
                         type Response = super::PingResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::PingRequest>,
@@ -322,22 +325,28 @@ pub mod observability_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/observability.ObservabilityService/GetTaskProgress" => {
+                "/observability.ObservabilityService/GetTaskMetrics" => {
                     #[allow(non_camel_case_types)]
-                    struct GetTaskProgressSvc<T: ObservabilityService>(pub Arc<T>);
-                    impl<T: ObservabilityService>
-                        tonic::server::UnaryService<super::GetTaskProgressRequest>
-                        for GetTaskProgressSvc<T>
-                    {
-                        type Response = super::GetTaskProgressResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                    struct GetTaskMetricsSvc<T: ObservabilityService>(pub Arc<T>);
+                    impl<
+                        T: ObservabilityService,
+                    > tonic::server::UnaryService<super::GetTaskMetricsRequest>
+                    for GetTaskMetricsSvc<T> {
+                        type Response = super::GetTaskMetricsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetTaskProgressRequest>,
+                            request: tonic::Request<super::GetTaskMetricsRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ObservabilityService>::get_task_progress(&inner, request)
+                                <T as ObservabilityService>::get_task_metrics(
+                                        &inner,
+                                        request,
+                                    )
                                     .await
                             };
                             Box::pin(fut)
@@ -349,7 +358,7 @@ pub mod observability_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetTaskProgressSvc(inner);
+                        let method = GetTaskMetricsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -365,19 +374,25 @@ pub mod observability_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(tonic::body::Body::default());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }

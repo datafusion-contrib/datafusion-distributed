@@ -30,7 +30,9 @@ pub use flight_service::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
-pub use metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
+pub use metrics::{
+    DistributedMetricsFormat, df_metric_to_proto, rewrite_distributed_plan_with_metrics,
+};
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
     create_flight_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
@@ -41,9 +43,9 @@ pub use stage::{
 };
 
 pub use observability::{
-    GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
+    GetTaskMetricsRequest, GetTaskMetricsResponse, ObservabilityService,
     ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
-    PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
+    PingResponse, StageKey as ObservabilityStageKey, TaskMetricsSummary,
 };
 
 pub use protobuf::StageKey;
