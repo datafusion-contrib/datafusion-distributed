@@ -175,8 +175,13 @@ impl ExecutionPlan for NetworkCoalesceExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let input = require_one_child(children)?;
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+
+        self_clone.properties = scale_partitioning_props(input.properties(), |p| {
+            p * self_clone.input_stage.tasks.len()
+        });
+        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(input);
         Ok(Arc::new(self_clone))
     }
 
