@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { z } from 'zod';
-import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
+import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
 
 // Remember to port-forward the Spark HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"
@@ -37,7 +37,8 @@ async function main() {
 }
 
 const QueryResponse = z.object({
-    count: z.number()
+    count: z.number(),
+    elapsed_ms: z.number(),
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
@@ -47,7 +48,7 @@ class SparkRunner implements BenchmarkRunner {
     constructor(private readonly options: {}) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         // Fix TPCH query 4: Add DATE prefix to date literals
         sql = sql.replace(/(?<!date\s)('[\d]{4}-[\d]{2}-[\d]{2}')/gi, 'DATE $1');
 
@@ -65,7 +66,7 @@ class SparkRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: "" }; // plans not yet supported in Spark.
+        return { rowCount: response.count, plan: "", elapsed: response.elapsed_ms }; // plans not yet supported in Spark.
     }
 
     private async query(sql: string): Promise<QueryResponse> {

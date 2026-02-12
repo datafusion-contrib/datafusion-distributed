@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { z } from 'zod';
-import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
+import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
 
 // Remember to port-forward the ballista HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9002,localPortNumber=9002"
@@ -38,7 +38,8 @@ async function main() {
 
 const QueryResponse = z.object({
     count: z.number(),
-    plan: z.string()
+    plan: z.string(),
+    elapsed_ms: z.number(),
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
@@ -48,7 +49,7 @@ class BallistaRunner implements BenchmarkRunner {
     constructor(private readonly options: {}) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         let response
         if (sql.includes("create view")) {
             // This is query 15
@@ -60,7 +61,7 @@ class BallistaRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: response.plan };
+        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms };
     }
 
     private async query(sql: string): Promise<QueryResponse> {
