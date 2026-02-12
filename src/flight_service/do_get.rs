@@ -1,4 +1,4 @@
-use crate::common::{map_last_stream, on_drop_stream};
+use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::flight_service::session_builder::WorkerQueryContext;
 use crate::flight_service::worker::Worker;
@@ -22,7 +22,7 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
-use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
+use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -63,6 +63,7 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
+    task_ctx: Arc<TaskContext>,
     pub(super) plan: Arc<dyn ExecutionPlan>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
@@ -83,19 +84,6 @@ impl Worker {
         })?;
 
         let headers = metadata.into_headers();
-        let mut session_state = self
-            .session_builder
-            .build_session_state(WorkerQueryContext {
-                builder: SessionStateBuilder::new()
-                    .with_default_features()
-                    .with_runtime_env(Arc::clone(&self.runtime)),
-                headers: headers.clone(),
-            })
-            .await
-            .map_err(|err| datafusion_error_to_tonic_status(&err))?;
-
-        let codec = DistributedCodec::new_combined_with_user(session_state.config());
-        let task_ctx = session_state.task_ctx();
 
         let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let once = self
@@ -105,6 +93,18 @@ impl Worker {
 
         let stage_data = once
             .get_or_try_init(|| async {
+                let session_state = self
+                    .session_builder
+                    .build_session_state(WorkerQueryContext {
+                        builder: SessionStateBuilder::new()
+                            .with_default_features()
+                            .with_runtime_env(Arc::clone(&self.runtime)),
+                        headers: headers.clone(),
+                    })
+                    .await?;
+
+                let codec = DistributedCodec::new_combined_with_user(session_state.config());
+                let task_ctx = session_state.task_ctx();
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
                 let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
                 for hook in self.hooks.on_plan.iter() {
@@ -115,16 +115,18 @@ impl Worker {
                 let total_partitions = plan.properties().partitioning.partition_count();
                 Ok::<_, DataFusionError>(TaskData {
                     plan,
+                    task_ctx,
                     num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 })
             })
             .await
             .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
         let plan = Arc::clone(&stage_data.plan);
+        let task_ctx = Arc::clone(&stage_data.task_ctx);
+        let mut cfg = task_ctx.session_config().clone();
 
-        let cfg = session_state.config_mut();
         let d_cfg =
-            set_distributed_option_extension_from_headers::<DistributedConfig>(cfg, &headers)
+            set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)
                 .map_err(|err| datafusion_error_to_tonic_status(&err))?;
         let compression = match d_cfg.compression.as_str() {
             "lz4" => Some(CompressionType::LZ4_FRAME),
@@ -135,10 +137,13 @@ impl Worker {
             )))?,
         };
         let send_metrics = d_cfg.collect_metrics;
-        cfg.set_extension(Arc::new(DistributedTaskContext {
-            task_index: doget.target_task_index as usize,
-            task_count: doget.target_task_count as usize,
-        }));
+        let task_ctx = Arc::new(task_ctx_with_extension(
+            &task_ctx,
+            DistributedTaskContext {
+                task_index: doget.target_task_index as usize,
+                task_count: doget.target_task_count as usize,
+            },
+        ));
 
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();
@@ -155,7 +160,7 @@ impl Worker {
             }
 
             let stream = plan
-                .execute(partition as usize, session_state.task_ctx())
+                .execute(partition as usize, Arc::clone(&task_ctx))
                 .map_err(|err| Status::internal(format!("Error executing stage plan: {err:#?}")))?;
 
             let stream = build_flight_data_stream(stream, compression)?;
@@ -225,7 +230,7 @@ impl Worker {
 
         // Merge all the per-partition streams into one. Each message in the stream is marked with
         // the original partition, so they can be reconstructed at the other side of the boundary.
-        let memory_pool = Arc::clone(&session_state.runtime_env().memory_pool);
+        let memory_pool = Arc::clone(&task_ctx.runtime_env().memory_pool);
         let stream = spawn_select_all(streams, memory_pool, RECORD_BATCH_BUFFER_SIZE);
 
         Ok(Response::new(Box::pin(stream.map_err(|err| match err {
