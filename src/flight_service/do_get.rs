@@ -27,13 +27,17 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
+use http::HeaderMap;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 use tonic::{Request, Response, Status};
 
 /// How many record batches to buffer from the plan execution.
 const RECORD_BATCH_BUFFER_SIZE: usize = 2;
+
+pub(crate) const PLAN_WRITTEN_HEADER: &str = "x-datafusion-distributed-plan-written";
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
@@ -63,7 +67,12 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
+    /// Headers associated to this query. Headers are typically the same under normal circumstances
+    /// for the same query.
+    headers: Arc<HeaderMap>,
+    /// Task context suitable for execute different partitions from the same task.
     task_ctx: Arc<TaskContext>,
+    /// Plan to be executed.
     pub(super) plan: Arc<dyn ExecutionPlan>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
@@ -83,46 +92,58 @@ impl Worker {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
 
-        let headers = metadata.into_headers();
-
         let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
-        let once = self
+        let entry = self
             .task_data_entries
             .get_with(key.clone(), async { Default::default() })
             .await;
-
-        let stage_data = once
-            .get_or_try_init(|| async {
-                let session_state = self
-                    .session_builder
-                    .build_session_state(WorkerQueryContext {
-                        builder: SessionStateBuilder::new()
-                            .with_default_features()
-                            .with_runtime_env(Arc::clone(&self.runtime)),
-                        headers: headers.clone(),
-                    })
-                    .await?;
-
-                let codec = DistributedCodec::new_combined_with_user(session_state.config());
-                let task_ctx = session_state.task_ctx();
-                let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
-                let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
-                for hook in self.hooks.on_plan.iter() {
-                    plan = hook(plan)
-                }
-
-                // Initialize partition count to the number of partitions in the stage
-                let total_partitions = plan.properties().partitioning.partition_count();
-                Ok::<_, DataFusionError>(TaskData {
-                    plan,
-                    task_ctx,
-                    num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+        let headers = metadata.into_headers();
+        let task_data = if headers
+            .get(PLAN_WRITTEN_HEADER)
+            .is_some_and(|v| v.to_str().is_ok_and(|v| v == "true"))
+        {
+            let session_state = self
+                .session_builder
+                .build_session_state(WorkerQueryContext {
+                    builder: SessionStateBuilder::new()
+                        .with_default_features()
+                        .with_runtime_env(Arc::clone(&self.runtime)),
+                    headers: headers.clone(),
                 })
-            })
-            .await
-            .map_err(|err| Status::invalid_argument(format!("Cannot decode stage proto: {err}")))?;
-        let plan = Arc::clone(&stage_data.plan);
-        let task_ctx = Arc::clone(&stage_data.task_ctx);
+                .await
+                .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+
+            let codec = DistributedCodec::new_combined_with_user(session_state.config());
+            let task_ctx = session_state.task_ctx();
+            let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())
+                .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+            let mut plan = proto_node
+                .try_into_physical_plan(&task_ctx, &codec)
+                .map_err(|err| datafusion_error_to_tonic_status(&err))?;
+            for hook in self.hooks.on_plan.iter() {
+                plan = hook(plan)
+            }
+
+            // Initialize partition count to the number of partitions in the stage
+            let total_partitions = plan.properties().partitioning.partition_count();
+            let task_data = TaskData {
+                headers: Arc::new(headers),
+                plan,
+                task_ctx,
+                num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+            };
+            entry.write(task_data.clone());
+            task_data
+        } else {
+            entry
+                .read(Duration::from_secs(10))
+                .await
+                .map_err(|v| Status::invalid_argument(v.to_string()))?
+        };
+
+        let plan = task_data.plan;
+        let task_ctx = task_data.task_ctx;
+        let headers = task_data.headers;
         let mut cfg = task_ctx.session_config().clone();
 
         let d_cfg =
@@ -166,7 +187,7 @@ impl Worker {
             let stream = build_flight_data_stream(stream, compression)?;
 
             let task_data_entries = Arc::clone(&self.task_data_entries);
-            let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+            let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
 
             let key = key.clone();
             let key_clone = key.clone();
@@ -204,7 +225,7 @@ impl Worker {
                 msg.map(|v| v.with_app_metadata(flight_data.encode_to_vec()))
             });
 
-            let num_partitions_remaining = Arc::clone(&stage_data.num_partitions_remaining);
+            let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
             let task_data_entries = Arc::clone(&self.task_data_entries);
             // When the stream is dropped before fully consumed (e.g. LIMIT on the client side),
             // metrics piggybacked on the last FlightData message are lost.
@@ -363,6 +384,7 @@ mod tests {
     use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
     use prost::{Message, bytes::Bytes};
     use tonic::Request;
+    use tonic::metadata::MetadataValue;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -417,7 +439,12 @@ mod tests {
                 ticket: Bytes::from(doget.encode_to_vec()),
             };
 
-            let request = Request::new(ticket);
+            let mut request = Request::new(ticket);
+            if partition == 0 {
+                request
+                    .metadata_mut()
+                    .insert(PLAN_WRITTEN_HEADER, MetadataValue::from_static("true"));
+            }
             let response = endpoint_ref.get(request).await?;
             let mut stream = response.into_inner();
 
