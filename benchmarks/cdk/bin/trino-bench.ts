@@ -63,25 +63,10 @@ class TrinoRunner implements BenchmarkRunner {
             response = await this.executeSingleStatement(`EXPLAIN ANALYZE ${sql}`)
         }
 
-        // Extract total server-side latency from the EXPLAIN ANALYZE plan header.
-        // The plan contains: "Queued: 9.38ms, Analysis: 38.95ms, Planning: 200.19ms, Execution: 573.65ms"
-        // The stats JSON fields (wallTimeMillis, etc.) are aggregates across all tasks/splits
-        // and don't represent the per-query timing, so the plan header is the reliable source.
-        const timingMatches = [...response.plan.matchAll(/(Queued|Analysis|Planning|Execution):\s+([\d.]+)(us|ms|s|m)/g)];
-        if (timingMatches.length === 0) {
-            throw new Error(`Could not extract timing from EXPLAIN ANALYZE plan:\n${response.plan}`);
-        }
-        let elapsed = 0;
-        for (const match of timingMatches) {
-            const value = parseFloat(match[2]);
-            const unit = match[3];
-            elapsed += unit === 'us' ? value / 1000 : unit === 's' ? value * 1000 : unit === 'm' ? value * 60000 : value;
-        }
-
-        return { ...response, elapsed }
+        return response
     }
 
-    private async executeSingleStatement(sql: string): Promise<{ rowCount: number, plan: string }> {
+    private async executeSingleStatement(sql: string): Promise<ExecuteQueryResult> {
         if (!this.schema) {
             throw new Error("No schema available, where the tables created?")
         }
@@ -105,6 +90,7 @@ class TrinoRunner implements BenchmarkRunner {
         let result: any = await submitResponse.json();
         let rowCount = 0;
         let plan = "";
+        let elapsed = 0;
 
         // Poll for results
         while (result.nextUri) {
@@ -131,13 +117,17 @@ class TrinoRunner implements BenchmarkRunner {
                 }
             }
 
+            if (result.stats) {
+                elapsed = result.stats.elapsedTimeMillis
+            }
+
             // Check for errors
             if (result.error) {
                 throw new Error(`Query failed: ${result.error.message}`);
             }
         }
 
-        return { rowCount, plan };
+        return { rowCount, plan, elapsed };
     }
 
     async createTables(tables: TableSpec[]): Promise<void> {
