@@ -13,7 +13,7 @@ async function main() {
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
-        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
         .parse(process.argv);
 
     const options = program.opts();
