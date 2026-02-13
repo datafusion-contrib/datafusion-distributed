@@ -1,7 +1,7 @@
 use crate::Stage;
 use crate::common::on_drop_stream;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::flight_service::do_get::DoGet;
+use crate::flight_service::do_get::{DoGet, PLAN_WRITTEN_HEADER};
 use crate::metrics::latency_tracker::LatencyTracker;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -22,7 +22,7 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricValue};
 use datafusion::physical_plan::metrics::{MetricBuilder, Time};
 use futures::{Stream, TryStreamExt};
-use http::Extensions;
+use http::{Extensions, HeaderValue};
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
 use std::fmt::{Debug, Formatter};
@@ -149,14 +149,20 @@ impl WorkerConnection {
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
         // Building the actual request that will be sent to the worker.
-        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
-        headers.extend(get_passthrough_headers(ctx.session_config()));
+        let cfg = ctx.session_config();
+        let mut headers = get_passthrough_headers(cfg);
+        let mut plan_proto = Bytes::new();
+        if target_partition_range.start == 0 {
+            headers.insert(PLAN_WRITTEN_HEADER, HeaderValue::from_static("true"));
+            headers.extend(get_config_extension_propagation_headers(cfg)?);
+            plan_proto = Bytes::clone(input_stage.plan.encoded()?);
+        }
         let ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
-                    plan_proto: Bytes::clone(input_stage.plan.encoded()?),
+                    plan_proto,
                     target_partition_start: target_partition_range.start as u64,
                     target_partition_end: target_partition_range.end as u64,
                     stage_key: Some(StageKey::new(
