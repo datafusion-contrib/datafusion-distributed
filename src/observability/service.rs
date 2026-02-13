@@ -97,7 +97,7 @@ fn aggregate_task_metrics(
 }
 
 /// Recursively walks the plan tree, accumulating metrics from each node.
-/// Stops at network boundary nodes.
+/// Stops at network boundary nodes since they are child stages on other workers.
 fn accumulate_metrics(
     plan: &Arc<dyn ExecutionPlan>,
     elapsed_compute: &mut u64,
@@ -108,6 +108,8 @@ fn accumulate_metrics(
         for metric in metrics.iter() {
             match metric.value() {
                 MetricValue::ElapsedCompute(t) => *elapsed_compute += t.value() as u64,
+                // FIXME: Guage drops the current memory usage snapshot before it's read, giving a
+                // 0 value each time.
                 MetricValue::CurrentMemoryUsage(g) => *current_memory_usage += g.value() as u64,
                 MetricValue::SpillCount(c) => *spill_count += c.value() as u64,
                 _ => {}
@@ -116,7 +118,6 @@ fn accumulate_metrics(
     }
 
     for child in plan.children() {
-        // Stop at network boundaries - these are child stages on other workers
         if child
             .as_any()
             .downcast_ref::<NetworkShuffleExec>()

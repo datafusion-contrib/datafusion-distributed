@@ -1,8 +1,7 @@
 use datafusion_distributed::{
-    GetTaskProgressRequest, ObservabilityServiceClient, ObservabilityStageKey, PingRequest,
-    TaskStatus,
+    GetTaskMetricsRequest, ObservabilityServiceClient, PingRequest, TaskMetricsSummary,
 };
-use std::collections::HashSet;
+use ratatui::widgets::TableState;
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use url::Url;
@@ -12,6 +11,7 @@ pub struct App {
     pub workers: Vec<WorkerState>,
     pub should_quit: bool,
     pub console_state: ConsoleState,
+    pub task_table_state: TableState,
 }
 
 /// Represents overall state of the console application.
@@ -19,16 +19,34 @@ pub struct App {
 pub enum ConsoleState {
     Idle,
     Active,
-    Completed,
 }
 
-/// Tracks individual worker conneciton states.
+/// Tracks individual worker connection states.
 #[derive(Clone)]
-enum ConnectionStatus {
+pub enum ConnectionStatus {
     Connecting,
     Idle,
     Active,
     Disconnected { reason: String },
+}
+
+#[derive(Clone, PartialEq)]
+pub enum TaskRowStatus {
+    Running,
+    Completed,
+}
+
+/// A flattened view of a task with its worker context, used for the global task table.
+pub struct TaskRow {
+    pub worker_url: String,
+    pub stage_id: u64,
+    pub task_number: u64,
+    pub query_id_short: String,
+    pub output_rows: u64,
+    pub elapsed_compute: u64,
+    pub current_memory_usage: u64,
+    pub spill_count: u64,
+    pub status: TaskRowStatus,
 }
 
 impl App {
@@ -44,7 +62,6 @@ impl App {
                 completed_tasks: Vec::new(),
                 last_poll: None,
                 last_reconnect_attempt: None,
-                last_seen_query_ids: HashSet::new(),
             })
             .collect();
 
@@ -52,31 +69,33 @@ impl App {
             workers,
             should_quit: false,
             console_state: ConsoleState::Idle,
+            task_table_state: TableState::default(),
         }
     }
 
-    /// Handle keyboard events
+    /// Handle keyboard events.
     pub fn handle_key_event(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyEventKind};
 
-        if key.kind == KeyEventKind::Press {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-                KeyCode::Char('r') => {
-                    // Clear completed tasks but keep connections
-                    for worker in &mut self.workers {
-                        worker.completed_tasks.clear();
-                    }
-                    self.console_state = ConsoleState::Idle;
-                }
-                _ => {}
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.task_table_state.select_next();
             }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.task_table_state.select_previous();
+            }
+            _ => {}
         }
     }
 
-    /// Poll all workers for task progress.
+    /// Poll all workers for task metrics.
     pub async fn tick(&mut self) {
-        // Attempt connection for workers in Connecting or Disconnected state
+        // Attempt reconnection for disconnected workers
         for worker in &mut self.workers {
             if worker.should_retry_connection() {
                 worker.try_connect().await;
@@ -92,7 +111,7 @@ impl App {
             })
             .collect();
 
-        let _ = tokio::time::timeout(Duration::from_millis(50), async {
+        let _ = tokio::time::timeout(Duration::from_millis(100), async {
             futures::future::join_all(poll_workers).await;
         })
         .await;
@@ -113,13 +132,9 @@ impl App {
             .any(|w| matches!(w.connection_status, ConnectionStatus::Active));
 
         let has_running_tasks = self.workers.iter().any(|w| !w.tasks.is_empty());
-        let has_completed_tasks = self.workers.iter().any(|w| w.has_completed_tasks());
 
         if has_active || has_running_tasks {
             self.console_state = ConsoleState::Active;
-        } else if has_completed_tasks {
-            // All tasks completed, no running tasks
-            self.console_state = ConsoleState::Completed;
         } else {
             self.console_state = ConsoleState::Idle;
         }
@@ -130,7 +145,6 @@ impl App {
         let mut stats = ClusterStats {
             active_count: 0,
             idle_count: 0,
-            completed: 0,
             disconnected_count: 0,
             total_tasks: 0,
         };
@@ -147,13 +161,57 @@ impl App {
 
         stats
     }
+
+    /// Build a flattened list of task rows across all workers for the global table.
+    /// Running tasks appear first, followed by completed tasks.
+    pub fn task_rows(&self) -> Vec<TaskRow> {
+        let mut rows = Vec::new();
+
+        for worker in &self.workers {
+            for task in &worker.tasks {
+                if let Some(row) = task_summary_to_row(task, &worker.url, TaskRowStatus::Running) {
+                    rows.push(row);
+                }
+            }
+            for task in &worker.completed_tasks {
+                if let Some(row) = task_summary_to_row(task, &worker.url, TaskRowStatus::Completed)
+                {
+                    rows.push(row);
+                }
+            }
+        }
+        rows
+    }
+}
+
+fn task_summary_to_row(
+    task: &TaskMetricsSummary,
+    worker_url: &Url,
+    status: TaskRowStatus,
+) -> Option<TaskRow> {
+    let sk = task.stage_key.as_ref()?;
+    let query_id_short = if sk.query_id.len() >= 4 {
+        hex::encode(&sk.query_id[..4])
+    } else {
+        hex::encode(&sk.query_id)
+    };
+    Some(TaskRow {
+        worker_url: worker_url.to_string(),
+        stage_id: sk.stage_id,
+        task_number: sk.task_number,
+        query_id_short,
+        output_rows: task.output_rows,
+        elapsed_compute: task.elapsed_compute,
+        current_memory_usage: task.current_memory_usage,
+        spill_count: task.spill_count,
+        status,
+    })
 }
 
 /// Cluster-wide statistics for display in the UI.
 pub struct ClusterStats {
     pub active_count: usize,
     pub idle_count: usize,
-    pub completed: usize,
     pub disconnected_count: usize,
     pub total_tasks: usize,
 }
@@ -161,22 +219,12 @@ pub struct ClusterStats {
 /// Tracks state for a single worker.
 pub struct WorkerState {
     pub url: Url,
-    client: Option<ObservabilityServiceClient<Channel>>,
-    connection_status: ConnectionStatus,
-    pub tasks: Vec<datafusion_distributed::TaskProgress>,
-    pub completed_tasks: Vec<CompletedTask>,
-    last_poll: Option<Instant>,
-    last_reconnect_attempt: Option<Instant>,
-    last_seen_query_ids: HashSet<Vec<u8>>,
-}
-
-/// Stores information about completed tasks for progress display after they are removed from the
-/// moka TTL cache.
-#[derive(Clone, Debug)]
-pub struct CompletedTask {
-    _stage_key: ObservabilityStageKey,
-    pub total_partitions: u64,
-    query_id: Vec<u8>,
+    pub client: Option<ObservabilityServiceClient<Channel>>,
+    pub connection_status: ConnectionStatus,
+    pub tasks: Vec<TaskMetricsSummary>,
+    pub completed_tasks: Vec<TaskMetricsSummary>,
+    pub last_poll: Option<Instant>,
+    pub last_reconnect_attempt: Option<Instant>,
 }
 
 impl WorkerState {
@@ -226,95 +274,62 @@ impl WorkerState {
         }
     }
 
-    /// Queries a worker for task progress.
+    /// Queries a worker for task metrics.
     async fn poll(&mut self) {
         if let Some(client) = &mut self.client {
-            match client.get_task_progress(GetTaskProgressRequest {}).await {
+            match client.get_task_metrics(GetTaskMetricsRequest {}).await {
                 Ok(response) => {
-                    let new_tasks = response.into_inner().tasks;
+                    let new_tasks = response.into_inner().task_summaries;
                     self.last_poll = Some(Instant::now());
 
-                    // Detect completed tasks: tasks that were running but now have completed and
-                    // been removed from the TTL cache.
+                    // Detect completed tasks: tasks in old list but not in new list.
                     for old_task in &self.tasks {
-                        if old_task.status == TaskStatus::Running as i32 {
-                            let still_exists = new_tasks.iter().any(|t| {
-                                if let (Some(old_key), Some(new_key)) =
-                                    (&old_task.stage_key, &t.stage_key)
-                                {
-                                    old_key.query_id == new_key.query_id
-                                        && old_key.stage_id == new_key.stage_id
-                                        && old_key.task_number == new_key.task_number
-                                } else {
-                                    false
+                        let still_exists = new_tasks.iter().any(|new_task| {
+                            match (&old_task.stage_key, &new_task.stage_key) {
+                                (Some(old_sk), Some(new_sk)) => {
+                                    old_sk.query_id == new_sk.query_id
+                                        && old_sk.stage_id == new_sk.stage_id
+                                        && old_sk.task_number == new_sk.task_number
                                 }
-                            });
-
-                            // Assume completion
-                            if !still_exists {
-                                if let Some(stage_key) = &old_task.stage_key {
-                                    self.completed_tasks.push(CompletedTask {
-                                        _stage_key: stage_key.clone(),
-                                        total_partitions: old_task.total_partitions,
-                                        query_id: stage_key.query_id.clone(),
-                                    });
-                                }
+                                _ => false,
                             }
+                        });
+                        if !still_exists {
+                            self.completed_tasks.push(old_task.clone());
                         }
                     }
 
-                    // Update current tasks
-                    self.tasks = new_tasks;
-
-                    // Collect query IDs from current tasks
-                    let mut current_query_ids = HashSet::new();
-                    let mut has_running = false;
-
-                    for task in &self.tasks {
-                        if let Some(stage_key) = &task.stage_key {
-                            current_query_ids.insert(stage_key.query_id.clone());
-
-                            if task.status == TaskStatus::Running as i32 {
-                                has_running = true;
-                            }
-                        }
-                    }
-
-                    // If new work starts, clear old completed tasks
-                    if has_running && !self.completed_tasks.is_empty() {
-                        // Check if this is a new query
-                        let completed_query_ids: HashSet<_> = self
-                            .completed_tasks
+                    // If new tasks belong to a different query, clear old completed tasks.
+                    if !new_tasks.is_empty() && !self.completed_tasks.is_empty() {
+                        let new_query_ids: Vec<_> = new_tasks
                             .iter()
-                            .map(|t| t.query_id.clone())
+                            .filter_map(|t| t.stage_key.as_ref().map(|sk| &sk.query_id))
                             .collect();
-
-                        if !current_query_ids
-                            .iter()
-                            .any(|id| completed_query_ids.contains(id))
-                        {
-                            // New query started, clear old completed tasks
+                        let any_match = self.completed_tasks.iter().any(|ct| {
+                            ct.stage_key
+                                .as_ref()
+                                .is_some_and(|sk| new_query_ids.contains(&&sk.query_id))
+                        });
+                        if !any_match {
                             self.completed_tasks.clear();
                         }
                     }
 
-                    // Update connection status based on task activity
+                    self.tasks = new_tasks;
+                    let has_running = !self.tasks.is_empty();
+
                     match &self.connection_status {
                         ConnectionStatus::Active => {
                             if !has_running {
-                                // All tasks disappeared, go to Idle
                                 self.connection_status = ConnectionStatus::Idle;
                             }
-                            // Otherwise stay Active
                         }
                         ConnectionStatus::Idle => {
                             if has_running {
-                                // New tasks started
                                 self.connection_status = ConnectionStatus::Active;
                             }
                         }
                         _ => {
-                            // For Connecting or Disconnected states
                             if has_running {
                                 self.connection_status = ConnectionStatus::Active;
                             } else {
@@ -322,78 +337,15 @@ impl WorkerState {
                             }
                         }
                     }
-
-                    // Update tracked query IDs
-                    self.last_seen_query_ids = current_query_ids;
                 }
                 Err(e) => {
-                    // Connection lost
                     self.client = None;
                     self.tasks.clear();
                     self.connection_status = ConnectionStatus::Disconnected {
                         reason: format!("Poll failed: {e}"),
                     };
-                    self.last_seen_query_ids.clear();
                 }
             }
         }
-    }
-
-    /// Returns string representation of connection status.
-    pub fn status_text(&self) -> String {
-        match &self.connection_status {
-            ConnectionStatus::Connecting => "CONNECTING".to_string(),
-            ConnectionStatus::Idle => "IDLE".to_string(),
-            ConnectionStatus::Active => "ACTIVE".to_string(),
-            ConnectionStatus::Disconnected { .. } => "DISCONNECTED".to_string(),
-        }
-    }
-
-    /// Returns color for UI display based on status.
-    pub fn status_color(&self) -> ratatui::style::Color {
-        use ratatui::style::Color;
-        match self.connection_status {
-            ConnectionStatus::Connecting => Color::Blue,
-            ConnectionStatus::Idle => Color::Yellow,
-            ConnectionStatus::Active => Color::Green,
-            ConnectionStatus::Disconnected { .. } => Color::Red,
-        }
-    }
-
-    /// Extracts disconnection reason if applicable.
-    pub fn disconnect_reason(&self) -> Option<&str> {
-        if let ConnectionStatus::Disconnected { reason } = &self.connection_status {
-            Some(reason)
-        } else {
-            None
-        }
-    }
-
-    /// Get aggregated progress across all tasks on this worker.
-    pub fn aggregate_progress(&self) -> (u64, u64) {
-        let running_completed: u64 = self.tasks.iter().map(|t| t.completed_partitions).sum();
-        let running_total: u64 = self.tasks.iter().map(|t| t.total_partitions).sum();
-
-        // Add completed task partitions (all completed, so total = completed)
-        let completed_total: u64 = self
-            .completed_tasks
-            .iter()
-            .map(|t| t.total_partitions)
-            .sum();
-
-        (
-            running_completed + completed_total,
-            running_total + completed_total,
-        )
-    }
-
-    /// Check if worker has any completed tasks.
-    pub fn has_completed_tasks(&self) -> bool {
-        !self.completed_tasks.is_empty()
-    }
-
-    /// Check if all tasks are completed.
-    pub fn all_tasks_completed(&self) -> bool {
-        self.tasks.is_empty() && !self.completed_tasks.is_empty()
     }
 }

@@ -52,7 +52,7 @@ async fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::R
 
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(10))? {
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 app.handle_key_event(key);
             }
