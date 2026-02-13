@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { z } from 'zod';
-import { BenchmarkRunner, runBenchmark, TableSpec } from "./@bench-common";
+import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
 import { execSync } from "child_process";
 
 // Remember to port-forward a worker with
@@ -22,7 +22,7 @@ async function main() {
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
-        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
         .parse(process.argv);
 
     const options = program.opts();
@@ -64,7 +64,8 @@ async function main() {
 
 const QueryResponse = z.object({
     count: z.number(),
-    plan: z.string()
+    plan: z.string(),
+    elapsed_ms: z.number(),
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
@@ -83,7 +84,7 @@ class DataFusionRunner implements BenchmarkRunner {
     }) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number, plan: string }> {
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         let response
         if (sql.includes("create view")) {
             // This is query 15
@@ -95,7 +96,7 @@ class DataFusionRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: response.plan };
+        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms };
     }
 
     private async query(sql: string): Promise<QueryResponse> {

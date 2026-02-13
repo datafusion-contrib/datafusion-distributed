@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import time
 from flask import Flask, request, jsonify
 from pyspark.sql import SparkSession
 
@@ -44,12 +45,14 @@ def execute_query():
 
         # Execute the query
         spark_session = get_spark()
+        start = time.monotonic()
         df = spark_session.sql(query)
 
         # Get row count without collecting all data
         count = df.count()
+        elapsed_ms = (time.monotonic() - start) * 1000
 
-        return jsonify({"count": count}), 200
+        return jsonify({"count": count, "elapsed_ms": elapsed_ms}), 200
 
     except Exception as e:
         return str(e), 500
