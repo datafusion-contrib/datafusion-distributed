@@ -2,8 +2,8 @@
 members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { path = "/home/bits/datafusion/datafusion/core", default-features = false }
-datafusion-proto = { path = "/home/bits/datafusion/datafusion/proto" }
+datafusion = { git = "https://github.com/jayshrivastava/datafusion.git", rev = "f3b6568afcc0ed8fc3455458a80a49377f75d4e4", default-features = false }
+datafusion-proto = { git = "https://github.com/jayshrivastava/datafusion.git", rev = "f3b6568afcc0ed8fc3455458a80a49377f75d4e4" }
 
 [package]
 name = "datafusion-distributed"
