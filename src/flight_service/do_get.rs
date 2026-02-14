@@ -106,7 +106,16 @@ impl Worker {
         let stage_data = once
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
-                let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
+
+                // Use DeduplicatingProtoConverter to restore Arc-sharing relationships
+                // (especially important for dynamic filters with shared inner state)
+                use datafusion_proto::physical_plan::DeduplicatingProtoConverter;
+                let converter = DeduplicatingProtoConverter::default();
+                let mut plan = proto_node.try_into_physical_plan_with_converter(
+                    &task_ctx,
+                    &codec,
+                    &converter,
+                )?;
                 for hook in self.hooks.on_plan.iter() {
                     plan = hook(plan)
                 }

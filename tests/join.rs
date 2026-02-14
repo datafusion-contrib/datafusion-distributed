@@ -14,6 +14,7 @@ mod tests {
         DefaultSessionBuilder, assert_snapshot, display_plan_ascii,
         test_utils::localhost::start_localhost_context,
     };
+    use std::sync::Arc;
 
     fn set_configs(ctx: &mut SessionContext) {
         // Preserve hive-style file partitions.
@@ -43,6 +44,13 @@ mod tests {
             .options_mut()
             .optimizer
             .hash_join_single_partition_threshold_rows = 0;
+        // Enable dynamic filter pushdown
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .enable_dynamic_filter_pushdown = true;
     }
 
     async fn register_tables(ctx: &SessionContext) -> Result<()> {
@@ -70,13 +78,86 @@ mod tests {
     ) -> Result<(String, Vec<RecordBatch>)> {
         let df = ctx.sql(query).await?;
         let (state, logical_plan) = df.into_parts();
+
+        // Create physical plan WITHOUT distributed optimizer
+        use datafusion::execution::SessionStateBuilder;
+        let mut state_builder = SessionStateBuilder::new_from_existing(state.clone());
+        state_builder = state_builder.with_physical_optimizer_rules(vec![]);
+        let non_distributed_state = state_builder.build();
+        let non_distributed_plan = non_distributed_state.create_physical_plan(&logical_plan).await?;
+
+        println!("\n——————— BEFORE DISTRIBUTED OPTIMIZER ———————\n");
+        print_datasource_predicates(&non_distributed_plan, 0);
+        println!("\n——————— ARC ADDRESSES BEFORE DISTRIBUTED OPTIMIZER ———————\n");
+        print_dynamic_filter_arc_addresses(&non_distributed_plan, 0);
+
+        // Create physical plan WITH distributed optimizer
         let physical_plan = state.create_physical_plan(&logical_plan).await?;
+
+        println!("\n——————— AFTER DISTRIBUTED OPTIMIZER ———————\n");
+        print_datasource_predicates(&physical_plan, 0);
+        println!("\n——————— ARC ADDRESSES AFTER DISTRIBUTED OPTIMIZER ———————\n");
+        print_dynamic_filter_arc_addresses(&physical_plan, 0);
+
         let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
         println!("\n——————— DISTRIBUTED PLAN ———————\n\n{distributed_plan}");
 
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
+        let distributed_results = collect(physical_plan.clone(), state.task_ctx()).await?;
         pretty::print_batches(&distributed_results)?;
+
+        // Print plan with metrics after execution
+        let distributed_plan_with_metrics = display_plan_ascii(physical_plan.as_ref(), true);
+        println!("\n——————— PLAN WITH METRICS ———————\n\n{distributed_plan_with_metrics}");
+
+        // Print detailed metrics from the physical plan
+        use datafusion::physical_plan::displayable;
+        let metrics_str = displayable(physical_plan.as_ref()).indent(true).to_string();
+        println!("\n——————— DETAILED METRICS ———————\n\n{metrics_str}");
+
         Ok((distributed_plan, distributed_results))
+    }
+
+    fn print_datasource_predicates(plan: &Arc<dyn datafusion::physical_plan::ExecutionPlan>, depth: usize) {
+        use datafusion::physical_plan::displayable;
+        let indent = "  ".repeat(depth);
+        let plan_name = plan.name();
+
+        // Use displayable format which shows predicates
+        if plan_name.starts_with("DataSourceExec") || plan_name.starts_with("ParquetExec") {
+            let display_str = displayable(plan.as_ref()).indent(false).to_string();
+            println!("{indent}{}", display_str);
+        }
+
+        for child in plan.children() {
+            print_datasource_predicates(child, depth + 1);
+        }
+    }
+
+    fn print_dynamic_filter_arc_addresses(plan: &Arc<dyn datafusion::physical_plan::ExecutionPlan>, depth: usize) {
+        use datafusion::physical_plan::joins::HashJoinExec;
+        use datafusion::datasource::source::DataSourceExec;
+
+        let indent = "  ".repeat(depth);
+
+        // Check if this is a HashJoinExec and print its dynamic filter address
+        if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+            if let Some(filter) = hash_join.dynamic_filter_for_test() {
+                let ptr_addr = Arc::as_ptr(filter) as *const () as u64;
+                println!("{}HashJoinExec dynamic filter Arc address: 0x{:x}", indent, ptr_addr);
+            }
+        }
+
+        // Check if this is a DataSourceExec and print its filter address
+        if let Some(data_source) = plan.as_any().downcast_ref::<DataSourceExec>() {
+            if let Some(filter) = data_source.filter_for_test() {
+                let ptr = Arc::as_ptr(&filter) as *const () as u64;
+                println!("{}DataSourceExec filter Arc address: 0x{:x}", indent, ptr);
+            }
+        }
+
+        for child in plan.children() {
+            print_dynamic_filter_arc_addresses(child, depth + 1);
+        }
     }
 
     #[tokio::test]
@@ -146,6 +227,174 @@ mod tests {
         | B      | 2023-01-01T09:12:50 | 92.3  | prod | log     | host-x |
         +--------+---------------------+-------+------+---------+--------+
         ");
+
+        Ok(())
+    }
+
+    /// Test showing dynamic filter behavior in Partitioned hash join mode.
+    ///
+    /// This test demonstrates a known correctness bug with dynamic filtering in distributed
+    /// Partitioned mode: https://github.com/apache/datafusion/pull/20175
+    ///
+    /// Expected behavior comparison:
+    ///
+    /// ============================================================
+    /// DISABLED (no dynamic filter) - WORKS CORRECTLY:
+    /// ============================================================
+    ///
+    /// ┌───── DistributedExec ── Tasks: t0:[p0]
+    /// │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
+    /// │   metrics=[output_rows=14]
+    /// │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+    /// └──────────────────────────────────────────────────
+    ///   ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+    ///   │ ProjectionExec: expr=[f_dkey@5, timestamp@3, value@4, env@0, service@1, host@2]
+    ///   │   metrics=[output_rows=14]
+    ///   │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)]
+    ///   │     metrics=[output_rows=14, input_batches=4, input_rows=24, probe_hit_rate=58% (14/24)]
+    ///   │                                               ^^^^^^^^^^^  ← Reads ALL 24 rows
+    ///   │     FilterExec: service@1 = log
+    ///   │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+    ///   │         DataSourceExec: file_groups={4 groups: [d_dkey=A, B, C, D]}
+    ///   │           predicate=service@1 = log
+    ///   │           metrics=[output_rows=2]
+    ///   │     PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+    ///   │       DataSourceExec: file_groups={4 groups: [f_dkey=A, B, C, D]}
+    ///   │         metrics=[output_rows=24, output_batches=4,
+    ///   │                  files_ranges_pruned_statistics=4 total → 4 matched,  ← ALL 4 files
+    ///   │                  bytes_scanned=767]
+    ///   └──────────────────────────────────────────────────
+    ///
+    /// Results: 1 batches, 14 total rows ✓
+    ///
+    ///
+    /// ============================================================
+    /// ENABLED (with dynamic filter) - Dynamic filtering works but results are wrong (known issue):
+    /// ============================================================
+    ///
+    /// ┌───── DistributedExec ── Tasks: t0:[p0]
+    /// │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
+    /// │   metrics=[output_rows=0]  ← NO OUTPUT!
+    /// │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+    /// └──────────────────────────────────────────────────
+    ///   ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+    ///   │ ProjectionExec: expr=[f_dkey@5, timestamp@3, value@4, env@0, service@1, host@2]
+    ///   │   metrics=[output_rows=0]  ← NO OUTPUT!
+    ///   │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@3, f_dkey@2)]
+    ///   │     metrics=[output_rows=0, input_batches=0, input_rows=0, probe_hit_rate=N/A (0/0)]
+    ///   │                                              ^^^^^^^^^^^  ← NO INPUT!
+    ///   │     FilterExec: service@1 = log
+    ///   │       PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+    ///   │         DataSourceExec: file_groups={4 groups: [d_dkey=A, B, C, D]}
+    ///   │           predicate=service@1 = log
+    ///   │           metrics=[output_rows=2]  ← Build side is fine
+    ///   │     PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+    ///   │       DataSourceExec: file_groups={4 groups: [f_dkey=A, B, C, D]}
+    ///   │         predicate=DynamicFilter [ empty ]
+    ///   │                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ///   │                   NOTE: Shows "empty" because the plan is displayed on the coordinator,
+    ///   │                   which doesn't have the dynamic filter state. On the workers, the filter
+    ///   │                   exists but incorrectly prunes ALL data.
+    ///   │         metrics=[output_rows=0, output_batches=0,
+    ///   │                  files_ranges_pruned_statistics=4 total → 0 matched,  ← PRUNED ALL!
+    ///   │                  bytes_scanned=0]  ← NO DATA READ!
+    ///   └──────────────────────────────────────────────────
+    ///
+    /// Results: 0 batches, 0 total rows ✗  (Should be 14 rows!)
+    ///
+    /// KNOWN ISSUE: Dynamic filtering in Partitioned mode incorrectly prunes all rows,
+    /// returning 0 results instead of 14. This is a correctness bug tracked at:
+    /// https://github.com/apache/datafusion/pull/20175
+    #[tokio::test]
+    async fn test_join_hive_dynamic_filter_comparison() -> Result<(), Box<dyn std::error::Error>> {
+        async fn run_with_dynamic_filter(enable: bool, query: &str) -> Result<(), Box<dyn std::error::Error>> {
+            let (mut ctx, _guard, _) =
+                start_localhost_context(2, DefaultSessionBuilder).await;
+
+            // Use same config as test_join_hive to get Partitioned mode
+            ctx.state_ref()
+                .write()
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .preserve_file_partitions = 1;
+            ctx.state_ref()
+                .write()
+                .config_mut()
+                .options_mut()
+                .execution
+                .target_partitions = 4;
+            // Force Partitioned mode by setting thresholds to 0
+            ctx.state_ref()
+                .write()
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .hash_join_single_partition_threshold = 0;
+            ctx.state_ref()
+                .write()
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .hash_join_single_partition_threshold_rows = 0;
+
+            // Set dynamic filter flag
+            ctx.state_ref()
+                .write()
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .enable_join_dynamic_filter_pushdown = enable;
+
+            register_tables(&ctx).await?;
+
+            println!("\n{}", "=".repeat(60));
+            println!("Dynamic Filter Pushdown: {}", if enable { "ENABLED" } else { "DISABLED" });
+            println!("{}\n", "=".repeat(60));
+
+            let df = ctx.sql(query).await?;
+            let mut physical_plan = df.create_physical_plan().await?;
+
+            // Execute using execute_stream to preserve metrics
+            use datafusion::physical_plan::execute_stream;
+            use futures::TryStreamExt;
+            let results = execute_stream(physical_plan.clone(), ctx.task_ctx())?
+                .try_collect::<Vec<_>>()
+                .await?;
+
+            // Rewrite plan with metrics collected from workers
+            use datafusion_distributed::{display_plan_ascii, rewrite_distributed_plan_with_metrics, DistributedMetricsFormat};
+            physical_plan = rewrite_distributed_plan_with_metrics(
+                physical_plan.clone(),
+                DistributedMetricsFormat::Aggregated,
+            )?;
+
+            // Display plan with metrics
+            let plan_with_metrics = display_plan_ascii(physical_plan.as_ref(), true);
+            println!("\nPlan with metrics:\n{}\n", plan_with_metrics);
+
+            println!("Results: {} batches, {} total rows\n", results.len(), results.iter().map(|b| b.num_rows()).sum::<usize>());
+
+            Ok(())
+        }
+
+        let query = r#"
+            SELECT
+                f.f_dkey,
+                f.timestamp,
+                f.value,
+                d.env,
+                d.service,
+                d.host
+            FROM dim d
+            INNER JOIN fact f ON d.d_dkey = f.f_dkey
+            WHERE d.service = 'log'
+            ORDER BY f_dkey, timestamp
+        "#;
+
+        run_with_dynamic_filter(false, query).await?;
+        println!("\n\n");
+        run_with_dynamic_filter(true, query).await?;
 
         Ok(())
     }
