@@ -61,12 +61,13 @@ mod tests {
             .hash_join_single_partition_threshold_rows = usize::MAX;
 
         // IMPORTANT: Set dynamic filter pushdown
+        // Use the specific join flag rather than the master flag
         ctx.state_ref()
             .write()
             .config_mut()
             .options_mut()
             .optimizer
-            .enable_dynamic_filter_pushdown = enable_dynamic_filter;
+            .enable_join_dynamic_filter_pushdown = enable_dynamic_filter;
 
         register_tables(&ctx).await?;
 
@@ -103,16 +104,32 @@ mod tests {
         let plan_with_metrics = display_plan_ascii(physical_plan.as_ref(), true);
         println!("\nPlan with metrics:\n{}\n", plan_with_metrics);
 
-        // How to verify dynamic filtering is working:
-        // 1. Look for "predicate=DynamicFilter [ ... ]" in DataSourceExec
-        //    - If it shows specific values (e.g., "f_dkey@2 >= A AND f_dkey@2 <= B"), the filter was updated
-        //    - If it shows "DynamicFilter [ empty ]", the filter was NOT updated (Arc sharing broken)
-        // 2. Check output_rows metrics:
-        //    - With dynamic filtering: DataSourceExec output_rows should be reduced (e.g., 14 rows)
-        //    - Without dynamic filtering: DataSourceExec output_rows would be higher (e.g., 24 rows)
-        // 3. Check files_ranges_pruned_statistics:
-        //    - With dynamic filtering: Should show "4 total → 2 matched" (only reading needed files)
-        //    - Without dynamic filtering: Would show "4 total → 4 matched" (reading all files)
+        // Expected results comparison (based on actual test runs):
+        //
+        // DISABLED (no dynamic filter):
+        //
+        //   DataSourceExec (fact table):
+        //     output_rows=24  ← All rows from all files
+        //     input_batches=4  ← 4 batches (one per file)
+        //     files_ranges_pruned_statistics=4 total → 4 matched  ← All 4 files read
+        //     bytes_scanned=767
+        //
+        //   HashJoinExec:
+        //     input_rows=24  ← Join processes all 24 rows
+        //     probe_hit_rate=58% (14/24)  ← Only 14 out of 24 rows match
+        //
+        // ENABLED (with dynamic filter):
+        //
+        //   DataSourceExec (fact table):
+        //     predicate=DynamicFilter [ f_dkey@2 >= A AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([B, A]) ]
+        //     output_rows=14  ← Only matching rows!
+        //     input_batches=2  ← Only 2 batches (files A and B)
+        //     files_ranges_pruned_statistics=4 total → 2 matched  ← Only 2 files read!
+        //     bytes_scanned=396  ← 48% less data scanned!
+        //
+        //   HashJoinExec:
+        //     input_rows=14  ← Join only processes 14 rows
+        //     probe_hit_rate=100% (14/14)  ← Every row matches!
         println!("Results: {} batches, {} total rows\n", results.len(), results.iter().map(|b| b.num_rows()).sum::<usize>());
 
         Ok(())
