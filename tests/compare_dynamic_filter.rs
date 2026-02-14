@@ -106,30 +106,59 @@ mod tests {
 
         // Expected results comparison (based on actual test runs):
         //
+        // ============================================================
         // DISABLED (no dynamic filter):
+        // ============================================================
         //
-        //   DataSourceExec (fact table):
-        //     output_rows=24  ← All rows from all files
-        //     input_batches=4  ← 4 batches (one per file)
-        //     files_ranges_pruned_statistics=4 total → 4 matched  ← All 4 files read
-        //     bytes_scanned=767
+        // ┌───── DistributedExec ── Tasks: t0:[p0]
+        // │ SortPreservingMergeExec: [f_dkey@6 ASC NULLS LAST, timestamp@4 ASC NULLS LAST], fetch=10
+        // │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_dkey@3, f_dkey@2)]
+        // │     metrics=[output_rows=14, input_batches=4, input_rows=24, probe_hit_rate=58% (14/24)]
+        // │                                                    ^^^^^^^^^^^  ← Reads ALL 24 rows
+        // │                                                                  ^^^^^^^^^^^^^^^^^^^^ Only 58% useful!
+        // │     CoalescePartitionsExec
+        // │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        // │     DataSourceExec: file_groups={4 groups: [f_dkey=A, f_dkey=B, f_dkey=C, f_dkey=D]}
+        // │       metrics=[output_rows=24, output_batches=4,
+        // │                files_ranges_pruned_statistics=4 total → 4 matched,  ← Reads ALL 4 files
+        // │                bytes_scanned=767]
+        // └──────────────────────────────────────────────────
+        //   ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+        //   │ FilterExec: service@1 = log
+        //   │   PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+        //   │     DataSourceExec: file_groups={4 groups: [d_dkey=A, d_dkey=B, d_dkey=C, d_dkey=D]}
+        //   │       predicate=service@1 = log
+        //   │       metrics=[output_rows=2]
+        //   └──────────────────────────────────────────────────
         //
-        //   HashJoinExec:
-        //     input_rows=24  ← Join processes all 24 rows
-        //     probe_hit_rate=58% (14/24)  ← Only 14 out of 24 rows match
         //
+        // ============================================================
         // ENABLED (with dynamic filter):
+        // ============================================================
         //
-        //   DataSourceExec (fact table):
-        //     predicate=DynamicFilter [ f_dkey@2 >= A AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([B, A]) ]
-        //     output_rows=14  ← Only matching rows!
-        //     input_batches=2  ← Only 2 batches (files A and B)
-        //     files_ranges_pruned_statistics=4 total → 2 matched  ← Only 2 files read!
-        //     bytes_scanned=396  ← 48% less data scanned!
-        //
-        //   HashJoinExec:
-        //     input_rows=14  ← Join only processes 14 rows
-        //     probe_hit_rate=100% (14/14)  ← Every row matches!
+        // ┌───── DistributedExec ── Tasks: t0:[p0]
+        // │ SortPreservingMergeExec: [f_dkey@6 ASC NULLS LAST, timestamp@4 ASC NULLS LAST], fetch=10
+        // │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d_dkey@3, f_dkey@2)]
+        // │     metrics=[output_rows=14, input_batches=2, input_rows=14, probe_hit_rate=100% (14/14)]
+        // │                                               ^^^^^^^^^^^  ← Only reads 14 rows!
+        // │                                                             ^^^^^^^^^^^^^^^^^^^^^ 100% useful!
+        // │     CoalescePartitionsExec
+        // │       [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        // │     DataSourceExec: file_groups={4 groups: [f_dkey=A, f_dkey=B, f_dkey=C, f_dkey=D]}
+        // │       predicate=DynamicFilter [ f_dkey@2 >= A AND f_dkey@2 <= B AND f_dkey@2 IN (SET) ([B, A]) ]
+        // │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        // │                 Dynamic filter with actual values from build side!
+        // │       metrics=[output_rows=14, output_batches=2,
+        // │                files_ranges_pruned_statistics=4 total → 2 matched,  ← Only reads 2 files (A, B)!
+        // │                bytes_scanned=396]  ← 48% less data scanned (767 → 396 bytes)
+        // └──────────────────────────────────────────────────
+        //   ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+        //   │ FilterExec: service@1 = log
+        //   │   PartitionIsolatorExec: t0:[p0,p1,__,__] t1:[__,__,p0,p1]
+        //   │     DataSourceExec: file_groups={4 groups: [d_dkey=A, d_dkey=B, d_dkey=C, d_dkey=D]}
+        //   │       predicate=service@1 = log
+        //   │       metrics=[output_rows=2]
+        //   └──────────────────────────────────────────────────
         println!("Results: {} batches, {} total rows\n", results.len(), results.iter().map(|b| b.num_rows()).sum::<usize>());
 
         Ok(())
