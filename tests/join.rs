@@ -14,6 +14,7 @@ mod tests {
         DefaultSessionBuilder, assert_snapshot, display_plan_ascii,
         test_utils::localhost::start_localhost_context,
     };
+    use std::sync::Arc;
 
     fn set_configs(ctx: &mut SessionContext) {
         // Preserve hive-style file partitions.
@@ -43,6 +44,13 @@ mod tests {
             .options_mut()
             .optimizer
             .hash_join_single_partition_threshold_rows = 0;
+        // Enable dynamic filter pushdown
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .optimizer
+            .enable_dynamic_filter_pushdown = true;
     }
 
     async fn register_tables(ctx: &SessionContext) -> Result<()> {
@@ -70,13 +78,86 @@ mod tests {
     ) -> Result<(String, Vec<RecordBatch>)> {
         let df = ctx.sql(query).await?;
         let (state, logical_plan) = df.into_parts();
+
+        // Create physical plan WITHOUT distributed optimizer
+        use datafusion::execution::SessionStateBuilder;
+        let mut state_builder = SessionStateBuilder::new_from_existing(state.clone());
+        state_builder = state_builder.with_physical_optimizer_rules(vec![]);
+        let non_distributed_state = state_builder.build();
+        let non_distributed_plan = non_distributed_state.create_physical_plan(&logical_plan).await?;
+
+        println!("\n——————— BEFORE DISTRIBUTED OPTIMIZER ———————\n");
+        print_datasource_predicates(&non_distributed_plan, 0);
+        println!("\n——————— ARC ADDRESSES BEFORE DISTRIBUTED OPTIMIZER ———————\n");
+        print_dynamic_filter_arc_addresses(&non_distributed_plan, 0);
+
+        // Create physical plan WITH distributed optimizer
         let physical_plan = state.create_physical_plan(&logical_plan).await?;
+
+        println!("\n——————— AFTER DISTRIBUTED OPTIMIZER ———————\n");
+        print_datasource_predicates(&physical_plan, 0);
+        println!("\n——————— ARC ADDRESSES AFTER DISTRIBUTED OPTIMIZER ———————\n");
+        print_dynamic_filter_arc_addresses(&physical_plan, 0);
+
         let distributed_plan = display_plan_ascii(physical_plan.as_ref(), false);
         println!("\n——————— DISTRIBUTED PLAN ———————\n\n{distributed_plan}");
 
-        let distributed_results = collect(physical_plan, state.task_ctx()).await?;
+        let distributed_results = collect(physical_plan.clone(), state.task_ctx()).await?;
         pretty::print_batches(&distributed_results)?;
+
+        // Print plan with metrics after execution
+        let distributed_plan_with_metrics = display_plan_ascii(physical_plan.as_ref(), true);
+        println!("\n——————— PLAN WITH METRICS ———————\n\n{distributed_plan_with_metrics}");
+
+        // Print detailed metrics from the physical plan
+        use datafusion::physical_plan::displayable;
+        let metrics_str = displayable(physical_plan.as_ref()).indent(true).to_string();
+        println!("\n——————— DETAILED METRICS ———————\n\n{metrics_str}");
+
         Ok((distributed_plan, distributed_results))
+    }
+
+    fn print_datasource_predicates(plan: &Arc<dyn datafusion::physical_plan::ExecutionPlan>, depth: usize) {
+        use datafusion::physical_plan::displayable;
+        let indent = "  ".repeat(depth);
+        let plan_name = plan.name();
+
+        // Use displayable format which shows predicates
+        if plan_name.starts_with("DataSourceExec") || plan_name.starts_with("ParquetExec") {
+            let display_str = displayable(plan.as_ref()).indent(false).to_string();
+            println!("{indent}{}", display_str);
+        }
+
+        for child in plan.children() {
+            print_datasource_predicates(child, depth + 1);
+        }
+    }
+
+    fn print_dynamic_filter_arc_addresses(plan: &Arc<dyn datafusion::physical_plan::ExecutionPlan>, depth: usize) {
+        use datafusion::physical_plan::joins::HashJoinExec;
+        use datafusion::datasource::source::DataSourceExec;
+
+        let indent = "  ".repeat(depth);
+
+        // Check if this is a HashJoinExec and print its dynamic filter address
+        if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+            if let Some(filter) = hash_join.dynamic_filter_for_test() {
+                let ptr_addr = Arc::as_ptr(filter) as *const () as u64;
+                println!("{}HashJoinExec dynamic filter Arc address: 0x{:x}", indent, ptr_addr);
+            }
+        }
+
+        // Check if this is a DataSourceExec and print its filter address
+        if let Some(data_source) = plan.as_any().downcast_ref::<DataSourceExec>() {
+            if let Some(filter) = data_source.filter_for_test() {
+                let ptr = Arc::as_ptr(&filter) as *const () as u64;
+                println!("{}DataSourceExec filter Arc address: 0x{:x}", indent, ptr);
+            }
+        }
+
+        for child in plan.children() {
+            print_dynamic_filter_arc_addresses(child, depth + 1);
+        }
     }
 
     #[tokio::test]

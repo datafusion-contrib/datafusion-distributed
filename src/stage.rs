@@ -106,11 +106,21 @@ pub(crate) enum MaybeEncodedPlan {
 impl MaybeEncodedPlan {
     pub(crate) fn to_encoded(&self, codec: &dyn PhysicalExtensionCodec) -> Result<Self> {
         Ok(match self {
-            Self::Decoded(plan) => Self::Encoded(
-                PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?
+            Self::Decoded(plan) => {
+                // Use DeduplicatingProtoConverter to preserve Arc-sharing relationships
+                // (especially important for dynamic filters)
+                use datafusion_proto::physical_plan::DeduplicatingProtoConverter;
+                let converter = DeduplicatingProtoConverter::default();
+                Self::Encoded(
+                    PhysicalPlanNode::try_from_physical_plan_with_converter(
+                        Arc::clone(plan),
+                        codec,
+                        &converter,
+                    )?
                     .encode_to_vec()
                     .into(),
-            ),
+                )
+            }
             Self::Encoded(plan) => Self::Encoded(plan.clone()),
         })
     }

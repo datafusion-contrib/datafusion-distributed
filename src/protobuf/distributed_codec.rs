@@ -19,7 +19,7 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{ComposedPhysicalExtensionCodec, PhysicalExtensionCodec};
+use datafusion_proto::physical_plan::{ComposedPhysicalExtensionCodec, PhysicalExtensionCodec, DefaultPhysicalProtoConverter};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use itertools::Itertools;
@@ -108,6 +108,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
@@ -132,6 +133,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
 
@@ -171,6 +173,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
 
@@ -258,6 +261,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -273,6 +277,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -298,6 +303,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
