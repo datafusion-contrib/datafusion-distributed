@@ -269,7 +269,7 @@ mod tests {
     ///
     ///
     /// ============================================================
-    /// ENABLED (with dynamic filter) - BROKEN! RETURNS 0 ROWS:
+    /// ENABLED (with dynamic filter) - Dynamic filtering works but results are wrong (known issue):
     /// ============================================================
     ///
     /// ┌───── DistributedExec ── Tasks: t0:[p0]
