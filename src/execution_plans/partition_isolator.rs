@@ -1,10 +1,15 @@
-use crate::DistributedTaskContext;
 use crate::common::require_one_child;
+use crate::DistributedTaskContext;
+use datafusion::common::config::ConfigOptions;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
-use datafusion::physical_plan::ExecutionPlanProperties;
+use datafusion::physical_plan::filter_pushdown::{
+    ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
+};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::{
     error::Result,
     execution::SendableRecordBatchStream,
@@ -192,11 +197,74 @@ impl ExecutionPlan for PartitionIsolatorExec {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+
+    /// PartitionIsolatorExec is a transparent passthrough node that only remaps
+    /// partition indices — it does not filter, project, or transform data.
+    /// Therefore it forwards all parent filters to its child unchanged,
+    /// matching the behavior of other transparent nodes like CoalesceBatchesExec
+    /// and RepartitionExec.
+    fn gather_filters_for_pushdown(
+        &self,
+        _phase: FilterPushdownPhase,
+        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterDescription> {
+        FilterDescription::from_children(parent_filters, &self.children())
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        _phase: FilterPushdownPhase,
+        child_pushdown_result: ChildPushdownResult,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+        Ok(FilterPushdownPropagation::if_all(child_pushdown_result))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]))
+    }
+
+    /// Verifies that PartitionIsolatorExec forwards parent filters to its
+    /// child unchanged. This is critical for dynamic filter pushdown (e.g.
+    /// TopK or hash join filters) to reach the DataSourceExec through
+    /// PartitionIsolatorExec.
+    #[test]
+    fn test_forwards_filters_to_child() {
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::expressions::lit;
+
+        let schema = test_schema();
+        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let isolator = PartitionIsolatorExec::new(input, 2);
+
+        // Create a filter expression to push down.
+        let filter: Arc<dyn PhysicalExpr> = lit(ScalarValue::Boolean(Some(true)));
+        let parent_filters = vec![filter];
+
+        let config = ConfigOptions::default();
+        let result = isolator
+            .gather_filters_for_pushdown(FilterPushdownPhase::Post, parent_filters.clone(), &config)
+            .expect("gather_filters_for_pushdown should succeed");
+
+        // The filter description should forward the parent filter to the
+        // single child. parent_filters() returns a Vec<Vec<PushedDownPredicate>>
+        // with one entry per child.
+        let child_filters = result.parent_filters();
+        assert_eq!(child_filters.len(), 1, "should have exactly one child");
+        assert_eq!(
+            child_filters[0].len(),
+            1,
+            "child should receive exactly one filter"
+        );
+    }
 
     #[test]
     fn test_partition_groups() {
