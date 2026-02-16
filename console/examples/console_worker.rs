@@ -1,4 +1,4 @@
-use datafusion_distributed::{ObservabilityServiceServer, Worker};
+use datafusion_distributed::Worker;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use structopt::StructOpt;
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
     let worker = Worker::default();
-    let observability_service = ObservabilityServiceServer::new(worker.observability_service());
+    let observability_service = worker.with_observability_service();
 
     Server::builder()
         .add_service(worker.into_flight_server())
