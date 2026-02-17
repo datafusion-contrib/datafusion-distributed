@@ -22,6 +22,7 @@ use url::Url;
 struct QueryResult {
     plan: String,
     count: usize,
+    elapsed_ms: f64,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -105,7 +106,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let ms = elapsed.as_secs_f64() * 1000.0;
                     info!("Returned {count} rows in {ms} ms");
 
-                    Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
+                    Ok::<_, (StatusCode, String)>(Json(QueryResult {
+                        count,
+                        plan,
+                        elapsed_ms: ms,
+                    }))
                 }
                 .inspect_err(|(_, msg)| {
                     error!("Error executing query: {msg}");
