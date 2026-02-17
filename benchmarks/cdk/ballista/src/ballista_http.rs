@@ -22,7 +22,7 @@ use url::Url;
 struct QueryResult {
     plan: String,
     count: usize,
-    elapsed_ms: usize,
+    elapsed_ms: f64,
 }
 
 #[derive(Debug, StructOpt, Clone)]
