@@ -4,7 +4,6 @@ use datafusion_distributed::{
 };
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tonic::transport::Channel;
 use url::Url;
 
@@ -13,7 +12,6 @@ pub struct App {
     pub workers: Vec<WorkerState>,
     pub should_quit: bool,
     pub console_state: ConsoleState,
-    worker_registration_rx: mpsc::UnboundedReceiver<Vec<Url>>,
 }
 
 /// Represents overall state of the console application.
@@ -34,29 +32,11 @@ enum ConnectionStatus {
 }
 
 impl App {
-    /// Create a new App in IDLE state.
-    pub fn new() -> (Self, mpsc::UnboundedSender<Vec<Url>>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let app = App {
-            workers: Vec::new(),
-            should_quit: false,
-            console_state: ConsoleState::Idle,
-            worker_registration_rx: rx,
-        };
-
-        (app, tx)
-    }
-
-    /// Called when new workers are registered via the ConsoleControlService.RegisterWorkers gRPC service.
-    async fn register_workers(&mut self, worker_urls: Vec<Url>) {
-        // Clear existing workers if switching to new query
-        if !self.workers.is_empty() {
-            self.workers.clear();
-        }
-
-        for url in worker_urls {
-            let mut worker = WorkerState {
+    /// Create a new App with the given worker URLs.
+    pub fn new(worker_urls: Vec<Url>) -> Self {
+        let workers = worker_urls
+            .into_iter()
+            .map(|url| WorkerState {
                 url,
                 client: None,
                 connection_status: ConnectionStatus::Connecting,
@@ -65,15 +45,13 @@ impl App {
                 last_poll: None,
                 last_reconnect_attempt: None,
                 last_seen_query_ids: HashSet::new(),
-            };
+            })
+            .collect();
 
-            worker.try_connect().await;
-            self.workers.push(worker);
-        }
-
-        // Transition to Active if workers are registered
-        if !self.workers.is_empty() {
-            self.console_state = ConsoleState::Active;
+        App {
+            workers,
+            should_quit: false,
+            console_state: ConsoleState::Idle,
         }
     }
 
@@ -98,12 +76,7 @@ impl App {
 
     /// Poll all workers for task progress.
     pub async fn tick(&mut self) {
-        // Check for new worker registrations
-        if let Ok(worker_urls) = self.worker_registration_rx.try_recv() {
-            self.register_workers(worker_urls).await;
-        }
-
-        // Attempt reconnection for disconnected workers
+        // Attempt connection for workers in Connecting or Disconnected state
         for worker in &mut self.workers {
             if worker.should_retry_connection() {
                 worker.try_connect().await;
@@ -234,21 +207,22 @@ impl WorkerState {
         }
     }
 
-    /// Returns true if the worker is disconnecteed and it's been at least 5 seconds since the last
-    /// reconnection attempt.
+    /// Returns true if the worker should attempt a connection. This covers the initial
+    /// `Connecting` state (first tick) and `Disconnected` state with a 5-second backoff.
     fn should_retry_connection(&self) -> bool {
-        if matches!(
-            self.connection_status,
-            ConnectionStatus::Disconnected { .. }
-        ) {
-            if let Some(last_attempt) = self.last_reconnect_attempt {
-                last_attempt.elapsed() >= Duration::from_secs(5)
-            } else {
-                // handles case where worker is Disconnected but last_reconnect_attempt is None
-                true
+        match &self.connection_status {
+            ConnectionStatus::Connecting => {
+                // First tick: no attempt made yet
+                self.last_reconnect_attempt.is_none()
             }
-        } else {
-            false
+            ConnectionStatus::Disconnected { .. } => {
+                if let Some(last_attempt) = self.last_reconnect_attempt {
+                    last_attempt.elapsed() >= Duration::from_secs(5)
+                } else {
+                    true
+                }
+            }
+            _ => false,
         }
     }
 

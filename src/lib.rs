@@ -40,11 +40,9 @@ pub use stage::{
 };
 
 pub use observability::{
-    ConsoleControlService, ConsoleControlServiceClient, ConsoleControlServiceImpl,
-    ConsoleControlServiceServer, GetTaskProgressRequest, GetTaskProgressResponse,
-    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceImpl,
-    ObservabilityServiceServer, PingRequest, PingResponse, RegisterWorkersRequest,
-    RegisterWorkersResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
+    GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
+    ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
+    PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
 };
 
 pub use protobuf::StageKey;

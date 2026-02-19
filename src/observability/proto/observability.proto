@@ -36,17 +36,3 @@ enum TaskStatus {
 message GetTaskProgressResponse {
   repeated TaskProgress tasks = 1;
 }
-
-// Console control service allows clients to register workers
-service ConsoleControlService {
-  rpc RegisterWorkers (RegisterWorkersRequest) returns (RegisterWorkersResponse);
-}
-
-message RegisterWorkersRequest {
-  repeated string worker_urls = 1;
-}
-
-message RegisterWorkersResponse {
-  uint32 workers_registered = 1;
-  string error_message = 2;
-}

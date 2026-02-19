@@ -274,7 +274,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let footer_text = match app.console_state {
         ConsoleState::Idle => Line::from(vec![
             Span::styled(
-                "Waiting for worker registration...  ",
+                "Waiting for tasks...  ",
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled("Press ", Style::default().fg(Color::DarkGray)),

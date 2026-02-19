@@ -3,8 +3,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ConsoleControlServiceClient, DistributedExt, DistributedPhysicalOptimizerRule,
-    RegisterWorkersRequest, WorkerResolver,
+    DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver,
 };
 use std::error::Error;
 use std::path::Path;
@@ -29,29 +28,12 @@ struct Args {
     /// Specific query to run (e.g., "q1"), or "all" to run all queries
     #[structopt(long, default_value = "all")]
     query: String,
-
-    /// Console address
-    #[structopt(long = "console-addr", default_value = "http://localhost:9090")]
-    console_addr: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
-    let worker_urls: Vec<String> = args
-        .cluster_ports
-        .iter()
-        .map(|p| format!("http://localhost:{p}"))
-        .collect();
-
-    match register_with_console(&args.console_addr, worker_urls).await {
-        Ok(count) => println!("Registered {count} workers with console"),
-        Err(e) => {
-            eprintln!("Warning: Failed to register with console: {e}");
-            eprintln!("Continuing without console monitoroing...");
-        }
-    }
     run_queries(
         args.cluster_ports,
         args.scale_factor,
@@ -59,25 +41,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &args.query,
     )
     .await
-}
-
-/// Register worker locations with console
-async fn register_with_console(
-    console_addr: &str,
-    worker_urls: Vec<String>,
-) -> Result<u32, Box<dyn Error>> {
-    let mut client = ConsoleControlServiceClient::connect(console_addr.to_string()).await?;
-
-    let request = RegisterWorkersRequest { worker_urls };
-
-    let response = client.register_workers(request).await?;
-    let response = response.into_inner();
-
-    if !response.error_message.is_empty() {
-        eprintln!("Registration warnings: {}", response.error_message);
-    }
-
-    Ok(response.workers_registered)
 }
 
 async fn run_queries(

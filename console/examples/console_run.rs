@@ -4,8 +4,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    ConsoleControlServiceClient, DistributedExt, DistributedPhysicalOptimizerRule,
-    RegisterWorkersRequest, WorkerResolver, display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use std::error::Error;
@@ -27,29 +26,6 @@ struct Args {
     /// Whether the distributed plan should be rendered instead of executing the query.
     #[structopt(long)]
     show_distributed_plan: bool,
-
-    /// Console address
-    #[structopt(long = "console-addr", default_value = "http://localhost:9090")]
-    console_addr: String,
-}
-
-/// Register worker locations with console
-async fn register_with_console(
-    console_addr: &str,
-    worker_urls: Vec<String>,
-) -> Result<u32, Box<dyn Error>> {
-    let mut client = ConsoleControlServiceClient::connect(console_addr.to_string()).await?;
-
-    let request = RegisterWorkersRequest { worker_urls };
-
-    let response = client.register_workers(request).await?;
-    let response = response.into_inner();
-
-    if !response.error_message.is_empty() {
-        eprintln!("Registration warnings: {}", response.error_message);
-    }
-
-    Ok(response.workers_registered)
 }
 
 #[tokio::main]
@@ -59,21 +35,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let localhost_resolver = LocalhostWorkerResolver {
         ports: args.cluster_ports.clone(),
     };
-
-    // Register workers with console before query execution
-    let worker_urls: Vec<String> = args
-        .cluster_ports
-        .iter()
-        .map(|p| format!("http://localhost:{p}"))
-        .collect();
-
-    match register_with_console(&args.console_addr, worker_urls).await {
-        Ok(count) => println!("Registered {count} workers with console"),
-        Err(e) => {
-            eprintln!("Warning: Failed to register with console: {e}");
-            eprintln!("Continuing without console monitoring...");
-        }
-    }
 
     let state = SessionStateBuilder::new()
         .with_default_features()

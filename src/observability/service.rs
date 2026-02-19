@@ -2,16 +2,12 @@ use crate::flight_service::TaskData;
 use crate::protobuf::StageKey;
 use moka::future::Cache;
 use std::sync::Arc;
-use tokio::sync::{OnceCell, mpsc};
+use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
-use url::Url;
 
 use super::{
     GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus,
-    generated::observability::{
-        GetTaskProgressRequest, PingRequest, PingResponse, RegisterWorkersRequest,
-        RegisterWorkersResponse, console_control_service_server::ConsoleControlService,
-    },
+    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
 
 pub struct ObservabilityServiceImpl {
@@ -55,48 +51,6 @@ impl ObservabilityService for ObservabilityServiceImpl {
         }
 
         Ok(Response::new(GetTaskProgressResponse { tasks }))
-    }
-}
-
-pub struct ConsoleControlServiceImpl {
-    worker_registration_tx: mpsc::UnboundedSender<Vec<Url>>,
-}
-
-impl ConsoleControlServiceImpl {
-    pub fn new(worker_registration_tx: mpsc::UnboundedSender<Vec<Url>>) -> Self {
-        Self {
-            worker_registration_tx,
-        }
-    }
-}
-
-#[tonic::async_trait]
-impl ConsoleControlService for ConsoleControlServiceImpl {
-    async fn register_workers(
-        &self,
-        request: Request<RegisterWorkersRequest>,
-    ) -> Result<Response<RegisterWorkersResponse>, Status> {
-        let urls: Vec<Url> = request
-            .into_inner()
-            .worker_urls
-            .iter()
-            .map(|u| Url::parse(u))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| Status::invalid_argument(format!("Invalid worker URL: {e}")))?;
-
-        let urls_len = urls.len() as u32;
-
-        if let Err(err) = self.worker_registration_tx.send(urls) {
-            Ok(Response::new(RegisterWorkersResponse {
-                workers_registered: 0,
-                error_message: err.to_string(),
-            }))
-        } else {
-            Ok(Response::new(RegisterWorkersResponse {
-                workers_registered: urls_len,
-                error_message: String::from("None"),
-            }))
-        }
     }
 }
 
