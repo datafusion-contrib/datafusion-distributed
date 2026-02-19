@@ -2,9 +2,7 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver,
-};
+use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver};
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
