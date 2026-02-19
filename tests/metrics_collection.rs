@@ -166,6 +166,19 @@ mod tests {
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_avg", 1);
         assert!(value > 0);
 
+        // Verify the plan_bytes_sent metric is present on network boundaries.
+        // This tracks the size of the serialized plan sent over the wire.
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "plan_bytes_sent", 1);
+        assert!(
+            value > 0,
+            "plan_bytes_sent should be > 0 for NetworkCoalesceExec"
+        );
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "plan_bytes_sent", 1);
+        assert!(
+            value > 0,
+            "plan_bytes_sent should be > 0 for NetworkShuffleExec"
+        );
+
         Ok(())
     }
 

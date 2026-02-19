@@ -148,6 +148,11 @@ impl WorkerConnection {
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
+        // Track the size of the serialized plan sent over the wire.
+        let plan_bytes = MetricBuilder::new(metrics).global_counter("plan_bytes_sent");
+        let plan_proto = input_stage.plan.encoded()?;
+        plan_bytes.add(plan_proto.len());
+
         // Building the actual request that will be sent to the worker.
         let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
         headers.extend(get_passthrough_headers(ctx.session_config()));
@@ -156,7 +161,7 @@ impl WorkerConnection {
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
-                    plan_proto: Bytes::clone(input_stage.plan.encoded()?),
+                    plan_proto: Bytes::clone(plan_proto),
                     target_partition_start: target_partition_range.start as u64,
                     target_partition_end: target_partition_range.end as u64,
                     stage_key: Some(StageKey::new(
