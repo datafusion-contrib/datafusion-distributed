@@ -9,13 +9,42 @@ There's a package.json file in `benchmarks/cdk/package.json` with relevant comma
 
 All the commands in this skill need to be prefixed with whatever the user declared in `./claude/settings.local.json`
 in the `aws-commands-prefix` key, typically for providing the commands with the correct permissions.
-(e.g., `$aws-commands-prefix npm run cdk deploy` or `$aws-commands-prexfix aws ssm ...`)
+(e.g., `$aws-commands-prefix npm run deploy` or `$aws-commands-prexfix aws ssm ...`)
 
-Running `npm run cdk deploy` will provision the cluster with the resources specified in `benchmarks/cdk/lib/`.
+Before running AWS/CDK commands, ensure auth is valid:
+
+```shell
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_CREDENTIAL_EXPIRATION
+export AWS_PROFILE=<profile>
+export AWS_REGION=${AWS_REGION:-us-east-1}
+export AWS_DEFAULT_REGION="$AWS_REGION"
+export AWS_SDK_LOAD_CONFIG=1
+aws sso login --profile "$AWS_PROFILE"
+aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
+```
+
+Bootstrap once per account/region:
+
+```shell
+ACCOUNT_ID=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text)
+npm run bootstrap -- aws://$ACCOUNT_ID/$AWS_REGION
+```
+
+Running `npm run deploy` will provision the cluster with the resources specified in `benchmarks/cdk/lib/`.
 This takes a while typically (~5 mins). If the user data of the EC2 machines was changed, and you want those changes
 to take effect you will need to prepend the deployment command with `USER_DATA_CAUSES_REPLACEMENT=true`.
+Deployment writes `.cdk-outputs.json` used by benchmark scripts for bucket resolution.
 
 Once the deployment is complete, the list of instance IDs will be printed to stdout.
+Pick one instance for validation commands with:
+
+```shell
+INSTANCE_ID=$(aws cloudformation describe-stacks \
+  --stack-name DataFusionDistributedBenchmarks \
+  --profile "$AWS_PROFILE" \
+  --query "Stacks[0].Outputs[?OutputKey=='WorkerInstanceIds'].OutputValue" \
+  --output text | cut -d',' -f1)
+```
 
 It's usually necessary to verify that everything was deployed correctly, and it's running fine. For that
 it's necessary to perform the following steps for the following engines:

@@ -39,7 +39,7 @@ async function main() {
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
     const debug = options.debug === 'true' || options.debug === 1
-    const warmup = options.warmup === 'true' || options.debug === 1
+    const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
     const runner = new DataFusionRunner({
         filesPerTask,
@@ -51,6 +51,8 @@ async function main() {
         compression,
         broadcastJoins
     });
+
+    await runner.assertReachable();
 
     await runBenchmark(runner, {
         dataset,
@@ -84,6 +86,23 @@ class DataFusionRunner implements BenchmarkRunner {
     }) {
     }
 
+    async assertReachable(): Promise<void> {
+        const infoUrl = `${this.url}/info`
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5_000)
+        try {
+            const response = await fetch(infoUrl, {signal: controller.signal})
+            if (!response.ok) {
+                const msg = await response.text()
+                throw new Error(`Worker health check failed: ${response.status} ${msg}`)
+            }
+        } catch (e: any) {
+            throw this.decorateConnectionError(e, infoUrl)
+        } finally {
+            clearTimeout(timeout)
+        }
+    }
+
     async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         let response
         if (sql.includes("create view")) {
@@ -103,7 +122,12 @@ class DataFusionRunner implements BenchmarkRunner {
         const url = new URL(this.url);
         url.searchParams.set('sql', sql);
 
-        const response = await fetch(url.toString());
+        let response
+        try {
+            response = await fetch(url.toString());
+        } catch (e: any) {
+            throw this.decorateConnectionError(e, url.toString())
+        }
 
         if (!response.ok) {
             const msg = await response.text();
@@ -134,6 +158,20 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
       SET distributed.broadcast_joins=${this.options.broadcastJoins};
     `);
+    }
+
+    private decorateConnectionError(err: any, url: string): Error {
+        const code = err?.cause?.code
+        const timeout = err?.name === "AbortError"
+        if (timeout || code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EHOSTUNREACH") {
+            return new Error(
+                `Could not connect to ${url}. Ensure the SSM port-forward is running (remote 9000 -> local 9000) and worker.service is active on the target instance.`
+            )
+        }
+        if (err instanceof Error) {
+            return err
+        }
+        return new Error(String(err))
     }
 }
 

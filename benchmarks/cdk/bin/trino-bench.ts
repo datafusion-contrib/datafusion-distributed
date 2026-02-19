@@ -8,7 +8,7 @@ async function main() {
     const program = new Command();
 
     program
-        .requiredOption('--dataset <string>', 'Scale factor', '1')
+        .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
@@ -21,7 +21,7 @@ async function main() {
     const iterations = parseInt(options.iterations);
     const queries = options.queries?.split(",") ?? []
     const debug = options.debug === 'true' || options.debug === 1
-    const warmup = options.warmup === 'true' || options.debug === 1
+    const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
     const runner = new TrinoRunner();
 

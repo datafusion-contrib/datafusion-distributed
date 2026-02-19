@@ -22,7 +22,7 @@ async function main() {
     const iterations = parseInt(options.iterations);
     const queries = options.queries?.split(",") ?? []
     const debug = options.debug === 'true' || options.debug === 1
-    const warmup = options.warmup === 'true' || options.debug === 1
+    const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
     const runner = new SparkRunner({});
 

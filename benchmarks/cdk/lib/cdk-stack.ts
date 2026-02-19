@@ -7,6 +7,7 @@ import path from "path";
 import * as cr from "aws-cdk-lib/custom-resources";
 
 const USER_DATA_CAUSES_REPLACEMENT = process.env['USER_DATA_CAUSES_REPLACEMENT'] == 'true'
+const DEFAULT_BUCKET_NAME_PREFIX = 'datafusion-distributed-benchmarks'
 if (USER_DATA_CAUSES_REPLACEMENT) {
     console.warn("Instances will forcefully get replaced")
 }
@@ -85,10 +86,19 @@ export class CdkStack extends Stack {
         );
 
         // Create S3 bucket
+        const benchmarkBucketName =
+            process.env['BENCHMARK_BUCKET'] ??
+            `${DEFAULT_BUCKET_NAME_PREFIX}-${this.account}-${this.region}`;
+
         const bucket = new s3.Bucket(this, 'BenchmarkBucket', {
-            bucketName: "datafusion-distributed-benchmarks",
+            bucketName: benchmarkBucketName,
             autoDeleteObjects: true,
             removalPolicy: RemovalPolicy.DESTROY
+        });
+
+        new CfnOutput(this, 'BenchmarkBucketName', {
+            value: bucket.bucketName,
+            description: 'S3 bucket used for benchmark datasets',
         });
 
         // Create IAM role for EC2 instances
@@ -177,6 +187,7 @@ export class CdkStack extends Stack {
             value: `
 # === select one instance to connect to ===
 ${instances.map(_ => `export INSTANCE_ID=${_.instanceId}`).join("\n")} 
+export BENCHMARK_BUCKET=${bucket.bucketName}
 
 # === port forward the HTTP endpoint ===
 aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
