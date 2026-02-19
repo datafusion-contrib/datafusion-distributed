@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+datafusion = { workspace = true }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 futures = "0.3.31"
@@ -17,8 +18,7 @@ structopt = "0.3.26"
 url = "2.5.7"
 
 [dev-dependencies]
-arrow = "57.2.0"
+arrow = "57.1.0"
 async-trait = "0.1.89"
-datafusion = "52.0.0"
 futures = "0.3.31"
 url = "2.5.7"
