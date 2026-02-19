@@ -26,7 +26,7 @@ pub enum ConsoleState {
 
 /// Tracks individual worker conneciton states.
 #[derive(Clone)]
-pub enum ConnectionStatus {
+enum ConnectionStatus {
     Connecting,
     Idle,
     Active,
@@ -188,22 +188,22 @@ pub struct ClusterStats {
 /// Tracks state for a single worker.
 pub struct WorkerState {
     pub url: Url,
-    pub client: Option<ObservabilityServiceClient<Channel>>,
-    pub connection_status: ConnectionStatus,
+    client: Option<ObservabilityServiceClient<Channel>>,
+    connection_status: ConnectionStatus,
     pub tasks: Vec<datafusion_distributed::TaskProgress>,
     pub completed_tasks: Vec<CompletedTask>,
-    pub last_poll: Option<Instant>,
-    pub last_reconnect_attempt: Option<Instant>,
-    pub last_seen_query_ids: HashSet<Vec<u8>>,
+    last_poll: Option<Instant>,
+    last_reconnect_attempt: Option<Instant>,
+    last_seen_query_ids: HashSet<Vec<u8>>,
 }
 
 /// Stores information about completed tasks for progress display after they are removed from the
 /// moka TTL cache.
 #[derive(Clone, Debug)]
 pub struct CompletedTask {
-    pub _stage_key: ObservabilityStageKey,
+    _stage_key: ObservabilityStageKey,
     pub total_partitions: u64,
-    pub query_id: Vec<u8>,
+    query_id: Vec<u8>,
 }
 
 impl WorkerState {
