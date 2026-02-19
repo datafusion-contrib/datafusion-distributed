@@ -1,5 +1,5 @@
-import {Command} from "commander";
-import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
+import { Command } from "commander";
+import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
 
 // Remember to port-forward Trino coordinator with
 // aws ssm start-session --target {instance-0-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=8080,localPortNumber=8080"
@@ -11,6 +11,8 @@ async function main() {
         .requiredOption('--dataset <string>', 'Scale factor', '1')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
         .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
         .parse(process.argv);
 
     const options = program.opts();
@@ -18,6 +20,8 @@ async function main() {
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
     const queries = options.queries?.split(",") ?? []
+    const debug = options.debug === 'true' || options.debug === 1
+    const warmup = options.warmup === 'true' || options.debug === 1
 
     const runner = new TrinoRunner();
 
@@ -26,6 +30,8 @@ async function main() {
         engine: 'trino',
         iterations,
         queries,
+        debug,
+        warmup
     });
 }
 
@@ -33,7 +39,7 @@ class TrinoRunner implements BenchmarkRunner {
     private trinoUrl = 'http://localhost:8080';
     private schema?: string
 
-    async executeQuery(sql: string): Promise<{ rowCount: number }> {
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         // Fix TPCH query 4: Add DATE prefix to date literals that don't have it.
         sql = sql.replace(/(?<!date\s)('[\d]{4}-[\d]{2}-[\d]{2}')/gi, 'DATE $1');
 
@@ -60,7 +66,7 @@ class TrinoRunner implements BenchmarkRunner {
         return response
     }
 
-    private async executeSingleStatement(sql: string): Promise<{ rowCount: number }> {
+    private async executeSingleStatement(sql: string): Promise<ExecuteQueryResult> {
         if (!this.schema) {
             throw new Error("No schema available, where the tables created?")
         }
@@ -83,6 +89,8 @@ class TrinoRunner implements BenchmarkRunner {
 
         let result: any = await submitResponse.json();
         let rowCount = 0;
+        let plan = "";
+        let elapsed = 0;
 
         // Poll for results
         while (result.nextUri) {
@@ -98,8 +106,9 @@ class TrinoRunner implements BenchmarkRunner {
             // Count rows if data is present
             if (result.data) {
                 if (typeof result.data?.[0]?.[0] === 'string') {
+                    plan = result.data[0][0]
                     // Extract row count from EXPLAIN ANALYZE output
-                    const outputMatch = result.data[0][0].match(/Output.*?(\d+)\s+rows/i);
+                    const outputMatch = plan.match(/Output.*?(\d+)\s+rows/i);
                     if (outputMatch) {
                         rowCount = parseInt(outputMatch[1]);
                     }
@@ -108,13 +117,17 @@ class TrinoRunner implements BenchmarkRunner {
                 }
             }
 
+            if (result.stats) {
+                elapsed = result.stats.elapsedTimeMillis
+            }
+
             // Check for errors
             if (result.error) {
                 throw new Error(`Query failed: ${result.error.message}`);
             }
         }
 
-        return { rowCount };
+        return { rowCount, plan, elapsed };
     }
 
     async createTables(tables: TableSpec[]): Promise<void> {

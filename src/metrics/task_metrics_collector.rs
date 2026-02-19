@@ -344,6 +344,71 @@ mod tests {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
 
+    /// Tests whether metrics are lost when a LIMIT causes early stream termination.
+    ///
+    /// Issue: https://github.com/datafusion-contrib/datafusion-distributed/issues/187
+    ///
+    /// Metrics are piggybacked on the last FlightData message of the last partition stream
+    /// (see `do_get.rs`). If a LIMIT causes the client-side stream to be dropped before the
+    /// worker finishes, the last message (carrying metrics) is never received.
+    ///
+    /// This uses the `flights_1m` dataset (1M rows) so the worker is still producing data
+    /// when the LIMIT causes the client to drop the stream.
+    ///
+    /// This test is ignored because it demonstrates a known issue: metrics are lost when the
+    /// client drops the stream early. Un-ignore it to reproduce the issue or to verify a fix.
+    #[tokio::test]
+    #[ignore]
+    async fn test_metrics_collection_with_limit_causing_early_stream_termination() {
+        let ctx = make_test_ctx().await;
+        register_parquet_tables(&ctx).await.unwrap();
+
+        // GROUP BY forces a network shuffle; LIMIT 1 causes early stream termination.
+        let sql =
+            "SELECT \"FL_DATE\", COUNT(*) as cnt FROM flights_1m GROUP BY \"FL_DATE\" LIMIT 1";
+
+        let df = ctx.sql(sql).await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+
+        let dist_exec = plan
+            .as_any()
+            .downcast_ref::<DistributedExec>()
+            .expect("expected DistributedExec");
+
+        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
+        assert!(
+            expected_stage_keys.len() > 1,
+            "expected more than 1 stage key. Plan was not distributed:\n{}",
+            DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
+        );
+
+        execute_plan(plan.clone(), &ctx).await;
+
+        let collector = TaskMetricsCollector::new();
+        let result = collector.collect(dist_exec.plan.clone()).unwrap();
+
+        for expected_stage_key in expected_stage_keys {
+            let actual_metrics = result
+                .input_task_metrics
+                .get(&expected_stage_key)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Missing metrics for stage key {expected_stage_key:?}. \
+                         The LIMIT caused the stream to be dropped before the worker \
+                         sent the last FlightData message with metrics."
+                    )
+                });
+
+            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            let stage_plan = stage.plan.decoded().unwrap();
+            assert_eq!(
+                actual_metrics.len(),
+                count_plan_nodes_up_to_network_boundary(stage_plan),
+                "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
+            );
+        }
+    }
+
     /// Test that verifies PartitionIsolatorExec nodes are preserved during metrics collection.
     /// This tests the corner case where PartitionIsolatorExec nodes (which have no metrics)
     /// must still be included in the metrics collection to maintain correct node-to-metric mapping.
