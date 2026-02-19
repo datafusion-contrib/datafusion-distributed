@@ -86,6 +86,7 @@ export class CdkStack extends Stack {
         );
 
         // Create S3 bucket
+        // Bucket names are globally unique, so default includes account/region and still allows explicit override.
         const benchmarkBucketName =
             process.env['BENCHMARK_BUCKET'] ??
             `${DEFAULT_BUCKET_NAME_PREFIX}-${this.account}-${this.region}`;

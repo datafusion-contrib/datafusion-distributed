@@ -29,6 +29,7 @@ function getBucketFromLocalOutputs(): string | undefined {
 }
 
 function resolveBucketUri(): string {
+    // Keep resolution local-first to avoid live AWS calls during benchmark script startup.
     // Resolution order:
     // 1) explicit env override
     // 2) local CDK outputs produced by `npm run deploy -- --outputs-file ...`

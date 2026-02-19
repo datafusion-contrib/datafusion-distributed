@@ -38,7 +38,7 @@ async function main() {
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
-    const debug = options.debug === 'true' || options.debug === 1
+    const debug = options.debug === true || options.debug === 'true' || options.debug === 1
     const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
     const runner = new DataFusionRunner({
@@ -52,6 +52,7 @@ async function main() {
         broadcastJoins
     });
 
+    // Fail fast on dead port-forward/unhealthy worker before doing table setup and benchmark work.
     await runner.assertReachable();
 
     await runBenchmark(runner, {
@@ -87,6 +88,7 @@ class DataFusionRunner implements BenchmarkRunner {
     }
 
     async assertReachable(): Promise<void> {
+        // `/info` is a lightweight health endpoint; timeout avoids hanging when the local tunnel is stale.
         const infoUrl = `${this.url}/info`
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 5_000)
