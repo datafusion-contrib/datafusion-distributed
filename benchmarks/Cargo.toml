@@ -31,6 +31,10 @@ openssl = { version = "0.10", features = ["vendored"] }
 clap = "4.5"
 mimalloc = "0.1"
 
+[dev-dependencies]
+criterion = "0.5"
+sysinfo = "0.30"
+
 [build-dependencies]
 built = { version = "0.8" , features = ["git2", "chrono"]}
 
@@ -41,3 +45,7 @@ path = "src/main.rs"
 [[bin]]
 name = "worker"
 path = "cdk/bin/worker.rs"
+
+[[bench]]
+name = "broadcast_cache_scenarios"
+harness = false

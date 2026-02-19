@@ -30,7 +30,8 @@ mod tests {
                 .build())
         }
 
-        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx.set_distributed_user_codec(CustomPassThroughExecCodec);
 
         let query = r#"SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 20.0 ORDER BY "MinTemp" DESC"#;
 

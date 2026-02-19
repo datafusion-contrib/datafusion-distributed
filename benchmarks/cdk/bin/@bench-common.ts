@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs/promises";
-import {BenchmarkRun, BenchResult} from "./@results";
+import { BenchmarkRun, BenchResult } from "./@results";
 
 export const ROOT = path.join(__dirname, '../../..')
 export const BUCKET = 's3://datafusion-distributed-benchmarks' // hardcoded in CDK code
@@ -11,10 +11,16 @@ export interface TableSpec {
     s3Path: string
 }
 
+export interface ExecuteQueryResult {
+    rowCount: number,
+    plan: string
+    elapsed: number
+}
+
 export interface BenchmarkRunner {
     createTables(s3Paths: TableSpec[]): Promise<void>;
 
-    executeQuery(query: string): Promise<{ rowCount: number }>;
+    executeQuery(query: string): Promise<ExecuteQueryResult>;
 }
 
 async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
@@ -73,9 +79,11 @@ export async function runBenchmark(
         engine: string,
         iterations: number;
         queries: string[];
+        debug: boolean;
+        warmup: boolean;
     }
 ) {
-    const { dataset, engine, iterations, queries } = options;
+    const { dataset, engine, iterations, queries, warmup, debug } = options;
 
     const benchmarkRun = new BenchmarkRun(dataset, engine)
 
@@ -90,21 +98,23 @@ export async function runBenchmark(
 
         const result = new BenchResult(dataset, engine, id)
 
-        console.log(`Warming up query ${id}...`)
-        try {
-            await runner.executeQuery(sql);
-        } catch (e: any) {
-            result.iterations.push({
-                elapsed: 0,
-                rowCount: 0,
-                error: e.toString()
-            })
-            console.error(`Query ${id} failed: ${e.toString()}`)
-            continue
+        if (warmup) {
+            console.log(`Warming up query ${id}...`)
+            try {
+                await runner.executeQuery(sql);
+            } catch (e: any) {
+                result.iterations.push({
+                    elapsed: 0,
+                    rowCount: 0,
+                    error: e.toString(),
+                    plan: ""
+                })
+                console.error(`Query ${id} failed: ${e.toString()}`)
+                continue
+            }
         }
 
         for (let i = 0; i < iterations; i++) {
-            const start = new Date()
             let response
             try {
                 response = await runner.executeQuery(sql);
@@ -112,20 +122,24 @@ export async function runBenchmark(
                 result.iterations.push({
                     elapsed: 0,
                     rowCount: 0,
-                    error: e.toString()
+                    error: e.toString(),
+                    plan: ""
                 })
                 console.error(`Query ${id} failed: ${e.toString()}`)
                 break
             }
-            const elapsed = Math.round(new Date().getTime() - start.getTime())
 
+            if (debug) {
+                console.log(response.plan)
+            }
             result.iterations.push({
-                elapsed,
+                elapsed: response.elapsed,
                 rowCount: response.rowCount,
+                plan: response.plan
             })
 
             console.log(
-                `Query ${id} iteration ${i} took ${elapsed} ms and returned ${response.rowCount} rows`
+                `Query ${id} iteration ${i} took ${Math.round(response.elapsed)} ms and returned ${response.rowCount} rows`
             );
         }
 

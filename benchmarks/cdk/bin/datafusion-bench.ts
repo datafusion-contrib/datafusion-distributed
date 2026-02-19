@@ -1,7 +1,7 @@
-import {Command} from "commander";
-import {z} from 'zod';
-import {BenchmarkRunner, runBenchmark, TableSpec} from "./@bench-common";
-import {execSync} from "child_process";
+import { Command } from "commander";
+import { z } from 'zod';
+import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
+import { execSync } from "child_process";
 
 // Remember to port-forward a worker with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
@@ -17,10 +17,12 @@ async function main() {
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
-        .option('--broadcast-joins <number>', 'Use broadcast joins', 'false')
+        .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
         .parse(process.argv);
 
     const options = program.opts();
@@ -36,6 +38,8 @@ async function main() {
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
+    const debug = options.debug === 'true' || options.debug === 1
+    const warmup = options.warmup === 'true' || options.debug === 1
 
     const runner = new DataFusionRunner({
         filesPerTask,
@@ -53,12 +57,15 @@ async function main() {
         engine: `datafusion-distributed-${getCurrentBranch()}`,
         iterations,
         queries,
+        debug,
+        warmup
     });
 }
 
 const QueryResponse = z.object({
     count: z.number(),
-    plan: z.string()
+    plan: z.string(),
+    elapsed_ms: z.number(),
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
@@ -77,7 +84,7 @@ class DataFusionRunner implements BenchmarkRunner {
     }) {
     }
 
-    async executeQuery(sql: string): Promise<{ rowCount: number }> {
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
         let response
         if (sql.includes("create view")) {
             // This is query 15
@@ -89,7 +96,7 @@ class DataFusionRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count };
+        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms };
     }
 
     private async query(sql: string): Promise<QueryResponse> {

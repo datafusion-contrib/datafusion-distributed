@@ -30,6 +30,9 @@ cargo zigbuild -p datafusion-distributed-benchmarks --release --bin worker --tar
 
 ## CDK deploy
 
+This only needs to be done once, after that, `npm run fast-deploy` can be used for fast deploying new code in
+seconds.
+
 ```shell
 npm run cdk deploy
 ```
@@ -119,5 +122,5 @@ Several arguments can be passed for running the benchmarks against different sca
 for example:
 
 ```shell
-npm run datafusion-bench -- --datset tpch_sf10 --files-per-task 4 --query 7
+npm run datafusion-bench -- --datset tpch_sf10
 ```

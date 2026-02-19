@@ -10,8 +10,9 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver,
-    display_plan_ascii, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule,
+    Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
+    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -39,6 +40,7 @@ pub(crate) mod built_info {
 struct QueryResult {
     plan: String,
     count: usize,
+    elapsed_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -177,6 +179,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             count += batch.map_err(err)?.num_rows();
                             info!("Gathered {count} rows, query still in progress..")
                         }
+                        let physical = rewrite_distributed_plan_with_metrics(
+                            physical,
+                            DistributedMetricsFormat::PerTask,
+                        )
+                        .map_err(err)?;
                         let plan = display_plan_ascii(physical.as_ref(), true);
                         drop(task);
 
@@ -186,7 +193,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         info!("Returned {count} rows in {ms} ms");
                         abort_notifier.finished();
 
-                        Ok::<_, (StatusCode, String)>(Json(QueryResult { count, plan }))
+                        Ok::<_, (StatusCode, String)>(Json(QueryResult {
+                            count,
+                            plan,
+                            elapsed_ms: ms,
+                        }))
                     }
                     .inspect_err(|(_, msg)| {
                         error!("Error executing query: {msg}");

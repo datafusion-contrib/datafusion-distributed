@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import {z} from "zod";
+import { z } from "zod";
 
 // Assuming DATA_PATH is defined elsewhere or passed as parameter
 export const DATA_PATH = path.join(__dirname, '../../data');
@@ -8,88 +8,114 @@ export const RESULTS_DIR = ".results-remote"
 
 // Interface for a single iteration of a benchmark query
 export interface QueryIter {
-  rowCount: number;
-  elapsed: number; // Duration in milliseconds
-  error?: string;
+    plan: string;
+    rowCount: number;
+    elapsed: number; // Duration in milliseconds
+    error?: string;
 }
 
 // Class for collecting benchmark run data
 export class BenchmarkRun {
-  startTime: number;
-  dataset: string;
-  engine: string;
-  results: BenchResult[];
+    startTime: number;
+    dataset: string;
+    engine: string;
+    results: BenchResult[];
 
-  constructor(dataset: string, engine: string) {
-    this.dataset = dataset;
-    this.engine = engine;
-    this.startTime = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
-    this.results = [];
-  }
-
-  loadPrevious(): BenchmarkRun | null {
-    const previousPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
-
-    try {
-      const prevData = fs.readFileSync(previousPath, 'utf-8');
-      const prevOutput = JSON.parse(prevData) as BenchmarkRun;
-
-      // Create new instance and load results
-      const instance = new BenchmarkRun(prevOutput.dataset, prevOutput.engine);
-      instance.startTime = prevOutput.startTime;
-      instance.loadResults();
-
-      return instance;
-    } catch {
-      return null;
-    }
-  }
-
-  private loadResults(): void {
-    this.results = BenchResult.loadMany(this.dataset, this.engine);
-  }
-
-  // Write data as JSON into output path if it exists
-  store(): void {
-    const outputPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
-
-    // Ensure directory exists
-    const dir = path.dirname(outputPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    constructor(dataset: string, engine: string) {
+        this.dataset = dataset;
+        this.engine = engine;
+        this.startTime = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
+        this.results = [];
     }
 
-    // Custom serialization to handle results
-    const toSerialize = {
-      ...this,
-      results: [] // Empty array for serialization
-    };
+    loadPrevious(): BenchmarkRun | null {
+        const previousPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
 
-    const json = JSON.stringify(toSerialize, null, 2);
-    fs.writeFileSync(outputPath, json);
+        try {
+            const prevData = fs.readFileSync(previousPath, 'utf-8');
+            const prevOutput = JSON.parse(prevData) as BenchmarkRun;
 
-    // Store individual results
-    for (const result of this.results) {
-      result.store();
-    }
-  }
+            // Create new instance and load results
+            const instance = new BenchmarkRun(prevOutput.dataset, prevOutput.engine);
+            instance.startTime = prevOutput.startTime;
+            instance.loadResults();
 
-  compareWithPrevious(): void {
-    const previous = this.loadPrevious();
-    if (!previous) {
-      return;
+            return instance;
+        } catch {
+            return null;
+        }
     }
 
-    console.log(`=== Comparing ${this.dataset} results from engine '${previous.engine}' [prev] with '${this.engine}' [new] ===`);
-    for (const query of this.results) {
-      const prevQuery = previous.results.find(v => v.id === query.id);
-      if (!prevQuery) {
-        continue;
-      }
-
-      query.compare(prevQuery);
+    loadResults(): void {
+        this.results = BenchResult.loadMany(this.dataset, this.engine);
     }
-  }
+
+    // Write data as JSON into output path if it exists
+    store(): void {
+        const outputPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
+
+        // Ensure directory exists
+        const dir = path.dirname(outputPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        // Custom serialization to handle results
+        const toSerialize = {
+            ...this,
+            results: [] // Empty array for serialization
+        };
+
+        const json = JSON.stringify(toSerialize, null, 2);
+        fs.writeFileSync(outputPath, json);
+
+        // Store individual results
+        for (const result of this.results) {
+            result.store();
+        }
+    }
+
+    compare(other: BenchmarkRun): void {
+        console.log(`=== Comparing ${this.dataset} results from engine '${other.engine}' [prev] with '${this.engine}' [new] ===`);
+        let totalTimePrev = 0
+        let totalTimeNew = 0
+        for (const query of this.results) {
+            const prevQuery = other.results.find(v => v.id === query.id);
+            if (!prevQuery) {
+                continue;
+            }
+            const timePrev = prevQuery.totalTime()
+            const timeNew = query.totalTime()
+            if (timePrev && timeNew) {
+                totalTimePrev += timePrev
+                totalTimeNew += timeNew
+            }
+
+            query.compare(prevQuery);
+        }
+
+        let f, tag, emoji
+        if (totalTimeNew < totalTimePrev) {
+            f = totalTimePrev / totalTimeNew;
+            tag = "faster";
+            emoji = f > 1.2 ? "✅" : "✔";
+        } else {
+            f = totalTimeNew / totalTimePrev;
+            tag = "slower";
+            emoji = f > 1.2 ? "❌" : "✖";
+        }
+        console.log(
+            `${"TOTAL".padStart(8)}: prev=${totalTimePrev.toString()} ms, new=${totalTimeNew.toString()} ms, diff=${f.toFixed(2)} ${tag} ${emoji}`
+        );
+    }
+
+    compareWithPrevious(): void {
+        const previous = this.loadPrevious();
+        if (!previous) {
+            return;
+        }
+        this.compare(previous)
+    }
 }
 
 // Class for a single benchmark case
@@ -113,6 +139,15 @@ export class BenchResult {
 
         const sum = this.iterations.reduce((acc, iter) => acc + iter.elapsed, 0);
         return Math.floor(sum / this.iterations.length);
+    }
+
+    totalTime(): undefined | number {
+        let totalTime = 0;
+        for (const iter of this.iterations) {
+            if (iter.error) return undefined
+            totalTime += iter.elapsed
+        }
+        return totalTime
     }
 
     compare(prevQuery: BenchResult): void {
@@ -190,8 +225,9 @@ export class BenchResult {
                 iterations: z.object({
                     rowCount: z.number(),
                     elapsed: z.number(),
-                    error: z.string().optional()
-                }).array()
+                    error: z.string().optional(),
+                    plan: z.string()
+                }).array(),
             })
             const data = fs.readFileSync(filePath, 'utf-8');
             const parsed = parser.parse(JSON.parse(data))
