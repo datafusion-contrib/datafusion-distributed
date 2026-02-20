@@ -8,13 +8,27 @@ This project uses a remote benchmarks EC2 cluster constructed with AWS CDK locat
 
 There's a package.json file in `benchmarks/cdk/package.json` with relevant commands about benchmarking.
 
-All the commands in this skill need to be prefixed with whatever the user declared in `./claude/settings.local.json`
-in the `aws-commands-prefix` key, typically for providing the commands with the correct permissions.
-(e.g., `$aws-commands-prefix npm run fast-deploy` or `$aws-commands-prexfix aws ssm ...`)
+Authentication for this skill should be handled in this order of preference:
+1. AWS SSO profile commands
+2. Command prefix wrapper from `./claude/settings.local.json` key `aws-commands-prefix` (for example `aws-vault exec <profile> --`)
+3. Explicit environment credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`)
 
-Before benchmarking, ensure shell auth is valid:
+For method 2, define an `awscmd` shell function in your session that applies the chosen prefix.
+
+Setup references:
+- AWS CLI + IAM Identity Center (SSO): https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html
+- AWS CLI profile/config files: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
+- AWS CLI environment variables: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
+- `aws-vault` project: https://github.com/99designs/aws-vault
+
+Before benchmarking, ensure shell auth is valid for the chosen method:
 
 ```shell
+# Method 1: AWS SSO profile commands (preferred)
+# How to get these values:
+# - aws configure sso
+# - aws configure list-profiles
+# - aws configure get region --profile <profile>
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_CREDENTIAL_EXPIRATION
 export AWS_PROFILE=<profile>
 export AWS_REGION=${AWS_REGION:-us-east-1}
@@ -22,12 +36,48 @@ export AWS_DEFAULT_REGION="$AWS_REGION"
 export AWS_SDK_LOAD_CONFIG=1
 aws sso login --profile "$AWS_PROFILE"
 aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
+
+# Method 2: Command prefix wrapper (example: aws-vault)
+# How to get these values:
+# - same <profile> discovery as method 1
+# - aws-vault list
+# - aws-vault exec <profile> -- aws sts get-caller-identity
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_CREDENTIAL_EXPIRATION
+export AWS_REGION=${AWS_REGION:-us-east-1}
+export AWS_DEFAULT_REGION="$AWS_REGION"
+awscmd() { aws-vault exec <profile> -- "$@"; }
+awscmd aws sts get-caller-identity --region "$AWS_REGION"
+
+# Method 3: Explicit environment credentials
+# How to get these values:
+# - https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+# - include AWS_SESSION_TOKEN when using temporary credentials
+unset AWS_PROFILE
+export AWS_ACCESS_KEY_ID=<access-key-id>
+export AWS_SECRET_ACCESS_KEY=<secret-access-key>
+# export AWS_SESSION_TOKEN=<session-token> # when credentials are temporary
+export AWS_REGION=${AWS_REGION:-us-east-1}
+export AWS_DEFAULT_REGION="$AWS_REGION"
+aws sts get-caller-identity --region "$AWS_REGION"
 ```
 
 If this is the first run in an account/region, bootstrap and deploy once:
 
 ```shell
+# Method 1: AWS SSO profile commands
 ACCOUNT_ID=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text)
+npm run bootstrap -- aws://$ACCOUNT_ID/$AWS_REGION
+npm run deploy
+npm run sync-bucket
+
+# Method 2: Command prefix wrapper (example: aws-vault)
+ACCOUNT_ID=$(awscmd aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text)
+awscmd npm run bootstrap -- aws://$ACCOUNT_ID/$AWS_REGION
+awscmd npm run deploy
+awscmd npm run sync-bucket
+
+# Method 3: Explicit environment credentials
+ACCOUNT_ID=$(aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text)
 npm run bootstrap -- aws://$ACCOUNT_ID/$AWS_REGION
 npm run deploy
 npm run sync-bucket
@@ -44,12 +94,30 @@ forward locally in order to issue queries to it.
 Once deployment is completed, get one instance ID and port forward it to local port 9000:
 
 ```shell
+# Method 1: AWS SSO profile commands
 INSTANCE_ID=$(aws cloudformation describe-stacks \
   --stack-name DataFusionDistributedBenchmarks \
   --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='WorkerInstanceIds'].OutputValue" \
   --output text | cut -d',' -f1)
-aws ssm start-session --target "$INSTANCE_ID" --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
+aws ssm start-session --target "$INSTANCE_ID" --profile "$AWS_PROFILE" --region "$AWS_REGION" --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
+
+# Method 2: Command prefix wrapper (example: aws-vault)
+INSTANCE_ID=$(awscmd aws cloudformation describe-stacks \
+  --stack-name DataFusionDistributedBenchmarks \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='WorkerInstanceIds'].OutputValue" \
+  --output text | cut -d',' -f1)
+awscmd aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION" --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
+
+# Method 3: Explicit environment credentials
+INSTANCE_ID=$(aws cloudformation describe-stacks \
+  --stack-name DataFusionDistributedBenchmarks \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='WorkerInstanceIds'].OutputValue" \
+  --output text | cut -d',' -f1)
+aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION" --document-name AWS-StartPortForwardingSession --parameters "portNumber=9000,localPortNumber=9000"
 ```
 
 Remember to run that in the background, as that will block in place.
