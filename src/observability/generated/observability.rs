@@ -6,6 +6,60 @@ pub struct PingResponse {
     #[prost(uint32, tag = "1")]
     pub value: u32,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTaskProgressRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StageKey {
+    #[prost(bytes = "vec", tag = "1")]
+    pub query_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub stage_id: u64,
+    #[prost(uint64, tag = "3")]
+    pub task_number: u64,
+}
+/// Progress information for a single task
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TaskProgress {
+    #[prost(message, optional, tag = "1")]
+    pub stage_key: ::core::option::Option<StageKey>,
+    #[prost(uint64, tag = "2")]
+    pub total_partitions: u64,
+    #[prost(uint64, tag = "3")]
+    pub completed_partitions: u64,
+    #[prost(enumeration = "TaskStatus", tag = "4")]
+    pub status: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetTaskProgressResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub tasks: ::prost::alloc::vec::Vec<TaskProgress>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TaskStatus {
+    Unspecified = 0,
+    Running = 1,
+}
+impl TaskStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TASK_STATUS_UNSPECIFIED",
+            Self::Running => "TASK_STATUS_RUNNING",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TASK_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "TASK_STATUS_RUNNING" => Some(Self::Running),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod observability_service_client {
     #![allow(
@@ -113,6 +167,25 @@ pub mod observability_service_client {
             ));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_task_progress(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTaskProgressRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/observability.ObservabilityService/GetTaskProgress",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "observability.ObservabilityService",
+                "GetTaskProgress",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -132,6 +205,10 @@ pub mod observability_service_server {
             &self,
             request: tonic::Request<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
+        async fn get_task_progress(
+            &self,
+            request: tonic::Request<super::GetTaskProgressRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct ObservabilityServiceServer<T> {
@@ -230,6 +307,49 @@ pub mod observability_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PingSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/observability.ObservabilityService/GetTaskProgress" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetTaskProgressSvc<T: ObservabilityService>(pub Arc<T>);
+                    impl<T: ObservabilityService>
+                        tonic::server::UnaryService<super::GetTaskProgressRequest>
+                        for GetTaskProgressSvc<T>
+                    {
+                        type Response = super::GetTaskProgressResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetTaskProgressRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ObservabilityService>::get_task_progress(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetTaskProgressSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

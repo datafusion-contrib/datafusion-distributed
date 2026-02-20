@@ -1,0 +1,399 @@
+use datafusion_distributed::{
+    GetTaskProgressRequest, ObservabilityServiceClient, ObservabilityStageKey, PingRequest,
+    TaskStatus,
+};
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+use tonic::transport::Channel;
+use url::Url;
+
+/// App holds the main application state.
+pub struct App {
+    pub workers: Vec<WorkerState>,
+    pub should_quit: bool,
+    pub console_state: ConsoleState,
+}
+
+/// Represents overall state of the console application.
+#[derive(Clone, PartialEq)]
+pub enum ConsoleState {
+    Idle,
+    Active,
+    Completed,
+}
+
+/// Tracks individual worker conneciton states.
+#[derive(Clone)]
+enum ConnectionStatus {
+    Connecting,
+    Idle,
+    Active,
+    Disconnected { reason: String },
+}
+
+impl App {
+    /// Create a new App with the given worker URLs.
+    pub fn new(worker_urls: Vec<Url>) -> Self {
+        let workers = worker_urls
+            .into_iter()
+            .map(|url| WorkerState {
+                url,
+                client: None,
+                connection_status: ConnectionStatus::Connecting,
+                tasks: Vec::new(),
+                completed_tasks: Vec::new(),
+                last_poll: None,
+                last_reconnect_attempt: None,
+                last_seen_query_ids: HashSet::new(),
+            })
+            .collect();
+
+        App {
+            workers,
+            should_quit: false,
+            console_state: ConsoleState::Idle,
+        }
+    }
+
+    /// Handle keyboard events
+    pub fn handle_key_event(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyEventKind};
+
+        if key.kind == KeyEventKind::Press {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                KeyCode::Char('r') => {
+                    // Clear completed tasks but keep connections
+                    for worker in &mut self.workers {
+                        worker.completed_tasks.clear();
+                    }
+                    self.console_state = ConsoleState::Idle;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Poll all workers for task progress.
+    pub async fn tick(&mut self) {
+        // Attempt connection for workers in Connecting or Disconnected state
+        for worker in &mut self.workers {
+            if worker.should_retry_connection() {
+                worker.try_connect().await;
+            }
+        }
+
+        // Poll all connected workers in parallel with timeout
+        let poll_workers: Vec<_> = self
+            .workers
+            .iter_mut()
+            .map(|worker| async {
+                worker.poll().await;
+            })
+            .collect();
+
+        let _ = tokio::time::timeout(Duration::from_millis(50), async {
+            futures::future::join_all(poll_workers).await;
+        })
+        .await;
+
+        self.update_console_state();
+    }
+
+    /// Update overall console state based on worker states.
+    fn update_console_state(&mut self) {
+        if self.workers.is_empty() {
+            self.console_state = ConsoleState::Idle;
+            return;
+        }
+
+        let has_active = self
+            .workers
+            .iter()
+            .any(|w| matches!(w.connection_status, ConnectionStatus::Active));
+
+        let has_running_tasks = self.workers.iter().any(|w| !w.tasks.is_empty());
+        let has_completed_tasks = self.workers.iter().any(|w| w.has_completed_tasks());
+
+        if has_active || has_running_tasks {
+            self.console_state = ConsoleState::Active;
+        } else if has_completed_tasks {
+            // All tasks completed, no running tasks
+            self.console_state = ConsoleState::Completed;
+        } else {
+            self.console_state = ConsoleState::Idle;
+        }
+    }
+
+    /// Get cluster-wide statistics.
+    pub fn cluster_stats(&self) -> ClusterStats {
+        let mut stats = ClusterStats {
+            active_count: 0,
+            idle_count: 0,
+            completed: 0,
+            disconnected_count: 0,
+            total_tasks: 0,
+        };
+
+        for worker in &self.workers {
+            match worker.connection_status {
+                ConnectionStatus::Active => stats.active_count += 1,
+                ConnectionStatus::Idle => stats.idle_count += 1,
+                ConnectionStatus::Disconnected { .. } => stats.disconnected_count += 1,
+                ConnectionStatus::Connecting => {}
+            }
+            stats.total_tasks += worker.tasks.len();
+        }
+
+        stats
+    }
+}
+
+/// Cluster-wide statistics for display in the UI.
+pub struct ClusterStats {
+    pub active_count: usize,
+    pub idle_count: usize,
+    pub completed: usize,
+    pub disconnected_count: usize,
+    pub total_tasks: usize,
+}
+
+/// Tracks state for a single worker.
+pub struct WorkerState {
+    pub url: Url,
+    client: Option<ObservabilityServiceClient<Channel>>,
+    connection_status: ConnectionStatus,
+    pub tasks: Vec<datafusion_distributed::TaskProgress>,
+    pub completed_tasks: Vec<CompletedTask>,
+    last_poll: Option<Instant>,
+    last_reconnect_attempt: Option<Instant>,
+    last_seen_query_ids: HashSet<Vec<u8>>,
+}
+
+/// Stores information about completed tasks for progress display after they are removed from the
+/// moka TTL cache.
+#[derive(Clone, Debug)]
+pub struct CompletedTask {
+    _stage_key: ObservabilityStageKey,
+    pub total_partitions: u64,
+    query_id: Vec<u8>,
+}
+
+impl WorkerState {
+    /// Attempts to establish a gRPC connection to a worker.
+    async fn try_connect(&mut self) {
+        self.last_reconnect_attempt = Some(Instant::now());
+
+        match ObservabilityServiceClient::connect(self.url.to_string()).await {
+            Ok(mut client) => match client.ping(PingRequest {}).await {
+                Ok(_) => {
+                    self.client = Some(client);
+                    self.connection_status = ConnectionStatus::Idle;
+                    self.tasks.clear();
+                }
+                Err(e) => {
+                    self.client = None;
+                    self.connection_status = ConnectionStatus::Disconnected {
+                        reason: format!("Ping failed: {e}"),
+                    };
+                }
+            },
+            Err(e) => {
+                self.client = None;
+                self.connection_status = ConnectionStatus::Disconnected {
+                    reason: format!("Connection failed: {e}"),
+                };
+            }
+        }
+    }
+
+    /// Returns true if the worker should attempt a connection. This covers the initial
+    /// `Connecting` state (first tick) and `Disconnected` state with a 5-second backoff.
+    fn should_retry_connection(&self) -> bool {
+        match &self.connection_status {
+            ConnectionStatus::Connecting => {
+                // First tick: no attempt made yet
+                self.last_reconnect_attempt.is_none()
+            }
+            ConnectionStatus::Disconnected { .. } => {
+                if let Some(last_attempt) = self.last_reconnect_attempt {
+                    last_attempt.elapsed() >= Duration::from_secs(5)
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Queries a worker for task progress.
+    async fn poll(&mut self) {
+        if let Some(client) = &mut self.client {
+            match client.get_task_progress(GetTaskProgressRequest {}).await {
+                Ok(response) => {
+                    let new_tasks = response.into_inner().tasks;
+                    self.last_poll = Some(Instant::now());
+
+                    // Detect completed tasks: tasks that were running but now have completed and
+                    // been removed from the TTL cache.
+                    for old_task in &self.tasks {
+                        if old_task.status == TaskStatus::Running as i32 {
+                            let still_exists = new_tasks.iter().any(|t| {
+                                if let (Some(old_key), Some(new_key)) =
+                                    (&old_task.stage_key, &t.stage_key)
+                                {
+                                    old_key.query_id == new_key.query_id
+                                        && old_key.stage_id == new_key.stage_id
+                                        && old_key.task_number == new_key.task_number
+                                } else {
+                                    false
+                                }
+                            });
+
+                            // Assume completion
+                            if !still_exists {
+                                if let Some(stage_key) = &old_task.stage_key {
+                                    self.completed_tasks.push(CompletedTask {
+                                        _stage_key: stage_key.clone(),
+                                        total_partitions: old_task.total_partitions,
+                                        query_id: stage_key.query_id.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Update current tasks
+                    self.tasks = new_tasks;
+
+                    // Collect query IDs from current tasks
+                    let mut current_query_ids = HashSet::new();
+                    let mut has_running = false;
+
+                    for task in &self.tasks {
+                        if let Some(stage_key) = &task.stage_key {
+                            current_query_ids.insert(stage_key.query_id.clone());
+
+                            if task.status == TaskStatus::Running as i32 {
+                                has_running = true;
+                            }
+                        }
+                    }
+
+                    // If new work starts, clear old completed tasks
+                    if has_running && !self.completed_tasks.is_empty() {
+                        // Check if this is a new query
+                        let completed_query_ids: HashSet<_> = self
+                            .completed_tasks
+                            .iter()
+                            .map(|t| t.query_id.clone())
+                            .collect();
+
+                        if !current_query_ids
+                            .iter()
+                            .any(|id| completed_query_ids.contains(id))
+                        {
+                            // New query started, clear old completed tasks
+                            self.completed_tasks.clear();
+                        }
+                    }
+
+                    // Update connection status based on task activity
+                    match &self.connection_status {
+                        ConnectionStatus::Active => {
+                            if !has_running {
+                                // All tasks disappeared, go to Idle
+                                self.connection_status = ConnectionStatus::Idle;
+                            }
+                            // Otherwise stay Active
+                        }
+                        ConnectionStatus::Idle => {
+                            if has_running {
+                                // New tasks started
+                                self.connection_status = ConnectionStatus::Active;
+                            }
+                        }
+                        _ => {
+                            // For Connecting or Disconnected states
+                            if has_running {
+                                self.connection_status = ConnectionStatus::Active;
+                            } else {
+                                self.connection_status = ConnectionStatus::Idle;
+                            }
+                        }
+                    }
+
+                    // Update tracked query IDs
+                    self.last_seen_query_ids = current_query_ids;
+                }
+                Err(e) => {
+                    // Connection lost
+                    self.client = None;
+                    self.tasks.clear();
+                    self.connection_status = ConnectionStatus::Disconnected {
+                        reason: format!("Poll failed: {e}"),
+                    };
+                    self.last_seen_query_ids.clear();
+                }
+            }
+        }
+    }
+
+    /// Returns string representation of connection status.
+    pub fn status_text(&self) -> String {
+        match &self.connection_status {
+            ConnectionStatus::Connecting => "CONNECTING".to_string(),
+            ConnectionStatus::Idle => "IDLE".to_string(),
+            ConnectionStatus::Active => "ACTIVE".to_string(),
+            ConnectionStatus::Disconnected { .. } => "DISCONNECTED".to_string(),
+        }
+    }
+
+    /// Returns color for UI display based on status.
+    pub fn status_color(&self) -> ratatui::style::Color {
+        use ratatui::style::Color;
+        match self.connection_status {
+            ConnectionStatus::Connecting => Color::Blue,
+            ConnectionStatus::Idle => Color::Yellow,
+            ConnectionStatus::Active => Color::Green,
+            ConnectionStatus::Disconnected { .. } => Color::Red,
+        }
+    }
+
+    /// Extracts disconnection reason if applicable.
+    pub fn disconnect_reason(&self) -> Option<&str> {
+        if let ConnectionStatus::Disconnected { reason } = &self.connection_status {
+            Some(reason)
+        } else {
+            None
+        }
+    }
+
+    /// Get aggregated progress across all tasks on this worker.
+    pub fn aggregate_progress(&self) -> (u64, u64) {
+        let running_completed: u64 = self.tasks.iter().map(|t| t.completed_partitions).sum();
+        let running_total: u64 = self.tasks.iter().map(|t| t.total_partitions).sum();
+
+        // Add completed task partitions (all completed, so total = completed)
+        let completed_total: u64 = self
+            .completed_tasks
+            .iter()
+            .map(|t| t.total_partitions)
+            .sum();
+
+        (
+            running_completed + completed_total,
+            running_total + completed_total,
+        )
+    }
+
+    /// Check if worker has any completed tasks.
+    pub fn has_completed_tasks(&self) -> bool {
+        !self.completed_tasks.is_empty()
+    }
+
+    /// Check if all tasks are completed.
+    pub fn all_tasks_completed(&self) -> bool {
+        self.tasks.is_empty() && !self.completed_tasks.is_empty()
+    }
+}
