@@ -131,7 +131,7 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
             }
             let mut style = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
             if i == app.selected_column {
-                style = style.add_modifier(Modifier::UNDERLINED);
+                style = style.bg(Color::DarkGray);
             }
             Cell::from(text).style(style)
         })
