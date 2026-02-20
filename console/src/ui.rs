@@ -1,4 +1,4 @@
-use crate::app::{App, ConsoleState, TaskRowStatus};
+use crate::app::{App, ConsoleState, SortDirection, TaskRowStatus};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -106,7 +106,7 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let header = Row::new(vec![
+    let column_names = [
         "Query ID",
         "Stage No.",
         "Task No.",
@@ -116,12 +116,28 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
         "Elapsed Compute",
         "Memory Usage",
         "Rows Spilled",
-    ])
-    .style(
-        Style::default()
-            .add_modifier(Modifier::BOLD)
-            .fg(Color::Cyan),
-    );
+    ];
+
+    let header_cells: Vec<Cell> = column_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let mut text = name.to_string();
+            if app.sort_column == Some(i) {
+                match app.sort_direction {
+                    SortDirection::Ascending => text.push_str(" ▲"),
+                    SortDirection::Descending => text.push_str(" ▼"),
+                }
+            }
+            let mut style = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
+            if i == app.selected_column {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            Cell::from(text).style(style)
+        })
+        .collect();
+
+    let header = Row::new(header_cells);
 
     let table_rows: Vec<Row> = rows
         .iter()
@@ -198,17 +214,28 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(": navigate  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": rows  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "h/l",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": columns  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Space",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": sort  |  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 "'q'",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                " to quit  |  Updates every 10ms",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(" to quit", Style::default().fg(Color::DarkGray)),
         ]),
     };
 

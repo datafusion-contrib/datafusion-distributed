@@ -6,12 +6,25 @@ use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use url::Url;
 
+/// Number of columns in the task table.
+pub const COLUMN_COUNT: usize = 9;
+
+/// Sort direction for table columns.
+#[derive(Clone, PartialEq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
 /// App holds the main application state.
 pub struct App {
     pub workers: Vec<WorkerState>,
     pub should_quit: bool,
     pub console_state: ConsoleState,
     pub task_table_state: TableState,
+    pub selected_column: usize,
+    pub sort_column: Option<usize>,
+    pub sort_direction: SortDirection,
 }
 
 /// Represents overall state of the console application.
@@ -70,6 +83,9 @@ impl App {
             should_quit: false,
             console_state: ConsoleState::Idle,
             task_table_state: TableState::default(),
+            selected_column: 0,
+            sort_column: None,
+            sort_direction: SortDirection::Ascending,
         }
     }
 
@@ -88,6 +104,30 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.task_table_state.select_previous();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.selected_column = self.selected_column.saturating_sub(1);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.selected_column < COLUMN_COUNT - 1 {
+                    self.selected_column += 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                if self.sort_column == Some(self.selected_column) {
+                    match self.sort_direction {
+                        SortDirection::Ascending => {
+                            self.sort_direction = SortDirection::Descending;
+                        }
+                        SortDirection::Descending => {
+                            self.sort_column = None;
+                            self.sort_direction = SortDirection::Ascending;
+                        }
+                    }
+                } else {
+                    self.sort_column = Some(self.selected_column);
+                    self.sort_direction = SortDirection::Ascending;
+                }
             }
             _ => {}
         }
@@ -180,7 +220,37 @@ impl App {
                 }
             }
         }
+        self.sort_task_rows(&mut rows);
         rows
+    }
+
+    /// Sort task rows by the currently selected sort column and direction.
+    fn sort_task_rows(&self, rows: &mut [TaskRow]) {
+        let Some(col) = self.sort_column else {
+            return;
+        };
+        rows.sort_by(|a, b| {
+            let cmp = match col {
+                0 => a.query_id_short.cmp(&b.query_id_short),
+                1 => a.stage_id.cmp(&b.stage_id),
+                2 => a.task_number.cmp(&b.task_number),
+                3 => a.worker_url.cmp(&b.worker_url),
+                4 => {
+                    let rank =
+                        |s: &TaskRowStatus| if *s == TaskRowStatus::Running { 0 } else { 1 };
+                    rank(&a.status).cmp(&rank(&b.status))
+                }
+                5 => a.output_rows.cmp(&b.output_rows),
+                6 => a.elapsed_compute.cmp(&b.elapsed_compute),
+                7 => a.current_memory_usage.cmp(&b.current_memory_usage),
+                8 => a.spill_count.cmp(&b.spill_count),
+                _ => std::cmp::Ordering::Equal,
+            };
+            match self.sort_direction {
+                SortDirection::Ascending => cmp,
+                SortDirection::Descending => cmp.reverse(),
+            }
+        });
     }
 }
 
