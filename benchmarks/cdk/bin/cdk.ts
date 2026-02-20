@@ -19,4 +19,8 @@ const config = {
     ]
 };
 
-new CdkStack(app, 'DataFusionDistributedBenchmarks', { config });
+new CdkStack(app, 'DataFusionDistributedBenchmarks', {
+    config,
+    // Set env during synth so account/region-derived names and outputs stay deterministic.
+    env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+});

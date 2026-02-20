@@ -1,9 +1,61 @@
 import path from "path";
 import fs from "fs/promises";
-import { BenchmarkRun, BenchResult } from "./@results";
+import * as fsSync from "fs";
+import {BenchmarkRun, BenchResult} from "./@results";
 
 export const ROOT = path.join(__dirname, '../../..')
-export const BUCKET = 's3://datafusion-distributed-benchmarks' // hardcoded in CDK code
+const STACK_NAME = "DataFusionDistributedBenchmarks"
+const CDK_OUTPUT_FILE = path.join(__dirname, "..", ".cdk-outputs.json")
+
+function normalizeBucketUri(bucket: string): string {
+    const withoutProtocol = bucket.replace(/^s3:\/\//, "").replace(/\/+$/, "")
+    return `s3://${withoutProtocol}`
+}
+
+function getBucketFromLocalOutputs(): string | undefined {
+    // Prefer local deploy metadata over live AWS lookups to keep benchmark scripts deterministic
+    // and independent from shell/profile/region drift.
+    try {
+        const raw = fsSync.readFileSync(CDK_OUTPUT_FILE, "utf-8")
+        const outputs = JSON.parse(raw) as Record<string, Record<string, unknown>>
+        const value = outputs[STACK_NAME]?.["BenchmarkBucketName"]
+        if (typeof value === "string" && value.trim() !== "") {
+            return normalizeBucketUri(value)
+        }
+    } catch {
+        // Ignore read/parse issues and fall back to env-based configuration.
+    }
+    return undefined
+}
+
+function resolveBucketUri(): string {
+    // Keep resolution local-first to avoid live AWS calls during benchmark script startup.
+    // Resolution order:
+    // 1) explicit env override
+    // 2) local CDK outputs produced by `npm run deploy -- --outputs-file ...`
+    const fromEnv = process.env.BENCHMARK_BUCKET
+    if (fromEnv) {
+        return normalizeBucketUri(fromEnv)
+    }
+
+    const fromLocalOutput = getBucketFromLocalOutputs()
+    if (fromLocalOutput) {
+        return fromLocalOutput
+    }
+
+    throw new Error(
+        "Could not resolve benchmark bucket. Set BENCHMARK_BUCKET or deploy DataFusionDistributedBenchmarks with --outputs-file .cdk-outputs.json."
+    )
+}
+
+let resolvedBucketUri: string | undefined
+export function getBucketUri(): string {
+    // Resolve once per process; bucket does not change during a single benchmark invocation.
+    if (!resolvedBucketUri) {
+        resolvedBucketUri = resolveBucketUri()
+    }
+    return resolvedBucketUri
+}
 
 export interface TableSpec {
     schema: string
@@ -25,6 +77,7 @@ export interface BenchmarkRunner {
 
 async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
     const datasetPath = path.join(ROOT, "benchmarks", "data", dataset)
+    const bucketUri = getBucketUri()
 
     const result: TableSpec[] = []
     for (const entryName of await fs.readdir(datasetPath)) {
@@ -33,7 +86,7 @@ async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
             result.push({
                 name: entryName,
                 schema: dataset,
-                s3Path: `${BUCKET}/${dataset}/${entryName}/`
+                s3Path: `${bucketUri}/${dataset}/${entryName}/`
             })
         }
     }

@@ -4,6 +4,7 @@ import * as Cdk from '../lib/cdk-stack';
 const config = {
   instanceType: 't3.xlarge',
   instanceCount: 4,
+  engines: [],
 };
 
 test('it builds', () => {
