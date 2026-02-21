@@ -1,5 +1,6 @@
 use crate::flight_service::WorkerSessionBuilder;
-use crate::flight_service::do_get::TaskData;
+use crate::flight_service::do_action::{INIT_ACTION_TYPE, TaskData};
+use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
 use crate::protobuf::StageKey;
 use crate::{DefaultSessionBuilder, ObservabilityServiceImpl};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
@@ -14,7 +15,6 @@ use futures::stream::BoxStream;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
@@ -24,13 +24,15 @@ pub(super) struct WorkerHooks {
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
+type ResultTaskData = Result<TaskData, Status>;
+
 #[derive(Clone)]
 pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
     /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
     /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
     /// access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>,
+    pub(super) task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
@@ -216,9 +218,14 @@ impl FlightService for Worker {
 
     async fn do_action(
         &self,
-        _: Request<Action>,
+        request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        match request.get_ref().r#type.as_str() {
+            INIT_ACTION_TYPE => self.init(request).await,
+            v => Err(Status::unimplemented(format!(
+                "Action {v} not yet implemented"
+            ))),
+        }
     }
 
     type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;

@@ -281,7 +281,7 @@ mod tests {
             // just verify that a metrics set exists for each node. The count assertion above
             // ensures all nodes are included in the metrics collection.
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.decoded().unwrap();
+            let stage_plan = stage.plan.as_ref().unwrap();
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
@@ -400,7 +400,7 @@ mod tests {
                 });
 
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.decoded().unwrap();
+            let stage_plan = stage.plan.as_ref().unwrap();
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
@@ -446,7 +446,7 @@ mod tests {
         for expected_stage_key in expected_stage_keys {
             let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
             let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.decoded().unwrap();
+            let stage_plan = stage.plan.as_ref().unwrap();
 
             // Verify metrics count matches - this ensures all nodes are included in metrics collection
             // regardless of whether they have metrics or not (some nodes may have empty metrics sets)

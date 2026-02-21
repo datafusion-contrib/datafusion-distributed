@@ -208,7 +208,9 @@ pub fn stage_metrics_rewriter(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
 
-    let plan = stage.plan.decoded()?;
+    let Some(plan) = &stage.plan else {
+        return internal_err!("The inner plan of a stage was not present");
+    };
 
     plan.clone().transform_down(|plan| {
         // Collect metrics for this node. It should contain metrics from each task.
