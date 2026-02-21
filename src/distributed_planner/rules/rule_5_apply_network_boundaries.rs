@@ -1,75 +1,51 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::batch_coalescing_below_network_boundaries;
-use crate::distributed_planner::plan_annotator::{
-    AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
+use crate::distributed_planner::distributed_context::DistributedContext;
+use crate::distributed_planner::rules::rule_4_annotate_plan::{
+    AnnotatedPlan, PlanOrNetworkBoundary,
 };
 use crate::{
     DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec, TaskEstimator,
 };
+use datafusion::common::DataFusionError;
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use std::fmt::Debug;
+use datafusion::physical_plan::ExecutionPlan;
 use std::ops::AddAssign;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::insert_broadcast::insert_broadcast_execs;
+#[derive(Debug)]
+pub struct ApplyNetworkBoundaries;
 
-/// Physical optimizer rule that inspects the plan, places the appropriate network
-/// boundaries, and breaks it down into stages that can be executed in a distributed manner.
-///
-/// The rule has three steps:
-///
-/// 1. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
-///    many distributed tasks should be used in the stage containing them, and whether they
-///    need a network boundary below or not.
-///    For more information about this step, read [annotate_plan] docs.
-///
-/// 2. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
-///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
-///    assignation that the annotations required. After this, the plan is already a distributed
-///    executable plan.
-///
-/// 3. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
-///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
-#[derive(Debug, Default)]
-pub struct DistributedPhysicalOptimizerRule;
-
-impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
+impl PhysicalOptimizerRule for ApplyNetworkBoundaries {
     fn optimize(
         &self,
-        original: Arc<dyn ExecutionPlan>,
-        cfg: &ConfigOptions,
+        plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        if original.as_any().is::<DistributedExec>() {
-            return Ok(original);
-        }
+        let d_ctx = DistributedContext::ensure(self, &plan)?;
 
-        let mut plan = Arc::clone(&original);
-        if original.output_partitioning().partition_count() > 1 {
-            plan = Arc::new(CoalescePartitionsExec::new(plan))
-        }
-
-        plan = insert_broadcast_execs(plan, cfg)?;
-
-        let annotated = annotate_plan(plan, cfg)?;
+        let Some(annotated) = d_ctx.annotated_plan.lock().unwrap().take() else {
+            return Ok(plan);
+        };
 
         let mut stage_id = 1;
-        let distributed = distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
-        if stage_id == 1 {
-            return Ok(original);
-        }
-        let distributed = batch_coalescing_below_network_boundaries(distributed, cfg)?;
+        let query_id = Uuid::new_v4();
+        let distributed = apply_network_boundaries(annotated, config, query_id, &mut stage_id)?;
 
-        Ok(Arc::new(DistributedExec::new(distributed)))
+        let child = if stage_id == 1 {
+            // The plan did not get distributed, so rolling back to the original plan.
+            Arc::clone(&d_ctx.original_single_node_plan)
+        } else {
+            // The plan did get distributed.
+            Arc::new(DistributedExec::new(distributed))
+        };
+        plan.with_new_children(vec![child])
     }
 
     fn name(&self) -> &str {
-        "DistributedPhysicalOptimizer"
+        "ApplyNetworkBoundaries"
     }
 
     fn schema_check(&self) -> bool {
@@ -84,7 +60,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 ///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
 /// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
 ///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
-fn distribute_plan(
+fn apply_network_boundaries(
     annotated_plan: AnnotatedPlan,
     cfg: &ConfigOptions,
     query_id: Uuid,
@@ -96,7 +72,7 @@ fn distribute_plan(
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
     let new_children = children
         .into_iter()
-        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
+        .map(|child| apply_network_boundaries(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
     match annotated_plan.plan_or_nb {
         // This is a leaf node. It needs to be scaled up in order to account for it running in
@@ -174,12 +150,9 @@ mod tests {
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
         sql_to_physical_plan,
     };
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
-    };
+    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::displayable;
-    use std::sync::Arc;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -949,8 +922,7 @@ mod tests {
             options.broadcast_enabled,
         );
         if use_optimizer {
-            builder =
-                builder.with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
+            builder.set_distributed_physical_optimizer_rules()
         }
         let builder = configure(builder);
         let (ctx, query) = context_with_query(builder, query).await;

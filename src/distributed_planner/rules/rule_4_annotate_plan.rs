@@ -1,9 +1,11 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
+use crate::distributed_planner::distributed_context::DistributedContext;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
-use datafusion::common::{DataFusionError, plan_datafusion_err};
+use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -13,6 +15,35 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::union::UnionExec;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct AnnotatePlan;
+
+impl PhysicalOptimizerRule for AnnotatePlan {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let d_ctx = DistributedContext::ensure(self, &plan)?;
+
+        d_ctx.annotated_plan.lock().unwrap().replace(annotate_plan(
+            Arc::clone(&d_ctx.plan),
+            None,
+            config,
+            true,
+        )?);
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        "AnnotatePlan"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
 
 /// Annotation attached to a single [ExecutionPlan] that determines the kind of network boundary
 /// needed just below itself.
@@ -42,7 +73,7 @@ impl PlanOrNetworkBoundary {
 
 /// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
 /// it should run on, and whether it needs a network boundary below or not.
-pub(super) struct AnnotatedPlan {
+pub(crate) struct AnnotatedPlan {
     /// The annotated [ExecutionPlan].
     pub(super) plan_or_nb: PlanOrNetworkBoundary,
     /// The annotated children of this [ExecutionPlan]. This will always hold the same nodes as
@@ -158,14 +189,7 @@ impl Debug for AnnotatedPlan {
 /// ```
 ///
 /// ```
-pub(super) fn annotate_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<AnnotatedPlan, DataFusionError> {
-    _annotate_plan(plan, None, cfg, true)
-}
-
-fn _annotate_plan(
+fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     parent: Option<&Arc<dyn ExecutionPlan>>,
     cfg: &ConfigOptions,
@@ -182,8 +206,8 @@ fn _annotate_plan(
     let annotated_children = plan
         .children()
         .iter()
-        .map(|child| _annotate_plan(Arc::clone(child), Some(&plan), cfg, false))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|child| annotate_plan(Arc::clone(child), Some(&plan), cfg, false))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
@@ -265,7 +289,7 @@ fn _annotate_plan(
         // If the parent is trying to coalesce all partitions into one, we need to introduce
         // a network coalesce right below it (or in other words, above the current node)
         && (parent.as_any().is::<CoalescePartitionsExec>()
-            || parent.as_any().is::<SortPreservingMergeExec>())
+        || parent.as_any().is::<SortPreservingMergeExec>())
     {
         // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
         if plan.as_any().is::<BroadcastExec>() {
@@ -290,7 +314,7 @@ fn _annotate_plan(
         annotation: &mut AnnotatedPlan,
         task_count: &TaskCountAnnotation,
         d_cfg: &DistributedConfig,
-    ) -> Result<(), DataFusionError> {
+    ) -> std::result::Result<(), DataFusionError> {
         annotation.task_count = task_count.clone();
         let plan = match &annotation.plan_or_nb {
             // If it's a normal plan, continue with the propagation.
@@ -403,14 +427,17 @@ fn _annotate_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::test_utils::plans::{
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
         sql_to_physical_plan,
     };
-    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
+    use crate::{
+        DistributedExt, EndDistributedContext, InsertBroadcast, StartDistributedContext,
+        TaskEstimation, TaskEstimator, assert_snapshot,
+    };
     use datafusion::config::ConfigOptions;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_optimizer::PhysicalOptimizerRule;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::filter::FilterExec;
     /* schema for the "weather" table
@@ -979,12 +1006,15 @@ mod tests {
         let (ctx, query) = context_with_query(builder, query).await;
         let df = ctx.sql(&query).await.unwrap();
         let mut plan = df.create_physical_plan().await.unwrap();
+        let state_ref = ctx.state_ref();
+        let state = state_ref.read();
+        let cfg = state.config_options().as_ref();
 
-        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
+        plan = StartDistributedContext.optimize(plan, cfg).unwrap();
+        plan = InsertBroadcast.optimize(plan, cfg).unwrap();
+        plan = EndDistributedContext.optimize(plan, cfg).unwrap();
+        let annotated = annotate_plan(Arc::clone(&plan), None, cfg, true).unwrap();
 
-        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to annotate plan");
         format!("{annotated:?}")
     }
 }

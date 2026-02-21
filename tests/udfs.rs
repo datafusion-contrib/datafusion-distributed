@@ -16,8 +16,9 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
-        display_plan_ascii,
+        AddCoalesceOnTop, AnnotatePlan, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries,
+        DistributedExt, EndDistributedContext, InsertBroadcast, StartDistributedContext,
+        WorkerQueryContext, assert_snapshot, display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -57,9 +58,17 @@ mod tests {
         };
 
         let node = wrap(wrap(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))));
+        let cfg = ctx.copied_config();
+        let opts = cfg.options();
 
-        let physical_distributed =
-            DistributedPhysicalOptimizerRule.optimize(node, ctx.copied_config().options())?;
+        // TODO: refactor this test so that it doesn't do this weird thing.
+        let node = StartDistributedContext.optimize(node, opts)?;
+        let node = AddCoalesceOnTop.optimize(node, opts)?;
+        let node = InsertBroadcast.optimize(node, opts)?;
+        let node = AnnotatePlan.optimize(node, opts)?;
+        let node = ApplyNetworkBoundaries.optimize(node, opts)?;
+        let node = BatchCoalesceBelowBoundaries.optimize(node, opts)?;
+        let physical_distributed = EndDistributedContext.optimize(node, opts)?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 

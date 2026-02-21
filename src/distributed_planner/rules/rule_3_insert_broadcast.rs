@@ -1,18 +1,15 @@
-use std::sync::Arc;
-
+use crate::distributed_planner::distributed_context::DistributedContext;
+use crate::{BroadcastExec, DistributedConfig};
 use datafusion::common::JoinType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use std::sync::Arc;
 
-use crate::BroadcastExec;
-
-use super::DistributedConfig;
-
-/// This is a top-down traversal of a [ExecutionPlan] that inserts [BroadcastExec] opeerators where
+/// This is a top-down traversal of a [ExecutionPlan] that inserts [BroadcastExec] operators where
 /// appropriate.
 ///
 /// # What is it doing?
@@ -108,82 +105,95 @@ use super::DistributedConfig;
 /// Worker 1 would emit: (2, Alice), (3, Bob)
 /// Worker 2 would emit: (1, John), (3, Bob)
 /// Thus when unioning results: (2, Alice), (3, Bob), (1, John), (3, Bob)
-/// ```
-///
-/// ```
-pub(super) fn insert_broadcast_execs(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-    if !d_cfg.broadcast_joins {
-        return Ok(plan);
+#[derive(Debug)]
+pub struct InsertBroadcast;
+
+impl PhysicalOptimizerRule for InsertBroadcast {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        DistributedContext::ensure(self, &plan)?;
+
+        let d_cfg = DistributedConfig::from_config_options(cfg)?;
+        if !d_cfg.broadcast_joins {
+            return Ok(plan);
+        }
+
+        plan.transform_down(|node| {
+            let Some(hash_join) = node.as_any().downcast_ref::<HashJoinExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            if hash_join.partition_mode() != &PartitionMode::CollectLeft {
+                return Ok(Transformed::no(node));
+            }
+
+            // Only broadcast when output is driven by the probe side.
+            // Joins that can emit build-side rows (left/left-semi/left-anti/left-mark/full) would
+            // duplicate output if the build is broadcast, thus are excluded.
+            let join_type = hash_join.join_type();
+            if !matches!(
+                join_type,
+                JoinType::Inner
+                    | JoinType::Right
+                    | JoinType::RightSemi
+                    | JoinType::RightAnti
+                    | JoinType::RightMark
+            ) {
+                return Ok(Transformed::no(node));
+            }
+
+            let children = node.children();
+            let Some(build_child) = children.first() else {
+                return Ok(Transformed::no(node));
+            };
+
+            // If build child is CoalescePartitionsExec get its input
+            // Otherwise, use the build child directly (DataSourceExec)
+            let broadcast_input = if let Some(coalesce) = build_child
+                .as_any()
+                .downcast_ref::<CoalescePartitionsExec>()
+            {
+                Arc::clone(coalesce.input())
+            } else {
+                Arc::clone(build_child)
+            };
+
+            // Insert BroadcastExec. consumer_task_count=1 is a placeholder and
+            // will be corrected during optimizer rule.
+            let broadcast = Arc::new(BroadcastExec::new(
+                broadcast_input,
+                1, // placeholder
+            ));
+
+            // Always wrap with CoalescePartitionsExec
+            let new_build_child: Arc<dyn ExecutionPlan> =
+                Arc::new(CoalescePartitionsExec::new(broadcast));
+
+            let mut new_children: Vec<Arc<dyn ExecutionPlan>> =
+                children.into_iter().cloned().collect();
+            new_children[0] = new_build_child;
+            Ok(Transformed::yes(node.with_new_children(new_children)?))
+        })
+        .map(|transformed| transformed.data)
     }
 
-    plan.transform_down(|node| {
-        let Some(hash_join) = node.as_any().downcast_ref::<HashJoinExec>() else {
-            return Ok(Transformed::no(node));
-        };
-        if hash_join.partition_mode() != &PartitionMode::CollectLeft {
-            return Ok(Transformed::no(node));
-        }
+    fn name(&self) -> &str {
+        "InsertBroadcast"
+    }
 
-        // Only broadcast when output is driven by the probe side.
-        // Joins that can emit build-side rows (left/left-semi/left-anti/left-mark/full) would
-        // duplicate output if the build is broadcast, thus are excluded.
-        let join_type = hash_join.join_type();
-        if !matches!(
-            join_type,
-            JoinType::Inner
-                | JoinType::Right
-                | JoinType::RightSemi
-                | JoinType::RightAnti
-                | JoinType::RightMark
-        ) {
-            return Ok(Transformed::no(node));
-        }
-
-        let children = node.children();
-        let Some(build_child) = children.first() else {
-            return Ok(Transformed::no(node));
-        };
-
-        // If build child is CoalescePartitionsExec get its input
-        // Otherwise, use the build child directly (DataSourceExec)
-        let broadcast_input = if let Some(coalesce) = build_child
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
-            Arc::clone(coalesce.input())
-        } else {
-            Arc::clone(build_child)
-        };
-
-        // Insert BroadcastExec. consumer_task_count=1 is a placeholder and
-        // will be corrected during optimizer rule.
-        let broadcast = Arc::new(BroadcastExec::new(
-            broadcast_input,
-            1, // placeholder
-        ));
-
-        // Always wrap with CoalescePartitionsExec
-        let new_build_child: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(broadcast));
-
-        let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
-        new_children[0] = new_build_child;
-        Ok(Transformed::yes(node.with_new_children(new_children)?))
-    })
-    .map(|transformed| transformed.data)
+    fn schema_check(&self) -> bool {
+        true
+    }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_snapshot;
     use crate::test_utils::plans::{
         TestPlanOptions, base_session_builder, context_with_query, sql_to_physical_plan,
     };
+    use crate::{StartDistributedContext, assert_snapshot};
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
@@ -282,9 +292,16 @@ mod tests {
         );
         let (ctx, query) = context_with_query(builder, query).await;
         let df = ctx.sql(&query).await.unwrap();
-        let plan = df.create_physical_plan().await.unwrap();
-        let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to insert broadcasts");
-        format!("{}", displayable(plan.as_ref()).indent(true))
+        let mut plan = df.create_physical_plan().await.unwrap();
+        let state_ref = ctx.state_ref();
+        let state = state_ref.read();
+        let cfg = state.config_options().as_ref();
+
+        plan = StartDistributedContext.optimize(plan, cfg).unwrap();
+        plan = InsertBroadcast.optimize(plan, cfg).unwrap();
+
+        let d_ctx = plan.as_any().downcast_ref::<DistributedContext>().unwrap();
+
+        format!("{}", displayable(d_ctx.plan.as_ref()).indent(true))
     }
 }

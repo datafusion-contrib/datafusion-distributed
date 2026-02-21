@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver};
+use datafusion_distributed::{DistributedExt, SessionStateBuilderExt, WorkerResolver};
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -74,7 +74,7 @@ async fn run_queries(
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_worker_resolver(localhost_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_physical_optimizer_rules()
         .build();
 
     let ctx = SessionContext::from(state);
