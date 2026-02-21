@@ -520,6 +520,20 @@ pub trait DistributedExt: Sized {
         &mut self,
         headers: HeaderMap,
     ) -> Result<(), DataFusionError>;
+
+    /// Sets the maximum tasks that will be assigned for each stage.
+    ///
+    /// If not specified, the number of workers returned by the provided [WorkerResolver] is taken.
+    fn with_distributed_max_tasks_per_stage(
+        self,
+        max_tasks_per_stage: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_max_tasks_per_stage] but with an in-place mutation.
+    fn set_distributed_max_tasks_per_stage(
+        &mut self,
+        max_tasks_per_stage: usize,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -632,6 +646,15 @@ impl DistributedExt for SessionConfig {
         set_passthrough_headers(self, headers)
     }
 
+    fn set_distributed_max_tasks_per_stage(
+        &mut self,
+        max_tasks_per_stage: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.max_tasks_per_stage = max_tasks_per_stage;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -693,6 +716,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_passthrough_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_max_tasks_per_stage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -774,6 +801,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_passthrough_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_max_tasks_per_stage(&mut self, max_tasks_per_stage: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_max_tasks_per_stage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -855,6 +887,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_passthrough_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_passthrough_headers(mut self, headers: HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_max_tasks_per_stage(&mut self, max_tasks_per_stage: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_max_tasks_per_stage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -936,6 +973,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_passthrough_headers)]
             #[expr($?;Ok(self))]
             fn with_distributed_passthrough_headers(self, headers: HeaderMap) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_max_tasks_per_stage(&mut self, max_tasks_per_stage: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_max_tasks_per_stage)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
