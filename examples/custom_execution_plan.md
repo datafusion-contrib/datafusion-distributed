@@ -12,12 +12,8 @@ Uses `DistributedTaskContext` to determine which range to generate.
 **NumbersExecCodec** – Protobuf-based serialization implementing `PhysicalExtensionCodec`.
 Must be registered in the `SessionStateBuilder` that initiates the query as well as the one used by `Worker`s.
 
-**NumbersTaskEstimator** – Controls distributed parallelism:
-
-- `task_estimation()` - Returns how many tasks needed based on range size and config
-- `scale_up_leaf_node()` - Splits single range of numbers into N per-task ranges
-
-**NumbersConfig** – Custom config extension for controlling distributed parallelism (`numbers_per_task: usize`)
+**NumbersDistributedPlannerExtension** – Controls distributed parallelism:
+    - `scale_up_leaf_node()` - Splits single range of numbers into N per-task ranges
 
 ## Usage
 
@@ -49,16 +45,20 @@ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 
 This will print a non-distributed plan, as the range of numbers we are querying (`numbers(0, 10)`) is small.
 
-The config parameter `numbers.numbers_per_task` is the one that controls how many distributed tasks are used in the
-query, and it's default value is `10`, so querying 10 numbers will not distribute the plan.
+Distributed DataFusion has a config parameter that allows controlling the parallelism of a distributed query:
+`distributed.bytes_processed_per_partition`.
 
-However, if we try to query 11 numbers:
+It determines how many bytes each partition is expected to handle, and if handling the query would require more
+partitions than CPUs the machine has, then the query will get distributed across workers.
+
+For example, if we set `distributed.bytes_processed_per_partition` to something very low, like 10 bytes,
+the query will get distributed:
 
 ```bash
 cargo run \
   --features integration \
   --example custom_execution_plan \
-  "SELECT DISTINCT number FROM numbers(0, 11) ORDER BY number" \
+  "SET distributed.bytes_processed_per_partition=10;SELECT DISTINCT number FROM numbers(0, 11) ORDER BY number" \
   --show-distributed-plan
 ```
 
@@ -70,58 +70,55 @@ cargo run \
   ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] 
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
-  │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=2
+  │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=3
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
-    │           NumbersExec: t0:[0-6), t1:[6-11)
+    ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] t2:[p0..p31] 
+    │ RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=1
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     CooperativeExec
+    │       NumbersExec: t0:[0-4), t1:[4-8), t2:[8-11)
     └──────────────────────────────────────────────────
 ```
 
 The distribution rule kicks in, and the plan gets distributed.
 
-Note that the parallelism in the plan has an upper threshold, so for example, if we query 100 numbers:
+Note that the parallelism in the plan has an upper threshold, so for example, if we query 100 numbers so that
+more rows flow through the query:
 
 ```bash
 cargo run \
   --features integration \
   --example custom_execution_plan \
-  "SELECT DISTINCT number FROM numbers(0, 100) ORDER BY number" \
+  "SET distributed.bytes_processed_per_partition=10;SELECT DISTINCT number FROM numbers(0, 100) ORDER BY number" \
   --show-distributed-plan
 ```
 
 ```
 ┌───── DistributedExec ── Tasks: t0:[p0] 
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
-│   [Stage 2] => NetworkCoalesceExec: output_partitions=48, input_tasks=3
+│   [Stage 2] => NetworkCoalesceExec: output_partitions=64, input_tasks=4
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] 
+  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] t3:[p0..p15] 
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=4
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p47] t1:[p0..p47] t2:[p0..p47] t3:[p0..p47] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
-    │           NumbersExec: t0:[0-25), t1:[25-50), t2:[50-75), t3:[75-100)
+    ┌───── Stage 1 ── Tasks: t0:[p0..p63] t1:[p0..p63] t2:[p0..p63] t3:[p0..p63] 
+    │ RepartitionExec: partitioning=Hash([number@0], 64), input_partitions=1
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     CooperativeExec
+    │       NumbersExec: t0:[0-25), t1:[25-50), t2:[50-75), t3:[75-100)
     └──────────────────────────────────────────────────
 ```
 
-We do not get 100/10 = 10 distributed tasks, we just get 4. This is because the example is configured by default to
-simulate a 4-worker cluster. If we increase the worker count, we get a highly distributed plan out with 10 tasks:
+We do not get many more distributed tasks, we just get 4. This is because the example is configured by default to
+simulate a 4-worker cluster. If we increase the worker count, we get a highly distributed plan with more parallelism:
 
 ```bash
 cargo run \
   --features integration \
   --example custom_execution_plan \
-  "SELECT DISTINCT number FROM numbers(0, 100) ORDER BY number" \
+  "SET distributed.bytes_processed_per_partition=10;SELECT DISTINCT number FROM numbers(0, 100) ORDER BY number" \
   --workers 10 \
   --show-distributed-plan
 ```
@@ -129,20 +126,18 @@ cargo run \
 ```
 ┌───── DistributedExec ── Tasks: t0:[p0] 
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
-│   [Stage 2] => NetworkCoalesceExec: output_partitions=112, input_tasks=7
+│   [Stage 2] => NetworkCoalesceExec: output_partitions=160, input_tasks=10
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] t3:[p0..p15] t4:[p0..p15] t5:[p0..p15] t6:[p0..p15] 
+  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] t3:[p0..p15] t4:[p0..p15] t5:[p0..p15] t6:[p0..p15] t7:[p0..p15] t8:[p0..p15] t9:[p0..p15] 
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=10
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p111] t1:[p0..p111] t2:[p0..p111] t3:[p0..p111] t4:[p0..p111] t5:[p0..p111] t6:[p0..p111] t7:[p0..p111] t8:[p0..p111] t9:[p0..p111] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
-    │           NumbersExec: t0:[0-10), t1:[10-20), t2:[20-30), t3:[30-40), t4:[40-50), t5:[50-60), t6:[60-70), t7:[70-80), t8:[80-90), t9:[90-100)
+    ┌───── Stage 1 ── Tasks: t0:[p0..p159] t1:[p0..p159] t2:[p0..p159] t3:[p0..p159] t4:[p0..p159] t5:[p0..p159] t6:[p0..p159] t7:[p0..p159] t8:[p0..p159] t9:[p0..p159] 
+    │ RepartitionExec: partitioning=Hash([number@0], 160), input_partitions=1
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     CooperativeExec
+    │       NumbersExec: t0:[0-10), t1:[10-20), t2:[20-30), t3:[30-40), t4:[40-50), t5:[50-60), t6:[60-70), t7:[70-80), t8:[80-90), t9:[90-100)
     └──────────────────────────────────────────────────
 ```
 

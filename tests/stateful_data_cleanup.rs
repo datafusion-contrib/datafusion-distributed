@@ -4,9 +4,9 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
+    use datafusion_distributed::DefaultSessionBuilder;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::{benchmarks_common, tpch};
-    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use futures::TryStreamExt;
     use std::fs;
     use std::path::Path;
@@ -17,7 +17,6 @@ mod tests {
     const NUM_WORKERS: usize = 4;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
     const TPCH_DATA_PARTS: i32 = 16;
-    const CARDINALITY_TASK_COUNT_FACTOR: f64 = 1.0;
 
     #[tokio::test]
     async fn no_pending_tasks_if_query_completes() -> Result<()> {
@@ -68,9 +67,6 @@ mod tests {
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
 
         let query_sql = tpch::get_query(query_id)?;
-
-        let d_ctx = d_ctx
-            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
         benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
 

@@ -19,8 +19,7 @@ mod tests {
     use tokio::sync::OnceCell;
 
     const NUM_WORKERS: usize = 4;
-    const FILES_PER_TASK: usize = 2;
-    const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
+    const BYTES_PROCESSED_PER_PARTITION: usize = 1024 * 1024;
     const SF: f64 = 1.0;
     const PARQUET_PARTITIONS: usize = 4;
 
@@ -229,6 +228,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "Query q41 did not get distributed"]
     async fn test_tpcds_41() -> Result<()> {
         test_tpcds_query("q41").await
     }
@@ -264,7 +264,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "Query q48 did not get distributed"]
     async fn test_tpcds_48() -> Result<()> {
         test_tpcds_query("q48").await
     }
@@ -337,7 +336,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "Query q62 did not get distributed"]
     async fn test_tpcds_62() -> Result<()> {
         test_tpcds_query("q62").await
     }
@@ -487,7 +485,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "Query q91 did not get distributed"]
     async fn test_tpcds_91() -> Result<()> {
         test_tpcds_query("q91").await
     }
@@ -569,8 +566,7 @@ mod tests {
         // Make distributed localhost context to run queries
         let (d_ctx, _guard, _) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
-            .with_distributed_files_per_task(FILES_PER_TASK)?
-            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
+            .with_distributed_bytes_processed_per_partition(BYTES_PROCESSED_PER_PARTITION)?
             .with_distributed_broadcast_joins(true)?;
 
         benchmarks_common::register_tables(&s_ctx, &data_dir).await?;

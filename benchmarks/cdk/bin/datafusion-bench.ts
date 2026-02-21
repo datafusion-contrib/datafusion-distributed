@@ -12,8 +12,7 @@ async function main() {
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '3')
-        .option('--files-per-task <number>', 'Files per task', '8')
-        .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
+        .option('--bytes-processed-per-partition <number>', 'How many bytes each partition is expected to process', '8388608') // 8 Mb default
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
@@ -29,8 +28,7 @@ async function main() {
 
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
-    const filesPerTask = parseInt(options.filesPerTask);
-    const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
+    const bytesProcessedPerPartition = parseInt(options.bytesProcessedPerPartition)
     const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const compression = options.compression;
@@ -42,8 +40,7 @@ async function main() {
     const warmup = options.warmup === 'true' || options.debug === 1
 
     const runner = new DataFusionRunner({
-        filesPerTask,
-        cardinalityTaskSf,
+        bytesProcessedPerPartition,
         batchSize,
         shuffleBatchSize,
         collectMetrics,
@@ -73,8 +70,7 @@ class DataFusionRunner implements BenchmarkRunner {
     private url = 'http://localhost:9000';
 
     constructor(private readonly options: {
-        filesPerTask: number;
-        cardinalityTaskSf: number;
+        bytesProcessedPerPartition: number;
         batchSize: number;
         shuffleBatchSize: number;
         collectMetrics: boolean;
@@ -125,8 +121,7 @@ class DataFusionRunner implements BenchmarkRunner {
         }
         await this.query(stmt);
         await this.query(`
-      SET distributed.files_per_task=${this.options.filesPerTask};
-      SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
+      SET distributed.bytes_processed_per_partition=${this.options.bytesProcessedPerPartition};
       SET datafusion.execution.batch_size=${this.options.batchSize};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};

@@ -75,13 +75,9 @@ pub struct RunOpt {
     #[structopt(long)]
     threads: Option<usize>,
 
-    /// Number of files per each distributed task.
-    #[structopt(long)]
-    files_per_task: Option<usize>,
-
-    /// Task count scale factor for when nodes in stages change the cardinality of the data
-    #[structopt(long)]
-    cardinality_task_sf: Option<f64>,
+    /// Number of bytes each partition is expected to process.
+    #[structopt(long, default_value = "8388608")] // 8 Mb
+    bytes_processed_per_partition: usize,
 
     /// Use children isolator UNIONs for distributing UNION operations.
     #[structopt(long)]
@@ -176,12 +172,7 @@ impl RunOpt {
             .with_config(self.config()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
             .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
-            .with_distributed_files_per_task(
-                self.files_per_task.unwrap_or(get_available_parallelism()),
-            )?
-            .with_distributed_cardinality_effect_task_scale_factor(
-                self.cardinality_task_sf.unwrap_or(1.0),
-            )?
+            .with_distributed_bytes_processed_per_partition(self.bytes_processed_per_partition)?
             .with_distributed_compression(match self.compression.as_str() {
                 "zstd" => Some(CompressionType::ZSTD),
                 "lz4" => Some(CompressionType::LZ4_FRAME),
