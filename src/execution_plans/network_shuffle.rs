@@ -3,7 +3,7 @@ use crate::execution_plans::common::scale_partitioning;
 use crate::flight_service::WorkerConnectionPool;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{AppMetadata, StageKey};
-use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::stage::Stage;
 use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -160,7 +160,7 @@ impl NetworkShuffleExec {
             input_stage: Stage {
                 query_id,
                 num,
-                plan: MaybeEncodedPlan::Decoded(transformed.data),
+                plan: Some(transformed.data),
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
@@ -209,8 +209,8 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match &self.input_stage.plan {
-            MaybeEncodedPlan::Decoded(v) => vec![v],
-            MaybeEncodedPlan::Encoded(_) => vec![],
+            Some(v) => vec![v],
+            None => vec![],
         }
     }
 
@@ -219,7 +219,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+        self_clone.input_stage.plan = Some(require_one_child(children)?);
         Ok(Arc::new(self_clone))
     }
 
