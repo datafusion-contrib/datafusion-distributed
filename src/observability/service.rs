@@ -1,8 +1,7 @@
-use crate::flight_service::TaskData;
+use crate::flight_service::{SingleWriteMultiRead, TaskData};
 use crate::protobuf::StageKey;
 use moka::future::Cache;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
 
 use super::{
@@ -10,12 +9,17 @@ use super::{
     generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
 
+type ResultTaskData = Result<TaskData, Status>;
+
+#[allow(dead_code)] // TEMP: will be used in future implementations.
 pub struct ObservabilityServiceImpl {
-    task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>,
+    task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
 }
 
 impl ObservabilityServiceImpl {
-    pub fn new(task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>) -> Self {
+    pub fn new(
+        task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    ) -> Self {
         Self { task_data_entries }
     }
 }
@@ -36,7 +40,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
             let (internal_key, task_data_cell) = entry;
 
             // Only include initialized tasks
-            if let Some(task_data) = task_data_cell.get() {
+            if let Some(Ok(task_data)) = task_data_cell.read_now() {
                 let total_partitions = task_data.total_partitions() as u64;
                 let remaining = task_data.num_partitions_remaining() as u64;
                 let completed_partitions = total_partitions.saturating_sub(remaining);

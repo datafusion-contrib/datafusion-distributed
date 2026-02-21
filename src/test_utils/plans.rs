@@ -70,7 +70,7 @@ pub fn get_stages_and_stage_keys(
         }
 
         // Add any child stages
-        queue.extend(find_input_stages(stage.plan.decoded().unwrap().as_ref()));
+        queue.extend(find_input_stages(stage.plan.as_ref().unwrap().as_ref()));
     }
     (stages_map, stage_keys)
 }

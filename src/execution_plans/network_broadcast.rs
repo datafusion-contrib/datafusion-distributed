@@ -4,7 +4,7 @@ use crate::distributed_planner::NetworkBoundary;
 use crate::flight_service::WorkerConnectionPool;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{AppMetadata, StageKey};
-use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::stage::Stage;
 use dashmap::DashMap;
 use datafusion::common::internal_datafusion_err;
 use datafusion::error::DataFusionError;
@@ -150,13 +150,12 @@ impl NetworkBroadcastExec {
         let broadcast_exec: Arc<dyn ExecutionPlan> =
             Arc::new(super::BroadcastExec::new(child, consumer_task_count));
 
-        let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
-        let properties = input_stage
-            .plan
-            .decoded()?
+        let properties = broadcast_exec
             .properties()
             .clone()
             .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
+
+        let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
 
         Ok(Self {
             properties,
@@ -190,7 +189,7 @@ impl DisplayAs for NetworkBroadcastExec {
         let stage_partitions = self
             .input_stage
             .plan
-            .decoded()
+            .as_ref()
             .map(|p| p.properties().partitioning.partition_count())
             .unwrap_or(0);
         write!(
@@ -215,8 +214,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match &self.input_stage.plan {
-            MaybeEncodedPlan::Decoded(plan) => vec![plan],
-            MaybeEncodedPlan::Encoded(_) => vec![],
+            Some(plan) => vec![plan],
+            None => vec![],
         }
     }
 
@@ -225,7 +224,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+        self_clone.input_stage.plan = Some(require_one_child(children)?);
         Ok(Arc::new(self_clone))
     }
 

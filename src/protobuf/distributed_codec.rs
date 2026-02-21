@@ -3,7 +3,7 @@ use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
 };
 use crate::flight_service::WorkerConnectionPool;
-use crate::stage::{ExecutionTask, MaybeEncodedPlan, Stage};
+use crate::stage::{ExecutionTask, Stage};
 use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
@@ -58,36 +58,17 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
         fn parse_stage_proto(
             proto: Option<StageProto>,
-            inputs: &[Arc<dyn ExecutionPlan>],
+            _inputs: &[Arc<dyn ExecutionPlan>],
         ) -> Result<Stage, DataFusionError> {
             let Some(proto) = proto else {
                 return Err(proto_error("Empty StageProto"));
-            };
-            let plan_proto = match proto.plan_proto.is_empty() {
-                true => None,
-                false => Some(proto.plan_proto),
-            };
-
-            let plan = match (plan_proto, inputs.first()) {
-                (Some(plan_proto), None) => MaybeEncodedPlan::Encoded(plan_proto),
-                (None, Some(child)) => MaybeEncodedPlan::Decoded(Arc::clone(child)),
-                (Some(_), Some(_)) => {
-                    return Err(proto_error(
-                        "When building a Stage from protobuf, either an already decoded child or its serialized bytes must be passed, but not both",
-                    ));
-                }
-                (None, None) => {
-                    return Err(proto_error(
-                        "When building a Stage from protobuf, an already decoded child or its serialized bytes must be passed",
-                    ));
-                }
             };
 
             Ok(Stage {
                 query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
                     .map_err(|_| proto_error("Invalid query_id in StageProto"))?,
                 num: proto.num as usize,
-                plan,
+                plan: None,
                 tasks: decode_tasks(proto.tasks)?,
             })
         }
@@ -245,10 +226,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
                 num: stage.num as u64,
                 tasks: encode_tasks(&stage.tasks),
-                plan_proto: match &stage.plan {
-                    MaybeEncodedPlan::Decoded(_) => Bytes::new(),
-                    MaybeEncodedPlan::Encoded(proto) => proto.clone(),
-                },
             })
         }
 
@@ -384,9 +361,6 @@ pub struct StageProto {
     /// the plan
     #[prost(message, repeated, tag = "3")]
     pub tasks: Vec<ExecutionTaskProto>,
-    /// The child plan already serialized
-    #[prost(bytes, tag = "4")]
-    pub plan_proto: Bytes, // Apparently, with an optional keyword, we cannot put Bytes here.
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -591,7 +565,7 @@ mod tests {
         Stage {
             query_id: Default::default(),
             num: 0,
-            plan: MaybeEncodedPlan::Decoded(empty_exec()),
+            plan: None,
             tasks: vec![],
         }
     }

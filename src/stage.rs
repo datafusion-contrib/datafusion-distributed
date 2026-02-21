@@ -1,8 +1,8 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
-use datafusion::common::HashMap;
 use datafusion::common::plan_err;
+use datafusion::common::{HashMap, config_err};
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -73,8 +73,9 @@ pub struct Stage {
     pub(crate) query_id: Uuid,
     /// Our stage number
     pub(crate) num: usize,
-    /// The physical execution plan that this stage will execute.
-    pub(crate) plan: MaybeEncodedPlan,
+    /// The physical execution plan that this stage will execute. It will only be present if
+    /// accessing to it through the coordinating stage.
+    pub(crate) plan: Option<Arc<dyn ExecutionPlan>>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
@@ -85,49 +86,6 @@ pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
     pub(crate) url: Option<Url>,
-}
-
-/// An [ExecutionPlan] that can be either:
-/// - Decoded: the inner [ExecutionPlan] is stored as-is.
-/// - Encoded: the inner [ExecutionPlan] is stored as protobuf [Bytes]. Storing it this way allow us
-///   to thread it through the project and eventually send it through gRPC in a zero copy manner.
-#[derive(Debug, Clone)]
-pub(crate) enum MaybeEncodedPlan {
-    /// The decoded [ExecutionPlan].
-    Decoded(Arc<dyn ExecutionPlan>),
-    /// A protobuf encoded version of the [ExecutionPlan]. The inner [Bytes] represent the full
-    /// input [ExecutionPlan] encoded in protobuf format.
-    ///
-    /// By keeping it encoded, we avoid encoding/decoding it unnecessarily in parts of the project
-    /// that only need it to be decoded.
-    Encoded(Bytes),
-}
-
-impl MaybeEncodedPlan {
-    pub(crate) fn to_encoded(&self, codec: &dyn PhysicalExtensionCodec) -> Result<Self> {
-        Ok(match self {
-            Self::Decoded(plan) => Self::Encoded(
-                PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?
-                    .encode_to_vec()
-                    .into(),
-            ),
-            Self::Encoded(plan) => Self::Encoded(plan.clone()),
-        })
-    }
-
-    pub(crate) fn decoded(&self) -> Result<&Arc<dyn ExecutionPlan>> {
-        match self {
-            MaybeEncodedPlan::Decoded(v) => Ok(v),
-            MaybeEncodedPlan::Encoded(_) => plan_err!("Expected plan to be in a decoded state"),
-        }
-    }
-
-    pub(crate) fn encoded(&self) -> Result<&Bytes> {
-        match self {
-            MaybeEncodedPlan::Decoded(_) => plan_err!("Expected plan to be in a encoded state"),
-            MaybeEncodedPlan::Encoded(v) => Ok(v),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,7 +117,7 @@ impl Stage {
         Self {
             query_id,
             num,
-            plan: MaybeEncodedPlan::Decoded(plan),
+            plan: Some(plan),
             tasks: vec![ExecutionTask { url: None }; n_tasks],
         }
     }
@@ -167,12 +125,8 @@ impl Stage {
 
 use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
-use bytes::Bytes;
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;
-use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use datafusion_proto::protobuf::PhysicalPlanNode;
-use prost::Message;
 /// Be able to display a nice tree for stages.
 ///
 /// The challenge to doing this at the moment is that `TreeRenderVisitor`
@@ -232,7 +186,7 @@ fn display_ascii(
     let plan = match stage {
         Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
         Either::Right(stage) => {
-            let MaybeEncodedPlan::Decoded(plan) = &stage.plan else {
+            let Some(plan) = &stage.plan else {
                 return write!(f, "StageExec: encoded input plan");
             };
             plan
@@ -479,7 +433,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         let head_stage = Stage {
             query_id: Default::default(),
             num: max_num + 1,
-            plan: MaybeEncodedPlan::Decoded(plan.clone()),
+            plan: Some(plan.clone()),
             tasks: vec![ExecutionTask { url: None }],
         };
         all_stages.insert(0, &head_stage);
@@ -493,7 +447,8 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         }
         // now draw edges between the tasks
         for stage in &all_stages {
-            for input_stage in find_input_stages(stage.plan.decoded()?.as_ref()) {
+            let Some(plan) = &stage.plan else { continue };
+            for input_stage in find_input_stages(plan.as_ref()) {
                 for task_i in 0..stage.tasks.len() {
                     for input_task_i in 0..input_stage.tasks.len() {
                         let edges =
@@ -520,7 +475,9 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
 }
 
 fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
-    let plan = stage.plan.decoded()?;
+    let Some(plan) = &stage.plan else {
+        return config_err!("plan not present");
+    };
     let partition_group =
         build_partition_group(task_i, plan.output_partitioning().partition_count());
 
@@ -774,10 +731,10 @@ fn display_inter_task_edges(
     input_stage: &Stage,
     input_task_i: usize,
 ) -> Result<String> {
-    let MaybeEncodedPlan::Decoded(plan) = &stage.plan else {
+    let Some(plan) = &stage.plan else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
-    let MaybeEncodedPlan::Decoded(input_plan) = &input_stage.plan else {
+    let Some(input_plan) = &input_stage.plan else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
     let mut f = String::new();
