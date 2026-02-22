@@ -193,15 +193,16 @@ fn display_ascii(
         }
     };
     match stage {
-        Either::Left(_) => {
+        Either::Left(dist_exec) => {
             writeln!(
                 f,
-                "{}{}{} DistributedExec {} {}",
+                "{}{}{} DistributedExec {} {} {}",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(1, plan)
+                format_tasks_for_stage(1, plan),
+                format_metrics_by_task(&dist_exec.metrics().unwrap_or_default())
             )?;
         }
         Either::Right(stage) => {

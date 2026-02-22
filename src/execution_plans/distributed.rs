@@ -6,7 +6,10 @@ use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
-use crate::{ChannelResolver, StageKey, WorkerResolver, get_distributed_channel_resolver};
+use crate::{
+    ChannelResolver, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, StageKey, WorkerResolver,
+    get_distributed_channel_resolver,
+};
 use arrow_flight::Action;
 use bytes::Bytes;
 use datafusion::common::runtime::JoinSet;
@@ -15,6 +18,8 @@ use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -42,6 +47,7 @@ use url::Url;
 pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 struct PreparedPlan {
@@ -54,6 +60,7 @@ impl DistributedExec {
         Self {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -78,6 +85,10 @@ impl DistributedExec {
         let urls = worker_resolver.get_urls()?;
 
         let mut tasks = vec![];
+
+        let plan_bytes_sent = MetricBuilder::new(&self.metrics)
+            .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
+            .global_counter("plan_bytes_sent");
 
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
             let Some(plan) = plan.as_network_boundary() else {
@@ -109,6 +120,7 @@ impl DistributedExec {
                             task_number: i as _,
                         }),
                     };
+                    plan_bytes_sent.add(bytes.len());
                     tasks.push(send_plan_task(Arc::clone(ctx), url.clone(), action).boxed());
 
                     ExecutionTask { url: Some(url) }
@@ -159,6 +171,7 @@ impl ExecutionPlan for DistributedExec {
         Ok(Arc::new(DistributedExec {
             plan: require_one_child(&children)?,
             prepared_plan: self.prepared_plan.clone(),
+            metrics: self.metrics.clone(),
         }))
     }
 
@@ -208,11 +221,17 @@ impl ExecutionPlan for DistributedExec {
         });
         Ok(builder.build())
     }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
 }
 
 async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, init_action: InitAction) -> Result<()> {
     let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
     let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
+
+    let body = init_action.encode_to_vec().into();
 
     let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
     headers.extend(get_passthrough_headers(ctx.session_config()));
@@ -221,7 +240,7 @@ async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, init_action: InitAction
         Extensions::default(),
         Action {
             r#type: INIT_ACTION_TYPE.to_string(),
-            body: init_action.encode_to_vec().into(),
+            body,
         },
     );
 
