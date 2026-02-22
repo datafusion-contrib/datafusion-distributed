@@ -118,8 +118,8 @@ impl ConfigExtension for DistributedConfig {
 // FIXME: Ideally, both ChannelResolverExtension and TaskEstimators would be passed as
 //  extensions in SessionConfig's AnyMap instead of the ConfigOptions. However, we need
 //  to pass this as ConfigOptions as we need these two fields to be present during
-//  planning in the DistributedPhysicalOptimizerRule, and the signature of the optimize()
-//  method there accepts a ConfigOptions instead of a SessionConfig.
+//  distributed planning, and the signature of the optimize()  method there accepts a
+//  ConfigOptions instead of a SessionConfig.
 //  The following PR addresses this: https://github.com/apache/datafusion/pull/18168
 //  but it still has not been accepted or merged.
 //  Because of this, all the boilerplate trait implementations below are needed.

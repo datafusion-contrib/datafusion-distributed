@@ -24,14 +24,6 @@ You'll see these concepts mentioned extensively across the documentation and the
 
 Some other more tangible concepts are the structs and traits exposed publicly, the most important are:
 
-## [DistributedPhysicalOptimizerRule](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/distributed_physical_optimizer_rule.rs)
-
-A physical optimizer rule that transforms single-node DataFusion query plans into distributed query plans. It reads
-a fully formed physical plan and injects the appropriate nodes to execute the query in a distributed fashion.
-
-It builds the distributed plan from bottom to top, injecting network boundaries at appropriate locations based on
-the nodes present in the original plan.
-
 ## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/flight_service/worker.rs)
 
 Arrow Flight server implementation that integrates with the Tonic ecosystem and listens to serialized plans that get
@@ -70,3 +62,12 @@ data. If you are on the task with index 2, you might want to return the last 1/3
 
 Optional extension trait that allows to customize how connections are established to workers. Given one of the
 URLs returned by the `WorkerResolver`, it builds an Arrow Flight client ready for serving queries.
+
+## [NetworkBoundaryPlaceholder](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/network_boundary_placeholder.rs)
+
+A custom ExecutionPlan implementation that acts as a placeholder for the distributed planner to place network boundaries
+that spawn the specified amount of tasks.
+
+Users can create their own physical optimizer rules and place them before this project's ApplyNetworkBoundaries rule
+in order to customize their distributed plan.
+
