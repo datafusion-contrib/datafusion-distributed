@@ -51,8 +51,9 @@ pub use observability::{
 };
 
 pub use distributed_planner::{
-    AddCoalesceOnTop, AnnotatePlan, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries,
-    EndDistributedContext, InsertBroadcast, StartDistributedContext,
+    AddCoalesceOnTop, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries, DistributedContext,
+    EndDistributedContext, InjectNetworkBoundaryPlaceholders, InsertBroadcast, NetworkBoundaryKind,
+    NetworkBoundaryPlaceholder, StartDistributedContext,
 };
 
 pub use protobuf::StageKey;

@@ -16,9 +16,9 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
-        AddCoalesceOnTop, AnnotatePlan, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries,
-        DistributedExt, EndDistributedContext, InsertBroadcast, StartDistributedContext,
-        WorkerQueryContext, assert_snapshot, display_plan_ascii,
+        AddCoalesceOnTop, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries, DistributedExt,
+        EndDistributedContext, InjectNetworkBoundaryPlaceholders, InsertBroadcast,
+        StartDistributedContext, WorkerQueryContext, assert_snapshot, display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -65,7 +65,7 @@ mod tests {
         let node = StartDistributedContext.optimize(node, opts)?;
         let node = AddCoalesceOnTop.optimize(node, opts)?;
         let node = InsertBroadcast.optimize(node, opts)?;
-        let node = AnnotatePlan.optimize(node, opts)?;
+        let node = InjectNetworkBoundaryPlaceholders.optimize(node, opts)?;
         let node = ApplyNetworkBoundaries.optimize(node, opts)?;
         let node = BatchCoalesceBelowBoundaries.optimize(node, opts)?;
         let physical_distributed = EndDistributedContext.optimize(node, opts)?;
