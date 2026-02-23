@@ -196,7 +196,7 @@ fn display_ascii(
         Either::Left(dist_exec) => {
             writeln!(
                 f,
-                "{}{}{} DistributedExec {} {} {}",
+                "{}{}{} DistributedExec {} {}{}",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
