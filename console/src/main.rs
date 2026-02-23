@@ -8,6 +8,8 @@ use std::time::Duration;
 use structopt::StructOpt;
 use url::Url;
 
+const POLL_FREQUENCY_MS: u64 = 100;
+
 #[derive(StructOpt)]
 #[structopt(
     name = "datafusion-distributed-console",
@@ -52,7 +54,7 @@ async fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::R
 
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(POLL_FREQUENCY_MS))? {
             if let Event::Key(key) = event::read()? {
                 app.handle_key_event(key);
             }
