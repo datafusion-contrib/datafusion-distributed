@@ -113,7 +113,7 @@ fn accumulate_metrics(
             match metric.value() {
                 MetricValue::ElapsedCompute(t) => *elapsed_compute += t.value() as u64,
                 MetricValue::Gauge { name, gauge } => {
-                    if name.as_ref() == "build_mem_used" {
+                    if name.as_ref() == "build_mem_used" || name.as_ref() == "stream_memory_usage" {
                         *build_mem_used += gauge.value() as u64;
                     } else if name.as_ref() == "peak_mem_used" {
                         *peak_mem_used += gauge.value() as u64;
