@@ -67,7 +67,8 @@ fn aggregate_task_metrics(
 ) -> TaskMetricsSummary {
     let mut output_rows = 0u64;
     let mut elapsed_compute = 0u64;
-    let mut current_memory_usage = 0u64;
+    let mut build_mem_used = 0u64;
+    let mut peak_mem_used = 0u64;
     let mut spill_count = 0u64;
 
     // Extract output_rows from root node only
@@ -83,7 +84,8 @@ fn aggregate_task_metrics(
     accumulate_metrics(
         plan,
         &mut elapsed_compute,
-        &mut current_memory_usage,
+        &mut build_mem_used,
+        &mut peak_mem_used,
         &mut spill_count,
     );
 
@@ -91,7 +93,8 @@ fn aggregate_task_metrics(
         stage_key: Some(convert_stage_key(&stage_key)),
         output_rows,
         elapsed_compute,
-        current_memory_usage,
+        build_mem_used,
+        peak_mem_used,
         spill_count,
     }
 }
@@ -101,16 +104,21 @@ fn aggregate_task_metrics(
 fn accumulate_metrics(
     plan: &Arc<dyn ExecutionPlan>,
     elapsed_compute: &mut u64,
-    current_memory_usage: &mut u64,
+    build_mem_used: &mut u64,
+    peak_mem_used: &mut u64,
     spill_count: &mut u64,
 ) {
     if let Some(metrics) = plan.metrics() {
         for metric in metrics.iter() {
             match metric.value() {
                 MetricValue::ElapsedCompute(t) => *elapsed_compute += t.value() as u64,
-                // FIXME: Guage drops the current memory usage snapshot before it's read, giving a
-                // 0 value each time.
-                MetricValue::CurrentMemoryUsage(g) => *current_memory_usage += g.value() as u64,
+                MetricValue::Gauge { name, gauge } => {
+                    if name.as_ref() == "build_mem_used" {
+                        *build_mem_used += gauge.value() as u64;
+                    } else if name.as_ref() == "peak_mem_used" {
+                        *peak_mem_used += gauge.value() as u64;
+                    }
+                }
                 MetricValue::SpillCount(c) => *spill_count += c.value() as u64,
                 _ => {}
             }
@@ -133,6 +141,12 @@ fn accumulate_metrics(
         {
             continue;
         }
-        accumulate_metrics(child, elapsed_compute, current_memory_usage, spill_count);
+        accumulate_metrics(
+            child,
+            elapsed_compute,
+            build_mem_used,
+            peak_mem_used,
+            spill_count,
+        );
     }
 }

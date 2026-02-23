@@ -7,7 +7,7 @@ use tonic::transport::Channel;
 use url::Url;
 
 /// Number of columns in the task table.
-pub const COLUMN_COUNT: usize = 9;
+pub const COLUMN_COUNT: usize = 10;
 
 /// Sort direction for table columns.
 #[derive(Clone, PartialEq)]
@@ -57,7 +57,8 @@ pub struct TaskRow {
     pub query_id_short: String,
     pub output_rows: u64,
     pub elapsed_compute: u64,
-    pub current_memory_usage: u64,
+    pub build_mem_used: u64,
+    pub peak_mem_used: u64,
     pub spill_count: u64,
     pub status: TaskRowStatus,
 }
@@ -236,14 +237,14 @@ impl App {
                 2 => a.task_number.cmp(&b.task_number),
                 3 => a.worker_url.cmp(&b.worker_url),
                 4 => {
-                    let rank =
-                        |s: &TaskRowStatus| if *s == TaskRowStatus::Running { 0 } else { 1 };
+                    let rank = |s: &TaskRowStatus| if *s == TaskRowStatus::Running { 0 } else { 1 };
                     rank(&a.status).cmp(&rank(&b.status))
                 }
                 5 => a.output_rows.cmp(&b.output_rows),
                 6 => a.elapsed_compute.cmp(&b.elapsed_compute),
-                7 => a.current_memory_usage.cmp(&b.current_memory_usage),
-                8 => a.spill_count.cmp(&b.spill_count),
+                7 => a.build_mem_used.cmp(&b.build_mem_used),
+                8 => a.peak_mem_used.cmp(&b.peak_mem_used),
+                9 => a.spill_count.cmp(&b.spill_count),
                 _ => std::cmp::Ordering::Equal,
             };
             match self.sort_direction {
@@ -272,7 +273,8 @@ fn task_summary_to_row(
         query_id_short,
         output_rows: task.output_rows,
         elapsed_compute: task.elapsed_compute,
-        current_memory_usage: task.current_memory_usage,
+        build_mem_used: task.build_mem_used,
+        peak_mem_used: task.peak_mem_used,
         spill_count: task.spill_count,
         status,
     })
@@ -352,7 +354,8 @@ impl WorkerState {
                     let new_tasks = response.into_inner().task_summaries;
                     self.last_poll = Some(Instant::now());
 
-                    // Detect completed tasks: tasks in old list but not in new list.
+                    // Tasks that are in the oldtask list but not in the new task list are assumed
+                    // to be completed.
                     for old_task in &self.tasks {
                         let still_exists = new_tasks.iter().any(|new_task| {
                             match (&old_task.stage_key, &new_task.stage_key) {

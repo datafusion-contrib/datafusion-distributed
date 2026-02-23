@@ -114,7 +114,8 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
         "Status",
         "Output Rows",
         "Elapsed Compute",
-        "Memory Usage",
+        "Build Memory",
+        "Peak Memory",
         "Rows Spilled",
     ];
 
@@ -129,7 +130,9 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
                     SortDirection::Descending => text.push_str(" ▼"),
                 }
             }
-            let mut style = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
+            let mut style = Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan);
             if i == app.selected_column {
                 style = style.bg(Color::DarkGray);
             }
@@ -158,7 +161,8 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(status_text).style(Style::default().fg(status_color)),
                 Cell::from(format_count(r.output_rows)),
                 Cell::from(format_duration_ns(r.elapsed_compute)),
-                Cell::from(format_bytes(r.current_memory_usage)),
+                Cell::from(format_bytes(r.build_mem_used)),
+                Cell::from(format_bytes(r.peak_mem_used)),
                 Cell::from(format_count(r.spill_count)),
             ])
             .style(row_style)
@@ -169,14 +173,15 @@ fn render_task_table(frame: &mut Frame, area: Rect, app: &mut App) {
         table_rows,
         [
             Constraint::Percentage(10), // Query
-            Constraint::Percentage(8),  // Stage
-            Constraint::Percentage(5),  // Task No.
-            Constraint::Percentage(12), // Worker
+            Constraint::Percentage(10), // Stage
+            Constraint::Percentage(10), // Task No.
+            Constraint::Percentage(10), // Worker
             Constraint::Percentage(10), // Status
-            Constraint::Percentage(14), // Output Rows
-            Constraint::Percentage(17), // Elapsed Compute
-            Constraint::Percentage(12), // Memory Usage
-            Constraint::Percentage(12), // Spilled Rows
+            Constraint::Percentage(10), // Output Rows
+            Constraint::Percentage(10), // Elapsed Compute
+            Constraint::Percentage(10), // Build Memory
+            Constraint::Percentage(10), // Peak Memory
+            Constraint::Percentage(10), // Spilled Rows
         ],
     )
     .header(header)

@@ -27,7 +27,9 @@ pub struct TaskMetricsSummary {
     #[prost(uint64, tag = "6")]
     pub spill_count: u64,
     #[prost(uint64, tag = "7")]
-    pub current_memory_usage: u64,
+    pub build_mem_used: u64,
+    #[prost(uint64, tag = "8")]
+    pub peak_mem_used: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTaskMetricsRequest {}

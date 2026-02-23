@@ -24,7 +24,8 @@ message TaskMetricsSummary {
   uint64 output_rows = 4;
   uint64 elapsed_compute = 5;
   uint64 spill_count = 6;
-  uint64 current_memory_usage = 7;
+  uint64 build_mem_used = 7;
+  uint64 peak_mem_used = 8;
 }
 
 message GetTaskMetricsRequest {}
