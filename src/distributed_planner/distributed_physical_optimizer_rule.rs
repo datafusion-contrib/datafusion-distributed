@@ -528,7 +528,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // FIXME: fix this test
     async fn test_limited_by_worker() {
         let query = r#"
         SET datafusion.execution.target_partitions=2;
@@ -541,18 +540,39 @@ mod tests {
         })
         .await;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
-          │ UnionExec
-          │   ProjectionExec: expr=[1 as Int64(1)]
-          │     PartitionIsolatorExec: t0:[p0,__] t1:[__,p0]
-          │       DataSourceExec: file_groups={2 groups: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, file_type=parquet
-          │   ProjectionExec: expr=[1 as Int64(1)]
-          │     PartitionIsolatorExec: t0:[p0] t1:[__]
-          │       DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, file_type=parquet
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
+          │ DistributedUnionExec: t0:[c0] t1:[c1]
+          │   DataSourceExec: file_groups={2 groups: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[1 as Int64(1)], file_type=parquet
+          │   DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[1 as Int64(1)], file_type=parquet
+          └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_limited_by_config() {
+        let query = r#"
+        SET distributed.max_tasks_per_stage=2;
+        SELECT 1 FROM weather
+        UNION ALL
+        SELECT 1 FROM flights_1m
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] 
+          │ DistributedUnionExec: t0:[c0] t1:[c1]
+          │   DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[1 as Int64(1)], file_type=parquet
+          │   DataSourceExec: file_groups={1 group: [[/testdata/flights-1m.parquet]]}, projection=[1 as Int64(1)], file_type=parquet
           └──────────────────────────────────────────────────
         ");
     }

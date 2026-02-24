@@ -174,7 +174,10 @@ fn _annotate_plan(
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
     let broadcast_joins = d_cfg.broadcast_joins;
     let estimator = &d_cfg.__private_task_estimator;
-    let n_workers = d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1);
+    let max_tasks = match d_cfg.max_tasks_per_stage {
+        0 => d_cfg.__private_worker_resolver.0.get_urls()?.len().max(1),
+        v => v,
+    };
 
     let annotated_children = plan
         .children()
@@ -190,7 +193,7 @@ fn _annotate_plan(
             Ok(AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
-                task_count: estimate.task_count.limit(n_workers),
+                task_count: estimate.task_count.limit(max_tasks),
             })
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -237,7 +240,7 @@ fn _annotate_plan(
         }
     }
 
-    task_count = task_count.limit(n_workers);
+    task_count = task_count.limit(max_tasks);
 
     // Wrap the node with a boundary node if the parent marks it.
     let mut annotation = AnnotatedPlan {

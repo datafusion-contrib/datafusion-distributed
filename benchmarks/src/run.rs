@@ -99,6 +99,10 @@ pub struct RunOpt {
     #[structopt(long, default_value = "lz4")]
     compression: String,
 
+    /// Sets the limits of tasks for each stage
+    #[structopt(long, default_value = "0")]
+    max_tasks_per_stage: usize,
+
     /// Number of iterations of each test run
     #[structopt(short = "i", long = "iterations", default_value = "3")]
     iterations: usize,
@@ -191,6 +195,7 @@ impl RunOpt {
             .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_metrics_collection(self.collect_metrics)?
+            .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .build();
         let ctx = SessionContext::new_with_state(state);
         benchmarks_common::register_tables(&ctx, &self.get_path()?).await?;

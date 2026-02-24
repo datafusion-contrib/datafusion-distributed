@@ -17,9 +17,12 @@ async function main() {
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
-        .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'false')
+        .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'true')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
+        .option('--max-tasks-per-stage <number>', 'Max tasks per stage', '0')
+        .option('--repartition-file-min-size <number>', 'repartition_file_min_size DF option', '10485760' /* upstream default */)
+        .option('--target-partitions <number>', 'target_partitions DF option', '8')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -34,6 +37,9 @@ async function main() {
     const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const compression = options.compression;
+    const maxTasksPerStage = parseInt(options.maxTasksPerStage);
+    const repartitionFileMinSize = parseInt(options.repartitionFileMinSize)
+    const targetPartitions = parseInt(options.targetPartitions);
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
@@ -49,7 +55,10 @@ async function main() {
         collectMetrics,
         childrenIsolatorUnions,
         compression,
-        broadcastJoins
+        broadcastJoins,
+        maxTasksPerStage,
+        repartitionFileMinSize,
+        targetPartitions
     });
 
     // Fail fast on dead port-forward/unhealthy worker before doing table setup and benchmark work.
@@ -84,6 +93,9 @@ class DataFusionRunner implements BenchmarkRunner {
         compression: string;
         childrenIsolatorUnions: boolean;
         broadcastJoins: boolean;
+        maxTasksPerStage: number;
+        repartitionFileMinSize: number;
+        targetPartitions: number;
     }) {
     }
 
@@ -159,6 +171,9 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.compression=${this.options.compression};
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
       SET distributed.broadcast_joins=${this.options.broadcastJoins};
+      SET distributed.max_tasks_per_stage=${this.options.maxTasksPerStage};
+      SET datafusion.optimizer.repartition_file_min_size=${this.options.repartitionFileMinSize};
+      SET datafusion.execution.target_partitions=${this.options.targetPartitions};
     `);
     }
 
