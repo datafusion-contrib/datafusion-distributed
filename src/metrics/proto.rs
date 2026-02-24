@@ -7,19 +7,23 @@ use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, Rat
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use super::latency_metric::{
+    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
+};
+
 /// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricProto {
+    #[prost(message, repeated, tag = "1")]
+    pub labels: Vec<ProtoLabel>,
+    #[prost(uint64, optional, tag = "2")]
+    pub partition: Option<u64>,
     #[prost(
         oneof = "MetricValueProto",
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28"
     )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
-    #[prost(message, repeated, tag = "16")]
-    pub labels: Vec<ProtoLabel>,
-    #[prost(uint64, optional, tag = "17")]
-    pub partition: Option<u64>,
 }
 
 /// A MetricsSetProto is a protobuf mirror of [datafusion::physical_plan::metrics::MetricsSet]. It represents
@@ -45,36 +49,44 @@ impl MetricsSetProto {
 /// MetricValueProto is a protobuf mirror of the [datafusion::physical_plan::metrics::MetricValue] enum.
 #[derive(Clone, PartialEq, Eq, ::prost::Oneof)]
 pub enum MetricValueProto {
-    #[prost(message, tag = "1")]
-    OutputRows(OutputRows),
-    #[prost(message, tag = "2")]
-    ElapsedCompute(ElapsedCompute),
-    #[prost(message, tag = "3")]
-    SpillCount(SpillCount),
-    #[prost(message, tag = "4")]
-    SpilledBytes(SpilledBytes),
-    #[prost(message, tag = "5")]
-    SpilledRows(SpilledRows),
-    #[prost(message, tag = "6")]
-    CurrentMemoryUsage(CurrentMemoryUsage),
-    #[prost(message, tag = "7")]
-    Count(NamedCount),
-    #[prost(message, tag = "8")]
-    Gauge(NamedGauge),
-    #[prost(message, tag = "9")]
-    Time(NamedTime),
     #[prost(message, tag = "10")]
-    StartTimestamp(StartTimestamp),
+    OutputRows(OutputRows),
     #[prost(message, tag = "11")]
-    EndTimestamp(EndTimestamp),
+    ElapsedCompute(ElapsedCompute),
     #[prost(message, tag = "12")]
-    OutputBytes(OutputBytes),
+    SpillCount(SpillCount),
     #[prost(message, tag = "13")]
-    OutputBatches(OutputBatches),
+    SpilledBytes(SpilledBytes),
     #[prost(message, tag = "14")]
-    PruningMetrics(NamedPruningMetrics),
+    SpilledRows(SpilledRows),
     #[prost(message, tag = "15")]
+    CurrentMemoryUsage(CurrentMemoryUsage),
+    #[prost(message, tag = "16")]
+    Count(NamedCount),
+    #[prost(message, tag = "17")]
+    Gauge(NamedGauge),
+    #[prost(message, tag = "18")]
+    Time(NamedTime),
+    #[prost(message, tag = "19")]
+    StartTimestamp(StartTimestamp),
+    #[prost(message, tag = "20")]
+    EndTimestamp(EndTimestamp),
+    #[prost(message, tag = "21")]
+    OutputBytes(OutputBytes),
+    #[prost(message, tag = "22")]
+    OutputBatches(OutputBatches),
+    #[prost(message, tag = "23")]
+    PruningMetrics(NamedPruningMetrics),
+    #[prost(message, tag = "24")]
     Ratio(NamedRatio),
+    #[prost(message, tag = "25")]
+    CustomMinLatency(MinLatency),
+    #[prost(message, tag = "26")]
+    CustomMaxLatency(MaxLatency),
+    #[prost(message, tag = "27")]
+    CustomAvgLatency(AvgLatency),
+    #[prost(message, tag = "28")]
+    CustomFirstLatency(FirstLatency),
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -179,6 +191,40 @@ pub struct NamedRatio {
     pub part: u64,
     #[prost(uint64, tag = "3")]
     pub total: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct MinLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct MaxLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct AvgLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub nanos_sum: u64,
+    #[prost(uint64, tag = "3")]
+    pub count: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct FirstLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
 }
 
 /// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
@@ -331,7 +377,48 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             partition,
             labels,
         }),
-        MetricValue::Custom { .. } => internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED),
+        MetricValue::Custom { name, value } => {
+            if let Some(min) = value.as_any().downcast_ref::<MinLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomMinLatency(MinLatency {
+                        name: name.to_string(),
+                        value: min.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(max) = value.as_any().downcast_ref::<MaxLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomMaxLatency(MaxLatency {
+                        name: name.to_string(),
+                        value: max.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(avg) = value.as_any().downcast_ref::<AvgLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomAvgLatency(AvgLatency {
+                        name: name.to_string(),
+                        nanos_sum: avg.nanos_sum() as u64,
+                        count: avg.count() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(first) = value.as_any().downcast_ref::<FirstLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomFirstLatency(FirstLatency {
+                        name: name.to_string(),
+                        value: first.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else {
+                internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED)
+            }
+        }
         MetricValue::OutputBytes(count) => Ok(MetricProto {
             metric: Some(MetricValueProto::OutputBytes(OutputBytes { value: count.value() as u64 })),
             partition,
@@ -524,6 +611,53 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 MetricValue::Ratio {
                     name: Cow::Owned(named_ratio.name),
                     ratio_metrics,
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomMinLatency(min_latency)) => {
+            let value = MinLatencyMetric::from_nanos(min_latency.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(min_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomMaxLatency(max_latency)) => {
+            let value = MaxLatencyMetric::from_nanos(max_latency.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(max_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomAvgLatency(avg_latency)) => {
+            let value = AvgLatencyMetric::from_raw(
+                avg_latency.nanos_sum as usize,
+                avg_latency.count as usize,
+            );
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(avg_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomFirstLatency(first_latency)) => {
+            let value = FirstLatencyMetric::from_nanos(first_latency.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(first_latency.name),
+                    value: Arc::new(value),
                 },
                 partition,
                 labels,
@@ -1089,5 +1223,78 @@ mod tests {
             labels,
         )));
         test_roundtrip_helper(metrics_set, "ratio_metrics");
+    }
+
+    #[test]
+    fn test_latency_metrics_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("min_latency"),
+                value: Arc::new(MinLatencyMetric::from_nanos(10_000)),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("max_latency"),
+                value: Arc::new(MaxLatencyMetric::from_nanos(90_000)),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("avg_latency"),
+                value: Arc::new(AvgLatencyMetric::from_raw(300_000, 3)),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("first_latency"),
+                value: Arc::new(FirstLatencyMetric::from_nanos(55_000)),
+            },
+            Some(0),
+        )));
+
+        let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
+        assert_eq!(proto.metrics.len(), 4);
+
+        let rt = metrics_set_proto_to_df(&proto).unwrap();
+        assert_eq!(rt.iter().count(), 4);
+
+        for (orig, rt) in metrics_set.iter().zip(rt.iter()) {
+            match (orig.value(), rt.value()) {
+                (
+                    MetricValue::Custom {
+                        name: n1,
+                        value: v1,
+                    },
+                    MetricValue::Custom {
+                        name: n2,
+                        value: v2,
+                    },
+                ) => {
+                    assert_eq!(n1.as_ref(), n2.as_ref());
+                    if let Some(v1) = v1.as_any().downcast_ref::<MinLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<MinLatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<MaxLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<MaxLatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<AvgLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<AvgLatencyMetric>().unwrap();
+                        assert_eq!(v1.nanos_sum(), v2.nanos_sum());
+                        assert_eq!(v1.count(), v2.count());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<FirstLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<FirstLatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                    } else {
+                        panic!("unexpected custom metric type");
+                    }
+                }
+                _ => panic!("expected Custom metrics"),
+            }
+        }
     }
 }

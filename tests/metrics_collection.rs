@@ -154,7 +154,13 @@ mod tests {
         assert!(value > 100);
         let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_min", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_max", 1);
+        assert!(value > 0);
         let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_avg", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_first", 1);
         assert!(value > 0);
 
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
@@ -163,7 +169,13 @@ mod tests {
         assert!(value > 100);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "elapsed_compute", 1);
         assert!(value > 100);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_min", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_max", 1);
+        assert!(value > 0);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_avg", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_first", 1);
         assert!(value > 0);
 
         // Verify the plan_bytes_sent metric is present on network boundaries.
