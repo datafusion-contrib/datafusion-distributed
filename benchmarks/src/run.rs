@@ -99,7 +99,7 @@ pub struct RunOpt {
     #[structopt(long, default_value = "lz4")]
     compression: String,
 
-    /// Collects metrics across network boundaries
+    /// Sets the limits of tasks for each stage
     #[structopt(long, default_value = "0")]
     max_tasks_per_stage: usize,
 
