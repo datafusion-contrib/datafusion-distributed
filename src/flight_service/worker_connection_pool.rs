@@ -2,7 +2,7 @@ use crate::Stage;
 use crate::common::on_drop_stream;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
-use crate::metrics::latency_tracker::LatencyTracker;
+use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{
@@ -142,7 +142,10 @@ impl WorkerConnection {
         // Track the total encoded size of all recieved messages.
         let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
         // Track end-to-end network latency distribution for all messages.
-        let network_latency_metrics = NetworkLatencyMetrics::new(metrics);
+        let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
+        let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
+        let avg_latency = MetricBuilder::new(metrics).avg_latency("network_latency_avg");
+        let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
         // Track the total CPU time spent in polling messages over the network + decoding them.
         let elapsed_compute = Time::new();
         let elapsed_compute_clone = elapsed_compute.clone();
@@ -221,10 +224,6 @@ impl WorkerConnection {
                 Err(err) => return fanout(&per_partition_tx, err),
             };
 
-            // Recorder updates network latency metrics when it's dropped.
-            let mut network_latency_recorder =
-                NetworkLatencyRecorder::new(network_latency_metrics);
-
             let consumer = MemoryConsumer::new("WorkerConnection");
 
             loop {
@@ -252,10 +251,15 @@ impl WorkerConnection {
                 };
 
                 // Update the running latency tracker.
-                network_latency_recorder.record_from_metadata(
-                    &flight_metadata,
-                    msg_received_time,
-                );
+                let sent_time = UNIX_EPOCH + Duration::from_nanos(flight_metadata.created_timestamp_unix_nanos);
+                if flight_metadata.created_timestamp_unix_nanos > 0
+                    && let Ok(delta) = msg_received_time.duration_since(sent_time) {
+                    min_latency.add_duration(delta);
+                    max_latency.add_duration(delta);
+                    avg_latency.add_duration(delta);
+                    first_latency.add_duration(delta);
+                }
+
                 let partition = flight_metadata.partition as usize;
                 // the `per_partition_tx` variable is using a normal `Vec` for storing the
                 // channel transmitters, so we need to subtract the `target_partition_range.start`
@@ -354,89 +358,6 @@ impl WorkerConnection {
 fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
     for o_tx in o_txs {
         let _ = o_tx.send(Err(err.clone()));
-    }
-}
-
-/// Aggregates network latency metrics ourselves since DataFusion's default aggregation for
-/// all [Time] metrics is sum.
-#[derive(Clone)]
-struct NetworkLatencyMetrics {
-    first: Time,
-    min: Time,
-    max: Time,
-    avg: Time,
-    p99: Time,
-}
-
-impl NetworkLatencyMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
-        Self {
-            first: build_time_metric(metrics, "network_latency_first"),
-            min: build_time_metric(metrics, "network_latency_min"),
-            max: build_time_metric(metrics, "network_latency_max"),
-            avg: build_time_metric(metrics, "network_latency_avg"),
-            p99: build_time_metric(metrics, "network_latency_p99"),
-        }
-    }
-}
-
-fn build_time_metric(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Time {
-    let time = Time::new();
-    MetricBuilder::new(metrics).build(MetricValue::Time {
-        name: name.into(),
-        time: time.clone(),
-    });
-    time
-}
-
-/// Tracks message network latencies and publishes metrics on drop.
-struct NetworkLatencyRecorder {
-    tracker: LatencyTracker,
-    metrics: NetworkLatencyMetrics,
-}
-
-impl NetworkLatencyRecorder {
-    fn new(metrics: NetworkLatencyMetrics) -> Self {
-        Self {
-            tracker: LatencyTracker::new(),
-            metrics,
-        }
-    }
-
-    fn record_from_metadata(
-        &mut self,
-        flight_metadata: &FlightAppMetadata,
-        message_recieved_time: SystemTime,
-    ) {
-        if flight_metadata.created_timestamp_unix_nanos == 0 {
-            return;
-        }
-
-        let sent_time =
-            UNIX_EPOCH + Duration::from_nanos(flight_metadata.created_timestamp_unix_nanos);
-        if let Ok(delta) = message_recieved_time.duration_since(sent_time) {
-            self.tracker.track(delta);
-        }
-    }
-}
-
-impl Drop for NetworkLatencyRecorder {
-    fn drop(&mut self) {
-        if let Some(first) = self.tracker.first() {
-            self.metrics.first.add_duration(first);
-        }
-        if let Some(min) = self.tracker.min() {
-            self.metrics.min.add_duration(min);
-        }
-        if let Some(max) = self.tracker.max() {
-            self.metrics.max.add_duration(max);
-        }
-        if let Some(avg) = self.tracker.avg() {
-            self.metrics.avg.add_duration(avg);
-        }
-        if let Some(p99) = self.tracker.quantile(0.99) {
-            self.metrics.p99.add_duration(p99);
-        }
     }
 }
 
@@ -645,28 +566,5 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
-    }
-
-    #[test]
-    fn network_latency_updates_on_drop() {
-        let metrics = NetworkLatencyMetrics::new(&ExecutionPlanMetricsSet::default());
-
-        let sent = UNIX_EPOCH + Duration::from_secs(5);
-        let received = UNIX_EPOCH + Duration::from_secs(8);
-        let mut flight_metadata = FlightAppMetadata::new(0);
-        flight_metadata.created_timestamp_unix_nanos =
-            sent.duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
-
-        {
-            let mut recorder = NetworkLatencyRecorder::new(metrics.clone());
-            recorder.record_from_metadata(&flight_metadata, received);
-        }
-
-        let expected = 3_000_000_000usize;
-        assert_eq!(metrics.first.value(), expected);
-        assert_eq!(metrics.min.value(), expected);
-        assert_eq!(metrics.max.value(), expected);
-        assert_eq!(metrics.avg.value(), expected);
-        assert!(metrics.p99.value() >= expected);
     }
 }
