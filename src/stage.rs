@@ -202,7 +202,11 @@ fn display_ascii(
                 HORIZONTAL.repeat(5),
                 HORIZONTAL.repeat(2),
                 format_tasks_for_stage(1, plan),
-                format_metrics_by_task(&dist_exec.metrics().unwrap_or_default())
+                if show_metrics {
+                    format_metrics_by_task(&dist_exec.metrics().unwrap_or_default())
+                } else {
+                    "".into()
+                }
             )?;
         }
         Either::Right(stage) => {
