@@ -21,7 +21,12 @@ use crate::flight_service::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
+use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -120,6 +125,7 @@ impl Worker {
             .get_or_try_init(|| async {
                 let proto_node = PhysicalPlanNode::try_decode(doget.plan_proto.as_ref())?;
                 let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
+                plan = attach_cached_parquet_reader_factory(plan, session_state.runtime_env())?;
                 for hook in self.hooks.on_plan.iter() {
                     plan = hook(plan)
                 }
@@ -246,6 +252,43 @@ impl Worker {
             _ => Status::internal(format!("Error during flight stream: {err}")),
         }))))
     }
+}
+
+fn attach_cached_parquet_reader_factory(
+    plan: Arc<dyn ExecutionPlan>,
+    runtime_env: &Arc<RuntimeEnv>,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let runtime_env = Arc::clone(runtime_env);
+    let transformed = plan.transform_up(move |plan| {
+        if let Some(dse) = plan.as_any().downcast_ref::<DataSourceExec>() {
+            if let Some(file_scan) = dse.data_source().as_any().downcast_ref::<FileScanConfig>() {
+                if let Some(parquet_source) = file_scan
+                    .file_source
+                    .as_any()
+                    .downcast_ref::<ParquetSource>()
+                {
+                    if parquet_source.parquet_file_reader_factory().is_some() {
+                        return Ok(Transformed::no(plan));
+                    }
+
+                    let store = runtime_env.object_store(file_scan.object_store_url.clone())?;
+                    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+                    let reader_factory =
+                        Arc::new(CachedParquetFileReaderFactory::new(store, metadata_cache));
+                    let new_source = parquet_source
+                        .clone()
+                        .with_parquet_file_reader_factory(reader_factory);
+
+                    let mut new_scan = file_scan.clone();
+                    new_scan.file_source = Arc::new(new_source);
+                    let new_exec = DataSourceExec::new(Arc::new(new_scan));
+                    return Ok(Transformed::yes(Arc::new(new_exec)));
+                }
+            }
+        }
+        Ok(Transformed::no(plan))
+    })?;
+    Ok(transformed.data)
 }
 
 fn build_flight_data_stream(
