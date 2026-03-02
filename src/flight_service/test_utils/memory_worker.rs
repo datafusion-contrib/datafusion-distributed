@@ -1,8 +1,10 @@
-use crate::{BoxCloneSyncChannel, StageKey, TaskData, Worker};
+use crate::config_extension_ext::set_distributed_option_extension;
+use crate::{BoxCloneSyncChannel, DistributedConfig, StageKey, TaskData, Worker};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::execution::SessionStateBuilder;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -46,6 +48,15 @@ impl MemoryWorker {
     pub async fn into_channel(self) -> BoxCloneSyncChannel {
         let schema = self.schema.expect("Schema was not set");
         let worker = Worker::default();
+        let task_ctx = {
+            let mut cfg = datafusion::prelude::SessionConfig::default();
+            set_distributed_option_extension(&mut cfg, DistributedConfig::default());
+            SessionStateBuilder::new()
+                .with_config(cfg)
+                .with_default_features()
+                .build()
+                .task_ctx()
+        };
         let plan = MemorySourceConfig::try_new_exec(&self.partitions_batches, schema.clone(), None)
             .expect("Failing to build MemorySourceConfig");
         let swmr_task_data = worker
@@ -55,15 +66,12 @@ impl MemoryWorker {
             })
             .await;
         swmr_task_data
-            .get_or_init(|| async move {
-                TaskData {
-                    plan: plan.clone(),
-                    num_partitions_remaining: Arc::new(AtomicUsize::new(
-                        self.partitions_batches.len(),
-                    )),
-                }
-            })
-            .await;
+            .write(Ok(TaskData {
+                task_ctx: task_ctx.clone(),
+                plan: plan.clone(),
+                num_partitions_remaining: Arc::new(AtomicUsize::new(self.partitions_batches.len())),
+            }))
+            .expect("failed to write to task data");
 
         let (client, server) = tokio::io::duplex(1024 * 1024);
 

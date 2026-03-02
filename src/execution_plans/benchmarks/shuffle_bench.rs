@@ -1,7 +1,6 @@
 use crate::common::task_ctx_with_extension;
 use crate::flight_service::WorkerConnectionPool;
 use crate::flight_service::test_utils::memory_worker::MemoryWorker;
-use crate::stage::MaybeEncodedPlan;
 use crate::{
     BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedTaskContext, ExecutionTask,
     NetworkShuffleExec, Stage, create_flight_client,
@@ -13,7 +12,6 @@ use arrow::datatypes::{Field, Schema, TimeUnit};
 use arrow::util::data_gen::create_random_batch;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_ipc::CompressionType;
-use bytes::Bytes;
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -131,7 +129,7 @@ impl ShuffleBench {
         let input_stage = Stage {
             query_id: Uuid::from_u128(0),
             num: 0,
-            plan: MaybeEncodedPlan::Encoded(Bytes::new()),
+            plan: None,
             tasks: (0..self.producer_tasks)
                 .map(|i| ExecutionTask {
                     url: Some(Url::parse(&format!("http://localhost:{i}")).unwrap()),
