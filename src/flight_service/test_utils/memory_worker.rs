@@ -1,5 +1,6 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::{BoxCloneSyncChannel, DistributedConfig, StageKey, TaskData, Worker};
+use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, StageKey, TaskData, Worker};
+use arrow_ipc::CompressionType;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -23,6 +24,7 @@ pub struct MemoryWorker {
     task_index: usize,
     schema: Option<SchemaRef>,
     partitions_batches: Vec</* partition */ Vec<RecordBatch>>,
+    compression: Option<CompressionType>,
 }
 
 impl MemoryWorker {
@@ -31,7 +33,13 @@ impl MemoryWorker {
             task_index,
             schema: None,
             partitions_batches: vec![],
+            compression: None,
         }
+    }
+
+    pub fn with_compression(mut self, compression: Option<CompressionType>) -> Self {
+        self.compression = compression;
+        self
     }
 
     pub fn add_batch(&mut self, partition_i: usize, batch: RecordBatch) {
@@ -54,6 +62,8 @@ impl MemoryWorker {
             SessionStateBuilder::new()
                 .with_config(cfg)
                 .with_default_features()
+                .with_distributed_compression(self.compression)
+                .unwrap()
                 .build()
                 .task_ctx()
         };

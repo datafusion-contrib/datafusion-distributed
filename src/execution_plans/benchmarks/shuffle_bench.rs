@@ -93,7 +93,7 @@ impl ShuffleBench {
         }
         let mut workers = vec![];
         for input_task_i in 0..self.producer_tasks {
-            workers.push(MemoryWorker::new(input_task_i));
+            workers.push(MemoryWorker::new(input_task_i).with_compression(self.compression));
         }
 
         let partitions_per_producer_task = self.partitions * self.consumer_tasks;
