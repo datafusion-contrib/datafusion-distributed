@@ -11,7 +11,6 @@ use super::{
 
 type ResultTaskData = Result<TaskData, Status>;
 
-#[allow(dead_code)] // TEMP: will be used in future implementations.
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
 }
