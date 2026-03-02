@@ -8,6 +8,9 @@ mod network_coalesce;
 mod network_shuffle;
 mod partition_isolator;
 
+#[cfg(any(test, feature = "integration"))]
+pub mod benchmarks;
+
 pub use broadcast::BroadcastExec;
 pub use children_isolator_union::ChildrenIsolatorUnionExec;
 pub use distributed::DistributedExec;

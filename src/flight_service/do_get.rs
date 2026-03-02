@@ -63,13 +63,13 @@ pub struct DoGet {
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
-    pub(super) plan: Arc<dyn ExecutionPlan>,
+    pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
     /// complete because it's possible that the same partition was retried and this count was
     /// decremented more than once for the same partition.
-    num_partitions_remaining: Arc<AtomicUsize>,
+    pub(crate) num_partitions_remaining: Arc<AtomicUsize>,
 }
 
 impl TaskData {

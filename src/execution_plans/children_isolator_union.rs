@@ -1,4 +1,5 @@
 use crate::DistributedTaskContext;
+use crate::common::task_ctx_with_extension;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{internal_err, plan_err};
@@ -237,18 +238,7 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 // We need to intercept the DistributedTaskContext and insert a modified one that
                 // tells the child that is running in "isolation" (see the beginning of this file
                 // for a longer explanation)
-                let context = Arc::new(TaskContext::new(
-                    context.task_id(),
-                    context.session_id(),
-                    context
-                        .session_config()
-                        .clone()
-                        .with_extension(Arc::new(child_task_ctx)),
-                    context.scalar_functions().clone(),
-                    context.aggregate_functions().clone(),
-                    context.window_functions().clone(),
-                    context.runtime_env(),
-                ));
+                let context = Arc::new(task_ctx_with_extension(context.as_ref(), child_task_ctx));
 
                 let stream = input.execute(partition, context)?;
 
