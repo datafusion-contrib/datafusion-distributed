@@ -42,11 +42,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         tokio::spawn(async move {
             let worker = Worker::default();
-            let observability_service = worker.with_observability_service();
 
             Server::builder()
+                .add_service(worker.with_observability_service())
                 .add_service(worker.into_flight_server())
-                .add_service(observability_service)
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
                 .expect("worker server failed");

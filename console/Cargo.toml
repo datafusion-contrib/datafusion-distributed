@@ -15,6 +15,7 @@ tonic = "0.14.2"
 datafusion-distributed = { path = "..", features = ["integration"] }
 arrow-flight = "57.1.0"
 url = "2.5.7"
+tokio-stream = "0.1.18"
 
 [dev-dependencies]
 arrow = "57.1.0"

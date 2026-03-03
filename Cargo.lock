@@ -2230,6 +2230,7 @@ dependencies = [
  "ratatui",
  "structopt",
  "tokio",
+ "tokio-stream",
  "tonic",
  "url",
 ]
