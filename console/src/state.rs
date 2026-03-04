@@ -16,7 +16,7 @@ pub(crate) enum SortColumn {
     Tasks,
     Queries,
     Cpu,
-    Rss,
+    Memory,
 }
 
 impl SortColumn {
