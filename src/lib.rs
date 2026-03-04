@@ -47,7 +47,7 @@ pub use stage::{
 pub use observability::{
     GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
     ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
-    PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
+    PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus, WorkerMetrics,
 };
 
 pub use protobuf::StageKey;
