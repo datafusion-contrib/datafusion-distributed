@@ -9,6 +9,7 @@ use datafusion_distributed::{
 };
 use futures::TryStreamExt;
 use std::error::Error;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
@@ -36,7 +37,7 @@ struct Args {
     /// Maximum number of concurrent queries. Defaults to all queries at once.
     /// Use --concurrency 1 for sequential execution.
     #[structopt(long)]
-    concurrency: Option<usize>,
+    concurrency: Option<NonZeroUsize>,
 
     /// Run the query and display the plan with execution metrics (EXPLAIN ANALYZE)
     #[structopt(long)]
@@ -68,7 +69,7 @@ async fn run_queries(
     scale_factor: f64,
     parquet_partitions: usize,
     query_id: &str,
-    concurrency: Option<usize>,
+    concurrency: Option<NonZeroUsize>,
     explain_analyze: bool,
     show_distributed_plan: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -115,7 +116,7 @@ async fn run_queries(
         vec![query_id.to_string()]
     };
 
-    let max_concurrent = concurrency.unwrap_or(queries.len());
+    let max_concurrent = concurrency.map(NonZeroUsize::get).unwrap_or(queries.len());
 
     println!(
         "\nRunning {} queries (concurrency={})...\n",
