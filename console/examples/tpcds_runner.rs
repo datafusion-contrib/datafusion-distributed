@@ -146,29 +146,26 @@ async fn run_queries(
         tasks.spawn(async move {
             use std::time::Instant;
 
-            println!("Running {query_id}");
             let start = Instant::now();
-
             let result =
                 run_single_query(&ctx, &query_sql, explain_analyze, show_distributed_plan).await;
             drop(permit);
 
+            let duration = start.elapsed();
             match result {
                 Ok(batches) => {
-                    let duration = start.elapsed();
                     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-                    println!("{query_id} completed in {duration:?} ({row_count} rows)");
+                    format!("{query_id} completed in {duration:?} ({row_count} rows)")
                 }
-                Err(e) => {
-                    println!("{query_id} failed: {e}");
-                }
+                Err(e) => format!("{query_id} failed: {e}"),
             }
         });
     }
 
     while let Some(result) = tasks.join_next().await {
-        if let Err(e) = result {
-            eprintln!("Task panicked: {e}");
+        match result {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => eprintln!("Task panicked: {e}"),
         }
     }
 
