@@ -82,4 +82,3 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(header, area);
 }
-
