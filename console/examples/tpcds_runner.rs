@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use clap::Parser;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::execute_stream;
@@ -12,45 +13,44 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
-use structopt::StructOpt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use url::Url;
 
-#[derive(StructOpt)]
-#[structopt(name = "tpcds_runner", about = "Run TPC-DS with observability")]
+#[derive(Parser)]
+#[command(name = "tpcds_runner", about = "Run TPC-DS with observability")]
 struct Args {
     /// Comma-delimited list of worker ports (e.g. 8080,8081)
-    #[structopt(long, use_delimiter = true)]
+    #[arg(long, value_delimiter = ',')]
     cluster_ports: Vec<u16>,
 
-    #[structopt(long, default_value = "1.0")]
+    #[arg(long, default_value = "1.0")]
     scale_factor: f64,
 
-    #[structopt(long, default_value = "4")]
+    #[arg(long, default_value = "4")]
     parquet_partitions: usize,
 
     /// Specific query to run (e.g., "q1"), or "all" to run all queries
-    #[structopt(long, default_value = "all")]
+    #[arg(long, default_value = "all")]
     query: String,
 
     /// Maximum number of concurrent queries. Defaults to all queries at once.
     /// Use --concurrency 1 for sequential execution.
-    #[structopt(long)]
+    #[arg(long)]
     concurrency: Option<NonZeroUsize>,
 
     /// Run the query and display the plan with execution metrics (EXPLAIN ANALYZE)
-    #[structopt(long)]
+    #[arg(long)]
     explain_analyze: bool,
 
     /// Whether the distributed plan should be rendered instead of executing the query.
-    #[structopt(long)]
+    #[arg(long)]
     show_distributed_plan: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::from_args();
+    let args = Args::parse();
 
     run_queries(
         args.cluster_ports,

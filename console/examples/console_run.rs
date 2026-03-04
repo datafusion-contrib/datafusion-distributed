@@ -1,5 +1,6 @@
 use arrow::util::pretty::pretty_format_batches;
 use async_trait::async_trait;
+use clap::Parser;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
@@ -9,28 +10,26 @@ use datafusion_distributed::{
 use futures::TryStreamExt;
 use std::error::Error;
 use std::sync::Arc;
-use structopt::StructOpt;
 use url::Url;
 
-#[derive(StructOpt)]
-#[structopt(name = "console_run", about = "Run queries with console integration")]
+#[derive(Parser)]
+#[command(name = "console_run", about = "Run queries with console integration")]
 struct Args {
     /// The SQL query to run.
-    #[structopt()]
     query: String,
 
     /// The ports holding Distributed DataFusion workers.
-    #[structopt(long = "cluster-ports", use_delimiter = true)]
+    #[arg(long = "cluster-ports", value_delimiter = ',')]
     cluster_ports: Vec<u16>,
 
     /// Whether the distributed plan should be rendered instead of executing the query.
-    #[structopt(long)]
+    #[arg(long)]
     show_distributed_plan: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::from_args();
+    let args = Args::parse();
 
     let localhost_resolver = LocalhostWorkerResolver {
         ports: args.cluster_ports.clone(),

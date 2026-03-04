@@ -1,29 +1,29 @@
+use clap::Parser;
 use datafusion_distributed::Worker;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use structopt::StructOpt;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 
-#[derive(StructOpt)]
-#[structopt(
+#[derive(Parser)]
+#[command(
     name = "cluster",
     about = "Start an in-memory cluster of workers with observability"
 )]
 struct Args {
     /// Number of workers to start
-    #[structopt(long, default_value = "16")]
+    #[arg(long, default_value = "16")]
     workers: usize,
 
     /// Starting port. Workers bind to consecutive ports from this value.
     /// If 0, the OS assigns random ports.
-    #[structopt(long, default_value = "0")]
+    #[arg(long, default_value = "0")]
     base_port: u16,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::from_args();
+    let args = Args::parse();
 
     let mut ports = Vec::new();
 
