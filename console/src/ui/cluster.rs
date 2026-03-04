@@ -337,4 +337,3 @@ fn render_task_distribution(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(Paragraph::new(line), area);
 }
-
