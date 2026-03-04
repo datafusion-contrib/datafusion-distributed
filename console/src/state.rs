@@ -1,7 +1,7 @@
 use ratatui::widgets::TableState;
 
 /// Which view is currently active.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) enum View {
     ClusterOverview,
     WorkerDetail,

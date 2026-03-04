@@ -139,7 +139,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             ("Status", SortColumn::Status),
             ("Tasks", SortColumn::Tasks),
             ("CPU", SortColumn::Cpu),
-            ("RSS", SortColumn::Rss),
+            ("Memory", SortColumn::Rss),
         ]
     };
 

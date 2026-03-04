@@ -7,15 +7,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let tab_spans = |view: &View| -> Vec<Span> {
-        let cluster_style = if *view == View::ClusterOverview {
+    let tab_spans = |view: View| -> Vec<Span> {
+        let cluster_style = if view == View::ClusterOverview {
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let worker_style = if *view == View::WorkerDetail {
+        let worker_style = if view == View::WorkerDetail {
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
@@ -77,7 +77,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         ],
     };
 
-    let mut spans = tab_spans(&app.current_view);
+    let mut spans = tab_spans(app.current_view);
     spans.push(Span::styled(" │", Style::default().fg(Color::DarkGray)));
     spans.extend(context_hints);
 
