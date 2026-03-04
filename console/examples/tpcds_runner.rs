@@ -5,7 +5,7 @@ use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule, WorkerResolver,
-    display_plan_ascii, explain_analyze,
+    display_plan_ascii,
 };
 use futures::TryStreamExt;
 use std::error::Error;
@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.parquet_partitions,
         &args.query,
         args.concurrency,
+        args.explain_analyze,
+        args.show_distributed_plan,
     )
     .await
 }
@@ -67,6 +69,8 @@ async fn run_queries(
     parquet_partitions: usize,
     query_id: &str,
     concurrency: Option<usize>,
+    explain_analyze: bool,
+    show_distributed_plan: bool,
 ) -> Result<(), Box<dyn Error>> {
     use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use std::fs;
@@ -144,7 +148,8 @@ async fn run_queries(
             println!("Running {query_id}");
             let start = Instant::now();
 
-            let result = run_single_query(&ctx, &query_sql).await;
+            let result =
+                run_single_query(&ctx, &query_sql, explain_analyze, show_distributed_plan).await;
             drop(permit);
 
             match result {
@@ -174,18 +179,19 @@ async fn run_queries(
 async fn run_single_query(
     ctx: &SessionContext,
     query_sql: &str,
+    explain_analyze: bool,
+    show_distributed_plan: bool,
 ) -> Result<Vec<datafusion::arrow::array::RecordBatch>, Box<dyn Error + Send + Sync>> {
-    let args = Args::from_args();
-
     let df = ctx.sql(query_sql).await?;
     let plan = df.create_physical_plan().await?;
-    if args.show_distributed_plan {
+    if show_distributed_plan {
         println!("{}", display_plan_ascii(plan.as_ref(), false));
     }
     let stream = execute_stream(plan.clone(), ctx.task_ctx())?;
     let batches = stream.try_collect::<Vec<_>>().await?;
-    if args.explain_analyze {
-        let output = explain_analyze(plan, DistributedMetricsFormat::Aggregated)?;
+    if explain_analyze {
+        let output =
+            datafusion_distributed::explain_analyze(plan, DistributedMetricsFormat::Aggregated)?;
         println!("{output}");
     }
     // let formatted = pretty_format_batches(&batches)?;
