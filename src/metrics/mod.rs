@@ -4,7 +4,8 @@ mod task_metrics_collector;
 mod task_metrics_rewriter;
 
 pub use latency_metric::{
-    AvgLatencyMetric, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric, MinLatencyMetric,
+    AvgLatencyMetric, CountLatencyMetric, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric,
+    MinLatencyMetric, TotalLatencyMetric,
 };
 pub(crate) use task_metrics_collector::{MetricsCollectorResult, TaskMetricsCollector};
 pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};

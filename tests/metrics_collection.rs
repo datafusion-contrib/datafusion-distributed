@@ -162,6 +162,10 @@ mod tests {
         assert!(value > 0);
         let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_first", 1);
         assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_total", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkCoalesceExec>(&d_physical, "network_latency_count", 1);
+        assert!(value > 0);
 
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "bytes_transferred", 1);
         assert!(value > 100);
@@ -176,6 +180,10 @@ mod tests {
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_avg", 1);
         assert!(value > 0);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_first", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_total", 1);
+        assert!(value > 0);
+        let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_count", 1);
         assert!(value > 0);
 
         Ok(())

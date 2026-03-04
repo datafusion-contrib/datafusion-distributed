@@ -31,9 +31,9 @@ pub use flight_service::{
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::{
-    AvgLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedMetricsFormat,
-    FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric, MinLatencyMetric,
-    rewrite_distributed_plan_with_metrics,
+    AvgLatencyMetric, CountLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedMetricsFormat, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric,
+    MinLatencyMetric, TotalLatencyMetric, rewrite_distributed_plan_with_metrics,
 };
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,

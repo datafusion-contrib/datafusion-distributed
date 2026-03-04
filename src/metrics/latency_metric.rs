@@ -16,6 +16,8 @@ pub trait LatencyMetricExt {
     fn max_latency(self, name: impl Into<Cow<'static, str>>) -> MaxLatencyMetric;
     fn avg_latency(self, name: impl Into<Cow<'static, str>>) -> AvgLatencyMetric;
     fn first_latency(self, name: impl Into<Cow<'static, str>>) -> FirstLatencyMetric;
+    fn total_latency(self, name: impl Into<Cow<'static, str>>) -> TotalLatencyMetric;
+    fn count_latency(self, name: impl Into<Cow<'static, str>>) -> CountLatencyMetric;
 }
 
 impl LatencyMetricExt for MetricBuilder<'_> {
@@ -48,6 +50,24 @@ impl LatencyMetricExt for MetricBuilder<'_> {
 
     fn first_latency(self, name: impl Into<Cow<'static, str>>) -> FirstLatencyMetric {
         let value = FirstLatencyMetric::default();
+        self.build(MetricValue::Custom {
+            name: name.into(),
+            value: Arc::new(value.clone()),
+        });
+        value
+    }
+
+    fn total_latency(self, name: impl Into<Cow<'static, str>>) -> TotalLatencyMetric {
+        let value = TotalLatencyMetric::default();
+        self.build(MetricValue::Custom {
+            name: name.into(),
+            value: Arc::new(value.clone()),
+        });
+        value
+    }
+
+    fn count_latency(self, name: impl Into<Cow<'static, str>>) -> CountLatencyMetric {
+        let value = CountLatencyMetric::default();
         self.build(MetricValue::Custom {
             name: name.into(),
             value: Arc::new(value.clone()),
@@ -327,6 +347,120 @@ impl CustomMetricValue for FirstLatencyMetric {
         other.value() == self.value()
     }
 }
+#[derive(Debug, Clone, Default)]
+pub struct TotalLatencyMetric {
+    nanos: Arc<AtomicUsize>,
+}
+
+impl TotalLatencyMetric {
+    pub fn from_nanos(nanos: usize) -> Self {
+        Self {
+            nanos: Arc::new(AtomicUsize::new(nanos)),
+        }
+    }
+
+    pub fn value(&self) -> usize {
+        self.nanos.load(Relaxed)
+    }
+
+    pub fn add_elapsed(&self, start: Instant) {
+        self.add_duration(start.elapsed());
+    }
+
+    pub fn add_duration(&self, duration: Duration) {
+        let more_nanos = duration.as_nanos() as usize;
+        self.nanos.fetch_add(more_nanos.max(1), Relaxed);
+    }
+}
+
+impl Display for TotalLatencyMetric {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", human_readable_duration(self.value() as u64))
+    }
+}
+
+impl CustomMetricValue for TotalLatencyMetric {
+    fn new_empty(&self) -> Arc<dyn CustomMetricValue> {
+        Arc::new(TotalLatencyMetric::default())
+    }
+
+    fn aggregate(&self, other: Arc<dyn CustomMetricValue + 'static>) {
+        let Some(other) = other.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.nanos.fetch_add(other.nanos.load(Relaxed), Relaxed);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_usize(&self) -> usize {
+        self.value()
+    }
+
+    fn is_eq(&self, other: &Arc<dyn CustomMetricValue>) -> bool {
+        let Some(other) = other.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        other.value() == self.value()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CountLatencyMetric {
+    count: Arc<AtomicUsize>,
+}
+
+impl CountLatencyMetric {
+    pub fn from_count(count: usize) -> Self {
+        Self {
+            count: Arc::new(AtomicUsize::new(count)),
+        }
+    }
+
+    pub fn value(&self) -> usize {
+        self.count.load(Relaxed)
+    }
+
+    pub fn add(&self, n: usize) {
+        self.count.fetch_add(n, Relaxed);
+    }
+}
+
+impl Display for CountLatencyMetric {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value())
+    }
+}
+
+impl CustomMetricValue for CountLatencyMetric {
+    fn new_empty(&self) -> Arc<dyn CustomMetricValue> {
+        Arc::new(CountLatencyMetric::default())
+    }
+
+    fn aggregate(&self, other: Arc<dyn CustomMetricValue + 'static>) {
+        let Some(other) = other.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.count.fetch_add(other.count.load(Relaxed), Relaxed);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_usize(&self) -> usize {
+        self.value()
+    }
+
+    fn is_eq(&self, other: &Arc<dyn CustomMetricValue>) -> bool {
+        let Some(other) = other.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        other.value() == self.value()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -400,6 +534,36 @@ mod tests {
     }
 
     #[test]
+    fn total_latency_sums_all_values_and_aggregates() {
+        let m = TotalLatencyMetric::default();
+        assert_eq!(m.value(), 0);
+        m.add_duration(Duration::from_millis(100));
+        m.add_duration(Duration::from_millis(200));
+        m.add_duration(Duration::from_millis(50));
+        assert_eq!(m.value(), Duration::from_millis(350).as_nanos() as usize);
+
+        let other = TotalLatencyMetric::default();
+        other.add_duration(Duration::from_millis(150));
+        m.aggregate(Arc::new(other));
+        assert_eq!(m.value(), Duration::from_millis(500).as_nanos() as usize);
+    }
+
+    #[test]
+    fn count_latency_increments_and_aggregates() {
+        let m = CountLatencyMetric::default();
+        assert_eq!(m.value(), 0);
+        m.add(1);
+        m.add(1);
+        m.add(3);
+        assert_eq!(m.value(), 5);
+
+        let other = CountLatencyMetric::default();
+        other.add(7);
+        m.aggregate(Arc::new(other));
+        assert_eq!(m.value(), 12);
+    }
+
+    #[test]
     fn zero_duration_clamped_to_one_nano() {
         let min = MinLatencyMetric::default();
         min.add_duration(Duration::ZERO);
@@ -416,5 +580,9 @@ mod tests {
         let first = FirstLatencyMetric::default();
         first.add_duration(Duration::ZERO);
         assert_eq!(first.value(), 1);
+
+        let total = TotalLatencyMetric::default();
+        total.add_duration(Duration::ZERO);
+        assert_eq!(total.value(), 1);
     }
 }

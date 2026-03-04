@@ -8,7 +8,8 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use super::latency_metric::{
-    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
+    AvgLatencyMetric, CountLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
+    TotalLatencyMetric,
 };
 
 /// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
@@ -20,7 +21,7 @@ pub struct MetricProto {
     pub partition: Option<u64>,
     #[prost(
         oneof = "MetricValueProto",
-        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28"
+        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30"
     )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
@@ -87,6 +88,10 @@ pub enum MetricValueProto {
     CustomAvgLatency(AvgLatency),
     #[prost(message, tag = "28")]
     CustomFirstLatency(FirstLatency),
+    #[prost(message, tag = "29")]
+    CustomTotalLatency(TotalLatency),
+    #[prost(message, tag = "30")]
+    CustomLatencyCount(LatencyCount),
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -221,6 +226,22 @@ pub struct AvgLatency {
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct FirstLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct TotalLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct LatencyCount {
     #[prost(string, tag = "1")]
     pub name: String,
     #[prost(uint64, tag = "2")]
@@ -411,6 +432,24 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     metric: Some(MetricValueProto::CustomFirstLatency(FirstLatency {
                         name: name.to_string(),
                         value: first.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(total) = value.as_any().downcast_ref::<TotalLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomTotalLatency(TotalLatency {
+                        name: name.to_string(),
+                        value: total.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(count) = value.as_any().downcast_ref::<CountLatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomLatencyCount(LatencyCount {
+                        name: name.to_string(),
+                        value: count.value() as u64,
                     })),
                     partition,
                     labels,
@@ -657,6 +696,28 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(first_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomTotalLatency(total_latency)) => {
+            let value = TotalLatencyMetric::from_nanos(total_latency.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(total_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomLatencyCount(latency_count)) => {
+            let value = CountLatencyMetric::from_count(latency_count.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(latency_count.name),
                     value: Arc::new(value),
                 },
                 partition,
@@ -1256,12 +1317,26 @@ mod tests {
             },
             Some(0),
         )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("total_latency"),
+                value: Arc::new(TotalLatencyMetric::from_nanos(400_000)),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("latency_count"),
+                value: Arc::new(CountLatencyMetric::from_count(42)),
+            },
+            Some(0),
+        )));
 
         let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
-        assert_eq!(proto.metrics.len(), 4);
+        assert_eq!(proto.metrics.len(), 6);
 
         let rt = metrics_set_proto_to_df(&proto).unwrap();
-        assert_eq!(rt.iter().count(), 4);
+        assert_eq!(rt.iter().count(), 6);
 
         for (orig, rt) in metrics_set.iter().zip(rt.iter()) {
             match (orig.value(), rt.value()) {
@@ -1288,6 +1363,12 @@ mod tests {
                         assert_eq!(v1.count(), v2.count());
                     } else if let Some(v1) = v1.as_any().downcast_ref::<FirstLatencyMetric>() {
                         let v2 = v2.as_any().downcast_ref::<FirstLatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<TotalLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<TotalLatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<CountLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<CountLatencyMetric>().unwrap();
                         assert_eq!(v1.value(), v2.value());
                     } else {
                         panic!("unexpected custom metric type");
