@@ -33,7 +33,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if args.base_port == 0 {
                 0
             } else {
-                args.base_port + i as u16
+                args.base_port
+                    .checked_add(i as u16)
+                    .expect("port overflow: base_port + workers exceeds u16::MAX")
             },
         );
         let listener = TcpListener::bind(addr).await?;
