@@ -131,7 +131,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             ("Tasks", SortColumn::Tasks),
             ("Queries", SortColumn::Queries),
             ("CPU", SortColumn::Cpu),
-            ("Memory", SortColumn::Rss),
+            ("Memory", SortColumn::Memory),
         ]
     } else {
         vec![
@@ -139,7 +139,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             ("Status", SortColumn::Status),
             ("Tasks", SortColumn::Tasks),
             ("CPU", SortColumn::Cpu),
-            ("Memory", SortColumn::Rss),
+            ("Memory", SortColumn::Memory),
         ]
     };
 

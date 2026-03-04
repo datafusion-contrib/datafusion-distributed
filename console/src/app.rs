@@ -200,7 +200,7 @@ impl App {
                     if ascending { cmp } else { cmp.reverse() }
                 });
             }
-            SortColumn::Rss => {
+            SortColumn::Memory => {
                 indices.sort_by(|&a, &b| {
                     let cmp = self.workers[a].rss_bytes.cmp(&self.workers[b].rss_bytes);
                     if ascending { cmp } else { cmp.reverse() }

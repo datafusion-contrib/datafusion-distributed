@@ -33,15 +33,15 @@ impl SortColumn {
                 }
             }
             SortColumn::Queries => SortColumn::Cpu,
-            SortColumn::Cpu => SortColumn::Rss,
-            SortColumn::Rss => SortColumn::Worker,
+            SortColumn::Cpu => SortColumn::Memory,
+            SortColumn::Memory => SortColumn::Worker,
         }
     }
 
     /// Move to the previous column. When `wide` is false, skip Queries.
     pub(crate) fn prev(self, wide: bool) -> Self {
         match self {
-            SortColumn::Worker => SortColumn::Rss,
+            SortColumn::Worker => SortColumn::Memory,
             SortColumn::Status => SortColumn::Worker,
             SortColumn::Tasks => SortColumn::Status,
             SortColumn::Queries => SortColumn::Tasks,
@@ -52,7 +52,7 @@ impl SortColumn {
                     SortColumn::Tasks
                 }
             }
-            SortColumn::Rss => SortColumn::Cpu,
+            SortColumn::Memory => SortColumn::Cpu,
         }
     }
 }
