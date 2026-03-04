@@ -2,6 +2,7 @@ mod app;
 mod input;
 mod state;
 mod ui;
+mod worker;
 
 use app::App;
 use clap::Parser;

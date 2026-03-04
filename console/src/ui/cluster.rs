@@ -181,7 +181,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             let status_color = worker.status_color();
             let is_disconnected = matches!(
                 worker.connection_status,
-                crate::app::ConnectionStatus::Disconnected { .. }
+                crate::worker::ConnectionStatus::Disconnected { .. }
             );
 
             // URL display
