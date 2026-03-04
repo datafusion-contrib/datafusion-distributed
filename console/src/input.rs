@@ -3,7 +3,7 @@ use crate::state::{View, WorkerPanel};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// Handle a key event, dispatching to the appropriate view handler.
-pub fn handle_key_event(app: &mut App, key: KeyEvent) {
+pub(crate) fn handle_key_event(app: &mut App, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {
         return;
     }

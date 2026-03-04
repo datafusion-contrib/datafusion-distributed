@@ -3,7 +3,7 @@ use std::time::Duration;
 
 /// Format a byte count as a human-readable string.
 /// Returns `"--"` for zero bytes.
-pub fn format_bytes(bytes: u64) -> String {
+pub(super) fn format_bytes(bytes: u64) -> String {
     if bytes == 0 {
         "--".to_string()
     } else if bytes >= 1_073_741_824 {
@@ -18,7 +18,7 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// Format a duration as a compact human-readable string.
-pub fn format_duration(d: Duration) -> String {
+pub(super) fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     let millis = d.subsec_millis();
     if secs == 0 {
@@ -32,7 +32,7 @@ pub fn format_duration(d: Duration) -> String {
 
 /// Format a row count with K/M suffixes.
 /// Returns `"--"` for zero rows.
-pub fn format_row_count(rows: u64) -> String {
+pub(super) fn format_row_count(rows: u64) -> String {
     if rows == 0 {
         "--".to_string()
     } else if rows >= 1_000_000 {
@@ -45,7 +45,7 @@ pub fn format_row_count(rows: u64) -> String {
 }
 
 /// Format a rows-per-second throughput value.
-pub fn format_rows_throughput(rows_per_sec: f64) -> String {
+pub(super) fn format_rows_throughput(rows_per_sec: f64) -> String {
     if rows_per_sec >= 1_000_000.0 {
         format!("{:.1}M rows out/s", rows_per_sec / 1_000_000.0)
     } else if rows_per_sec >= 1_000.0 {
@@ -56,7 +56,7 @@ pub fn format_rows_throughput(rows_per_sec: f64) -> String {
 }
 
 /// Return a color for CPU usage percentage.
-pub fn cpu_color(pct: f64) -> Color {
+pub(super) fn cpu_color(pct: f64) -> Color {
     if pct > 95.0 {
         Color::Red
     } else if pct > 80.0 {

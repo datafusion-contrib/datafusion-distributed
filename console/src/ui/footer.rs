@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let tab_spans = |view: &View| -> Vec<Span> {
         let cluster_style = if *view == View::ClusterOverview {
             Style::default()

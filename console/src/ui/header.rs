@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let stats = app.cluster_stats();
 
     let view_name = match app.current_view {

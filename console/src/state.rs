@@ -2,14 +2,14 @@ use ratatui::widgets::TableState;
 
 /// Which view is currently active.
 #[derive(Clone, PartialEq)]
-pub enum View {
+pub(crate) enum View {
     ClusterOverview,
     WorkerDetail,
 }
 
 /// Which column is selected for sorting in the cluster table.
 #[derive(Clone, Copy, PartialEq, Default)]
-pub enum SortColumn {
+pub(crate) enum SortColumn {
     #[default]
     Worker,
     Status,
@@ -21,7 +21,7 @@ pub enum SortColumn {
 
 impl SortColumn {
     /// Move to the next column. When `wide` is false, skip Queries.
-    pub fn next(self, wide: bool) -> Self {
+    pub(crate) fn next(self, wide: bool) -> Self {
         match self {
             SortColumn::Worker => SortColumn::Status,
             SortColumn::Status => SortColumn::Tasks,
@@ -39,7 +39,7 @@ impl SortColumn {
     }
 
     /// Move to the previous column. When `wide` is false, skip Queries.
-    pub fn prev(self, wide: bool) -> Self {
+    pub(crate) fn prev(self, wide: bool) -> Self {
         match self {
             SortColumn::Worker => SortColumn::Rss,
             SortColumn::Status => SortColumn::Worker,
@@ -59,7 +59,7 @@ impl SortColumn {
 
 /// Sort direction for the selected column.
 #[derive(Clone, Copy, PartialEq, Default)]
-pub enum SortDirection {
+pub(crate) enum SortDirection {
     #[default]
     Unsorted,
     Ascending,
@@ -67,7 +67,7 @@ pub enum SortDirection {
 }
 
 impl SortDirection {
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             SortDirection::Unsorted => SortDirection::Ascending,
             SortDirection::Ascending => SortDirection::Descending,
@@ -75,7 +75,7 @@ impl SortDirection {
         }
     }
 
-    pub fn indicator(self) -> &'static str {
+    pub(crate) fn indicator(self) -> &'static str {
         match self {
             SortDirection::Unsorted => "",
             SortDirection::Ascending => " ▲",
@@ -86,17 +86,17 @@ impl SortDirection {
 
 /// Which panel is focused in worker detail view.
 #[derive(Clone, Copy, PartialEq)]
-pub enum WorkerPanel {
+pub(crate) enum WorkerPanel {
     Metrics,
     ActiveTasks,
     CompletedTasks,
 }
 
 /// State for the Cluster Overview view.
-pub struct ClusterViewState {
-    pub table: TableState,
-    pub selected_column: SortColumn,
-    pub sort_direction: SortDirection,
+pub(crate) struct ClusterViewState {
+    pub(crate) table: TableState,
+    pub(crate) selected_column: SortColumn,
+    pub(crate) sort_direction: SortDirection,
 }
 
 impl Default for ClusterViewState {
@@ -112,11 +112,11 @@ impl Default for ClusterViewState {
 }
 
 /// State for the Worker Detail view.
-pub struct WorkerViewState {
-    pub worker_idx: usize,
-    pub active_table: TableState,
-    pub completed_table: TableState,
-    pub focused_panel: WorkerPanel,
+pub(crate) struct WorkerViewState {
+    pub(crate) worker_idx: usize,
+    pub(crate) active_table: TableState,
+    pub(crate) completed_table: TableState,
+    pub(crate) focused_panel: WorkerPanel,
 }
 
 impl Default for WorkerViewState {

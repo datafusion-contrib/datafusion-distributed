@@ -14,66 +14,66 @@ const MAX_COMPLETED_TASKS: usize = 50;
 const METRIC_HISTORY_LEN: usize = 120;
 
 /// App holds the main application state.
-pub struct App {
-    pub workers: Vec<WorkerConn>,
-    pub queries: HashMap<Vec<u8>, QuerySummary>,
-    pub current_view: View,
-    pub cluster_state: ClusterViewState,
-    pub worker_state: WorkerViewState,
-    pub paused: bool,
-    pub show_help: bool,
-    pub should_quit: bool,
-    pub start_time: Instant,
-    pub poll_count: u64,
+pub(crate) struct App {
+    pub(crate) workers: Vec<WorkerConn>,
+    queries: HashMap<Vec<u8>, QuerySummary>,
+    pub(crate) current_view: View,
+    pub(crate) cluster_state: ClusterViewState,
+    pub(crate) worker_state: WorkerViewState,
+    pub(crate) paused: bool,
+    pub(crate) show_help: bool,
+    pub(crate) should_quit: bool,
+    pub(crate) start_time: Instant,
+    poll_count: u64,
     /// Previous tick's cluster-wide output rows total (for throughput delta).
     prev_output_rows_total: u64,
     prev_output_rows_time: Option<Instant>,
     /// Smoothed cluster-wide throughput in rows/s.
-    pub current_throughput: f64,
+    pub(crate) current_throughput: f64,
 }
 
 /// Summary of a query aggregated across all workers.
-pub struct QuerySummary {
-    pub query_id: Vec<u8>,
-    pub worker_count: usize,
-    pub task_count: usize,
-    pub stage_count: usize,
+struct QuerySummary {
+    query_id: Vec<u8>,
+    worker_count: usize,
+    task_count: usize,
+    stage_count: usize,
 }
 
 /// Cluster-wide statistics for the header.
-pub struct ClusterStats {
-    pub total: usize,
-    pub active_count: usize,
-    pub idle_count: usize,
-    pub connecting_count: usize,
-    pub disconnected_count: usize,
-    pub total_tasks: usize,
-    pub total_completed: usize,
-    pub active_queries: usize,
+pub(crate) struct ClusterStats {
+    pub(crate) total: usize,
+    pub(crate) active_count: usize,
+    pub(crate) idle_count: usize,
+    pub(crate) connecting_count: usize,
+    pub(crate) disconnected_count: usize,
+    pub(crate) total_tasks: usize,
+    pub(crate) total_completed: usize,
+    pub(crate) active_queries: usize,
 }
 
 /// Tracks connection and task state for a single worker.
-pub struct WorkerConn {
-    pub url: Url,
+pub(crate) struct WorkerConn {
+    pub(crate) url: Url,
     client: Option<ObservabilityServiceClient<Channel>>,
-    pub connection_status: ConnectionStatus,
-    pub tasks: Vec<TaskProgress>,
-    pub completed_tasks: VecDeque<CompletedTaskRecord>,
-    pub task_first_seen: HashMap<TaskKey, Instant>,
-    pub connected_since: Option<Instant>,
-    pub poll_count: u64,
+    pub(crate) connection_status: ConnectionStatus,
+    pub(crate) tasks: Vec<TaskProgress>,
+    pub(crate) completed_tasks: VecDeque<CompletedTaskRecord>,
+    task_first_seen: HashMap<TaskKey, Instant>,
+    pub(crate) connected_since: Option<Instant>,
+    pub(crate) poll_count: u64,
     last_reconnect_attempt: Option<Instant>,
     last_seen_query_ids: HashSet<Vec<u8>>,
     /// Worker RSS memory in bytes (from WorkerMetrics).
-    pub rss_bytes: u64,
+    pub(crate) rss_bytes: u64,
     /// Worker CPU usage percentage (from WorkerMetrics).
-    pub cpu_usage_percent: f64,
+    pub(crate) cpu_usage_percent: f64,
     /// Sum of output_rows across all running tasks on this worker.
-    pub output_rows_total: u64,
+    pub(crate) output_rows_total: u64,
     /// Time-series history for sparkline graphs.
-    pub cpu_history: VecDeque<u64>,
-    pub rss_history: VecDeque<u64>,
-    pub rows_history: VecDeque<u64>,
+    pub(crate) cpu_history: VecDeque<u64>,
+    pub(crate) rss_history: VecDeque<u64>,
+    pub(crate) rows_history: VecDeque<u64>,
     /// Previous output_rows_total for computing per-poll delta.
     prev_output_rows: u64,
 }
@@ -83,16 +83,16 @@ type TaskKey = (Vec<u8>, u64, u64);
 
 /// Record of a completed task with observed duration.
 #[derive(Clone, Debug)]
-pub struct CompletedTaskRecord {
-    pub query_id: Vec<u8>,
-    pub stage_id: u64,
-    pub task_number: u64,
-    pub observed_duration: Duration,
+pub(crate) struct CompletedTaskRecord {
+    pub(crate) query_id: Vec<u8>,
+    pub(crate) stage_id: u64,
+    pub(crate) task_number: u64,
+    pub(crate) observed_duration: Duration,
 }
 
 /// Connection status for a worker.
 #[derive(Clone)]
-pub enum ConnectionStatus {
+pub(crate) enum ConnectionStatus {
     Connecting,
     Idle,
     Active,
@@ -101,7 +101,7 @@ pub enum ConnectionStatus {
 
 impl App {
     /// Create a new App with the given worker URLs.
-    pub fn new(worker_urls: Vec<Url>) -> Self {
+    pub(crate) fn new(worker_urls: Vec<Url>) -> Self {
         let workers = worker_urls
             .into_iter()
             .map(|url| WorkerConn {
@@ -143,7 +143,7 @@ impl App {
     }
 
     /// Poll all workers for task progress. Called on the gRPC tick interval.
-    pub async fn tick(&mut self) {
+    pub(crate) async fn tick(&mut self) {
         if self.paused {
             return;
         }
@@ -244,7 +244,7 @@ impl App {
     }
 
     /// Get cluster-wide statistics.
-    pub fn cluster_stats(&self) -> ClusterStats {
+    pub(crate) fn cluster_stats(&self) -> ClusterStats {
         let mut stats = ClusterStats {
             total: self.workers.len(),
             active_count: 0,
@@ -271,7 +271,7 @@ impl App {
     }
 
     /// Get the sorted worker indices for the cluster view.
-    pub fn sorted_worker_indices(&self) -> Vec<usize> {
+    pub(crate) fn sorted_worker_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..self.workers.len()).collect();
         let direction = self.cluster_state.sort_direction;
 
@@ -333,7 +333,7 @@ impl App {
     }
 
     /// Average observed_duration across all workers' completed tasks.
-    pub fn cluster_avg_task_duration(&self) -> Option<Duration> {
+    pub(crate) fn cluster_avg_task_duration(&self) -> Option<Duration> {
         let mut total = Duration::ZERO;
         let mut count = 0usize;
         for worker in &self.workers {
@@ -350,7 +350,7 @@ impl App {
     }
 
     /// Longest currently-running task across all workers.
-    pub fn cluster_longest_active_task(&self) -> Duration {
+    pub(crate) fn cluster_longest_active_task(&self) -> Duration {
         self.workers
             .iter()
             .map(|w| w.longest_task_duration())
@@ -359,7 +359,7 @@ impl App {
     }
 
     /// Get average task count across all workers (for hot spot detection).
-    pub fn avg_tasks_per_worker(&self) -> f64 {
+    pub(crate) fn avg_tasks_per_worker(&self) -> f64 {
         if self.workers.is_empty() {
             return 0.0;
         }
@@ -570,7 +570,7 @@ impl WorkerConn {
     }
 
     /// Status text for display.
-    pub fn status_text(&self) -> &'static str {
+    pub(crate) fn status_text(&self) -> &'static str {
         match &self.connection_status {
             ConnectionStatus::Connecting => "CONNECTING",
             ConnectionStatus::Idle => "IDLE",
@@ -580,7 +580,7 @@ impl WorkerConn {
     }
 
     /// Status color for display.
-    pub fn status_color(&self) -> ratatui::style::Color {
+    pub(crate) fn status_color(&self) -> ratatui::style::Color {
         use ratatui::style::Color;
         match self.connection_status {
             ConnectionStatus::Connecting => Color::Blue,
@@ -591,7 +591,7 @@ impl WorkerConn {
     }
 
     /// Sort key for status ordering (disconnected first, then active, idle, connecting).
-    pub fn status_sort_key(&self) -> u8 {
+    pub(crate) fn status_sort_key(&self) -> u8 {
         match self.connection_status {
             ConnectionStatus::Disconnected { .. } => 0,
             ConnectionStatus::Active => 1,
@@ -601,7 +601,7 @@ impl WorkerConn {
     }
 
     /// Disconnect reason if applicable.
-    pub fn disconnect_reason(&self) -> Option<&str> {
+    pub(crate) fn disconnect_reason(&self) -> Option<&str> {
         if let ConnectionStatus::Disconnected { reason } = &self.connection_status {
             Some(reason)
         } else {
@@ -610,7 +610,7 @@ impl WorkerConn {
     }
 
     /// Duration of the longest-running task on this worker.
-    pub fn longest_task_duration(&self) -> Duration {
+    pub(crate) fn longest_task_duration(&self) -> Duration {
         self.task_first_seen
             .values()
             .map(|first| first.elapsed())
@@ -619,7 +619,7 @@ impl WorkerConn {
     }
 
     /// Number of distinct queries this worker has tasks for.
-    pub fn distinct_query_count(&self) -> usize {
+    pub(crate) fn distinct_query_count(&self) -> usize {
         let ids: HashSet<_> = self
             .tasks
             .iter()
@@ -629,7 +629,12 @@ impl WorkerConn {
     }
 
     /// Get task duration for a specific task.
-    pub fn task_duration(&self, query_id: &[u8], stage_id: u64, task_number: u64) -> Duration {
+    pub(crate) fn task_duration(
+        &self,
+        query_id: &[u8],
+        stage_id: u64,
+        task_number: u64,
+    ) -> Duration {
         let key = (query_id.to_vec(), stage_id, task_number);
         self.task_first_seen
             .get(&key)

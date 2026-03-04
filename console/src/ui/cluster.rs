@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let [metrics_area, table_area, summary_area] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(3),

@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-pub fn render_overlay(frame: &mut Frame) {
+pub(super) fn render_overlay(frame: &mut Frame) {
     let area = centered_rect(50, 60, frame.area());
 
     // Clear the background

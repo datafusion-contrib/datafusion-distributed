@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, SparklineBar, Table};
 use std::collections::VecDeque;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let idx = app.worker_state.worker_idx;
     if idx >= app.workers.len() {
         let msg = Paragraph::new("No worker selected")

@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 
 /// Top-level render dispatch.
-pub fn render(frame: &mut Frame, app: &mut App) {
+pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     let [header_area, content_area, footer_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(5),

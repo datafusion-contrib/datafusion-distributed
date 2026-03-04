@@ -58,13 +58,11 @@ async fn run_app(
     let mut last_poll = Instant::now();
 
     loop {
-        // Poll workers on the gRPC tick interval
         if last_poll.elapsed() >= poll_interval {
             app.tick().await;
             last_poll = Instant::now();
         }
 
-        // Render
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // Check for keyboard input (16ms timeout ~ 60fps responsiveness)
