@@ -75,7 +75,7 @@ impl ObservabilityServiceImpl {
             use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
             let pid = Pid::from_u32(std::process::id());
-            let mut sys = self.system.lock().unwrap();
+            let mut sys = self.system.lock().unwrap_or_else(|e| e.into_inner());
             sys.refresh_processes_specifics(
                 ProcessesToUpdate::Some(&[pid]),
                 true,
