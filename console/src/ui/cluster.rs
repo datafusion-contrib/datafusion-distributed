@@ -20,12 +20,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            " Cluster Metrics ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        " Cluster Metrics ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -54,6 +52,13 @@ fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
         Color::DarkGray
     };
 
+    let queries_str = format!("{}", stats.active_queries);
+    let queries_color = if stats.active_queries > 0 {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+
     let line1 = Line::from(vec![
         Span::styled(
             " Throughput: ",
@@ -63,6 +68,12 @@ fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw("     "),
         Span::styled(" Active: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(active_str, Style::default().fg(active_color)),
+        Span::raw("     "),
+        Span::styled(
+            " Queries in flight: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(queries_str, Style::default().fg(queries_color)),
     ]);
     frame.render_widget(Paragraph::new(line1), line1_area);
 
@@ -93,10 +104,7 @@ fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
             " Completed: ",
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            completed_str,
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled(completed_str, Style::default().fg(Color::Cyan)),
         Span::raw("     "),
         Span::styled(
             "Avg duration: ",
@@ -104,10 +112,7 @@ fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(avg_dur_str, Style::default().fg(Color::DarkGray)),
         Span::raw("     "),
-        Span::styled(
-            "Longest: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Longest: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(longest_str, Style::default().fg(longest_color)),
     ]);
     frame.render_widget(Paragraph::new(line2), line2_area);
@@ -125,7 +130,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             ("Tasks", SortColumn::Tasks),
             ("Queries", SortColumn::Queries),
             ("CPU", SortColumn::Cpu),
-            ("RSS", SortColumn::Rss),
+            ("Memory", SortColumn::Rss),
         ]
     } else {
         vec![
@@ -142,7 +147,11 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let header = Row::new(columns.iter().map(|(label, col)| {
         let is_selected = *col == selected_col;
-        let indicator = if is_selected { sort_dir.indicator() } else { "" };
+        let indicator = if is_selected {
+            sort_dir.indicator()
+        } else {
+            ""
+        };
         let text = format!("{label}{indicator}");
 
         let style = if is_selected && sort_dir != SortDirection::Unsorted {
@@ -275,11 +284,7 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Workers "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(" Workers "))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
