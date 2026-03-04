@@ -122,6 +122,10 @@ fn handle_cluster_keys(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_worker_keys(app: &mut App, key: KeyEvent) {
+    if app.worker_state.worker_idx >= app.workers.len() {
+        return;
+    }
+
     match key.code {
         KeyCode::Esc | KeyCode::Tab => {
             app.current_view = View::ClusterOverview;
