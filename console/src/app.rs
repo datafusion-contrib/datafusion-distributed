@@ -436,6 +436,7 @@ impl WorkerConn {
                 self.output_rows_total = new_tasks.iter().map(|t| t.output_rows).sum();
 
                 // Record metric history samples for sparkline graphs
+                // Scale CPU% (0.0–100.0) by 100 → 0–10000 range for sparkline precision.
                 push_history(
                     &mut self.cpu_history,
                     (self.cpu_usage_percent * 100.0) as u64,
