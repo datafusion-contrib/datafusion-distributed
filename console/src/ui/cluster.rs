@@ -1,3 +1,4 @@
+use super::format::{format_bytes, format_duration, format_rows_throughput};
 use crate::app::App;
 use crate::state::{SortColumn, SortDirection};
 use ratatui::Frame;
@@ -82,14 +83,14 @@ fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
 
     let avg_dur_str = app
         .cluster_avg_task_duration()
-        .map(format_task_duration)
+        .map(format_duration)
         .unwrap_or_else(|| "--".to_string());
 
     let longest = app.cluster_longest_active_task();
     let longest_str = if longest.is_zero() {
         "--".to_string()
     } else {
-        format_task_duration(longest)
+        format_duration(longest)
     };
     let longest_color = if longest.as_secs() > 60 {
         Color::Red
@@ -337,36 +338,3 @@ fn render_task_distribution(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn format_task_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    let millis = d.subsec_millis();
-    if secs == 0 {
-        format!("{millis}ms")
-    } else if secs < 60 {
-        format!("{secs}.{:01}s", millis / 100)
-    } else {
-        format!("{}m {}s", secs / 60, secs % 60)
-    }
-}
-
-fn format_rows_throughput(rows_per_sec: f64) -> String {
-    if rows_per_sec >= 1_000_000.0 {
-        format!("{:.1}M rows out/s", rows_per_sec / 1_000_000.0)
-    } else if rows_per_sec >= 1_000.0 {
-        format!("{:.1}K rows out/s", rows_per_sec / 1_000.0)
-    } else {
-        format!("{rows_per_sec:.0} rows out/s")
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.0} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.0} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}

@@ -1,5 +1,6 @@
 mod cluster;
 mod footer;
+mod format;
 mod header;
 mod help;
 mod worker;
