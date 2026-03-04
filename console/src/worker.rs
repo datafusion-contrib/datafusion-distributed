@@ -9,8 +9,8 @@ use url::Url;
 /// Maximum number of completed tasks to retain per worker.
 const MAX_COMPLETED_TASKS: usize = 50;
 
-/// Number of metric samples to keep per worker (120 * 250ms = 30s of history).
-pub(crate) const METRIC_HISTORY_LEN: usize = 120;
+/// Number of metric samples to keep per worker (300 * 100ms = 30s of history).
+pub(crate) const METRIC_HISTORY_LEN: usize = 300;
 
 /// Tracks connection and task state for a single worker.
 pub(crate) struct WorkerConn {
