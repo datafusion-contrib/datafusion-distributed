@@ -196,8 +196,6 @@ async fn run_single_query(
             datafusion_distributed::explain_analyze(plan, DistributedMetricsFormat::Aggregated)?;
         println!("{output}");
     }
-    // let formatted = pretty_format_batches(&batches)?;
-    // println!("{formatted}");
     Ok(batches)
 }
 

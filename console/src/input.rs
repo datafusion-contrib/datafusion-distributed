@@ -201,10 +201,6 @@ fn handle_worker_keys(app: &mut App, key: KeyEvent) {
                 app.worker_state.completed_table.select(Some(selected));
             }
         },
-        KeyCode::Char('\t') => {
-            // This is a literal tab character, not the Tab key — for panel switching
-            // The Tab key without shift is handled above (goes back to cluster)
-        }
         KeyCode::BackTab => {
             // Shift+Tab: cycle focus between panels
             app.worker_state.focused_panel = match app.worker_state.focused_panel {

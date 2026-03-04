@@ -16,7 +16,7 @@ const METRIC_HISTORY_LEN: usize = 120;
 /// App holds the main application state.
 pub(crate) struct App {
     pub(crate) workers: Vec<WorkerConn>,
-    queries: HashMap<Vec<u8>, QuerySummary>,
+    active_query_count: usize,
     pub(crate) current_view: View,
     pub(crate) cluster_state: ClusterViewState,
     pub(crate) worker_state: WorkerViewState,
@@ -30,14 +30,6 @@ pub(crate) struct App {
     prev_output_rows_time: Option<Instant>,
     /// Smoothed cluster-wide throughput in rows/s.
     pub(crate) current_throughput: f64,
-}
-
-/// Summary of a query aggregated across all workers.
-struct QuerySummary {
-    query_id: Vec<u8>,
-    worker_count: usize,
-    task_count: usize,
-    stage_count: usize,
 }
 
 /// Cluster-wide statistics for the header.
@@ -127,7 +119,7 @@ impl App {
 
         App {
             workers,
-            queries: HashMap::new(),
+            active_query_count: 0,
             current_view: View::ClusterOverview,
             cluster_state: ClusterViewState::default(),
             worker_state: WorkerViewState::default(),
@@ -193,54 +185,17 @@ impl App {
         self.prev_output_rows_time = Some(now);
     }
 
-    /// Rebuild the queries HashMap from all workers' task data.
+    /// Count distinct active queries across all workers.
     fn rebuild_queries(&mut self) {
-        self.queries.clear();
-
+        let mut query_ids = HashSet::new();
         for worker in &self.workers {
             for task in &worker.tasks {
                 if let Some(sk) = &task.stage_key {
-                    let entry =
-                        self.queries
-                            .entry(sk.query_id.clone())
-                            .or_insert_with(|| QuerySummary {
-                                query_id: sk.query_id.clone(),
-                                worker_count: 0,
-                                task_count: 0,
-                                stage_count: 0,
-                            });
-                    entry.task_count += 1;
+                    query_ids.insert(&sk.query_id);
                 }
             }
         }
-
-        // Second pass: compute per-query worker count and stage count
-        for summary in self.queries.values_mut() {
-            let mut workers_with_query = HashSet::new();
-            let mut stages = HashSet::new();
-
-            for worker in &self.workers {
-                let has_tasks = worker.tasks.iter().any(|t| {
-                    t.stage_key
-                        .as_ref()
-                        .is_some_and(|sk| sk.query_id == summary.query_id)
-                });
-                if has_tasks {
-                    workers_with_query.insert(&worker.url);
-                }
-
-                for task in &worker.tasks {
-                    if let Some(sk) = &task.stage_key {
-                        if sk.query_id == summary.query_id {
-                            stages.insert(sk.stage_id);
-                        }
-                    }
-                }
-            }
-
-            summary.worker_count = workers_with_query.len();
-            summary.stage_count = stages.len();
-        }
+        self.active_query_count = query_ids.len();
     }
 
     /// Get cluster-wide statistics.
@@ -253,7 +208,7 @@ impl App {
             disconnected_count: 0,
             total_tasks: 0,
             total_completed: 0,
-            active_queries: self.queries.len(),
+            active_queries: self.active_query_count,
         };
 
         for worker in &self.workers {
