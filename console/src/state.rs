@@ -55,7 +55,6 @@ impl SortColumn {
             SortColumn::Rss => SortColumn::Cpu,
         }
     }
-
 }
 
 /// Sort direction for the selected column.

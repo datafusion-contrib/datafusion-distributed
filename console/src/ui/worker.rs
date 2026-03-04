@@ -17,7 +17,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let [summary_area, metrics_area, active_area, completed_area, conn_area] = Layout::vertical([
+    let [
+        summary_area,
+        metrics_area,
+        active_area,
+        completed_area,
+        conn_area,
+    ] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(9),
         Constraint::Percentage(45),
@@ -317,12 +323,10 @@ fn render_sparkline_panel(
     current_label: String,
     bar_color: Color,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(Color::DarkGray),
-        ));
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        format!(" {title} "),
+        Style::default().fg(Color::DarkGray),
+    ));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -365,9 +369,7 @@ fn render_sparkline_panel(
 
     let label = Line::from(Span::styled(
         format!(" {current_label}"),
-        Style::default()
-            .fg(bar_color)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(bar_color).add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(Paragraph::new(label), label_area);
 }

@@ -95,16 +95,13 @@ fn handle_cluster_keys(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Left => {
-            app.cluster_state.selected_column =
-                app.cluster_state.selected_column.prev(true);
+            app.cluster_state.selected_column = app.cluster_state.selected_column.prev(true);
         }
         KeyCode::Right => {
-            app.cluster_state.selected_column =
-                app.cluster_state.selected_column.next(true);
+            app.cluster_state.selected_column = app.cluster_state.selected_column.next(true);
         }
         KeyCode::Char(' ') => {
-            app.cluster_state.sort_direction =
-                app.cluster_state.sort_direction.next();
+            app.cluster_state.sort_direction = app.cluster_state.sort_direction.next();
         }
         KeyCode::Char('r') => {
             for worker in &mut app.workers {

@@ -113,7 +113,5 @@ fn convert_stage_key(key: &StageKey) -> super::StageKey {
 
 /// Extracts output rows from the root plan node's metrics.
 fn output_rows_from_plan(plan: &Arc<dyn ExecutionPlan>) -> u64 {
-    plan.metrics()
-        .and_then(|m| m.output_rows())
-        .unwrap_or(0) as u64
+    plan.metrics().and_then(|m| m.output_rows()).unwrap_or(0) as u64
 }

@@ -73,7 +73,10 @@ pub fn render_overlay(frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
-            Span::styled("  \u{2190} / \u{2192}     ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "  \u{2190} / \u{2192}     ",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw("Select sort column"),
         ]),
         Line::from(vec![
