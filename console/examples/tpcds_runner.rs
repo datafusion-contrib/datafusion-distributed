@@ -186,6 +186,7 @@ async fn run_single_query(
     let plan = df.create_physical_plan().await?;
     if show_distributed_plan {
         println!("{}", display_plan_ascii(plan.as_ref(), false));
+        return Ok(vec![]);
     }
     let stream = execute_stream(plan.clone(), ctx.task_ctx())?;
     let batches = stream.try_collect::<Vec<_>>().await?;
