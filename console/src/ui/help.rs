@@ -61,6 +61,10 @@ pub fn render_overlay(frame: &mut Frame) {
             Span::styled("  h / l       ", Style::default().fg(Color::Yellow)),
             Span::raw("Prev/next worker (detail)"),
         ]),
+        Line::from(vec![
+            Span::styled("  Shift+Tab   ", Style::default().fg(Color::Yellow)),
+            Span::raw("Cycle panels (Metrics/Tasks/Completed)"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "  Cluster View",
@@ -69,8 +73,12 @@ pub fn render_overlay(frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
-            Span::styled("  s           ", Style::default().fg(Color::Yellow)),
-            Span::raw("Cycle sort mode"),
+            Span::styled("  \u{2190} / \u{2192}     ", Style::default().fg(Color::Yellow)),
+            Span::raw("Select sort column"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space       ", Style::default().fg(Color::Yellow)),
+            Span::raw("Cycle sort direction (\u{25b2}/\u{25bc})"),
         ]),
         Line::from(vec![
             Span::styled("  r           ", Style::default().fg(Color::Yellow)),

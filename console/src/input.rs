@@ -94,8 +94,17 @@ fn handle_cluster_keys(app: &mut App, key: KeyEvent) {
                 }
             }
         }
-        KeyCode::Char('s') => {
-            app.sort_mode = app.sort_mode.next();
+        KeyCode::Left => {
+            app.cluster_state.selected_column =
+                app.cluster_state.selected_column.prev(true);
+        }
+        KeyCode::Right => {
+            app.cluster_state.selected_column =
+                app.cluster_state.selected_column.next(true);
+        }
+        KeyCode::Char(' ') => {
+            app.cluster_state.sort_direction =
+                app.cluster_state.sort_direction.next();
         }
         KeyCode::Char('r') => {
             for worker in &mut app.workers {
@@ -143,6 +152,7 @@ fn handle_worker_keys(app: &mut App, key: KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => {
             let worker = &app.workers[app.worker_state.worker_idx];
             match app.worker_state.focused_panel {
+                WorkerPanel::Metrics => {} // Sparklines are not scrollable
                 WorkerPanel::ActiveTasks => {
                     let count = worker.tasks.len();
                     if count > 0 {
@@ -170,6 +180,7 @@ fn handle_worker_keys(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Up | KeyCode::Char('k') => match app.worker_state.focused_panel {
+            WorkerPanel::Metrics => {} // Sparklines are not scrollable
             WorkerPanel::ActiveTasks => {
                 let selected = app
                     .worker_state
@@ -194,10 +205,11 @@ fn handle_worker_keys(app: &mut App, key: KeyEvent) {
             // The Tab key without shift is handled above (goes back to cluster)
         }
         KeyCode::BackTab => {
-            // Shift+Tab: switch focus between panels
+            // Shift+Tab: cycle focus between panels
             app.worker_state.focused_panel = match app.worker_state.focused_panel {
+                WorkerPanel::Metrics => WorkerPanel::ActiveTasks,
                 WorkerPanel::ActiveTasks => WorkerPanel::CompletedTasks,
-                WorkerPanel::CompletedTasks => WorkerPanel::ActiveTasks,
+                WorkerPanel::CompletedTasks => WorkerPanel::Metrics,
             };
         }
         KeyCode::Char('r') => {

@@ -1,7 +1,6 @@
-use crate::state::{ClusterViewState, SortMode, View, WorkerViewState};
+use crate::state::{ClusterViewState, SortColumn, SortDirection, View, WorkerViewState};
 use datafusion_distributed::{
-    GetTaskProgressRequest, ObservabilityServiceClient, ObservabilityStageKey, PingRequest,
-    TaskProgress, TaskStatus,
+    GetTaskProgressRequest, ObservabilityServiceClient, PingRequest, TaskProgress, TaskStatus,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -10,6 +9,9 @@ use url::Url;
 
 /// Maximum number of completed tasks to retain per worker.
 const MAX_COMPLETED_TASKS: usize = 50;
+
+/// Number of metric samples to keep per worker (120 * 250ms = 30s of history).
+const METRIC_HISTORY_LEN: usize = 120;
 
 /// App holds the main application state.
 pub struct App {
@@ -20,10 +22,14 @@ pub struct App {
     pub worker_state: WorkerViewState,
     pub paused: bool,
     pub show_help: bool,
-    pub sort_mode: SortMode,
     pub should_quit: bool,
     pub start_time: Instant,
     pub poll_count: u64,
+    /// Previous tick's cluster-wide output rows total (for throughput delta).
+    prev_output_rows_total: u64,
+    prev_output_rows_time: Option<Instant>,
+    /// Smoothed cluster-wide throughput in rows/s.
+    pub current_throughput: f64,
 }
 
 /// Summary of a query aggregated across all workers.
@@ -32,7 +38,6 @@ pub struct QuerySummary {
     pub worker_count: usize,
     pub task_count: usize,
     pub stage_count: usize,
-    pub first_seen: Instant,
 }
 
 /// Cluster-wide statistics for the header.
@@ -59,6 +64,18 @@ pub struct WorkerConn {
     pub poll_count: u64,
     last_reconnect_attempt: Option<Instant>,
     last_seen_query_ids: HashSet<Vec<u8>>,
+    /// Worker RSS memory in bytes (from WorkerMetrics).
+    pub rss_bytes: u64,
+    /// Worker CPU usage percentage (from WorkerMetrics).
+    pub cpu_usage_percent: f64,
+    /// Sum of output_rows across all running tasks on this worker.
+    pub output_rows_total: u64,
+    /// Time-series history for sparkline graphs.
+    pub cpu_history: VecDeque<u64>,
+    pub rss_history: VecDeque<u64>,
+    pub rows_history: VecDeque<u64>,
+    /// Previous output_rows_total for computing per-poll delta.
+    prev_output_rows: u64,
 }
 
 /// Unique key for a task: (query_id, stage_id, task_number).
@@ -67,7 +84,6 @@ type TaskKey = (Vec<u8>, u64, u64);
 /// Record of a completed task with observed duration.
 #[derive(Clone, Debug)]
 pub struct CompletedTaskRecord {
-    pub stage_key: ObservabilityStageKey,
     pub query_id: Vec<u8>,
     pub stage_id: u64,
     pub task_number: u64,
@@ -99,6 +115,13 @@ impl App {
                 poll_count: 0,
                 last_reconnect_attempt: None,
                 last_seen_query_ids: HashSet::new(),
+                rss_bytes: 0,
+                cpu_usage_percent: 0.0,
+                output_rows_total: 0,
+                cpu_history: VecDeque::with_capacity(METRIC_HISTORY_LEN),
+                rss_history: VecDeque::with_capacity(METRIC_HISTORY_LEN),
+                rows_history: VecDeque::with_capacity(METRIC_HISTORY_LEN),
+                prev_output_rows: 0,
             })
             .collect();
 
@@ -110,10 +133,12 @@ impl App {
             worker_state: WorkerViewState::default(),
             paused: false,
             show_help: false,
-            sort_mode: SortMode::Name,
             should_quit: false,
             start_time: Instant::now(),
             poll_count: 0,
+            prev_output_rows_total: 0,
+            prev_output_rows_time: None,
+            current_throughput: 0.0,
         }
     }
 
@@ -146,6 +171,26 @@ impl App {
 
         self.poll_count += 1;
         self.rebuild_queries();
+        self.update_throughput();
+    }
+
+    /// Update cluster-wide throughput from output rows delta.
+    fn update_throughput(&mut self) {
+        let current_total: u64 = self.workers.iter().map(|w| w.output_rows_total).sum();
+        let now = Instant::now();
+
+        if let Some(prev_time) = self.prev_output_rows_time {
+            let elapsed = prev_time.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let delta = current_total.saturating_sub(self.prev_output_rows_total);
+                let instantaneous = delta as f64 / elapsed;
+                // Exponential smoothing
+                self.current_throughput = 0.7 * instantaneous + 0.3 * self.current_throughput;
+            }
+        }
+
+        self.prev_output_rows_total = current_total;
+        self.prev_output_rows_time = Some(now);
     }
 
     /// Rebuild the queries HashMap from all workers' task data.
@@ -163,7 +208,6 @@ impl App {
                                 worker_count: 0,
                                 task_count: 0,
                                 stage_count: 0,
-                                first_seen: Instant::now(),
                             });
                     entry.task_count += 1;
                 }
@@ -229,34 +273,89 @@ impl App {
     /// Get the sorted worker indices for the cluster view.
     pub fn sorted_worker_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..self.workers.len()).collect();
-        match self.sort_mode {
-            SortMode::Name => {
-                indices.sort_by(|&a, &b| self.workers[a].url.cmp(&self.workers[b].url));
-            }
-            SortMode::Tasks => {
+        let direction = self.cluster_state.sort_direction;
+
+        if direction == SortDirection::Unsorted {
+            return indices;
+        }
+
+        let ascending = direction == SortDirection::Ascending;
+
+        match self.cluster_state.selected_column {
+            SortColumn::Worker => {
                 indices.sort_by(|&a, &b| {
-                    self.workers[b]
+                    let cmp = self.workers[a].url.cmp(&self.workers[b].url);
+                    if ascending { cmp } else { cmp.reverse() }
+                });
+            }
+            SortColumn::Status => {
+                indices.sort_by(|&a, &b| {
+                    let cmp = self.workers[a]
+                        .status_sort_key()
+                        .cmp(&self.workers[b].status_sort_key());
+                    if ascending { cmp } else { cmp.reverse() }
+                });
+            }
+            SortColumn::Tasks => {
+                indices.sort_by(|&a, &b| {
+                    let cmp = self.workers[a]
                         .tasks
                         .len()
-                        .cmp(&self.workers[a].tasks.len())
+                        .cmp(&self.workers[b].tasks.len());
+                    if ascending { cmp } else { cmp.reverse() }
                 });
             }
-            SortMode::Status => {
+            SortColumn::Queries => {
                 indices.sort_by(|&a, &b| {
-                    self.workers[a]
-                        .status_sort_key()
-                        .cmp(&self.workers[b].status_sort_key())
+                    let cmp = self.workers[a]
+                        .distinct_query_count()
+                        .cmp(&self.workers[b].distinct_query_count());
+                    if ascending { cmp } else { cmp.reverse() }
                 });
             }
-            SortMode::LongestTask => {
+            SortColumn::Cpu => {
                 indices.sort_by(|&a, &b| {
-                    let dur_a = self.workers[a].longest_task_duration();
-                    let dur_b = self.workers[b].longest_task_duration();
-                    dur_b.cmp(&dur_a)
+                    let cmp = self.workers[a]
+                        .cpu_usage_percent
+                        .partial_cmp(&self.workers[b].cpu_usage_percent)
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if ascending { cmp } else { cmp.reverse() }
+                });
+            }
+            SortColumn::Rss => {
+                indices.sort_by(|&a, &b| {
+                    let cmp = self.workers[a].rss_bytes.cmp(&self.workers[b].rss_bytes);
+                    if ascending { cmp } else { cmp.reverse() }
                 });
             }
         }
         indices
+    }
+
+    /// Average observed_duration across all workers' completed tasks.
+    pub fn cluster_avg_task_duration(&self) -> Option<Duration> {
+        let mut total = Duration::ZERO;
+        let mut count = 0usize;
+        for worker in &self.workers {
+            for ct in &worker.completed_tasks {
+                total += ct.observed_duration;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            Some(total / count as u32)
+        } else {
+            None
+        }
+    }
+
+    /// Longest currently-running task across all workers.
+    pub fn cluster_longest_active_task(&self) -> Duration {
+        self.workers
+            .iter()
+            .map(|w| w.longest_task_duration())
+            .max()
+            .unwrap_or_default()
     }
 
     /// Get average task count across all workers (for hot spot detection).
@@ -324,7 +423,28 @@ impl WorkerConn {
 
         match client.get_task_progress(GetTaskProgressRequest {}).await {
             Ok(response) => {
-                let new_tasks = response.into_inner().tasks;
+                let response = response.into_inner();
+                let new_tasks = response.tasks;
+
+                // Store worker-level metrics
+                if let Some(wm) = &response.worker_metrics {
+                    self.rss_bytes = wm.rss_bytes;
+                    self.cpu_usage_percent = wm.cpu_usage_percent;
+                }
+
+                // Compute output rows total across running tasks
+                self.output_rows_total = new_tasks.iter().map(|t| t.output_rows).sum();
+
+                // Record metric history samples for sparkline graphs
+                push_history(
+                    &mut self.cpu_history,
+                    (self.cpu_usage_percent * 100.0) as u64,
+                );
+                push_history(&mut self.rss_history, self.rss_bytes);
+                let rows_delta = self.output_rows_total.saturating_sub(self.prev_output_rows);
+                push_history(&mut self.rows_history, rows_delta);
+                self.prev_output_rows = self.output_rows_total;
+
                 self.poll_count += 1;
 
                 // Build set of new task keys for quick lookup
@@ -351,7 +471,6 @@ impl WorkerConn {
                                     .unwrap_or_default();
 
                                 self.completed_tasks.push_front(CompletedTaskRecord {
-                                    stage_key: sk.clone(),
                                     query_id: sk.query_id.clone(),
                                     stage_id: sk.stage_id,
                                     task_number: sk.task_number,
@@ -441,6 +560,10 @@ impl WorkerConn {
                     reason: format!("Poll failed: {e}"),
                 };
                 self.last_seen_query_ids.clear();
+                // Push zeros so sparkline shows the gap
+                push_history(&mut self.cpu_history, 0);
+                push_history(&mut self.rss_history, 0);
+                push_history(&mut self.rows_history, 0);
             }
         }
     }
@@ -512,4 +635,12 @@ impl WorkerConn {
             .map(|first| first.elapsed())
             .unwrap_or_default()
     }
+}
+
+/// Push a value into a ring buffer, evicting the oldest if at capacity.
+fn push_history(buf: &mut VecDeque<u64>, value: u64) {
+    if buf.len() >= METRIC_HISTORY_LEN {
+        buf.pop_front();
+    }
+    buf.push_back(value);
 }

@@ -20,12 +20,8 @@ struct Args {
     #[arg(long = "cluster-ports", value_delimiter = ',')]
     cluster_ports: Vec<u16>,
 
-    /// Full worker URLs (e.g. http://worker-01:50051)
-    #[arg(long = "cluster-urls", value_delimiter = ',')]
-    cluster_urls: Vec<String>,
-
     /// Polling interval in milliseconds
-    #[arg(long = "poll-interval", default_value = "250")]
+    #[arg(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
 }
 
@@ -35,15 +31,11 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::parse();
 
-    let mut worker_urls: Vec<Url> = args
+    let worker_urls: Vec<Url> = args
         .cluster_ports
         .iter()
         .map(|port| Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL"))
         .collect();
-
-    for url_str in &args.cluster_urls {
-        worker_urls.push(Url::parse(url_str)?);
-    }
 
     let poll_interval = Duration::from_millis(args.poll_interval);
     let mut app = App::new(worker_urls);

@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::state::{SortColumn, SortDirection};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -6,11 +7,110 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let [table_area, summary_area] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(area);
+    let [metrics_area, table_area, summary_area] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
+    render_cluster_metrics(frame, metrics_area, app);
     render_worker_table(frame, table_area, app);
     render_task_distribution(frame, summary_area, app);
+}
+
+fn render_cluster_metrics(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Cluster Metrics ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [line1_area, line2_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+
+    let stats = app.cluster_stats();
+
+    // Line 1: Throughput and active workers
+    let throughput_str = if app.current_throughput > 0.0 {
+        format_rows_throughput(app.current_throughput)
+    } else {
+        "--".to_string()
+    };
+    let throughput_color = if app.current_throughput > 0.0 {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
+
+    let active_str = format!("{}/{} workers", stats.active_count, stats.total);
+    let active_color = if stats.active_count > 0 {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
+
+    let line1 = Line::from(vec![
+        Span::styled(
+            " Throughput: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(throughput_str, Style::default().fg(throughput_color)),
+        Span::raw("     "),
+        Span::styled(" Active: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(active_str, Style::default().fg(active_color)),
+    ]);
+    frame.render_widget(Paragraph::new(line1), line1_area);
+
+    // Line 2: Completed tasks, avg duration, longest active task
+    let completed_str = format!("{} tasks", stats.total_completed);
+
+    let avg_dur_str = app
+        .cluster_avg_task_duration()
+        .map(format_task_duration)
+        .unwrap_or_else(|| "--".to_string());
+
+    let longest = app.cluster_longest_active_task();
+    let longest_str = if longest.is_zero() {
+        "--".to_string()
+    } else {
+        format_task_duration(longest)
+    };
+    let longest_color = if longest.as_secs() > 60 {
+        Color::Red
+    } else if longest.as_secs() > 30 {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
+    let line2 = Line::from(vec![
+        Span::styled(
+            " Completed: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            completed_str,
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw("     "),
+        Span::styled(
+            "Avg duration: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(avg_dur_str, Style::default().fg(Color::DarkGray)),
+        Span::raw("     "),
+        Span::styled(
+            "Longest: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(longest_str, Style::default().fg(longest_color)),
+    ]);
+    frame.render_widget(Paragraph::new(line2), line2_area);
 }
 
 fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -18,18 +118,48 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let avg_tasks = app.avg_tasks_per_worker();
     let wide = area.width >= 100;
 
-    let header_cells = if wide {
-        vec!["Worker", "Status", "Tasks", "Queries", "Longest Task"]
+    let columns: Vec<(&str, SortColumn)> = if wide {
+        vec![
+            ("Worker", SortColumn::Worker),
+            ("Status", SortColumn::Status),
+            ("Tasks", SortColumn::Tasks),
+            ("Queries", SortColumn::Queries),
+            ("CPU", SortColumn::Cpu),
+            ("RSS", SortColumn::Rss),
+        ]
     } else {
-        vec!["Worker", "Status", "Tasks", "Longest"]
+        vec![
+            ("Worker", SortColumn::Worker),
+            ("Status", SortColumn::Status),
+            ("Tasks", SortColumn::Tasks),
+            ("CPU", SortColumn::Cpu),
+            ("RSS", SortColumn::Rss),
+        ]
     };
 
-    let header = Row::new(header_cells.iter().map(|h| {
-        Cell::from(*h).style(
+    let selected_col = app.cluster_state.selected_column;
+    let sort_dir = app.cluster_state.sort_direction;
+
+    let header = Row::new(columns.iter().map(|(label, col)| {
+        let is_selected = *col == selected_col;
+        let indicator = if is_selected { sort_dir.indicator() } else { "" };
+        let text = format!("{label}{indicator}");
+
+        let style = if is_selected && sort_dir != SortDirection::Unsorted {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if is_selected {
             Style::default()
                 .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        };
+
+        Cell::from(text).style(style)
     }))
     .height(1);
 
@@ -39,13 +169,16 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
             let worker = &app.workers[idx];
             let task_count = worker.tasks.len();
             let status_color = worker.status_color();
+            let is_disconnected = matches!(
+                worker.connection_status,
+                crate::app::ConnectionStatus::Disconnected { .. }
+            );
 
             // URL display
             let url_str = worker.url.as_str();
             let url_display = if wide || url_str.len() <= 30 {
                 url_str.to_string()
             } else {
-                // Show last 28 chars with ".."
                 format!("..{}", &url_str[url_str.len().saturating_sub(28)..])
             };
 
@@ -59,36 +192,43 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::DarkGray)
                 };
 
-            let task_str = if matches!(
-                worker.connection_status,
-                crate::app::ConnectionStatus::Disconnected { .. }
-            ) {
+            let task_str = if is_disconnected {
                 "-".to_string()
             } else {
                 task_count.to_string()
             };
 
-            // Longest task duration
-            let longest = worker.longest_task_duration();
-            let longest_str = if longest.is_zero() {
-                "-".to_string()
+            // CPU usage
+            let (cpu_str, cpu_style) = if is_disconnected {
+                ("-".to_string(), Style::default().fg(Color::DarkGray))
+            } else if worker.cpu_usage_percent > 0.0 {
+                let style = if worker.cpu_usage_percent > 95.0 {
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                } else if worker.cpu_usage_percent > 80.0 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Green)
+                };
+                (format!("{:.1}%", worker.cpu_usage_percent), style)
             } else {
-                format_task_duration(longest)
+                ("--".to_string(), Style::default().fg(Color::DarkGray))
             };
-            let longest_style = if longest.as_secs() > 60 {
-                Style::default().fg(Color::Red)
-            } else if longest.as_secs() > 30 {
-                Style::default().fg(Color::Yellow)
+
+            // RSS memory
+            let (rss_str, rss_style) = if is_disconnected {
+                ("-".to_string(), Style::default().fg(Color::DarkGray))
+            } else if worker.rss_bytes > 0 {
+                (
+                    format_bytes(worker.rss_bytes),
+                    Style::default().fg(Color::White),
+                )
             } else {
-                Style::default().fg(Color::DarkGray)
+                ("--".to_string(), Style::default().fg(Color::DarkGray))
             };
 
             if wide {
                 let query_count = worker.distinct_query_count();
-                let query_str = if matches!(
-                    worker.connection_status,
-                    crate::app::ConnectionStatus::Disconnected { .. }
-                ) {
+                let query_str = if is_disconnected {
                     "-".to_string()
                 } else {
                     query_count.to_string()
@@ -99,14 +239,16 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
                     Cell::from(worker.status_text()).style(Style::default().fg(status_color)),
                     Cell::from(task_str).style(task_style),
                     Cell::from(query_str).style(Style::default().fg(Color::DarkGray)),
-                    Cell::from(longest_str).style(longest_style),
+                    Cell::from(cpu_str).style(cpu_style),
+                    Cell::from(rss_str).style(rss_style),
                 ])
             } else {
                 Row::new(vec![
                     Cell::from(url_display),
                     Cell::from(worker.status_text()).style(Style::default().fg(status_color)),
                     Cell::from(task_str).style(task_style),
-                    Cell::from(longest_str).style(longest_style),
+                    Cell::from(cpu_str).style(cpu_style),
+                    Cell::from(rss_str).style(rss_style),
                 ])
             }
         })
@@ -114,28 +256,29 @@ fn render_worker_table(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let widths = if wide {
         vec![
-            Constraint::Percentage(35),
-            Constraint::Percentage(15),
+            Constraint::Percentage(30),
+            Constraint::Percentage(12),
             Constraint::Percentage(10),
-            Constraint::Percentage(15),
-            Constraint::Percentage(25),
+            Constraint::Percentage(12),
+            Constraint::Percentage(13),
+            Constraint::Percentage(13),
         ]
     } else {
         vec![
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
+            Constraint::Percentage(35),
             Constraint::Percentage(15),
-            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+            Constraint::Percentage(20),
         ]
     };
 
-    let sort_label = app.sort_mode.label();
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Workers (sorted by {sort_label}) ")),
+                .title(" Workers "),
         )
         .row_highlight_style(
             Style::default()
@@ -198,5 +341,27 @@ fn format_task_duration(d: std::time::Duration) -> String {
         format!("{secs}.{:01}s", millis / 100)
     } else {
         format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+fn format_rows_throughput(rows_per_sec: f64) -> String {
+    if rows_per_sec >= 1_000_000.0 {
+        format!("{:.1}M rows out/s", rows_per_sec / 1_000_000.0)
+    } else if rows_per_sec >= 1_000.0 {
+        format!("{:.1}K rows out/s", rows_per_sec / 1_000.0)
+    } else {
+        format!("{rows_per_sec:.0} rows out/s")
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.0} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
     }
 }

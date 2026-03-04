@@ -4,7 +4,8 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, SparklineBar, Table};
+use std::collections::VecDeque;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let idx = app.worker_state.worker_idx;
@@ -16,15 +17,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let [summary_area, active_area, completed_area, conn_area] = Layout::vertical([
+    let [summary_area, metrics_area, active_area, completed_area, conn_area] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Percentage(50),
+        Constraint::Length(9),
+        Constraint::Percentage(45),
         Constraint::Min(4),
         Constraint::Length(1),
     ])
     .areas(area);
 
     render_summary(frame, summary_area, app, idx);
+    render_metrics(frame, metrics_area, app, idx);
     render_active_tasks(frame, active_area, app, idx);
     render_completed_tasks(frame, completed_area, app, idx);
     render_connection_info(frame, conn_area, app, idx);
@@ -74,7 +77,7 @@ fn render_active_tasks(frame: &mut Frame, area: Rect, app: &mut App, idx: usize)
     let worker = &app.workers[idx];
     let focused = app.worker_state.focused_panel == WorkerPanel::ActiveTasks;
 
-    let header = Row::new(vec!["Query", "Stage", "Task#", "Duration"]).style(
+    let header = Row::new(vec!["Query", "Stage", "Task#", "Duration", "Output Rows"]).style(
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
@@ -112,17 +115,21 @@ fn render_active_tasks(frame: &mut Frame, area: Rect, app: &mut App, idx: usize)
                     Style::default()
                 };
 
+                let output_rows_str = format_row_count(task.output_rows);
+
                 Row::new(vec![
                     Cell::from(query_hex).style(Style::default().fg(Color::Cyan)),
                     Cell::from(format!("S{}", sk.stage_id)),
                     Cell::from(format!("T{}", sk.task_number)),
                     Cell::from(dur_str).style(dur_style),
+                    Cell::from(output_rows_str).style(Style::default().fg(Color::DarkGray)),
                 ])
             } else {
                 Row::new(vec![
                     Cell::from("?"),
                     Cell::from("?"),
                     Cell::from("?"),
+                    Cell::from("-"),
                     Cell::from("-"),
                 ])
             }
@@ -140,10 +147,11 @@ fn render_active_tasks(frame: &mut Frame, area: Rect, app: &mut App, idx: usize)
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(30),
+            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
             Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
+            Constraint::Percentage(25),
         ],
     )
     .header(header)
@@ -243,6 +251,151 @@ fn render_connection_info(frame: &mut Frame, area: Rect, app: &App, idx: usize) 
     frame.render_widget(Paragraph::new(line), area);
 }
 
+fn render_metrics(frame: &mut Frame, area: Rect, app: &App, idx: usize) {
+    let worker = &app.workers[idx];
+    let focused = app.worker_state.focused_panel == WorkerPanel::Metrics;
+
+    let title_style = if focused {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let outer_block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Metrics ", title_style));
+
+    let inner = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
+    let [cpu_area, rss_area, rows_area] = Layout::horizontal([
+        Constraint::Percentage(33),
+        Constraint::Percentage(34),
+        Constraint::Percentage(33),
+    ])
+    .areas(inner);
+
+    render_sparkline_panel(
+        frame,
+        cpu_area,
+        "CPU",
+        &worker.cpu_history,
+        10_000, // 100.00% scaled to 10000
+        format!("{:.1}%", worker.cpu_usage_percent),
+        cpu_color(worker.cpu_usage_percent),
+    );
+
+    render_sparkline_panel(
+        frame,
+        rss_area,
+        "Memory",
+        &worker.rss_history,
+        0, // auto-scale
+        format_bytes(worker.rss_bytes),
+        Color::Cyan,
+    );
+
+    render_sparkline_panel(
+        frame,
+        rows_area,
+        "Rows/poll",
+        &worker.rows_history,
+        0, // auto-scale
+        format_row_count(worker.rows_history.back().copied().unwrap_or(0)),
+        Color::Green,
+    );
+}
+
+fn render_sparkline_panel(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    history: &VecDeque<u64>,
+    max_value: u64,
+    current_label: String,
+    bar_color: Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    let [spark_area, label_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+
+    // Right-align data: take only the most recent `width` samples,
+    // pad with None (absent) so empty region is distinct from real zero readings.
+    let width = spark_area.width as usize;
+    let skip = history.len().saturating_sub(width);
+    let recent: Vec<u64> = history.iter().copied().skip(skip).collect();
+
+    let data: Vec<SparklineBar> = if recent.len() < width {
+        let padding = width - recent.len();
+        std::iter::repeat_n(SparklineBar::from(None), padding)
+            .chain(recent.into_iter().map(SparklineBar::from))
+            .collect()
+    } else {
+        recent.into_iter().map(SparklineBar::from).collect()
+    };
+
+    let effective_max = if max_value > 0 {
+        max_value
+    } else {
+        history.iter().copied().max().unwrap_or(1).max(1)
+    };
+
+    let sparkline = Sparkline::default()
+        .data(data)
+        .max(effective_max)
+        .style(Style::default().fg(bar_color))
+        .absent_value_style(Style::default().fg(Color::DarkGray));
+
+    frame.render_widget(sparkline, spark_area);
+
+    let label = Line::from(Span::styled(
+        format!(" {current_label}"),
+        Style::default()
+            .fg(bar_color)
+            .add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(Paragraph::new(label), label_area);
+}
+
+fn cpu_color(pct: f64) -> Color {
+    if pct > 95.0 {
+        Color::Red
+    } else if pct > 80.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        "--".to_string()
+    } else if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Format the first `n` bytes of a byte slice as hex.
 fn hex_prefix(bytes: &[u8], n: usize) -> String {
     bytes
@@ -262,5 +415,17 @@ fn format_duration(d: std::time::Duration) -> String {
         format!("{secs}.{:01}s", millis / 100)
     } else {
         format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+fn format_row_count(rows: u64) -> String {
+    if rows == 0 {
+        "--".to_string()
+    } else if rows >= 1_000_000 {
+        format!("{:.1}M", rows as f64 / 1_000_000.0)
+    } else if rows >= 1_000 {
+        format!("{:.1}K", rows as f64 / 1_000.0)
+    } else {
+        rows.to_string()
     }
 }

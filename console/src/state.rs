@@ -7,31 +7,80 @@ pub enum View {
     WorkerDetail,
 }
 
-/// Sort mode for the worker table in cluster overview.
-#[derive(Clone, Copy, PartialEq)]
-pub enum SortMode {
-    Name,
-    Tasks,
+/// Which column is selected for sorting in the cluster table.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum SortColumn {
+    #[default]
+    Worker,
     Status,
-    LongestTask,
+    Tasks,
+    Queries,
+    Cpu,
+    Rss,
 }
 
-impl SortMode {
-    pub fn next(self) -> Self {
+impl SortColumn {
+    /// Move to the next column. When `wide` is false, skip Queries.
+    pub fn next(self, wide: bool) -> Self {
         match self {
-            SortMode::Name => SortMode::Tasks,
-            SortMode::Tasks => SortMode::Status,
-            SortMode::Status => SortMode::LongestTask,
-            SortMode::LongestTask => SortMode::Name,
+            SortColumn::Worker => SortColumn::Status,
+            SortColumn::Status => SortColumn::Tasks,
+            SortColumn::Tasks => {
+                if wide {
+                    SortColumn::Queries
+                } else {
+                    SortColumn::Cpu
+                }
+            }
+            SortColumn::Queries => SortColumn::Cpu,
+            SortColumn::Cpu => SortColumn::Rss,
+            SortColumn::Rss => SortColumn::Worker,
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// Move to the previous column. When `wide` is false, skip Queries.
+    pub fn prev(self, wide: bool) -> Self {
         match self {
-            SortMode::Name => "name",
-            SortMode::Tasks => "tasks",
-            SortMode::Status => "status",
-            SortMode::LongestTask => "longest task",
+            SortColumn::Worker => SortColumn::Rss,
+            SortColumn::Status => SortColumn::Worker,
+            SortColumn::Tasks => SortColumn::Status,
+            SortColumn::Queries => SortColumn::Tasks,
+            SortColumn::Cpu => {
+                if wide {
+                    SortColumn::Queries
+                } else {
+                    SortColumn::Tasks
+                }
+            }
+            SortColumn::Rss => SortColumn::Cpu,
+        }
+    }
+
+}
+
+/// Sort direction for the selected column.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum SortDirection {
+    #[default]
+    Unsorted,
+    Ascending,
+    Descending,
+}
+
+impl SortDirection {
+    pub fn next(self) -> Self {
+        match self {
+            SortDirection::Unsorted => SortDirection::Ascending,
+            SortDirection::Ascending => SortDirection::Descending,
+            SortDirection::Descending => SortDirection::Unsorted,
+        }
+    }
+
+    pub fn indicator(self) -> &'static str {
+        match self {
+            SortDirection::Unsorted => "",
+            SortDirection::Ascending => " ▲",
+            SortDirection::Descending => " ▼",
         }
     }
 }
@@ -39,6 +88,7 @@ impl SortMode {
 /// Which panel is focused in worker detail view.
 #[derive(Clone, Copy, PartialEq)]
 pub enum WorkerPanel {
+    Metrics,
     ActiveTasks,
     CompletedTasks,
 }
@@ -46,13 +96,19 @@ pub enum WorkerPanel {
 /// State for the Cluster Overview view.
 pub struct ClusterViewState {
     pub table: TableState,
+    pub selected_column: SortColumn,
+    pub sort_direction: SortDirection,
 }
 
 impl Default for ClusterViewState {
     fn default() -> Self {
         let mut table = TableState::default();
         table.select(Some(0));
-        Self { table }
+        Self {
+            table,
+            selected_column: SortColumn::default(),
+            sort_direction: SortDirection::default(),
+        }
     }
 }
 
