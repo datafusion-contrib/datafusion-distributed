@@ -1,3 +1,4 @@
+use super::format::format_duration;
 use crate::app::App;
 use crate::state::View;
 use ratatui::Frame;
@@ -82,13 +83,3 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(header, area);
 }
 
-fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m {}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-    }
-}

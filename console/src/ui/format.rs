@@ -25,8 +25,10 @@ pub(super) fn format_duration(d: Duration) -> String {
         format!("{millis}ms")
     } else if secs < 60 {
         format!("{secs}.{:01}s", millis / 100)
-    } else {
+    } else if secs < 3600 {
         format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
