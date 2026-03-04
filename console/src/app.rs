@@ -334,16 +334,16 @@ impl App {
 
     /// Average observed_duration across all workers' completed tasks.
     pub(crate) fn cluster_avg_task_duration(&self) -> Option<Duration> {
-        let mut total = Duration::ZERO;
+        let mut total_secs = 0.0f64;
         let mut count = 0usize;
         for worker in &self.workers {
             for ct in &worker.completed_tasks {
-                total += ct.observed_duration;
+                total_secs += ct.observed_duration.as_secs_f64();
                 count += 1;
             }
         }
         if count > 0 {
-            Some(total / count as u32)
+            Some(Duration::from_secs_f64(total_secs / count as f64))
         } else {
             None
         }
