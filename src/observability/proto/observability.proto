@@ -26,6 +26,7 @@ message TaskProgress {
   uint64 total_partitions = 2;
   uint64 completed_partitions = 3;
   TaskStatus status = 4;
+  uint64 output_rows = 5;
 }
 
 enum TaskStatus {
@@ -33,6 +34,13 @@ enum TaskStatus {
   TASK_STATUS_RUNNING = 1;
 }
 
+// Worker-level system metrics
+message WorkerMetrics {
+  uint64 rss_bytes = 1;
+  double cpu_usage_percent = 2;
+}
+
 message GetTaskProgressResponse {
   repeated TaskProgress tasks = 1;
+  WorkerMetrics worker_metrics = 2;
 }
