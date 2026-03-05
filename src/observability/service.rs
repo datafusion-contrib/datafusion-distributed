@@ -95,6 +95,8 @@ impl ObservabilityServiceImpl {
             }
         }
 
+        // When the `system-metrics` feature is not enabled, gracefully degrade
+        // by returning default (zeroed) metrics instead of querying the OS.
         #[cfg(not(feature = "system-metrics"))]
         {
             WorkerMetrics::default()
