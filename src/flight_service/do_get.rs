@@ -326,7 +326,7 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn do_get_wait_for_task_data_honors_propagated_timeout() {
+    async fn do_get_honors_propagated_wait_timeout() {
         let worker = Worker::default();
 
         let stage_key = StageKey::new(Bytes::from(Uuid::from_u128(1).as_bytes().to_vec()), 0, 0);

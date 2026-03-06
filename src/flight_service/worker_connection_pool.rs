@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_connection_do_get_request_timeout_controls_failure_and_success() -> Result<()> {
+    async fn do_get_request_timeout_controls_outcome() -> Result<()> {
         let (url, _guard) = spawn_delayed_do_get_server(Duration::from_millis(200))
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
