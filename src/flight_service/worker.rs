@@ -135,13 +135,18 @@ impl Worker {
             .max_encoding_message_size(usize::MAX)
     }
 
+    /// Creates an [`ObservabilityServiceServer`] that exposes task progress and cluster
+    /// worker discovery via the provided [`WorkerResolver`].
+    ///
+    /// The returned server is meant to be added to the same [`tonic::transport::Server`] as the
+    /// Flight service — gRPC multiplexes both services on a single port.
     pub fn with_observability_service(
         &self,
-        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
+        worker_resolver: impl WorkerResolver + Send + Sync + 'static,
     ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
         ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
             self.task_data_entries.clone(),
-            worker_resolver,
+            Arc::new(worker_resolver),
         ))
     }
 
