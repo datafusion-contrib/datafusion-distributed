@@ -266,7 +266,7 @@ pub fn stage_metrics_rewriter(
 
 #[cfg(test)]
 mod tests {
-    use crate::Stage;
+    use crate::DistributedExec;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::proto::{
         MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
@@ -282,7 +282,7 @@ mod tests {
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
+    use crate::{SessionStateBuilderExt, Stage};
     use bytes::Bytes;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -326,7 +326,7 @@ mod tests {
                 .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_physical_optimizer_rules()
                 .with_distributed_task_estimator(2)
         }
 

@@ -1,13 +1,10 @@
-use crate::{
-    DistributedExt, DistributedPhysicalOptimizerRule, Worker, WorkerResolver, WorkerSessionBuilder,
-};
+use crate::{DistributedExt, SessionStateBuilderExt, Worker, WorkerResolver, WorkerSessionBuilder};
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use std::error::Error;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -68,7 +65,7 @@ where
     let worker_resolver = LocalHostWorkerResolver::new(ports);
     let mut state = SessionStateBuilder::new()
         .with_default_features()
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_physical_optimizer_rules()
         .with_distributed_worker_resolver(worker_resolver)
         .build();
     state.config_mut().options_mut().execution.target_partitions = 3;
