@@ -9,6 +9,7 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use async_trait::async_trait;
+use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::BoxStream;
@@ -24,7 +25,7 @@ pub(super) struct WorkerHooks {
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
-type ResultTaskData = Result<TaskData, Status>;
+type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 #[derive(Clone)]
 pub struct Worker {

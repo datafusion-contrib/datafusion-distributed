@@ -1,5 +1,5 @@
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
-use crate::protobuf::{DistributedCodec, datafusion_error_to_tonic_status};
+use crate::protobuf::DistributedCodec;
 use crate::{DistributedConfig, StageKey, Worker, WorkerQueryContext};
 use arrow_flight::Action;
 use arrow_flight::flight_service_server::FlightService;
@@ -110,7 +110,7 @@ impl Worker {
             })
         };
 
-        entry.write(task_data().await.map_err(datafusion_error_to_tonic_status)).map_err(|_| {
+        entry.write(task_data().await.map_err(Arc::new)).map_err(|_| {
             Status::internal(format!(
                 "Logic error while setting plan for Stage key {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))

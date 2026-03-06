@@ -74,7 +74,8 @@ impl Worker {
         let task_data = entry
             .read(Duration::from_secs(WAIT_PLAN_TIMEOUT_SECS))
             .await
-            .map_err(|v| Status::invalid_argument(v.to_string()))??;
+            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(datafusion_error_to_tonic_status)?;
 
         let plan = task_data.plan;
         let task_ctx = task_data.task_ctx;

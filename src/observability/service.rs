@@ -1,5 +1,6 @@
 use crate::flight_service::{SingleWriteMultiRead, TaskData};
 use crate::protobuf::StageKey;
+use datafusion::error::DataFusionError;
 use moka::future::Cache;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -9,7 +10,7 @@ use super::{
     generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
 
-type ResultTaskData = Result<TaskData, Status>;
+type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
