@@ -6,6 +6,7 @@ mod worker;
 
 use app::App;
 use crossterm::event::{self, Event};
+use datafusion_distributed::DEFAULT_WORKER_PORT;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
@@ -21,6 +22,12 @@ struct Args {
     #[structopt(long = "cluster-ports", use_delimiter = true)]
     cluster_ports: Vec<u16>,
 
+    /// URL of a seed worker for auto-discovery (e.g. http://localhost:6789).
+    /// The console will call GetClusterWorkers to discover all workers.
+    /// Mutually exclusive with --cluster-ports.
+    #[arg(long = "connect", conflicts_with = "cluster_ports")]
+    connect: Option<Url>,
+
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
@@ -32,14 +39,26 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let worker_urls: Vec<Url> = args
-        .cluster_ports
-        .iter()
-        .map(|port| Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL"))
-        .collect();
-
     let poll_interval = Duration::from_millis(args.poll_interval);
-    let mut app = App::new(worker_urls);
+
+    let mut app = if !args.cluster_ports.is_empty() {
+        // Manual mode: explicit list of localhost ports
+        let worker_urls: Vec<Url> = args
+            .cluster_ports
+            .iter()
+            .map(|port| {
+                Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL")
+            })
+            .collect();
+        App::new_manual(worker_urls)
+    } else {
+        // Discovery mode: connect to seed URL (default: localhost:DEFAULT_WORKER_PORT)
+        let seed_url = args.connect.unwrap_or_else(|| {
+            Url::parse(&format!("http://localhost:{DEFAULT_WORKER_PORT}"))
+                .expect("valid default URL")
+        });
+        App::new_discovery(seed_url)
+    };
 
     let mut terminal = ratatui::init();
     terminal.clear()?;

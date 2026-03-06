@@ -29,7 +29,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
     let mut ports = Vec::new();
+    let mut listeners = Vec::new();
 
+    // Bind all listeners first so we know all ports before starting workers
     for i in 0..args.workers {
         let addr = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -45,12 +47,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let listener = TcpListener::bind(addr).await?;
         let port = listener.local_addr()?.port();
         ports.push(port);
+        listeners.push(listener);
+    }
 
+    // Create a shared resolver that knows about all workers
+    let resolver = LocalhostClusterResolver {
+        ports: Arc::new(RwLock::new(ports.clone())),
+    };
+
+    for listener in listeners {
+        let resolver = resolver.clone();
         tokio::spawn(async move {
             let worker = Worker::default();
 
             Server::builder()
-                .add_service(worker.with_observability_service(localhost_resolver))
+                .add_service(worker.with_observability_service(resolver))
                 .add_service(worker.into_flight_server())
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
@@ -65,7 +76,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .join(",");
 
     println!("Started {} workers on ports: {ports_csv}\n", args.workers);
-    println!("Console:");
+    println!("Console (auto-discovery via any worker):");
+    println!(
+        "\tcargo run -p datafusion-distributed-console -- --connect http://localhost:{}",
+        ports[0]
+    );
+    println!("Console (manual):");
     println!("\tcargo run -p datafusion-distributed-console -- --cluster-ports {ports_csv}");
     println!("TPC-DS runner:");
     println!(
@@ -77,7 +93,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     println!("Press Ctrl+C to stop all workers.");
 
-    // Block forever
     tokio::signal::ctrl_c().await?;
 
     Ok(())
