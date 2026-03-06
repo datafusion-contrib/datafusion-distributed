@@ -10,9 +10,10 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule,
-    Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
-    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DEFAULT_WORKER_PORT, DistributedExt, DistributedMetricsFormat,
+    DistributedPhysicalOptimizerRule, Worker, WorkerResolver, display_plan_ascii,
+    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -73,7 +74,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cmd = Cmd::from_args();
 
     const LISTENER_ADDR: &str = "0.0.0.0:9000";
-    const WORKER_ADDR: &str = "0.0.0.0:9001";
+    let worker_addr = format!("0.0.0.0:{DEFAULT_WORKER_PORT}");
 
     info!("Starting HTTP listener on {LISTENER_ADDR}...");
     let listener = tokio::net::TcpListener::bind(LISTENER_ADDR).await?;
@@ -208,10 +209,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let grpc_server = Server::builder()
         .add_service(worker.with_observability_service(Ec2WorkerResolver::new()))
         .add_service(worker.into_flight_server())
-        .serve(WORKER_ADDR.parse()?);
+        .serve(worker_addr.parse()?);
 
     info!("Started listener HTTP server in {LISTENER_ADDR}");
-    info!("Started distributed DataFusion worker in {WORKER_ADDR}");
+    info!("Started distributed DataFusion worker in {worker_addr}");
 
     tokio::select! {
         result = http_server => result?,
@@ -291,7 +292,7 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
             for reservation in result.reservations() {
                 for instance in reservation.instances() {
                     if let Some(private_ip) = instance.private_ip_address() {
-                        let url = Url::parse(&format!("http://{private_ip}:9001")).unwrap();
+                        let url = Url::parse(&format!("http://{private_ip}:{DEFAULT_WORKER_PORT}")).unwrap();
                         workers.push(url);
                     }
                 }

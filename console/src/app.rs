@@ -4,14 +4,6 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use url::Url;
 
-/// How the console discovers workers.
-pub(crate) enum DiscoveryMode {
-    /// Manual mode: static list of worker URLs from `--cluster-ports`.
-    Manual,
-    /// Discovery mode: periodically call `GetClusterWorkers` on the seed URL.
-    Auto { seed_url: Url },
-}
-
 /// App holds the main application state.
 pub(crate) struct App {
     pub(crate) workers: Vec<WorkerConn>,
@@ -29,8 +21,8 @@ pub(crate) struct App {
     prev_output_rows_time: Option<Instant>,
     /// Smoothed cluster-wide throughput in rows/s.
     pub(crate) current_throughput: f64,
-    /// How the console discovers workers.
-    discovery_mode: DiscoveryMode,
+    /// Seed URL for worker discovery via `GetClusterWorkers`.
+    seed_url: Url,
     /// Last time we ran worker discovery.
     last_discovery: Option<Instant>,
 }
@@ -51,20 +43,10 @@ pub(crate) struct ClusterStats {
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 
 impl App {
-    /// Create a new App in manual mode with an explicit list of worker URLs.
-    pub(crate) fn new_manual(worker_urls: Vec<Url>) -> Self {
-        let workers = worker_urls.into_iter().map(WorkerConn::new).collect();
-        Self::with_workers(workers, DiscoveryMode::Manual)
-    }
-
-    /// Create a new App in auto-discovery mode with a seed URL.
-    pub(crate) fn new_discovery(seed_url: Url) -> Self {
-        Self::with_workers(Vec::new(), DiscoveryMode::Auto { seed_url })
-    }
-
-    fn with_workers(workers: Vec<WorkerConn>, discovery_mode: DiscoveryMode) -> Self {
+    /// Create a new App that discovers workers via `GetClusterWorkers` on the seed URL.
+    pub(crate) fn new(seed_url: Url) -> Self {
         App {
-            workers,
+            workers: Vec::new(),
             active_query_count: 0,
             current_view: View::ClusterOverview,
             cluster_state: ClusterViewState::default(),
@@ -77,7 +59,7 @@ impl App {
             prev_output_rows_total: 0,
             prev_output_rows_time: None,
             current_throughput: 0.0,
-            discovery_mode,
+            seed_url,
             last_discovery: None,
         }
     }
@@ -119,11 +101,6 @@ impl App {
 
     /// Periodically discovers workers via `GetClusterWorkers` on the seed URL.
     async fn maybe_discover_workers(&mut self) {
-        let seed_url = match &self.discovery_mode {
-            DiscoveryMode::Manual => return,
-            DiscoveryMode::Auto { seed_url } => seed_url.clone(),
-        };
-
         let should_discover = match self.last_discovery {
             None => true,
             Some(last) => last.elapsed() >= DISCOVERY_INTERVAL,
@@ -135,7 +112,7 @@ impl App {
 
         self.last_discovery = Some(Instant::now());
 
-        let discovered_urls = match discover_cluster_workers(&seed_url).await {
+        let discovered_urls = match discover_cluster_workers(&self.seed_url).await {
             Ok(urls) => urls,
             Err(_) => return,
         };

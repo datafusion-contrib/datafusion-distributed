@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
-use datafusion_distributed::{Worker, WorkerResolver};
+use datafusion_distributed::{DEFAULT_WORKER_PORT, Worker, WorkerResolver};
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use structopt::StructOpt;
@@ -13,7 +13,7 @@ use url::Url;
     about = "A localhost DataFusion worker with observability"
 )]
 struct Args {
-    #[structopt(default_value = "8080")]
+    #[structopt(default_value = DEFAULT_WORKER_PORT)]
     port: u16,
 
     /// The ports holding Distributed DataFusion workers.

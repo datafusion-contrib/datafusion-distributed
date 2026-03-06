@@ -22,10 +22,10 @@ may take a few minutes).
 Start 4 workers on different ports in different terminals:
 
 ```bash
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8080
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8081
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8082
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8083
+cargo run -p datafusion-distributed-console --example console_worker
+cargo run -p datafusion-distributed-console --example console_worker -- 9002
+cargo run -p datafusion-distributed-console --example console_worker -- 9003
+cargo run -p datafusion-distributed-console --example console_worker -- 9004
 ```
 
 ### Step 2: Start the Console (Terminal 5)
@@ -34,19 +34,21 @@ cargo run -p datafusion-distributed-console --example -- console_worker -- 8083
 cargo run -p datafusion-distributed-console
 ```
 
+The console auto-discovers all workers via the default port (9001).
+
 ### Step 3: Run TPC-DS Queries (Terminal 6)
 
 #### Run a single query
 
 ```bash
-cargo run -p datafusion-distributed-console --example tpcds_runner \
-  --cluster-ports 8080,8081,8082,8083 \
+cargo run -p datafusion-distributed-console --example tpcds_runner -- \
+  --cluster-ports 9001,9002,9003,9004 \
   --query q99
 ```
 
 #### Run all TPC-DS queries sequentially
 
 ```bash
-cargo run -p datafusion-distributed-console --example tpcds_runner \
-  --cluster-ports 8080,8081,8082,8083 \
+cargo run -p datafusion-distributed-console --example tpcds_runner -- \
+  --cluster-ports 9001,9002,9003,9004
 ```

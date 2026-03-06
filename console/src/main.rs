@@ -18,14 +18,10 @@ use url::Url;
     about = "Console for monitoring DataFusion distributed workers"
 )]
 struct Args {
-    /// Comma-delimited list of worker ports (assumed localhost)
-    #[structopt(long = "cluster-ports", use_delimiter = true)]
-    cluster_ports: Vec<u16>,
-
-    /// URL of a seed worker for auto-discovery (e.g. http://localhost:6789).
-    /// The console will call GetClusterWorkers to discover all workers.
-    /// Mutually exclusive with --cluster-ports.
-    #[arg(long = "connect", conflicts_with = "cluster_ports")]
+    /// URL of a worker to connect to for auto-discovery (e.g. http://localhost:9001).
+    /// The console calls GetClusterWorkers on this worker to discover the full cluster.
+    /// Defaults to http://localhost:9001.
+    #[arg(long = "connect")]
     connect: Option<Url>,
 
     /// Polling interval in milliseconds
@@ -39,26 +35,12 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let poll_interval = Duration::from_millis(args.poll_interval);
+    let seed_url = args.connect.unwrap_or_else(|| {
+        Url::parse(&format!("http://localhost:{DEFAULT_WORKER_PORT}")).expect("valid default URL")
+    });
 
-    let mut app = if !args.cluster_ports.is_empty() {
-        // Manual mode: explicit list of localhost ports
-        let worker_urls: Vec<Url> = args
-            .cluster_ports
-            .iter()
-            .map(|port| {
-                Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL")
-            })
-            .collect();
-        App::new_manual(worker_urls)
-    } else {
-        // Discovery mode: connect to seed URL (default: localhost:DEFAULT_WORKER_PORT)
-        let seed_url = args.connect.unwrap_or_else(|| {
-            Url::parse(&format!("http://localhost:{DEFAULT_WORKER_PORT}"))
-                .expect("valid default URL")
-        });
-        App::new_discovery(seed_url)
-    };
+    let poll_interval = Duration::from_millis(args.poll_interval);
+    let mut app = App::new(seed_url);
 
     let mut terminal = ratatui::init();
     terminal.clear()?;

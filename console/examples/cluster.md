@@ -38,11 +38,14 @@ After starting, the example prints ready-to-use commands. For example:
 Started 4 workers on ports: 9000,9001,9002,9003
 
 Console:
-    cargo run -p datafusion-distributed-console -- --cluster-ports 9000,9001,9002,9003
+    cargo run -p datafusion-distributed-console -- --connect http://localhost:9000
 TPC-DS runner:
     cargo run -p datafusion-distributed-console --example tpcds_runner -- --cluster-ports 9000,9001,9002,9003
 Single query:
     cargo run -p datafusion-distributed-console --example console_run -- --cluster-ports 9000,9001,9002,9003 "SELECT 1"
 ```
+
+Note: if one of the workers is on the default port (9001), you can just run
+`cargo run -p datafusion-distributed-console` without any arguments.
 
 Press `Ctrl+C` to stop all workers.
