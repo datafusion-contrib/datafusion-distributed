@@ -1,5 +1,7 @@
+use crate::DistributedConfig;
 use crate::Stage;
 use crate::common::on_drop_stream;
+use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
@@ -150,9 +152,19 @@ impl WorkerConnection {
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
+        let default_cfg = DistributedConfig::default();
+        let grpc_request_timeout_ms = ctx
+            .session_config()
+            .options()
+            .extensions
+            .get::<DistributedConfig>()
+            .map(|cfg| cfg.grpc_request_timeout_ms)
+            .unwrap_or(default_cfg.grpc_request_timeout_ms);
+
         // Building the actual request that will be sent to the worker.
-        let headers = get_passthrough_headers(ctx.session_config());
-        let ticket = Request::from_parts(
+        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        headers.extend(get_passthrough_headers(ctx.session_config()));
+        let mut ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
             Ticket {
@@ -171,6 +183,7 @@ impl WorkerConnection {
                 .into(),
             },
         );
+        ticket.set_timeout(Duration::from_millis(grpc_request_timeout_ms as u64));
 
         let Some(task) = input_stage.tasks.get(target_task) else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
@@ -484,8 +497,110 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_extension_ext::set_distributed_option_extension;
+    use crate::{DistributedConfig, DistributedExt, ExecutionTask, Stage};
+    use arrow_flight::Action;
+    use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
+    use arrow_flight::{
+        Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest,
+        HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+    };
+    use async_trait::async_trait;
+    use datafusion::common::assert_contains;
+    use datafusion::execution::SessionStateBuilder;
     use futures::StreamExt;
+    use futures::stream::BoxStream;
     use futures::stream::unfold;
+    use std::pin::Pin;
+    use tokio::net::TcpListener;
+    use tonic::transport::Server;
+    use tonic::{Request, Response, Status, Streaming};
+    use url::Url;
+    use uuid::Uuid;
+
+    #[derive(Clone, Default)]
+    struct DelayedDoGetService {
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl FlightService for DelayedDoGetService {
+        type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
+        type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
+        type DoGetStream = Pin<Box<dyn futures::Stream<Item = Result<FlightData, Status>> + Send>>;
+        type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
+        type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
+        type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
+        type ListActionsStream = BoxStream<'static, Result<arrow_flight::ActionType, Status>>;
+
+        async fn handshake(
+            &self,
+            _: Request<Streaming<HandshakeRequest>>,
+        ) -> Result<Response<Self::HandshakeStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn list_flights(
+            &self,
+            _: Request<Criteria>,
+        ) -> Result<Response<Self::ListFlightsStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn get_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<FlightInfo>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn poll_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<PollInfo>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn get_schema(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<SchemaResult>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn do_get(&self, _: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
+            tokio::time::sleep(self.delay).await;
+            Ok(Response::new(Box::pin(futures::stream::empty())))
+        }
+
+        async fn do_put(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoPutStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn do_exchange(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoExchangeStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn do_action(
+            &self,
+            _: Request<Action>,
+        ) -> Result<Response<Self::DoActionStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+
+        async fn list_actions(
+            &self,
+            _: Request<Empty>,
+        ) -> Result<Response<Self::ListActionsStream>, Status> {
+            Err(Status::unimplemented("Not yet implemented"))
+        }
+    }
 
     #[tokio::test]
     async fn elapsed_compute_future() {
@@ -558,5 +673,87 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[tokio::test]
+    async fn worker_connection_do_get_request_timeout_controls_failure_and_success() -> Result<()> {
+        let (url, _guard) = spawn_delayed_do_get_server(Duration::from_millis(200))
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+        let stage = Stage {
+            query_id: Uuid::from_u128(42),
+            num: 0,
+            plan: None,
+            tasks: vec![ExecutionTask {
+                url: Some(Url::parse(url.as_str()).expect("valid url")),
+            }],
+        };
+
+        // The same delayed server should fail with a short deadline and succeed with a longer one.
+        let fast_fail_ctx = build_task_ctx_with_request_timeout(50)?;
+
+        let fail_pool = WorkerConnectionPool::new(1);
+        let fail_conn = fail_pool.get_or_init_worker_connection(&stage, 0..1, 0, &fast_fail_ctx)?;
+        let mut fail_stream = Box::pin(fail_conn.stream_partition(0, |_| {})?);
+        let err = fail_stream
+            .next()
+            .await
+            .expect("expected timeout error")
+            .unwrap_err();
+        assert_contains!(err.to_string(), "Timeout expired");
+
+        let succeeds_ctx = build_task_ctx_with_request_timeout(500)?;
+
+        let success_pool = WorkerConnectionPool::new(1);
+        let success_conn =
+            success_pool.get_or_init_worker_connection(&stage, 0..1, 0, &succeeds_ctx)?;
+        let mut success_stream = Box::pin(success_conn.stream_partition(0, |_| {})?);
+        assert!(
+            success_stream.next().await.is_none(),
+            "expected delayed empty stream to complete before timeout"
+        );
+        Ok(())
+    }
+
+    fn build_task_ctx_with_request_timeout(
+        grpc_request_timeout_ms: usize,
+    ) -> Result<Arc<datafusion::execution::TaskContext>> {
+        let mut cfg = datafusion::prelude::SessionConfig::default();
+        set_distributed_option_extension(&mut cfg, DistributedConfig::default());
+        cfg.set_distributed_grpc_request_timeout_ms(grpc_request_timeout_ms)?;
+        Ok(SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(cfg)
+            .build()
+            .task_ctx())
+    }
+
+    async fn spawn_delayed_do_get_server(
+        delay: Duration,
+    ) -> Result<(Url, SpawnedTask<()>), std::io::Error> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+
+        let port = listener
+            .local_addr()
+            .expect("Failed to get local address")
+            .port();
+
+        let task = SpawnedTask::spawn(async move {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            if let Err(err) = Server::builder()
+                .add_service(FlightServiceServer::new(DelayedDoGetService { delay }))
+                .serve_with_incoming(incoming)
+                .await
+            {
+                panic!("{err}")
+            }
+        });
+
+        Ok((
+            Url::parse(&format!("http://127.0.0.1:{port}"))
+                .expect("local test URL should always parse"),
+            task,
+        ))
     }
 }

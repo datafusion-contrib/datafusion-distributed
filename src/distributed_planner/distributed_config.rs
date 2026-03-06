@@ -48,6 +48,16 @@ extensions_options! {
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
+        /// Maximum time to wait while establishing a gRPC connection to a worker.
+        /// This is intended to bound connection setup to unreachable workers.
+        pub grpc_connect_timeout_ms: usize, default = grpc_connect_timeout_ms_default()
+        /// Total timeout for an outbound `do_get` request, in milliseconds.
+        /// This is a full-stream deadline for the whole RPC, not an idle timeout.
+        pub grpc_request_timeout_ms: usize, default = grpc_request_timeout_ms_default()
+        /// Maximum time a worker waits for task data to become available before failing the request.
+        pub wait_plan_timeout_ms: usize, default = wait_plan_timeout_ms_default()
+        /// TCP keepalive period used for worker-to-worker connections.
+        pub grpc_tcp_keepalive_ms: usize, default = grpc_tcp_keepalive_ms_default()
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
@@ -78,6 +88,22 @@ fn cardinality_task_count_factor_default() -> f64 {
     } else {
         1.0
     }
+}
+
+fn grpc_connect_timeout_ms_default() -> usize {
+    5_000
+}
+
+fn grpc_request_timeout_ms_default() -> usize {
+    30_000
+}
+
+fn wait_plan_timeout_ms_default() -> usize {
+    10_000
+}
+
+fn grpc_tcp_keepalive_ms_default() -> usize {
+    60_000
 }
 
 impl DistributedConfig {
