@@ -51,3 +51,6 @@ pub use observability::{
 };
 
 pub use protobuf::StageKey;
+
+#[cfg(any(feature = "integration", test))]
+pub use execution_plans::benchmarks::ShuffleBench;

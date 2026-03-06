@@ -230,6 +230,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "arrow-string",
+ "half",
+ "rand 0.9.2",
 ]
 
 [[package]]
