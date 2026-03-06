@@ -33,7 +33,7 @@ pub use flight_service::{
 pub use metrics::{
     AvgLatencyMetric, CountLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedMetricsFormat, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric,
-    MinLatencyMetric, TotalLatencyMetric, rewrite_distributed_plan_with_metrics,
+    MinLatencyMetric, SumLatencyMetric, rewrite_distributed_plan_with_metrics,
 };
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,

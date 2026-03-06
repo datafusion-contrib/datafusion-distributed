@@ -145,7 +145,7 @@ impl WorkerConnection {
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
         let avg_latency = MetricBuilder::new(metrics).avg_latency("network_latency_avg");
         let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
-        let total_latency = MetricBuilder::new(metrics).total_latency("network_latency_total");
+        let sum_latency = MetricBuilder::new(metrics).sum_latency("network_latency_sum");
         let latency_count = MetricBuilder::new(metrics).count_latency("network_latency_count");
         // Track the total CPU time spent in polling messages over the network + decoding them.
         let elapsed_compute = Time::new();
@@ -252,7 +252,7 @@ impl WorkerConnection {
                     max_latency.add_duration(delta);
                     avg_latency.add_duration(delta);
                     first_latency.add_duration(delta);
-                    total_latency.add_duration(delta);
+                    sum_latency.add_duration(delta);
                     latency_count.add(1);
                 }
 

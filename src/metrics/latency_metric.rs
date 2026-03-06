@@ -16,7 +16,7 @@ pub trait LatencyMetricExt {
     fn max_latency(self, name: impl Into<Cow<'static, str>>) -> MaxLatencyMetric;
     fn avg_latency(self, name: impl Into<Cow<'static, str>>) -> AvgLatencyMetric;
     fn first_latency(self, name: impl Into<Cow<'static, str>>) -> FirstLatencyMetric;
-    fn total_latency(self, name: impl Into<Cow<'static, str>>) -> TotalLatencyMetric;
+    fn sum_latency(self, name: impl Into<Cow<'static, str>>) -> SumLatencyMetric;
     fn count_latency(self, name: impl Into<Cow<'static, str>>) -> CountLatencyMetric;
 }
 
@@ -57,8 +57,8 @@ impl LatencyMetricExt for MetricBuilder<'_> {
         value
     }
 
-    fn total_latency(self, name: impl Into<Cow<'static, str>>) -> TotalLatencyMetric {
-        let value = TotalLatencyMetric::default();
+    fn sum_latency(self, name: impl Into<Cow<'static, str>>) -> SumLatencyMetric {
+        let value = SumLatencyMetric::default();
         self.build(MetricValue::Custom {
             name: name.into(),
             value: Arc::new(value.clone()),
@@ -348,11 +348,11 @@ impl CustomMetricValue for FirstLatencyMetric {
     }
 }
 #[derive(Debug, Clone, Default)]
-pub struct TotalLatencyMetric {
+pub struct SumLatencyMetric {
     nanos: Arc<AtomicUsize>,
 }
 
-impl TotalLatencyMetric {
+impl SumLatencyMetric {
     pub fn from_nanos(nanos: usize) -> Self {
         Self {
             nanos: Arc::new(AtomicUsize::new(nanos)),
@@ -373,15 +373,15 @@ impl TotalLatencyMetric {
     }
 }
 
-impl Display for TotalLatencyMetric {
+impl Display for SumLatencyMetric {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", human_readable_duration(self.value() as u64))
     }
 }
 
-impl CustomMetricValue for TotalLatencyMetric {
+impl CustomMetricValue for SumLatencyMetric {
     fn new_empty(&self) -> Arc<dyn CustomMetricValue> {
-        Arc::new(TotalLatencyMetric::default())
+        Arc::new(SumLatencyMetric::default())
     }
 
     fn aggregate(&self, other: Arc<dyn CustomMetricValue + 'static>) {
@@ -534,15 +534,15 @@ mod tests {
     }
 
     #[test]
-    fn total_latency_sums_all_values_and_aggregates() {
-        let m = TotalLatencyMetric::default();
+    fn sum_latency_sums_all_values_and_aggregates() {
+        let m = SumLatencyMetric::default();
         assert_eq!(m.value(), 0);
         m.add_duration(Duration::from_millis(100));
         m.add_duration(Duration::from_millis(200));
         m.add_duration(Duration::from_millis(50));
         assert_eq!(m.value(), Duration::from_millis(350).as_nanos() as usize);
 
-        let other = TotalLatencyMetric::default();
+        let other = SumLatencyMetric::default();
         other.add_duration(Duration::from_millis(150));
         m.aggregate(Arc::new(other));
         assert_eq!(m.value(), Duration::from_millis(500).as_nanos() as usize);
@@ -581,8 +581,8 @@ mod tests {
         first.add_duration(Duration::ZERO);
         assert_eq!(first.value(), 1);
 
-        let total = TotalLatencyMetric::default();
-        total.add_duration(Duration::ZERO);
-        assert_eq!(total.value(), 1);
+        let sum = SumLatencyMetric::default();
+        sum.add_duration(Duration::ZERO);
+        assert_eq!(sum.value(), 1);
     }
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::latency_metric::{
     AvgLatencyMetric, CountLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
-    TotalLatencyMetric,
+    SumLatencyMetric,
 };
 
 /// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
@@ -89,7 +89,7 @@ pub enum MetricValueProto {
     #[prost(message, tag = "28")]
     CustomFirstLatency(FirstLatency),
     #[prost(message, tag = "29")]
-    CustomTotalLatency(TotalLatency),
+    CustomSumLatency(SumLatency),
     #[prost(message, tag = "30")]
     CustomLatencyCount(LatencyCount),
 }
@@ -233,7 +233,7 @@ pub struct FirstLatency {
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct TotalLatency {
+pub struct SumLatency {
     #[prost(string, tag = "1")]
     pub name: String,
     #[prost(uint64, tag = "2")]
@@ -436,9 +436,9 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     partition,
                     labels,
                 })
-            } else if let Some(total) = value.as_any().downcast_ref::<TotalLatencyMetric>() {
+            } else if let Some(total) = value.as_any().downcast_ref::<SumLatencyMetric>() {
                 Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomTotalLatency(TotalLatency {
+                    metric: Some(MetricValueProto::CustomSumLatency(SumLatency {
                         name: name.to_string(),
                         value: total.value() as u64,
                     })),
@@ -702,11 +702,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomTotalLatency(total_latency)) => {
-            let value = TotalLatencyMetric::from_nanos(total_latency.value as usize);
+        Some(MetricValueProto::CustomSumLatency(sum_latency)) => {
+            let value = SumLatencyMetric::from_nanos(sum_latency.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
-                    name: Cow::Owned(total_latency.name),
+                    name: Cow::Owned(sum_latency.name),
                     value: Arc::new(value),
                 },
                 partition,
@@ -1319,8 +1319,8 @@ mod tests {
         )));
         metrics_set.push(Arc::new(Metric::new(
             MetricValue::Custom {
-                name: Cow::Borrowed("total_latency"),
-                value: Arc::new(TotalLatencyMetric::from_nanos(400_000)),
+                name: Cow::Borrowed("sum_latency"),
+                value: Arc::new(SumLatencyMetric::from_nanos(400_000)),
             },
             Some(0),
         )));
@@ -1364,8 +1364,8 @@ mod tests {
                     } else if let Some(v1) = v1.as_any().downcast_ref::<FirstLatencyMetric>() {
                         let v2 = v2.as_any().downcast_ref::<FirstLatencyMetric>().unwrap();
                         assert_eq!(v1.value(), v2.value());
-                    } else if let Some(v1) = v1.as_any().downcast_ref::<TotalLatencyMetric>() {
-                        let v2 = v2.as_any().downcast_ref::<TotalLatencyMetric>().unwrap();
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<SumLatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<SumLatencyMetric>().unwrap();
                         assert_eq!(v1.value(), v2.value());
                     } else if let Some(v1) = v1.as_any().downcast_ref::<CountLatencyMetric>() {
                         let v2 = v2.as_any().downcast_ref::<CountLatencyMetric>().unwrap();
