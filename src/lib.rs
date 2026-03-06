@@ -31,7 +31,7 @@ pub use flight_service::{
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::{
-    AvgLatencyMetric, CountLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    AvgLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedMetricsFormat, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric,
     MinLatencyMetric, SumLatencyMetric, rewrite_distributed_plan_with_metrics,
 };
