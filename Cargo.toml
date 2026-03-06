@@ -80,7 +80,7 @@ insta = { version = "1.46.0", features = ["filters"] }
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
 parquet = "57.1.0"
-arrow = "57.1.0"
+arrow = { version = "57.1.0", features = ["test_utils"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
