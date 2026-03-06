@@ -335,8 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_resolver_cache_reuses_only_matching_channel_settings()
-    -> Result<(), Box<dyn Error>> {
+    async fn default_resolver_cache_keys_channel_settings() -> Result<(), Box<dyn Error>> {
         let runtime = Arc::new(RuntimeEnv::default());
         let ctx1 = build_task_ctx(&runtime, 100, 1_000, 10_000)?;
         let ctx2 = build_task_ctx(&runtime, 200, 1_000, 10_000)?;
@@ -360,8 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_configured_connect_timeout_flows_through_default_resolver()
-    -> Result<(), Box<dyn Error>> {
+    async fn session_connect_timeout_applies_to_default_resolver() -> Result<(), Box<dyn Error>> {
         let runtime = Arc::new(RuntimeEnv::default());
         let task_ctx = build_task_ctx(&runtime, 100, 1_000, 10_000)?;
         let channel_resolver = get_distributed_channel_resolver(&task_ctx);
