@@ -91,8 +91,6 @@ impl DistributedExec {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
-        headers.extend(get_passthrough_headers(ctx.session_config()));
         let urls = worker_resolver.get_urls()?;
 
         // Metric that measures to total sum of bytes worth of subplans sent.
