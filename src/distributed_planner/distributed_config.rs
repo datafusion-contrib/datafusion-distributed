@@ -95,7 +95,7 @@ fn grpc_connect_timeout_ms_default() -> usize {
 }
 
 fn grpc_request_timeout_ms_default() -> usize {
-    30_000
+    300_000
 }
 
 fn wait_plan_timeout_ms_default() -> usize {
