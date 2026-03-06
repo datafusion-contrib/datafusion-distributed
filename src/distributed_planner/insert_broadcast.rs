@@ -5,8 +5,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 
 use crate::BroadcastExec;
 
@@ -121,17 +120,19 @@ pub(super) fn insert_broadcast_execs(
     }
 
     plan.transform_down(|node| {
-        let Some(hash_join) = node.as_any().downcast_ref::<HashJoinExec>() else {
+        let join_type = if let Some(join) = node.as_any().downcast_ref::<NestedLoopJoinExec>() {
+            join.join_type()
+        } else if let Some(join) = node.as_any().downcast_ref::<HashJoinExec>()
+            && join.partition_mode() == &PartitionMode::CollectLeft
+        {
+            join.join_type()
+        } else {
             return Ok(Transformed::no(node));
         };
-        if hash_join.partition_mode() != &PartitionMode::CollectLeft {
-            return Ok(Transformed::no(node));
-        }
 
         // Only broadcast when output is driven by the probe side.
         // Joins that can emit build-side rows (left/left-semi/left-anti/left-mark/full) would
         // duplicate output if the build is broadcast, thus are excluded.
-        let join_type = hash_join.join_type();
         if !matches!(
             join_type,
             JoinType::Inner
@@ -148,30 +149,15 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        // If build child is CoalescePartitionsExec get its input
-        // Otherwise, use the build child directly (DataSourceExec)
-        let broadcast_input = if let Some(coalesce) = build_child
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
-            Arc::clone(coalesce.input())
-        } else {
-            Arc::clone(build_child)
-        };
-
         // Insert BroadcastExec. consumer_task_count=1 is a placeholder and
         // will be corrected during optimizer rule.
         let broadcast = Arc::new(BroadcastExec::new(
-            broadcast_input,
+            Arc::clone(build_child),
             1, // placeholder
         ));
 
-        // Always wrap with CoalescePartitionsExec
-        let new_build_child: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(broadcast));
-
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
-        new_children[0] = new_build_child;
+        new_children[0] = broadcast;
         Ok(Transformed::yes(node.with_new_children(new_children)?))
     })
     .map(|transformed| transformed.data)
@@ -203,8 +189,8 @@ mod tests {
         let plan = sql_to_plan_with_broadcast(query, true, 4).await;
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            CoalescePartitionsExec
               DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
@@ -226,9 +212,8 @@ mod tests {
         let plan = sql_to_plan_with_broadcast(query, true, 1).await;
         assert_snapshot!(plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
-          CoalescePartitionsExec
-            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
     }
