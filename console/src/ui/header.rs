@@ -75,7 +75,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         live_badge,
     ]);
 
-    let title = format!(" ddf-console — {view_name} ");
+    let title = format!(" datafusion-distributed-console — {view_name} ");
     let header = Paragraph::new(line).block(Block::default().borders(Borders::BOTTOM).title(
         Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
     ));
