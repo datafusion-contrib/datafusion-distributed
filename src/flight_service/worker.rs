@@ -2,7 +2,9 @@ use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_action::{INIT_ACTION_TYPE, TaskData};
 use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
 use crate::protobuf::StageKey;
-use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
+use crate::{
+    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
+};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -135,9 +137,11 @@ impl Worker {
 
     pub fn with_observability_service(
         &self,
+        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
         ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
             self.task_data_entries.clone(),
+            worker_resolver,
         ))
     }
 

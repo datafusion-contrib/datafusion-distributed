@@ -12,11 +12,13 @@ use tonic::transport::Server;
 struct Args {
     #[structopt(default_value = "8080")]
     port: u16,
+
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
+    let localhost_worker_resolver = Arc::new(LocalhostWorkerResolver { ports:  })
 
     let worker = Worker::default();
 
@@ -27,4 +29,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct LocalhostWorkerResolver {
+    ports: Vec<u16>,
+}
+
+#[async_trait]
+impl WorkerResolver for LocalhostWorkerResolver {
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.ports
+            .iter()
+            .map(|port| {
+                let url_string = format!("http://localhost:{port}");
+                Url::parse(&url_string).map_err(|e| DataFusionError::External(Box::new(e)))
+            })
+            .collect::<Result<Vec<Url>, _>>()
+    }
 }

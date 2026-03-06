@@ -1,4 +1,5 @@
 use crate::flight_service::{SingleWriteMultiRead, TaskData};
+use crate::networking::WorkerResolver;
 use crate::protobuf::StageKey;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
@@ -13,14 +14,18 @@ use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
 use super::{
-    GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
-    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
+    GetClusterWorkersResponse, GetTaskProgressResponse, ObservabilityService, TaskProgress,
+    TaskStatus, WorkerMetrics,
+    generated::observability::{
+        GetClusterWorkersRequest, GetTaskProgressRequest, PingRequest, PingResponse,
+    },
 };
 
 type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     #[cfg(feature = "system-metrics")]
     system: watch::Receiver<WorkerMetrics>,
 }
@@ -28,6 +33,7 @@ pub struct ObservabilityServiceImpl {
 impl ObservabilityServiceImpl {
     pub fn new(
         task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> Self {
         #[cfg(feature = "system-metrics")]
         let (tx, rx) = tokio::sync::watch::channel(WorkerMetrics::default());
@@ -64,9 +70,9 @@ impl ObservabilityServiceImpl {
                 }
             });
         }
-
         Self {
             task_data_entries,
+            worker_resolver,
             #[cfg(feature = "system-metrics")]
             system: rx,
         }
@@ -111,6 +117,20 @@ impl ObservabilityService for ObservabilityServiceImpl {
             tasks,
             worker_metrics,
         }))
+    }
+
+    async fn get_cluster_workers(
+        &self,
+        _request: Request<GetClusterWorkersRequest>,
+    ) -> Result<Response<GetClusterWorkersResponse>, Status> {
+        let urls = self
+            .worker_resolver
+            .get_urls()
+            .map_err(|e| Status::internal(format!("Failed to resolve workers: {e}")))?;
+
+        let worker_urls = urls.into_iter().map(|url| url.to_string()).collect();
+
+        Ok(Response::new(GetClusterWorkersResponse { worker_urls }))
     }
 }
 

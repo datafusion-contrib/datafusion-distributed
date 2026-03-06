@@ -1,9 +1,12 @@
-use datafusion_distributed::Worker;
+use datafusion::error::DataFusionError;
+use datafusion_distributed::{Worker, WorkerResolver};
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
+use url::Url;
 
 #[derive(StructOpt)]
 #[structopt(
@@ -38,6 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .expect("port overflow: base_port + workers exceeds u16::MAX")
             },
         );
+        let localhost_resolver = Arc::new(LocalhostWorkerResolver { ports });
         let listener = TcpListener::bind(addr).await?;
         let port = listener.local_addr()?.port();
         ports.push(port);
@@ -46,7 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let worker = Worker::default();
 
             Server::builder()
-                .add_service(worker.with_observability_service())
+                .add_service(worker.with_observability_service(localhost_resolver))
                 .add_service(worker.into_flight_server())
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
@@ -77,4 +81,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::signal::ctrl_c().await?;
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct LocalhostWorkerResolver {
+    ports: Vec<u16>,
+}
+
+#[async_trait]
+impl WorkerResolver for LocalhostWorkerResolver {
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.ports
+            .iter()
+            .map(|port| {
+                let url_string = format!("http://localhost:{port}");
+                Url::parse(&url_string).map_err(|e| DataFusionError::External(Box::new(e)))
+            })
+            .collect::<Result<Vec<Url>, _>>()
+    }
 }
