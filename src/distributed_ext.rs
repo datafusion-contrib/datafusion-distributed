@@ -534,6 +534,56 @@ pub trait DistributedExt: Sized {
         &mut self,
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
+
+    /// Sets the maximum time spent establishing a gRPC connection to a worker.
+    fn with_distributed_grpc_connect_timeout_ms(
+        self,
+        timeout_ms: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_grpc_connect_timeout_ms] but with an in-place mutation.
+    fn set_distributed_grpc_connect_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets the total timeout for outbound `do_get` RPCs.
+    ///
+    /// This is a full-stream deadline for the whole request, not an idle timeout.
+    fn with_distributed_grpc_request_timeout_ms(
+        self,
+        timeout_ms: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_grpc_request_timeout_ms] but with an in-place mutation.
+    fn set_distributed_grpc_request_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets how long a worker waits for task data to become available before failing the request.
+    fn with_distributed_wait_plan_timeout_ms(
+        self,
+        timeout_ms: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_wait_plan_timeout_ms] but with an in-place mutation.
+    fn set_distributed_wait_plan_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets the TCP keepalive period for worker-to-worker connections.
+    fn with_distributed_grpc_tcp_keepalive_ms(
+        self,
+        keepalive_ms: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_grpc_tcp_keepalive_ms] but with an in-place mutation.
+    fn set_distributed_grpc_tcp_keepalive_ms(
+        &mut self,
+        keepalive_ms: usize,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -655,6 +705,42 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_grpc_connect_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.grpc_connect_timeout_ms = timeout_ms;
+        Ok(())
+    }
+
+    fn set_distributed_grpc_request_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.grpc_request_timeout_ms = timeout_ms;
+        Ok(())
+    }
+
+    fn set_distributed_wait_plan_timeout_ms(
+        &mut self,
+        timeout_ms: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.wait_plan_timeout_ms = timeout_ms;
+        Ok(())
+    }
+
+    fn set_distributed_grpc_tcp_keepalive_ms(
+        &mut self,
+        keepalive_ms: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.grpc_tcp_keepalive_ms = keepalive_ms;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -720,6 +806,22 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_grpc_connect_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_connect_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_grpc_request_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_request_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_wait_plan_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_wait_plan_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_grpc_tcp_keepalive_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_tcp_keepalive_ms(mut self, keepalive_ms: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -806,6 +908,26 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_connect_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_connect_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_connect_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_request_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_request_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_request_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_wait_plan_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_wait_plan_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_wait_plan_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_tcp_keepalive_ms(&mut self, keepalive_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_tcp_keepalive_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_tcp_keepalive_ms(mut self, keepalive_ms: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -892,6 +1014,26 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_connect_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_connect_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_connect_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_request_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_request_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_request_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_wait_plan_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_wait_plan_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_wait_plan_timeout_ms(mut self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_tcp_keepalive_ms(&mut self, keepalive_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_tcp_keepalive_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_tcp_keepalive_ms(mut self, keepalive_ms: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -978,6 +1120,26 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_connect_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_connect_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_connect_timeout_ms(self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_request_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_request_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_request_timeout_ms(self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_wait_plan_timeout_ms(&mut self, timeout_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_wait_plan_timeout_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_wait_plan_timeout_ms(self, timeout_ms: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_grpc_tcp_keepalive_ms(&mut self, keepalive_ms: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_grpc_tcp_keepalive_ms)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_grpc_tcp_keepalive_ms(self, keepalive_ms: usize) -> Result<Self, DataFusionError>;
         }
     }
 }

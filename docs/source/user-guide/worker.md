@@ -1,7 +1,8 @@
 # Spawn a Worker
 
-The `Worker` is a gRPC server implementing the Arrow Flight protocol for distributed query execution. Worker nodes
-run these endpoints to receive execution plans, execute them, and stream results back.
+The `Worker` is a gRPC server implementing the Arrow Flight protocol for distributed query
+execution. Worker nodes run these endpoints to receive execution plans, execute them, and stream
+results back.
 
 ## Overview
 
@@ -71,9 +72,10 @@ pub trait WorkerSessionBuilder {
 
 It receives a `WorkerQueryContext` containing:
 
-- `SessionStateBuilder`: A pre-populated session state builder in which you can inject your custom stuff
-- `headers`: HTTP headers from the incoming request (useful for passing metadata like authentication tokens or
-  configuration)
+- `SessionStateBuilder`: A pre-populated session state builder in which you can inject your custom
+  stuff
+- `headers`: HTTP headers from the incoming request (useful for passing metadata like authentication
+  tokens or configuration)
 
 ## Serving the Endpoint
 
@@ -94,4 +96,21 @@ async fn main() {
 }
 ```
 
-The `into_flight_server()` method builds a `FlightServiceServer` ready to be added as a Tonic service.
+The `into_flight_server()` method builds a `FlightServiceServer` ready to be added as a Tonic
+service.
+
+## Worker timeout config
+
+Workers also have a role in the distributed timeout model:
+
+- `distributed.wait_plan_timeout_ms`
+
+This controls how long a worker waits for task data to become available before failing the request.
+
+Example:
+
+```rust
+let state = SessionStateBuilder::new()
+    .with_distributed_wait_plan_timeout_ms(10_000)?
+    .build();
+```
