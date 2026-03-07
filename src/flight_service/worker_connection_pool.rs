@@ -24,6 +24,7 @@ use futures::{Stream, TryStreamExt};
 use http::Extensions;
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
+use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::pin::Pin;
@@ -145,6 +146,12 @@ impl WorkerConnection {
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
         let avg_latency = MetricBuilder::new(metrics).avg_latency("network_latency_avg");
         let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
+        let sum_latency = Time::new();
+        MetricBuilder::new(metrics).build(MetricValue::Time {
+            name: Cow::Borrowed("network_latency_sum"),
+            time: sum_latency.clone(),
+        });
+        let latency_count = MetricBuilder::new(metrics).counter("network_latency_count", 0);
         // Track the total CPU time spent in polling messages over the network + decoding them.
         let elapsed_compute = Time::new();
         let elapsed_compute_clone = elapsed_compute.clone();
@@ -250,6 +257,8 @@ impl WorkerConnection {
                     max_latency.add_duration(delta);
                     avg_latency.add_duration(delta);
                     first_latency.add_duration(delta);
+                    sum_latency.add_duration(delta);
+                    latency_count.add(1);
                 }
 
                 let partition = flight_metadata.partition as usize;
