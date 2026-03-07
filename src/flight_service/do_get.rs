@@ -1,4 +1,5 @@
 use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
+use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
@@ -21,6 +22,7 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
@@ -30,8 +32,6 @@ use tonic::{Request, Response, Status};
 
 /// How many record batches to buffer from the plan execution.
 const RECORD_BATCH_BUFFER_SIZE: usize = 2;
-const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
-
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DoGet {
     /// The index to the task within the stage that we want to execute
@@ -58,10 +58,17 @@ impl Worker {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<<Worker as FlightService>::DoGetStream>, Status> {
-        let body = request.into_inner();
+        let (metadata, _ext, body) = request.into_parts();
         let doget = DoGet::decode(body.ticket).map_err(|err| {
             Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
         })?;
+        let headers = metadata.into_headers();
+        let mut cfg = SessionConfig::default();
+        set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)
+            .map_err(datafusion_error_to_tonic_status)?;
+        let wait_plan_timeout_ms = DistributedConfig::from_config_options(cfg.options())
+            .map_err(datafusion_error_to_tonic_status)?
+            .wait_plan_timeout_ms;
 
         let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
         let entry = self
@@ -72,7 +79,7 @@ impl Worker {
         // Other request is responsible for writing the plan that belongs to this StageKey, so
         // we'll resolve immediately if it was already there, or wait until it's ready.
         let task_data = entry
-            .read(Duration::from_secs(WAIT_PLAN_TIMEOUT_SECS))
+            .read(Duration::from_millis(wait_plan_timeout_ms as u64))
             .await
             .map_err(|e| Status::internal(e.to_string()))?
             .map_err(datafusion_error_to_tonic_status)?;
@@ -300,4 +307,59 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(RecordBatch::try_new(schema, arrays)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DistributedExt;
+    use crate::StageKey;
+    use crate::config_extension_ext::{
+        get_config_extension_propagation_headers, set_distributed_option_extension,
+    };
+    use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
+    use bytes::Bytes;
+    use datafusion::common::assert_contains;
+    use http::Extensions;
+    use std::sync::Arc;
+    use tonic::metadata::MetadataMap;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn do_get_honors_propagated_wait_timeout() {
+        let worker = Worker::default();
+
+        let stage_key = StageKey::new(Bytes::from(Uuid::from_u128(1).as_bytes().to_vec()), 0, 0);
+        worker
+            .task_data_entries
+            .insert(stage_key.clone(), Arc::new(SingleWriteMultiRead::default()))
+            .await;
+
+        let mut cfg = SessionConfig::default();
+        set_distributed_option_extension(&mut cfg, DistributedConfig::default());
+        cfg.set_distributed_wait_plan_timeout_ms(20).unwrap();
+        let headers = get_config_extension_propagation_headers(&cfg).unwrap();
+
+        let request = Request::from_parts(
+            MetadataMap::from_headers(headers),
+            Extensions::default(),
+            Ticket {
+                ticket: DoGet {
+                    target_task_index: 0,
+                    target_task_count: 1,
+                    target_partition_start: 0,
+                    target_partition_end: 1,
+                    stage_key: Some(stage_key),
+                }
+                .encode_to_vec()
+                .into(),
+            },
+        );
+
+        let err = match worker.get(request).await {
+            Ok(_) => panic!("expected wait-plan timeout error"),
+            Err(err) => err,
+        };
+        assert_contains!(err.message(), "timed out waiting for value");
+    }
 }

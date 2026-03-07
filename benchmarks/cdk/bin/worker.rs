@@ -10,9 +10,10 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule,
-    Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
-    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DistributedConfig, DistributedExt, DistributedMetricsFormat,
+    DistributedPhysicalOptimizerRule, Worker, WorkerResolver, display_plan_ascii,
+    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -49,6 +50,15 @@ struct WorkerInfo {
     git_commit_hash: String,
     build_time_utc: String,
     errors: Vec<String>,
+    transport_config: WorkerTransportConfig,
+}
+
+#[derive(Serialize)]
+struct WorkerTransportConfig {
+    grpc_connect_timeout_ms: usize,
+    grpc_request_timeout_ms: usize,
+    wait_plan_timeout_ms: usize,
+    grpc_tcp_keepalive_ms: usize,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -108,10 +118,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "/info",
                 get(move || async move {
                     let ctx = ctx_clone.clone();
+                    let session_cfg = ctx.state_ref().read().config().clone();
+                    let transport_cfg =
+                        DistributedConfig::from_config_options(session_cfg.options())
+                            .map_err(err)?;
 
                     let worker_resolver =
-                        get_distributed_worker_resolver(ctx.state_ref().read().config())
-                            .map_err(err)?;
+                        get_distributed_worker_resolver(&session_cfg).map_err(err)?;
                     let channel_resolver =
                         get_distributed_channel_resolver(ctx.task_ctx().as_ref());
 
@@ -136,6 +149,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             .to_string(),
                         build_time_utc: built_info::BUILT_TIME_UTC.to_string(),
                         errors,
+                        transport_config: WorkerTransportConfig {
+                            grpc_connect_timeout_ms: transport_cfg.grpc_connect_timeout_ms,
+                            grpc_request_timeout_ms: transport_cfg.grpc_request_timeout_ms,
+                            wait_plan_timeout_ms: transport_cfg.wait_plan_timeout_ms,
+                            grpc_tcp_keepalive_ms: transport_cfg.grpc_tcp_keepalive_ms,
+                        },
                     }))
                 }),
             )
