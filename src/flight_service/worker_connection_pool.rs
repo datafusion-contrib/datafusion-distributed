@@ -278,7 +278,7 @@ impl WorkerConnection {
                 // so that it gets dropped as soon as the message leaves the queue. Dropping the
                 // memory reservation means releasing the memory from the pool for that specific
                 // message
-                let mut reservation = consumer.clone_with_new_id().register(&memory_pool);
+                let reservation = consumer.clone_with_new_id().register(&memory_pool);
                 let size = msg.encoded_len();
 
                 // Update memory related metrics.

@@ -131,17 +131,17 @@ impl TableProvider for NumbersTableProvider {
 #[derive(Debug, Clone)]
 struct NumbersExec {
     ranges_per_task: Vec<Range<i64>>,
-    plan_properties: PlanProperties,
+    plan_properties: Arc<PlanProperties>,
 }
 
 impl NumbersExec {
     fn new(ranges_per_task: impl IntoIterator<Item = Range<i64>>, schema: SchemaRef) -> Self {
-        let plan_properties = PlanProperties::new(
+        let plan_properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
             datafusion::physical_expr::Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             ranges_per_task: ranges_per_task.into_iter().collect(),
             plan_properties,
@@ -171,7 +171,7 @@ impl ExecutionPlan for NumbersExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan_properties
     }
 

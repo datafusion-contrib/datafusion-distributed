@@ -54,7 +54,7 @@ use std::{fmt::Formatter, sync::Arc};
 #[derive(Debug)]
 pub struct PartitionIsolatorExec {
     pub(crate) input: Arc<dyn ExecutionPlan>,
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) n_tasks: usize,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
@@ -65,10 +65,13 @@ impl PartitionIsolatorExec {
 
         let partition_count = Self::partition_groups(input_partitions, n_tasks)[0].len();
 
-        let properties = input
-            .properties()
-            .clone()
-            .with_partitioning(Partitioning::UnknownPartitioning(partition_count));
+        let properties = Arc::new(
+            input
+                .properties()
+                .as_ref()
+                .clone()
+                .with_partitioning(Partitioning::UnknownPartitioning(partition_count)),
+        );
 
         Self {
             input: input.clone(),
@@ -133,7 +136,7 @@ impl ExecutionPlan for PartitionIsolatorExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

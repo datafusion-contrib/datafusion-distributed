@@ -22,13 +22,13 @@ where
     Err: Send + 'static,
 {
     let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
+    let reservation = Arc::new(MemoryConsumer::new("NetworkBoundary").register(&pool));
 
     let mut tasks = vec![];
     for mut t in inner {
         let tx = tx.clone();
-        let pool = Arc::clone(&pool);
-        let consumer = MemoryConsumer::new("NetworkBoundary");
 
+        let reservation = Arc::clone(&reservation);
         tasks.push(SpawnedTask::spawn(async move {
             loop {
                 // Capture the closed() event as soon as possible. We don't want to do
@@ -40,20 +40,22 @@ where
                 };
                 let Some(msg) = msg else { return };
 
-                let mut reservation = consumer.clone_with_new_id().register(&pool);
                 if let Ok(msg) = &msg {
                     reservation.grow(msg.get_memory_size());
                 }
 
-                if tx.send((msg, reservation)).await.is_err() {
+                if tx.send(msg).await.is_err() {
                     return;
                 };
             }
         }))
     }
 
-    ReceiverStream::new(rx).map(move |(msg, _reservation)| {
+    ReceiverStream::new(rx).map(move |msg| {
         // keep the tasks alive as long as the stream lives
+        if let Ok(msg) = &msg {
+            reservation.shrink(msg.get_memory_size())
+        }
         let _ = &tasks;
         msg
     })

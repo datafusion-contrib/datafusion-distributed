@@ -249,11 +249,11 @@ pub fn df_metrics_set_to_proto(
             Ok(metric_proto) => metrics.push(metric_proto),
             Err(err) => {
                 // Check if this is the specific custom metrics error we want to filter out
-                if let DataFusionError::Internal(msg) = &err {
-                    if msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS {
-                        // Filter out custom/unsupported metrics error - continue processing other metrics
-                        continue;
-                    }
+                if let DataFusionError::Internal(msg) = &err
+                    && (msg == CUSTOM_METRICS_NOT_SUPPORTED || msg == UNSUPPORTED_METRICS)
+                {
+                    // Filter out custom/unsupported metrics error - continue processing other metrics
+                    continue;
                 }
                 // Any other error should be returned
                 return Err(err);
@@ -330,7 +330,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
         MetricValue::Count { name, count } => Ok(MetricProto {
             metric: Some(MetricValueProto::Count(NamedCount {
                 name: name.to_string(),
-                value: count.value() as u64
+                value: count.value() as u64,
             })),
             partition,
             labels,
@@ -338,7 +338,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
         MetricValue::Gauge { name, gauge } => Ok(MetricProto {
             metric: Some(MetricValueProto::Gauge(NamedGauge {
                 name: name.to_string(),
-                value: gauge.value() as u64
+                value: gauge.value() as u64,
             })),
             partition,
             labels,
@@ -346,7 +346,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
         MetricValue::Time { name, time } => Ok(MetricProto {
             metric: Some(MetricValueProto::Time(NamedTime {
                 name: name.to_string(),
-                value: time.value() as u64
+                value: time.value() as u64,
             })),
             partition,
             labels,

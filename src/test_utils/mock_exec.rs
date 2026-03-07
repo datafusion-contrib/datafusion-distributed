@@ -33,7 +33,7 @@ pub struct MockExec {
     permit_open: Option<Arc<AtomicBool>>,
     permit_notify: Option<Arc<Notify>>,
     execute_counts: Option<Arc<Vec<AtomicUsize>>>,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl MockExec {
@@ -115,13 +115,13 @@ impl MockExec {
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
-    fn compute_properties(schema: SchemaRef, partitions: usize) -> PlanProperties {
-        PlanProperties::new(
+    fn compute_properties(schema: SchemaRef, partitions: usize) -> Arc<PlanProperties> {
+        Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        )
+        ))
     }
 }
 
@@ -148,7 +148,7 @@ impl ExecutionPlan for MockExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -263,11 +263,6 @@ impl ExecutionPlan for MockExec {
                 stream,
             )))
         }
-    }
-
-    // Panics if one of the batches is an error
-    fn statistics(&self) -> datafusion::common::Result<Statistics> {
-        self.partition_statistics(None)
     }
 
     fn partition_statistics(
