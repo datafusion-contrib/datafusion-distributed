@@ -105,7 +105,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     /// metrics_collection is used to collect metrics from child tasks. It is initially
@@ -149,10 +149,10 @@ impl NetworkShuffleExec {
                 // This is fine, we can let the node be here.
                 Ok(Transformed::no(plan))
             } else {
-                return plan_err!(
+                plan_err!(
                     "NetworkShuffleExec input must be hash partitioned, but {} is not",
                     plan.name()
-                );
+                )
             }
         })?;
 
@@ -164,7 +164,7 @@ impl NetworkShuffleExec {
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
-            properties: input.properties().clone(),
+            properties: Arc::clone(input.properties()),
             metrics_collection: Default::default(),
         })
     }
@@ -203,7 +203,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

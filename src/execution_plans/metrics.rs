@@ -41,7 +41,7 @@ impl ExecutionPlan for MetricsWrapperExec {
     delegate! {
         to self.inner {
             fn name(&self) -> &str;
-            fn properties(&self) -> &PlanProperties;
+            fn properties(&self) -> &Arc<PlanProperties>;
             fn as_any(&self) -> &dyn Any;
         }
     }

@@ -70,18 +70,18 @@ mod tests {
     #[derive(Debug)]
     pub struct ErrorThrowingExec {
         msg: String,
-        plan_properties: PlanProperties,
+        plan_properties: Arc<PlanProperties>,
         child: Arc<dyn ExecutionPlan>,
     }
 
     impl ErrorThrowingExec {
         fn new(child: Arc<dyn ExecutionPlan>, msg: &str) -> Self {
-            let plan_properties = PlanProperties::new(
+            let plan_properties = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(child.schema()),
                 child.output_partitioning().clone(),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            );
+            ));
             Self {
                 msg: msg.to_string(),
                 plan_properties,
@@ -105,7 +105,7 @@ mod tests {
             self
         }
 
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.plan_properties
         }
 
