@@ -21,7 +21,7 @@ pub struct MetricProto {
     pub partition: Option<u64>,
     #[prost(
         oneof = "MetricValueProto",
-        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28"
+        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29"
     )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
