@@ -11,6 +11,8 @@ use datafusion::{
 };
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Extension trait for DataFusion's metric system that adds support for byte count metrics
+/// that display using human-readable byte sizes (KB, MB, GB) instead of plain count notation.
 pub trait BytesMetricExt {
     fn bytes_counter(self, name: impl Into<Cow<'static, str>>) -> BytesCounterMetric;
 }
@@ -25,6 +27,15 @@ impl BytesMetricExt for MetricBuilder<'_> {
         value
     }
 }
+/// A cumulative counter metric for tracking byte counts.
+///
+/// Unlike DataFusion's built-in [`Count`](datafusion::physical_plan::metrics::Count) which formats
+/// large values using plain count notation (e.g., "1.91 B" meaning 1.91 billion), this metric
+/// formats values using [`human_readable_size`] (e.g., "1.91 GB").
+///
+/// This avoids the confusing display where "B" (billions) looks like "bytes".
+///
+/// Aggregation sums values across partitions/tasks.
 #[derive(Debug, Clone)]
 pub struct BytesCounterMetric {
     bytes: Arc<AtomicUsize>,
