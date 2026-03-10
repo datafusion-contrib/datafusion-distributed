@@ -1,4 +1,3 @@
-use crate::Stage;
 use crate::common::on_drop_stream;
 use crate::flight_service::do_get::DoGet;
 use crate::metrics::LatencyMetricExt;
@@ -7,6 +6,7 @@ use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{
     FlightAppMetadata, StageKey, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
 };
+use crate::{BytesMetricExt, Stage};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightData, Ticket};
@@ -140,7 +140,7 @@ impl WorkerConnection {
         let mut curr_max_mem = 0;
         let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
         // Track the total encoded size of all recieved messages.
-        let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
+        let bytes_transferred = MetricBuilder::new(metrics).bytes_counter("bytes_transferred");
         // Track end-to-end network latency distribution for all messages.
         let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
@@ -282,7 +282,7 @@ impl WorkerConnection {
                 let size = msg.encoded_len();
 
                 // Update memory related metrics.
-                bytes_transferred.add(size);
+                bytes_transferred.add_bytes(size);
                 let curr_mem_used = curr_mem_used.fetch_add(size, Ordering::Relaxed);
                 if curr_mem_used > curr_max_mem {
                     curr_max_mem = curr_mem_used;
