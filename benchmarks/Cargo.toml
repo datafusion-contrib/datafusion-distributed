@@ -49,3 +49,7 @@ path = "cdk/bin/worker.rs"
 [[bench]]
 name = "broadcast_cache_scenarios"
 harness = false
+
+[[bench]]
+name = "shuffle"
+harness = false

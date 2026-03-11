@@ -31,9 +31,9 @@ pub use flight_service::{
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use metrics::{
-    AvgLatencyMetric, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedMetricsFormat,
-    FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric, MinLatencyMetric,
-    rewrite_distributed_plan_with_metrics,
+    AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedMetricsFormat, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric,
+    MinLatencyMetric, rewrite_distributed_plan_with_metrics,
 };
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
@@ -51,3 +51,6 @@ pub use observability::{
 };
 
 pub use protobuf::StageKey;
+
+#[cfg(any(feature = "integration", test))]
+pub use execution_plans::benchmarks::ShuffleBench;

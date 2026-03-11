@@ -1,6 +1,4 @@
-use crate::Stage;
 use crate::common::on_drop_stream;
-use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
@@ -8,6 +6,7 @@ use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{
     FlightAppMetadata, StageKey, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
 };
+use crate::{BytesMetricExt, Stage};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightData, Ticket};
@@ -25,6 +24,7 @@ use futures::{Stream, TryStreamExt};
 use http::Extensions;
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
+use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::pin::Pin;
@@ -140,31 +140,30 @@ impl WorkerConnection {
         let mut curr_max_mem = 0;
         let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
         // Track the total encoded size of all recieved messages.
-        let bytes_transferred = MetricBuilder::new(metrics).global_counter("bytes_transferred");
+        let bytes_transferred = MetricBuilder::new(metrics).bytes_counter("bytes_transferred");
         // Track end-to-end network latency distribution for all messages.
         let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
         let avg_latency = MetricBuilder::new(metrics).avg_latency("network_latency_avg");
         let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
+        let sum_latency = Time::new();
+        MetricBuilder::new(metrics).build(MetricValue::Time {
+            name: Cow::Borrowed("network_latency_sum"),
+            time: sum_latency.clone(),
+        });
+        let latency_count = MetricBuilder::new(metrics).counter("network_latency_count", 0);
         // Track the total CPU time spent in polling messages over the network + decoding them.
         let elapsed_compute = Time::new();
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
-        // Track the size of the serialized plan sent over the wire.
-        let plan_bytes = MetricBuilder::new(metrics).global_counter("plan_bytes_sent");
-        let plan_proto = input_stage.plan.encoded()?;
-        plan_bytes.add(plan_proto.len());
-
         // Building the actual request that will be sent to the worker.
-        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
-        headers.extend(get_passthrough_headers(ctx.session_config()));
+        let headers = get_passthrough_headers(ctx.session_config());
         let ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
             Ticket {
                 ticket: DoGet {
-                    plan_proto: Bytes::clone(plan_proto),
                     target_partition_start: target_partition_range.start as u64,
                     target_partition_end: target_partition_range.end as u64,
                     stage_key: Some(StageKey::new(
@@ -258,6 +257,8 @@ impl WorkerConnection {
                     max_latency.add_duration(delta);
                     avg_latency.add_duration(delta);
                     first_latency.add_duration(delta);
+                    sum_latency.add_duration(delta);
+                    latency_count.add(1);
                 }
 
                 let partition = flight_metadata.partition as usize;
@@ -281,7 +282,7 @@ impl WorkerConnection {
                 let size = msg.encoded_len();
 
                 // Update memory related metrics.
-                bytes_transferred.add(size);
+                bytes_transferred.add_bytes(size);
                 let curr_mem_used = curr_mem_used.fetch_add(size, Ordering::Relaxed);
                 if curr_mem_used > curr_max_mem {
                     curr_max_mem = curr_mem_used;

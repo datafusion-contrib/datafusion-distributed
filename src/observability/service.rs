@@ -1,9 +1,8 @@
-use crate::flight_service::TaskData;
+use crate::flight_service::{SingleWriteMultiRead, TaskData};
 use crate::protobuf::StageKey;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::error::DataFusionError;
 use moka::future::Cache;
 use std::sync::Arc;
-use tokio::sync::OnceCell;
 use tonic::{Request, Response, Status};
 
 use super::{
@@ -11,19 +10,17 @@ use super::{
     generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
 
+type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+
 pub struct ObservabilityServiceImpl {
-    task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>,
-    #[cfg(feature = "system-metrics")]
-    system: std::sync::Mutex<sysinfo::System>,
+    task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
 }
 
 impl ObservabilityServiceImpl {
-    pub fn new(task_data_entries: Arc<Cache<StageKey, Arc<OnceCell<TaskData>>>>) -> Self {
-        Self {
-            task_data_entries,
-            #[cfg(feature = "system-metrics")]
-            system: std::sync::Mutex::new(sysinfo::System::new()),
-        }
+    pub fn new(
+        task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    ) -> Self {
+        Self { task_data_entries }
     }
 }
 
@@ -43,7 +40,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
             let (internal_key, task_data_cell) = entry;
 
             // Only include initialized tasks
-            if let Some(task_data) = task_data_cell.get() {
+            if let Some(Ok(task_data)) = task_data_cell.read_now() {
                 let total_partitions = task_data.total_partitions() as u64;
                 let remaining = task_data.num_partitions_remaining() as u64;
                 let completed_partitions = total_partitions.saturating_sub(remaining);

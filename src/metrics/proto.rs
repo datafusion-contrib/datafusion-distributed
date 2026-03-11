@@ -7,6 +7,7 @@ use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, Rat
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use super::bytes_metric::BytesCounterMetric;
 use super::latency_metric::{
     AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
 };
@@ -20,7 +21,7 @@ pub struct MetricProto {
     pub partition: Option<u64>,
     #[prost(
         oneof = "MetricValueProto",
-        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28"
+        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29"
     )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
@@ -87,6 +88,8 @@ pub enum MetricValueProto {
     CustomAvgLatency(AvgLatency),
     #[prost(message, tag = "28")]
     CustomFirstLatency(FirstLatency),
+    #[prost(message, tag = "29")]
+    CustomBytesCount(BytesCount),
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -191,6 +194,14 @@ pub struct NamedRatio {
     pub part: u64,
     #[prost(uint64, tag = "3")]
     pub total: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct BytesCount {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -411,6 +422,15 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     metric: Some(MetricValueProto::CustomFirstLatency(FirstLatency {
                         name: name.to_string(),
                         value: first.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(bytes) = value.as_any().downcast_ref::<BytesCounterMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomBytesCount(BytesCount {
+                        name: name.to_string(),
+                        value: bytes.value() as u64,
                     })),
                     partition,
                     labels,
@@ -657,6 +677,17 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(first_latency.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomBytesCount(bytes_count)) => {
+            let value = BytesCounterMetric::from_value(bytes_count.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(bytes_count.name),
                     value: Arc::new(value),
                 },
                 partition,
@@ -1295,6 +1326,46 @@ mod tests {
                 }
                 _ => panic!("expected Custom metrics"),
             }
+        }
+    }
+
+    #[test]
+    fn test_bytes_counter_metric_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("bytes_transferred"),
+                value: Arc::new(BytesCounterMetric::from_value(1_073_741_824)),
+            },
+            Some(0),
+        )));
+
+        let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
+        assert_eq!(proto.metrics.len(), 1);
+
+        let rt = metrics_set_proto_to_df(&proto).unwrap();
+        assert_eq!(rt.iter().count(), 1);
+
+        let orig = metrics_set.iter().next().unwrap();
+        let rt = rt.iter().next().unwrap();
+
+        match (orig.value(), rt.value()) {
+            (
+                MetricValue::Custom {
+                    name: n1,
+                    value: v1,
+                },
+                MetricValue::Custom {
+                    name: n2,
+                    value: v2,
+                },
+            ) => {
+                assert_eq!(n1.as_ref(), n2.as_ref());
+                let v1 = v1.as_any().downcast_ref::<BytesCounterMetric>().unwrap();
+                let v2 = v2.as_any().downcast_ref::<BytesCounterMetric>().unwrap();
+                assert_eq!(v1.value(), v2.value());
+            }
+            _ => panic!("expected Custom metrics"),
         }
     }
 }

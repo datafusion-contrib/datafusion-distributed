@@ -4,7 +4,7 @@ use crate::execution_plans::common::scale_partitioning_props;
 use crate::flight_service::WorkerConnectionPool;
 use crate::metrics::proto::MetricsSetProto;
 use crate::protobuf::{AppMetadata, StageKey};
-use crate::stage::{MaybeEncodedPlan, Stage};
+use crate::stage::Stage;
 use crate::{DistributedTaskContext, ExecutionTask};
 use dashmap::DashMap;
 use datafusion::common::{exec_err, plan_err};
@@ -118,7 +118,7 @@ impl NetworkCoalesceExec {
             input_stage: Stage {
                 query_id,
                 num,
-                plan: MaybeEncodedPlan::Decoded(input),
+                plan: Some(input),
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
@@ -166,8 +166,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         match &self.input_stage.plan {
-            MaybeEncodedPlan::Decoded(v) => vec![v],
-            MaybeEncodedPlan::Encoded(_) => vec![],
+            Some(v) => vec![v],
+            None => vec![],
         }
     }
 
@@ -176,7 +176,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = MaybeEncodedPlan::Decoded(require_one_child(children)?);
+        self_clone.input_stage.plan = Some(require_one_child(children)?);
         Ok(Arc::new(self_clone))
     }
 
