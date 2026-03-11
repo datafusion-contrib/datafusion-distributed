@@ -408,9 +408,9 @@ macro_rules! percentile_latency_metric {
             pub(crate) fn serialize_sketch(&self) -> Result<Vec<u8>> {
                 let sketch = self.inner.lock().unwrap();
                 bincode::serialize(&*sketch).map_err(|e| {
-                    datafusion::error::DataFusionError::Internal(
-                        format!("failed to serialize DDSketch: {e}"),
-                    )
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "failed to serialize DDSketch: {e}"
+                    ))
                 })
             }
 

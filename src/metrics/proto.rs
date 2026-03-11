@@ -749,10 +749,9 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP50Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
-                .map_err(|e| {
-                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-                })?;
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
+                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+            })?;
             let value = P50LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -764,10 +763,9 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP75Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
-                .map_err(|e| {
-                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-                })?;
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
+                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+            })?;
             let value = P75LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -779,10 +777,9 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP95Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
-                .map_err(|e| {
-                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-                })?;
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
+                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+            })?;
             let value = P95LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -794,10 +791,9 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP99Latency(p)) => {
-            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
-                .map_err(|e| {
-                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
-                })?;
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
+                DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+            })?;
             let value = P99LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
