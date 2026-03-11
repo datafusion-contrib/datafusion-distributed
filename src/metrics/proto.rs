@@ -4,6 +4,7 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{Count, Gauge, Label, Time, Timestamp};
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
 use datafusion::physical_plan::metrics::{PruningMetrics as DfPruningMetrics, RatioMetrics};
+use sketches_ddsketch::DDSketch;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -251,10 +252,8 @@ pub struct FirstLatency {
 pub struct PercentileLatency {
     #[prost(string, tag = "1")]
     pub name: String,
-    #[prost(uint64, repeated, tag = "2")]
-    pub buckets: Vec<u64>,
-    #[prost(uint64, tag = "3")]
-    pub total: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub sketch_bytes: Vec<u8>,
 }
 
 /// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
@@ -458,8 +457,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                 Ok(MetricProto {
                     metric: Some(MetricValueProto::CustomP50Latency(PercentileLatency {
                         name: name.to_string(),
-                        buckets: p50.bucket_counts(),
-                        total: p50.total() as u64,
+                        sketch_bytes: p50.serialize_sketch()?,
                     })),
                     partition,
                     labels,
@@ -468,8 +466,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                 Ok(MetricProto {
                     metric: Some(MetricValueProto::CustomP75Latency(PercentileLatency {
                         name: name.to_string(),
-                        buckets: p75.bucket_counts(),
-                        total: p75.total() as u64,
+                        sketch_bytes: p75.serialize_sketch()?,
                     })),
                     partition,
                     labels,
@@ -478,8 +475,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                 Ok(MetricProto {
                     metric: Some(MetricValueProto::CustomP95Latency(PercentileLatency {
                         name: name.to_string(),
-                        buckets: p95.bucket_counts(),
-                        total: p95.total() as u64,
+                        sketch_bytes: p95.serialize_sketch()?,
                     })),
                     partition,
                     labels,
@@ -488,8 +484,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                 Ok(MetricProto {
                     metric: Some(MetricValueProto::CustomP99Latency(PercentileLatency {
                         name: name.to_string(),
-                        buckets: p99.bucket_counts(),
-                        total: p99.total() as u64,
+                        sketch_bytes: p99.serialize_sketch()?,
                     })),
                     partition,
                     labels,
@@ -754,7 +749,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP50Latency(p)) => {
-            let value = P50LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
+                .map_err(|e| {
+                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+                })?;
+            let value = P50LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(p.name),
@@ -765,7 +764,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP75Latency(p)) => {
-            let value = P75LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
+                .map_err(|e| {
+                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+                })?;
+            let value = P75LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(p.name),
@@ -776,7 +779,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP95Latency(p)) => {
-            let value = P95LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
+                .map_err(|e| {
+                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+                })?;
+            let value = P95LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(p.name),
@@ -787,7 +794,11 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             )))
         }
         Some(MetricValueProto::CustomP99Latency(p)) => {
-            let value = P99LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes)
+                .map_err(|e| {
+                    DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
+                })?;
+            let value = P99LatencyMetric::from_sketch(sketch);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(p.name),
@@ -1391,11 +1402,52 @@ mod tests {
             Some(0),
         )));
 
+        // Build percentile metrics by adding sample durations
+        let p50 = P50LatencyMetric::default();
+        let p75 = P75LatencyMetric::default();
+        let p95 = P95LatencyMetric::default();
+        let p99 = P99LatencyMetric::default();
+        for _ in 0..100 {
+            let d = std::time::Duration::from_millis(10);
+            p50.add_duration(d);
+            p75.add_duration(d);
+            p95.add_duration(d);
+            p99.add_duration(d);
+        }
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("p50_latency"),
+                value: Arc::new(p50),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("p75_latency"),
+                value: Arc::new(p75),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("p95_latency"),
+                value: Arc::new(p95),
+            },
+            Some(0),
+        )));
+        metrics_set.push(Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: Cow::Borrowed("p99_latency"),
+                value: Arc::new(p99),
+            },
+            Some(0),
+        )));
+
         let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
-        assert_eq!(proto.metrics.len(), 4);
+        assert_eq!(proto.metrics.len(), 8);
 
         let rt = metrics_set_proto_to_df(&proto).unwrap();
-        assert_eq!(rt.iter().count(), 4);
+        assert_eq!(rt.iter().count(), 8);
 
         for (orig, rt) in metrics_set.iter().zip(rt.iter()) {
             match (orig.value(), rt.value()) {
@@ -1423,6 +1475,22 @@ mod tests {
                     } else if let Some(v1) = v1.as_any().downcast_ref::<FirstLatencyMetric>() {
                         let v2 = v2.as_any().downcast_ref::<FirstLatencyMetric>().unwrap();
                         assert_eq!(v1.value(), v2.value());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<P50LatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<P50LatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                        assert_eq!(v1.count(), v2.count());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<P75LatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<P75LatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                        assert_eq!(v1.count(), v2.count());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<P95LatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<P95LatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                        assert_eq!(v1.count(), v2.count());
+                    } else if let Some(v1) = v1.as_any().downcast_ref::<P99LatencyMetric>() {
+                        let v2 = v2.as_any().downcast_ref::<P99LatencyMetric>().unwrap();
+                        assert_eq!(v1.value(), v2.value());
+                        assert_eq!(v1.count(), v2.count());
                     } else {
                         panic!("unexpected custom metric type");
                     }

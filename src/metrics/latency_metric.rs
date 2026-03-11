@@ -1,11 +1,13 @@
-use datafusion::common::human_readable_duration;
 use datafusion::common::instant::Instant;
+use datafusion::common::{Result, human_readable_duration};
 use datafusion::physical_expr_common::metrics::{MetricBuilder, MetricValue};
 use datafusion::physical_plan::metrics::CustomMetricValue;
+use sketches_ddsketch::{Config, DDSketch};
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
@@ -368,111 +370,53 @@ impl CustomMetricValue for FirstLatencyMetric {
     }
 }
 
-const NUM_BUCKETS: usize = 64;
-
-/// Shared histogram storage for percentile latency metrics.
-/// Uses power-of-2 logarithmic buckets: bucket i covers [2^i, 2^(i+1)) nanoseconds.
-#[derive(Debug)]
-struct LatencyHistogram {
-    buckets: [AtomicUsize; NUM_BUCKETS],
-    total: AtomicUsize,
-}
-
-impl Default for LatencyHistogram {
-    fn default() -> Self {
-        Self {
-            buckets: std::array::from_fn(|_| AtomicUsize::new(0)),
-            total: AtomicUsize::new(0),
-        }
-    }
-}
-
-impl LatencyHistogram {
-    fn from_raw(buckets: &[u64], total: usize) -> Self {
-        let histogram = Self::default();
-        for (i, &count) in buckets.iter().enumerate().take(NUM_BUCKETS) {
-            histogram.buckets[i].store(count as usize, Relaxed);
-        }
-        histogram.total.store(total, Relaxed);
-        histogram
-    }
-
-    fn bucket_counts(&self) -> Vec<u64> {
-        self.buckets
-            .iter()
-            .map(|b| b.load(Relaxed) as u64)
-            .collect()
-    }
-
-    fn total(&self) -> usize {
-        self.total.load(Relaxed)
-    }
-
-    fn record(&self, nanos: usize) {
-        let nanos = nanos.max(1);
-        let idx = (usize::BITS - 1 - nanos.leading_zeros()) as usize;
-        self.buckets[idx].fetch_add(1, Relaxed);
-        self.total.fetch_add(1, Relaxed);
-    }
-
-    fn percentile_value(&self, percentile: f64) -> usize {
-        let total = self.total.load(Relaxed);
-        if total == 0 {
-            return 0;
-        }
-        let threshold = ((total as f64) * percentile).ceil() as usize;
-        let mut cumulative = 0;
-        for (i, bucket) in self.buckets.iter().enumerate() {
-            cumulative += bucket.load(Relaxed);
-            if cumulative >= threshold {
-                // Return the midpoint of the bucket: (2^i + 2^(i+1)) / 2 = 3 * 2^(i-1)
-                return if i == 0 { 1 } else { 3 * (1usize << (i - 1)) };
-            }
-        }
-        // Should not reach here, but return the max bucket midpoint
-        3 * (1usize << (NUM_BUCKETS - 2))
-    }
-
-    fn aggregate_from(&self, other: &LatencyHistogram) {
-        for (i, bucket) in self.buckets.iter().enumerate() {
-            bucket.fetch_add(other.buckets[i].load(Relaxed), Relaxed);
-        }
-        self.total.fetch_add(other.total.load(Relaxed), Relaxed);
-    }
-}
-
 macro_rules! percentile_latency_metric {
     ($name:ident, $percentile:expr) => {
-        #[derive(Debug, Clone)]
+        #[derive(Clone)]
         pub struct $name {
-            inner: Arc<LatencyHistogram>,
+            inner: Arc<Mutex<DDSketch>>,
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("count", &self.count())
+                    .finish()
+            }
         }
 
         impl Default for $name {
             fn default() -> Self {
                 Self {
-                    inner: Arc::new(LatencyHistogram::default()),
+                    inner: Arc::new(Mutex::new(DDSketch::new(Config::defaults()))),
                 }
             }
         }
 
         impl $name {
-            pub(crate) fn from_raw(buckets: &[u64], total: usize) -> Self {
+            pub(crate) fn from_sketch(sketch: DDSketch) -> Self {
                 Self {
-                    inner: Arc::new(LatencyHistogram::from_raw(buckets, total)),
+                    inner: Arc::new(Mutex::new(sketch)),
                 }
             }
 
             pub fn value(&self) -> usize {
-                self.inner.percentile_value($percentile)
+                let sketch = self.inner.lock().unwrap();
+                sketch.quantile($percentile).unwrap_or(None).unwrap_or(0.0) as usize
             }
 
-            pub(crate) fn bucket_counts(&self) -> Vec<u64> {
-                self.inner.bucket_counts()
+            pub(crate) fn serialize_sketch(&self) -> Result<Vec<u8>> {
+                let sketch = self.inner.lock().unwrap();
+                bincode::serialize(&*sketch).map_err(|e| {
+                    datafusion::error::DataFusionError::Internal(
+                        format!("failed to serialize DDSketch: {e}"),
+                    )
+                })
             }
 
-            pub(crate) fn total(&self) -> usize {
-                self.inner.total()
+            pub(crate) fn count(&self) -> usize {
+                let sketch = self.inner.lock().unwrap();
+                sketch.count() as usize
             }
 
             pub fn add_elapsed(&self, start: Instant) {
@@ -480,7 +424,8 @@ macro_rules! percentile_latency_metric {
             }
 
             pub fn add_duration(&self, duration: Duration) {
-                self.inner.record(duration.as_nanos() as usize);
+                let nanos = (duration.as_nanos() as usize).max(1) as f64;
+                self.inner.lock().unwrap().add(nanos);
             }
         }
 
@@ -499,7 +444,8 @@ macro_rules! percentile_latency_metric {
                 let Some(other) = other.as_any().downcast_ref::<Self>() else {
                     return;
                 };
-                self.inner.aggregate_from(&other.inner);
+                let other_sketch = other.inner.lock().unwrap();
+                let _ = self.inner.lock().unwrap().merge(&other_sketch);
             }
 
             fn as_any(&self) -> &dyn Any {
@@ -597,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn p50_latency_returns_median_bucket() {
+    fn p50_latency_returns_median() {
         let m = P50LatencyMetric::default();
         assert_eq!(m.value(), 0);
         // Add 100 samples: 50 at 1ms, 50 at 100ms
@@ -607,13 +553,13 @@ mod tests {
         for _ in 0..50 {
             m.add_duration(Duration::from_millis(100));
         }
-        // p50 should fall in the 1ms bucket range
+        // p50 should be near 1ms (DDSketch gives approximate quantiles)
         let val = m.value();
         assert!(val < Duration::from_millis(2).as_nanos() as usize);
     }
 
     #[test]
-    fn p99_latency_returns_high_bucket() {
+    fn p99_latency_returns_high_value() {
         let m = P99LatencyMetric::default();
         // Add 98 samples at 1ms and 2 samples at 100ms
         for _ in 0..98 {
@@ -621,7 +567,7 @@ mod tests {
         }
         m.add_duration(Duration::from_millis(100));
         m.add_duration(Duration::from_millis(100));
-        // p99 = ceil(100 * 0.99) = 99th sample, which falls in the 100ms bucket
+        // p99 should be near 100ms
         let val = m.value();
         assert!(val >= Duration::from_millis(50).as_nanos() as usize);
     }
@@ -637,7 +583,7 @@ mod tests {
             m2.add_duration(Duration::from_millis(100));
         }
         m1.aggregate(Arc::new(m2));
-        // After aggregation: 75 at 1ms, 25 at 100ms. p75 should be in the 1ms range.
+        // After aggregation: 75 at 1ms, 25 at 100ms. p75 should be near 1ms.
         let val = m1.value();
         assert!(val < Duration::from_millis(2).as_nanos() as usize);
     }
