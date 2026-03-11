@@ -53,3 +53,7 @@ harness = false
 [[bench]]
 name = "shuffle"
 harness = false
+
+[[bench]]
+name = "latency_metric"
+harness = false

@@ -7,6 +7,7 @@ mod task_metrics_rewriter;
 pub use bytes_metric::{BytesCounterMetric, BytesMetricExt};
 pub use latency_metric::{
     AvgLatencyMetric, FirstLatencyMetric, LatencyMetricExt, MaxLatencyMetric, MinLatencyMetric,
+    P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
 pub(crate) use task_metrics_collector::{MetricsCollectorResult, TaskMetricsCollector};
 pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};

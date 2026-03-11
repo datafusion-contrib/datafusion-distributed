@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use super::bytes_metric::BytesCounterMetric;
 use super::latency_metric::{
-    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
+    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric,
+    P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
 
 /// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
@@ -21,7 +22,7 @@ pub struct MetricProto {
     pub partition: Option<u64>,
     #[prost(
         oneof = "MetricValueProto",
-        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29"
+        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33"
     )]
     // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
     pub metric: Option<MetricValueProto>,
@@ -90,6 +91,14 @@ pub enum MetricValueProto {
     CustomFirstLatency(FirstLatency),
     #[prost(message, tag = "29")]
     CustomBytesCount(BytesCount),
+    #[prost(message, tag = "30")]
+    CustomP50Latency(PercentileLatency),
+    #[prost(message, tag = "31")]
+    CustomP75Latency(PercentileLatency),
+    #[prost(message, tag = "32")]
+    CustomP95Latency(PercentileLatency),
+    #[prost(message, tag = "33")]
+    CustomP99Latency(PercentileLatency),
 }
 
 #[derive(Clone, PartialEq, Eq, ::prost::Message)]
@@ -236,6 +245,16 @@ pub struct FirstLatency {
     pub name: String,
     #[prost(uint64, tag = "2")]
     pub value: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct PercentileLatency {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint64, repeated, tag = "2")]
+    pub buckets: Vec<u64>,
+    #[prost(uint64, tag = "3")]
+    pub total: u64,
 }
 
 /// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
@@ -431,6 +450,46 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     metric: Some(MetricValueProto::CustomBytesCount(BytesCount {
                         name: name.to_string(),
                         value: bytes.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(p50) = value.as_any().downcast_ref::<P50LatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomP50Latency(PercentileLatency {
+                        name: name.to_string(),
+                        buckets: p50.bucket_counts(),
+                        total: p50.total() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(p75) = value.as_any().downcast_ref::<P75LatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomP75Latency(PercentileLatency {
+                        name: name.to_string(),
+                        buckets: p75.bucket_counts(),
+                        total: p75.total() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(p95) = value.as_any().downcast_ref::<P95LatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomP95Latency(PercentileLatency {
+                        name: name.to_string(),
+                        buckets: p95.bucket_counts(),
+                        total: p95.total() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(p99) = value.as_any().downcast_ref::<P99LatencyMetric>() {
+                Ok(MetricProto {
+                    metric: Some(MetricValueProto::CustomP99Latency(PercentileLatency {
+                        name: name.to_string(),
+                        buckets: p99.bucket_counts(),
+                        total: p99.total() as u64,
                     })),
                     partition,
                     labels,
@@ -688,6 +747,50 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(bytes_count.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomP50Latency(p)) => {
+            let value = P50LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(p.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomP75Latency(p)) => {
+            let value = P75LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(p.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomP95Latency(p)) => {
+            let value = P95LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(p.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(MetricValueProto::CustomP99Latency(p)) => {
+            let value = P99LatencyMetric::from_raw(&p.buckets, p.total as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(p.name),
                     value: Arc::new(value),
                 },
                 partition,
