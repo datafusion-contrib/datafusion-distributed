@@ -38,7 +38,7 @@ pub struct TaskData {
     /// Task context suitable for execute different partitions from the same task.
     pub(super) task_ctx: Arc<TaskContext>,
     /// Plan to be executed.
-    pub(super) plan: Arc<dyn ExecutionPlan>,
+    pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
     /// for this task. Once this count is zero, the task is likely complete. The task may not be

@@ -1,6 +1,7 @@
 use crate::flight_service::{SingleWriteMultiRead, TaskData};
 use crate::protobuf::StageKey;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -14,13 +15,19 @@ type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    #[cfg(feature = "system-metrics")]
+    system: std::sync::Mutex<sysinfo::System>,
 }
 
 impl ObservabilityServiceImpl {
     pub fn new(
         task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     ) -> Self {
-        Self { task_data_entries }
+        Self {
+            task_data_entries,
+            #[cfg(feature = "system-metrics")]
+            system: std::sync::Mutex::new(sysinfo::System::new()),
+        }
     }
 }
 
