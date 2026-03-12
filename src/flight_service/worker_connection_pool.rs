@@ -144,7 +144,8 @@ impl WorkerConnection {
         // Track end-to-end network latency distribution for all messages.
         let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
-        let avg_latency = MetricBuilder::new(metrics).avg_latency("network_latency_avg");
+        let p50_latency = MetricBuilder::new(metrics).p50_latency("network_latency_p50");
+        let p95_latency = MetricBuilder::new(metrics).p95_latency("network_latency_p95");
         let first_latency = MetricBuilder::new(metrics).first_latency("network_latency_first");
         let sum_latency = Time::new();
         MetricBuilder::new(metrics).build(MetricValue::Time {
@@ -255,7 +256,8 @@ impl WorkerConnection {
                     && let Ok(delta) = msg_received_time.duration_since(sent_time) {
                     min_latency.add_duration(delta);
                     max_latency.add_duration(delta);
-                    avg_latency.add_duration(delta);
+                    p50_latency.add_duration(delta);
+                    p95_latency.add_duration(delta);
                     first_latency.add_duration(delta);
                     sum_latency.add_duration(delta);
                     latency_count.add(1);
