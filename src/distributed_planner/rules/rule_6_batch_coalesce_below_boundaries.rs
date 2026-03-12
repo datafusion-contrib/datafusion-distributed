@@ -1,8 +1,9 @@
 use crate::common::require_one_child;
+use crate::distributed_planner::distributed_context::DistributedContext;
 use crate::{DistributedConfig, NetworkBoundaryExt};
-use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use std::sync::Arc;
@@ -10,60 +11,75 @@ use std::sync::Arc;
 /// Rearranges the [CoalesceBatchesExec] nodes in the plan so that they are placed right below
 /// the network boundaries, so that fewer but bigger record batches are sent over the wire across
 /// stages.
-pub(crate) fn batch_coalescing_below_network_boundaries(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+#[derive(Debug)]
+pub struct BatchCoalesceBelowBoundaries;
 
-    // Only apply this rule if the normal execution batch size is not already bigger than the
-    // shuffle batch size. Exchanging data between workers is better done with batches as big as
-    // possible, and if the normal execution batch size is already big, we don't want to proactively
-    // reduce it.
-    if d_cfg.shuffle_batch_size <= cfg.execution.batch_size {
-        return Ok(plan);
-    }
+impl PhysicalOptimizerRule for BatchCoalesceBelowBoundaries {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        DistributedContext::ensure(self, &plan)?;
 
-    let transformed = plan.transform_up(|plan| {
-        if !plan.is_network_boundary() {
-            return Ok(Transformed::no(plan));
+        let d_cfg = DistributedConfig::from_config_options(cfg)?;
+
+        // Only apply this rule if the normal execution batch size is not already bigger than the
+        // shuffle batch size. Exchanging data between workers is better done with batches as big as
+        // possible, and if the normal execution batch size is already big, we don't want to proactively
+        // reduce it.
+        if d_cfg.shuffle_batch_size <= cfg.execution.batch_size {
+            return Ok(plan);
         }
 
-        let input = require_one_child(plan.children())?;
-        if let Some(existing_coalesce) = input.as_any().downcast_ref::<CoalesceBatchesExec>() {
-            // There was already a CoalesceBatchesExec below...
-            if existing_coalesce.target_batch_size() == d_cfg.shuffle_batch_size {
-                // ...so either leave it alone if the batch size is correctly set...
-                Ok(Transformed::no(plan))
+        let transformed = plan.transform_up(|plan| {
+            if !plan.is_network_boundary() {
+                return Ok(Transformed::no(plan));
+            }
+
+            let input = require_one_child(plan.children())?;
+            if let Some(existing_coalesce) = input.as_any().downcast_ref::<CoalesceBatchesExec>() {
+                // There was already a CoalesceBatchesExec below...
+                if existing_coalesce.target_batch_size() == d_cfg.shuffle_batch_size {
+                    // ...so either leave it alone if the batch size is correctly set...
+                    Ok(Transformed::no(plan))
+                } else {
+                    // ... or replace it with one with the correct batch size.
+                    let coalesce_input = existing_coalesce.input();
+                    let new_coalesce = CoalesceBatchesExec::new(
+                        Arc::clone(coalesce_input),
+                        d_cfg.shuffle_batch_size,
+                    )
+                    .with_fetch(existing_coalesce.fetch());
+                    let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
+                    Ok(Transformed::yes(new_plan))
+                }
             } else {
-                // ... or replace it with one with the correct batch size.
-                let coalesce_input = existing_coalesce.input();
+                // No CoalesceBatchesExec below, need to put one.
+                let coalesce_input = input;
                 let new_coalesce =
-                    CoalesceBatchesExec::new(Arc::clone(coalesce_input), d_cfg.shuffle_batch_size)
-                        .with_fetch(existing_coalesce.fetch());
+                    CoalesceBatchesExec::new(coalesce_input, d_cfg.shuffle_batch_size);
                 let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
                 Ok(Transformed::yes(new_plan))
             }
-        } else {
-            // No CoalesceBatchesExec below, need to put one.
-            let coalesce_input = input;
-            let new_coalesce = CoalesceBatchesExec::new(coalesce_input, d_cfg.shuffle_batch_size);
-            let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
-            Ok(Transformed::yes(new_plan))
-        }
-    })?;
+        })?;
 
-    Ok(transformed.data)
+        Ok(transformed.data)
+    }
+
+    fn name(&self) -> &str {
+        "BatchCoalesceBelowBoundaries"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
 }
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
-    };
+    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use itertools::Itertools;
@@ -158,7 +174,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_physical_optimizer_rules()
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
             .build();
 

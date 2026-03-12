@@ -130,7 +130,7 @@ mod tests {
         count_plan_nodes_up_to_network_boundary, get_stages_and_stage_keys,
     };
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
+    use crate::{DistributedExt, SessionStateBuilderExt};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -151,7 +151,7 @@ mod tests {
             .with_config(config)
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
             .with_distributed_channel_resolver(InMemoryChannelResolver::default())
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_physical_optimizer_rules()
             .with_distributed_task_estimator(2)
             .with_distributed_metrics_collection(true)
             .unwrap()

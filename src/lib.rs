@@ -19,7 +19,7 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
+    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
     TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
@@ -49,6 +49,12 @@ pub use observability::{
     GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
     ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
     PingResponse, StageKey as ObservabilityStageKey, TaskProgress, TaskStatus,
+};
+
+pub use distributed_planner::{
+    AddCoalesceOnTop, ApplyNetworkBoundaries, BatchCoalesceBelowBoundaries, DistributedContext,
+    EndDistributedContext, InjectNetworkBoundaryPlaceholders, InsertBroadcast, NetworkBoundaryKind,
+    NetworkBoundaryPlaceholder, StartDistributedContext,
 };
 
 pub use protobuf::StageKey;

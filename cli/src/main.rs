@@ -36,7 +36,7 @@ use datafusion_cli::{
 use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
-use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule};
+use datafusion_distributed::{DistributedExt, SessionStateBuilderExt};
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -148,7 +148,7 @@ async fn main_inner() -> Result<()> {
         .with_default_features()
         .with_config(session_config)
         .with_runtime_env(runtime_env)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_physical_optimizer_rules()
         .with_distributed_worker_resolver(InMemoryWorkerResolver::new(16))
         .with_distributed_channel_resolver(InMemoryChannelResolver::default())
         .build();
