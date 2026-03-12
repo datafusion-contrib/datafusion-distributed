@@ -76,6 +76,7 @@ system-metrics = ["sysinfo"]
 tpch = ["integration"]
 tpcds = ["integration"]
 clickbench = ["integration"]
+sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
 structopt = "0.3"
