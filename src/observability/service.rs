@@ -4,6 +4,14 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
 use std::sync::Arc;
+#[cfg(feature = "system-metrics")]
+use std::thread;
+#[cfg(feature = "system-metrics")]
+use std::time::Duration;
+#[cfg(feature = "system-metrics")]
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+#[cfg(feature = "system-metrics")]
+use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
 use super::{
@@ -16,17 +24,56 @@ type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 pub struct ObservabilityServiceImpl {
     task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     #[cfg(feature = "system-metrics")]
-    system: std::sync::Mutex<sysinfo::System>,
+    system: watch::Receiver<WorkerMetrics>,
 }
 
 impl ObservabilityServiceImpl {
     pub fn new(
         task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     ) -> Self {
+        #[cfg(feature = "system-metrics")]
+        let (tx, rx) = tokio::sync::watch::channel(WorkerMetrics::default());
+
+        #[cfg(feature = "system-metrics")]
+        {
+            let pid = Pid::from_u32(std::process::id());
+            let mut sys = sysinfo::System::new_all();
+
+            // Spawn background thread to send system metrics.
+            // This is done to prevent stalling the tokio thread
+            // this task due to the sys call, leading to task pool starvation.
+            thread::spawn(move || {
+                loop {
+                    sys.refresh_processes_specifics(
+                        ProcessesToUpdate::Some(&[pid]),
+                        true,
+                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                    );
+
+                    if let Some(process) = sys.process(pid) {
+                        let num_cpus = std::thread::available_parallelism()
+                            .map(|n| n.get() as f64)
+                            .unwrap_or(1.0);
+                        let metrics = WorkerMetrics {
+                            rss_bytes: process.memory(),
+                            cpu_usage_percent: process.cpu_usage() as f64 / num_cpus,
+                        };
+                        if tx.send(metrics).is_err() {
+                            break;
+                        }
+                    } else if tx.send(WorkerMetrics::default()).is_err() {
+                        break;
+                    };
+
+                    thread::sleep(Duration::from_millis(100))
+                }
+            });
+        }
+
         Self {
             task_data_entries,
             #[cfg(feature = "system-metrics")]
-            system: std::sync::Mutex::new(sysinfo::System::new()),
+            system: rx,
         }
     }
 }
@@ -74,37 +121,13 @@ impl ObservabilityService for ObservabilityServiceImpl {
 
 impl ObservabilityServiceImpl {
     fn collect_worker_metrics(&self) -> WorkerMetrics {
-        #[cfg(feature = "system-metrics")]
-        {
-            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
-
-            let pid = Pid::from_u32(std::process::id());
-            let mut sys = self.system.lock().unwrap_or_else(|e| e.into_inner());
-            sys.refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[pid]),
-                true,
-                ProcessRefreshKind::nothing().with_cpu().with_memory(),
-            );
-
-            if let Some(process) = sys.process(pid) {
-                let num_cpus = std::thread::available_parallelism()
-                    .map(|n| n.get() as f64)
-                    .unwrap_or(1.0);
-                WorkerMetrics {
-                    rss_bytes: process.memory(),
-                    cpu_usage_percent: process.cpu_usage() as f64 / num_cpus,
-                }
-            } else {
-                WorkerMetrics::default()
-            }
-        }
-
-        // When the `system-metrics` feature is not enabled, gracefully degrade
-        // by returning default (zeroed) metrics instead of querying the OS.
         #[cfg(not(feature = "system-metrics"))]
         {
             WorkerMetrics::default()
         }
+
+        #[cfg(feature = "system-metrics")]
+        return *self.system.borrow();
     }
 }
 
