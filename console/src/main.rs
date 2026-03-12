@@ -5,24 +5,24 @@ mod ui;
 mod worker;
 
 use app::App;
-use clap::Parser;
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
+use structopt::StructOpt;
 use url::Url;
 
-#[derive(Parser)]
-#[command(
+#[derive(StructOpt)]
+#[structopt(
     name = "datafusion-distributed-console",
     about = "Console for monitoring DataFusion distributed workers"
 )]
 struct Args {
     /// Comma-delimited list of worker ports (assumed localhost)
-    #[arg(long = "cluster-ports", value_delimiter = ',')]
+    #[structopt(long = "cluster-ports", use_delimiter = true)]
     cluster_ports: Vec<u16>,
 
     /// Polling interval in milliseconds
-    #[arg(long = "poll-interval", default_value = "100")]
+    #[structopt(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
 }
 
@@ -30,7 +30,7 @@ struct Args {
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
-    let args = Args::parse();
+    let args = Args::from_args();
 
     let worker_urls: Vec<Url> = args
         .cluster_ports
