@@ -140,12 +140,12 @@ impl ShuffleBench {
         let mut join_set = JoinSet::default();
         for i in 0..self.consumer_tasks {
             let shuffle = NetworkShuffleExec {
-                properties: PlanProperties::new(
+                properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(schema.clone()),
                     Partitioning::UnknownPartitioning(self.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
-                ),
+                )),
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.producer_tasks),
                 metrics_collection: Arc::new(Default::default()),

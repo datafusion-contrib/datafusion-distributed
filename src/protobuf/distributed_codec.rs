@@ -19,7 +19,9 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{ComposedPhysicalExtensionCodec, PhysicalExtensionCodec};
+use datafusion_proto::physical_plan::{
+    ComposedPhysicalExtensionCodec, DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
+};
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use itertools::Itertools;
@@ -89,6 +91,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
@@ -113,6 +116,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
 
@@ -152,6 +156,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     ctx,
                     &schema,
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
 
@@ -185,12 +190,15 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 // efficient thing to do. However, it's the easiest way of getting the properties
                 // for the ChildrenIsolatorUnionExec without copy-pasting in this project
                 // all the machinery that builds them for UnionExec.
-                let mut properties = UnionExec::try_new(inputs.to_vec())?.properties().clone();
+                let mut properties = UnionExec::try_new(inputs.to_vec())?
+                    .properties()
+                    .as_ref()
+                    .clone();
                 properties.partitioning =
                     Partitioning::UnknownPartitioning(partition_count as usize);
 
                 Ok(Arc::new(ChildrenIsolatorUnionExec {
-                    properties,
+                    properties: Arc::new(properties),
                     metrics: Default::default(),
                     children: inputs.to_vec(),
                     task_idx_map: task_idx_map
@@ -235,6 +243,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -250,6 +259,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -275,6 +285,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
+                    &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -442,12 +453,12 @@ fn new_network_hash_shuffle_exec(
     input_stage: Stage,
 ) -> NetworkShuffleExec {
     NetworkShuffleExec {
-        properties: PlanProperties::new(
+        properties: Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
-        ),
+        )),
         worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
@@ -473,12 +484,12 @@ fn new_network_coalesce_tasks_exec(
     input_stage: Stage,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec {
-        properties: PlanProperties::new(
+        properties: Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
-        ),
+        )),
         worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
@@ -507,12 +518,12 @@ fn new_network_broadcast_exec(
     input_stage: Stage,
 ) -> NetworkBroadcastExec {
     NetworkBroadcastExec {
-        properties: PlanProperties::new(
+        properties: Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             partitioning,
             EmissionType::Incremental,
             Boundedness::Bounded,
-        ),
+        )),
         worker_connections: WorkerConnectionPool::new(input_stage.tasks.len()),
         input_stage,
         metrics_collection: Default::default(),
