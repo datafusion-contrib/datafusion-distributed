@@ -42,7 +42,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 tokio-util = "0.7"
 moka = { version = "0.12", features = ["sync", "future"] }
 crossbeam-queue = "0.3"
-sysinfo = { version = "0.34", optional = true }
+sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 bincode = "1"
 

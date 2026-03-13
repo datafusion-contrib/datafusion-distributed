@@ -9,7 +9,7 @@ use std::thread;
 #[cfg(feature = "system-metrics")]
 use std::time::Duration;
 #[cfg(feature = "system-metrics")]
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+use sysinfo::{Pid, ProcessRefreshKind};
 #[cfg(feature = "system-metrics")]
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
@@ -44,10 +44,9 @@ impl ObservabilityServiceImpl {
             // due to the sys call, leading to task pool starvation.
             thread::spawn(async move || {
                 loop {
-                    sys.refresh_processes_specifics(
-                        ProcessesToUpdate::Some(&[pid]),
-                        true,
-                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                    sys.refresh_process_specifics(
+                        pid,
+                        ProcessRefreshKind::new().with_cpu().with_memory(),
                     );
 
                     if let Some(process) = sys.process(pid) {
