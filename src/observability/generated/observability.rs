@@ -28,11 +28,23 @@ pub struct TaskProgress {
     pub completed_partitions: u64,
     #[prost(enumeration = "TaskStatus", tag = "4")]
     pub status: i32,
+    #[prost(uint64, tag = "5")]
+    pub output_rows: u64,
+}
+/// Worker-level system metrics
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct WorkerMetrics {
+    #[prost(uint64, tag = "1")]
+    pub rss_bytes: u64,
+    #[prost(double, tag = "2")]
+    pub cpu_usage_percent: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTaskProgressResponse {
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskProgress>,
+    #[prost(message, optional, tag = "2")]
+    pub worker_metrics: ::core::option::Option<WorkerMetrics>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

@@ -2,7 +2,7 @@ use crate::flight_service::WorkerSessionBuilder;
 use crate::flight_service::do_action::{INIT_ACTION_TYPE, TaskData};
 use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
 use crate::protobuf::StageKey;
-use crate::{DefaultSessionBuilder, ObservabilityServiceImpl};
+use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -133,8 +133,12 @@ impl Worker {
             .max_encoding_message_size(usize::MAX)
     }
 
-    pub fn observability_service(&self) -> ObservabilityServiceImpl {
-        ObservabilityServiceImpl::new(self.task_data_entries.clone())
+    pub fn with_observability_service(
+        &self,
+    ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
+        ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
+            self.task_data_entries.clone(),
+        ))
     }
 
     /// Returns the number of cached task entries currently held by this worker.

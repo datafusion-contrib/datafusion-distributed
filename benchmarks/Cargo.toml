@@ -36,7 +36,7 @@ criterion = "0.5"
 sysinfo = "0.30"
 
 [build-dependencies]
-built = { version = "0.8" , features = ["git2", "chrono"]}
+built = { version = "0.8", features = ["git2", "chrono"] }
 
 [[bin]]
 name = "dfbench"
@@ -53,4 +53,3 @@ harness = false
 [[bench]]
 name = "shuffle"
 harness = false
-
