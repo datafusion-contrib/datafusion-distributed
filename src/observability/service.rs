@@ -41,8 +41,8 @@ impl ObservabilityServiceImpl {
 
             // Spawn background thread to send system metrics.
             // This is done to prevent stalling the tokio thread
-            // this task due to the sys call, leading to task pool starvation.
-            thread::spawn(move || {
+            // due to the sys call, leading to task pool starvation.
+            thread::spawn(async move || {
                 loop {
                     sys.refresh_processes_specifics(
                         ProcessesToUpdate::Some(&[pid]),
@@ -65,7 +65,7 @@ impl ObservabilityServiceImpl {
                         break;
                     };
 
-                    thread::sleep(Duration::from_millis(100))
+                    tokio::time::sleep(Duration::from_millis(100)).await
                 }
             });
         }
