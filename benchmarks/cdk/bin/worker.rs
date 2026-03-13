@@ -292,7 +292,8 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
             for reservation in result.reservations() {
                 for instance in reservation.instances() {
                     if let Some(private_ip) = instance.private_ip_address() {
-                        let url = Url::parse(&format!("http://{private_ip}:{DEFAULT_WORKER_PORT}")).unwrap();
+                        let url = Url::parse(&format!("http://{private_ip}:{DEFAULT_WORKER_PORT}"))
+                            .unwrap();
                         workers.push(url);
                     }
                 }

@@ -86,10 +86,10 @@ pub mod observability_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct ObservabilityServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -128,14 +128,13 @@ pub mod observability_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    http::Request<tonic::body::Body>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ObservabilityServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -174,79 +173,55 @@ pub mod observability_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::PingRequest>,
         ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/observability.ObservabilityService/Ping",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/observability.ObservabilityService/Ping");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("observability.ObservabilityService", "Ping"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "observability.ObservabilityService",
+                "Ping",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn get_task_progress(
             &mut self,
             request: impl tonic::IntoRequest<super::GetTaskProgressRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetTaskProgressResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/observability.ObservabilityService/GetTaskProgress",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "observability.ObservabilityService",
-                        "GetTaskProgress",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "observability.ObservabilityService",
+                "GetTaskProgress",
+            ));
             self.inner.unary(req, path, codec).await
         }
         pub async fn get_cluster_workers(
             &mut self,
             request: impl tonic::IntoRequest<super::GetClusterWorkersRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetClusterWorkersResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetClusterWorkersResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/observability.ObservabilityService/GetClusterWorkers",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "observability.ObservabilityService",
-                        "GetClusterWorkers",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "observability.ObservabilityService",
+                "GetClusterWorkers",
+            ));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -258,7 +233,7 @@ pub mod observability_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ObservabilityServiceServer.
@@ -271,17 +246,11 @@ pub mod observability_service_server {
         async fn get_task_progress(
             &self,
             request: tonic::Request<super::GetTaskProgressRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetTaskProgressResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetTaskProgressResponse>, tonic::Status>;
         async fn get_cluster_workers(
             &self,
             request: tonic::Request<super::GetClusterWorkersRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetClusterWorkersResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetClusterWorkersResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct ObservabilityServiceServer<T> {
@@ -304,10 +273,7 @@ pub mod observability_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -342,8 +308,7 @@ pub mod observability_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>>
-    for ObservabilityServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for ObservabilityServiceServer<T>
     where
         T: ObservabilityService,
         B: Body + std::marker::Send + 'static,
@@ -363,14 +328,9 @@ pub mod observability_service_server {
                 "/observability.ObservabilityService/Ping" => {
                     #[allow(non_camel_case_types)]
                     struct PingSvc<T: ObservabilityService>(pub Arc<T>);
-                    impl<
-                        T: ObservabilityService,
-                    > tonic::server::UnaryService<super::PingRequest> for PingSvc<T> {
+                    impl<T: ObservabilityService> tonic::server::UnaryService<super::PingRequest> for PingSvc<T> {
                         type Response = super::PingResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::PingRequest>,
@@ -407,25 +367,19 @@ pub mod observability_service_server {
                 "/observability.ObservabilityService/GetTaskProgress" => {
                     #[allow(non_camel_case_types)]
                     struct GetTaskProgressSvc<T: ObservabilityService>(pub Arc<T>);
-                    impl<
-                        T: ObservabilityService,
-                    > tonic::server::UnaryService<super::GetTaskProgressRequest>
-                    for GetTaskProgressSvc<T> {
+                    impl<T: ObservabilityService>
+                        tonic::server::UnaryService<super::GetTaskProgressRequest>
+                        for GetTaskProgressSvc<T>
+                    {
                         type Response = super::GetTaskProgressResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetTaskProgressRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ObservabilityService>::get_task_progress(
-                                        &inner,
-                                        request,
-                                    )
+                                <T as ObservabilityService>::get_task_progress(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -456,25 +410,19 @@ pub mod observability_service_server {
                 "/observability.ObservabilityService/GetClusterWorkers" => {
                     #[allow(non_camel_case_types)]
                     struct GetClusterWorkersSvc<T: ObservabilityService>(pub Arc<T>);
-                    impl<
-                        T: ObservabilityService,
-                    > tonic::server::UnaryService<super::GetClusterWorkersRequest>
-                    for GetClusterWorkersSvc<T> {
+                    impl<T: ObservabilityService>
+                        tonic::server::UnaryService<super::GetClusterWorkersRequest>
+                        for GetClusterWorkersSvc<T>
+                    {
                         type Response = super::GetClusterWorkersResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetClusterWorkersRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ObservabilityService>::get_cluster_workers(
-                                        &inner,
-                                        request,
-                                    )
+                                <T as ObservabilityService>::get_cluster_workers(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -502,25 +450,19 @@ pub mod observability_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
