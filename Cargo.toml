@@ -88,3 +88,7 @@ pretty_assertions = "1.4"
 reqwest = "0.12"
 zip = "6.0"
 test-case = "3.3.1"
+
+[[example]]
+name = "custom_execution_plan"
+required-features = ["integration"]
