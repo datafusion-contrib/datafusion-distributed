@@ -43,7 +43,7 @@ async fn main() {
     let state = SessionStateBuilder::new()
         // these two are mandatory.
         .with_distributed_worker_resolver(todo!())
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_physical_optimizer_rules()
         // the CustomChannelResolver needs to be passed here once...
         .with_distributed_channel_resolver(channel_resolver.clone())
         .build();
