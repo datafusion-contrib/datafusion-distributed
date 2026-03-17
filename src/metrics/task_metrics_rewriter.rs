@@ -4,8 +4,9 @@ use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::MetricsCollectorResult;
 use crate::metrics::TaskMetricsCollector;
-use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
+use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::Stage;
+use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::StageKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
@@ -202,7 +203,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &Stage,
-    metrics_collection: Arc<HashMap<StageKey, Vec<MetricsSetProto>>>,
+    metrics_collection: Arc<HashMap<StageKey, Vec<pb::MetricsSet>>>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
@@ -271,9 +272,7 @@ pub fn stage_metrics_rewriter(
 mod tests {
     use crate::Stage;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-    use crate::metrics::proto::{
-        MetricsSetProto, df_metrics_set_to_proto, metrics_set_proto_to_df,
-    };
+    use crate::metrics::proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
     use crate::metrics::task_metrics_rewriter::{
         annotate_metrics_set_with_task_id, stage_metrics_rewriter,
     };
@@ -284,6 +283,7 @@ mod tests {
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
+    use crate::worker::generated::worker as pb;
     use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -448,7 +448,7 @@ mod tests {
                         num_metrics_per_task_per_node,
                     )
                 })
-                .collect::<Vec<MetricsSetProto>>();
+                .collect::<Vec<pb::MetricsSet>>();
 
             metrics_collection.insert(stage_key, metrics);
         }

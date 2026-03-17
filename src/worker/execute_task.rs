@@ -1,9 +1,9 @@
 use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
-use crate::protobuf::{
-    AppMetadata, FlightAppMetadata, MetricsCollection, TaskMetrics,
-    datafusion_error_to_tonic_status,
+use crate::protobuf::datafusion_error_to_tonic_status;
+use crate::worker::generated::worker::{
+    FlightAppMetadata, MetricsCollection, TaskMetrics, flight_app_metadata,
 };
 use crate::worker::worker_service::Worker;
 use crate::{DistributedConfig, DistributedTaskContext};
@@ -25,7 +25,7 @@ use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// How many record batches to buffer from the plan execution.
@@ -108,7 +108,14 @@ impl Worker {
                 // partition. This stream will be merged with several others from other partitions,
                 // so marking it with the original partition allows it to be deconstructed into
                 // the original per-partition streams in later steps.
-                let mut flight_data = FlightAppMetadata::new(partition);
+                let mut flight_data = FlightAppMetadata {
+                    partition,
+                    created_timestamp_unix_nanos: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos() as u64)
+                        .unwrap_or(0),
+                    content: None,
+                };
 
                 if last_msg_in_stream {
                     // If it's the last message from the last partition, clean up the entry from
@@ -122,7 +129,7 @@ impl Worker {
                         if send_metrics {
                             // Last message of the last partition. This is the moment to send
                             // the metrics back.
-                            flight_data.set_content(collect_and_create_metrics_flight_data(
+                            flight_data.content = Some(collect_and_create_metrics_flight_data(
                                 key.clone(),
                                 plan.clone(),
                             )?);
@@ -216,7 +223,7 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
 fn collect_and_create_metrics_flight_data(
     stage_key: StageKey,
     plan: Arc<dyn ExecutionPlan>,
-) -> Result<AppMetadata, FlightError> {
+) -> Result<flight_app_metadata::Content, FlightError> {
     // Get the metrics for the task executed on this worker + child tasks.
     let mut result = TaskMetricsCollector::new()
         .collect(plan)
@@ -245,9 +252,11 @@ fn collect_and_create_metrics_flight_data(
         });
     }
 
-    Ok(AppMetadata::MetricsCollection(MetricsCollection {
-        tasks: task_metrics_set,
-    }))
+    Ok(flight_app_metadata::Content::MetricsCollection(
+        MetricsCollection {
+            tasks: task_metrics_set,
+        },
+    ))
 }
 
 /// Garbage collects values sub-arrays.

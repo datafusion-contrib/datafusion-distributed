@@ -1,7 +1,7 @@
 use crate::NetworkBroadcastExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::execution_plans::NetworkShuffleExec;
-use crate::metrics::proto::MetricsSetProto;
+use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::StageKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
@@ -23,7 +23,7 @@ pub struct TaskMetricsCollector {
     task_metrics: Vec<MetricsSet>,
     /// input_task_metrics contains metrics for tasks from child [StageExec]s if they were
     /// collected.
-    input_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    input_task_metrics: HashMap<StageKey, Vec<pb::MetricsSet>>,
 }
 
 /// MetricsCollectorResult is the result of collecting metrics from a task.
@@ -31,7 +31,7 @@ pub struct MetricsCollectorResult {
     // metrics is a collection of metrics for a task ordered using a pre-order traversal of the task's plan.
     pub task_metrics: Vec<MetricsSet>,
     // input_task_metrics contains metrics for child tasks if they were collected.
-    pub input_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    pub input_task_metrics: HashMap<StageKey, Vec<pb::MetricsSet>>,
 }
 
 impl TreeNodeRewriter for TaskMetricsCollector {

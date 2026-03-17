@@ -1,11 +1,11 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::execution_plans::common::scale_partitioning_props;
-use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::AppMetadata;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
+use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::flight_app_metadata;
 use crate::{DistributedTaskContext, ExecutionTask};
 use dashmap::DashMap;
 use datafusion::common::{exec_err, plan_err};
@@ -89,7 +89,7 @@ pub struct NetworkCoalesceExec {
     /// the stage it is reading from. This is because, by convention, the Worker sends metrics for
     /// a task to the last NetworkCoalesceExec to read from it, which may or may not be this
     /// instance.
-    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<MetricsSetProto>>>,
+    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<pb::MetricsSet>>>,
 }
 
 impl NetworkCoalesceExec {
@@ -251,7 +251,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let metrics_collection = Arc::clone(&self.metrics_collection);
 
         let stream = worker_connection.stream_partition(target_partition, move |meta| {
-            if let Some(AppMetadata::MetricsCollection(m)) = meta.content {
+            if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
                 for task_metrics in m.tasks {
                     if let Some(stage_key) = task_metrics.stage_key {
                         metrics_collection.insert(stage_key, task_metrics.metrics);

@@ -2,9 +2,8 @@ use crate::common::on_drop_stream;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
-use crate::protobuf::{
-    FlightAppMetadata, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
-};
+use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
+use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, StageKey};
 use crate::{BytesMetricExt, ChannelResolver, Stage};
 use arrow_flight::FlightData;

@@ -55,3 +55,168 @@ message FlightData {
   bytes app_metadata = 3;
   bytes data_body = 1000;
 }
+
+// --- App metadata piggybacked on FlightData messages ---
+
+message FlightAppMetadata {
+  uint64 partition = 1;
+  uint64 created_timestamp_unix_nanos = 2;
+  oneof content {
+    MetricsCollection metrics_collection = 10;
+  }
+}
+
+// A collection of metrics for a set of tasks in an ExecutionPlan.
+// Each entry should have a distinct StageKey.
+message MetricsCollection {
+  repeated TaskMetrics tasks = 1;
+}
+
+// Metrics for a single task.
+message TaskMetrics {
+  StageKey stage_key = 1;
+  // metrics[i] is the set of metrics for plan node i where plan nodes are
+  // in pre-order traversal order.
+  repeated MetricsSet metrics = 2;
+}
+
+// --- Metric serialization ---
+
+message Label {
+  string name = 1;
+  string value = 2;
+}
+
+message Metric {
+  repeated Label labels = 1;
+  optional uint64 partition = 2;
+  oneof value {
+    OutputRows output_rows = 10;
+    ElapsedCompute elapsed_compute = 11;
+    SpillCount spill_count = 12;
+    SpilledBytes spilled_bytes = 13;
+    SpilledRows spilled_rows = 14;
+    CurrentMemoryUsage current_memory_usage = 15;
+    NamedCount count = 16;
+    NamedGauge gauge = 17;
+    NamedTime time = 18;
+    StartTimestamp start_timestamp = 19;
+    EndTimestamp end_timestamp = 20;
+    OutputBytes output_bytes = 21;
+    OutputBatches output_batches = 22;
+    NamedPruningMetrics pruning_metrics = 23;
+    NamedRatio ratio = 24;
+    MinLatency custom_min_latency = 25;
+    MaxLatency custom_max_latency = 26;
+    AvgLatency custom_avg_latency = 27;
+    FirstLatency custom_first_latency = 28;
+    BytesCount custom_bytes_count = 29;
+    PercentileLatency custom_p50_latency = 30;
+    PercentileLatency custom_p75_latency = 31;
+    PercentileLatency custom_p95_latency = 32;
+    PercentileLatency custom_p99_latency = 33;
+  }
+}
+
+// A collection of metrics for one ExecutionPlan node.
+message MetricsSet {
+  repeated Metric metrics = 1;
+}
+
+message OutputRows {
+  uint64 value = 1;
+}
+
+message ElapsedCompute {
+  uint64 value = 1;
+}
+
+message SpillCount {
+  uint64 value = 1;
+}
+
+message SpilledBytes {
+  uint64 value = 1;
+}
+
+message SpilledRows {
+  uint64 value = 1;
+}
+
+message CurrentMemoryUsage {
+  uint64 value = 1;
+}
+
+message NamedCount {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedGauge {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedTime {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message StartTimestamp {
+  optional int64 value = 1;
+}
+
+message EndTimestamp {
+  optional int64 value = 1;
+}
+
+message OutputBytes {
+  uint64 value = 1;
+}
+
+message OutputBatches {
+  uint64 value = 1;
+}
+
+message NamedPruningMetrics {
+  string name = 1;
+  uint64 pruned = 2;
+  uint64 matched = 3;
+}
+
+message NamedRatio {
+  string name = 1;
+  uint64 part = 2;
+  uint64 total = 3;
+}
+
+message BytesCount {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message MinLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message MaxLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message AvgLatency {
+  string name = 1;
+  uint64 nanos_sum = 2;
+  uint64 count = 3;
+}
+
+message FirstLatency {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message PercentileLatency {
+  string name = 1;
+  bytes sketch_bytes = 4;
+}
