@@ -206,8 +206,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }),
             ),
     );
+    let ec2_worker_resolver = Arc::new(Ec2WorkerResolver::new());
     let grpc_server = Server::builder()
-        .add_service(worker.with_observability_service(Ec2WorkerResolver::new()))
+        .add_service(worker.with_observability_service(ec2_worker_resolver))
         .add_service(worker.into_flight_server())
         .serve(worker_addr.parse()?);
 
