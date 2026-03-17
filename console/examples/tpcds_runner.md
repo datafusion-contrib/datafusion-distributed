@@ -17,9 +17,15 @@ may take a few minutes).
 
 ## Usage
 
-### Step 1: Start Workers with Observability (Terminals 1-4)
+### Step 1: Start Workers with Observability
 
-Start 4 workers on different ports in different terminals:
+The quickest way is to start a cluster (defaults to 16 workers on ports 9001-9016):
+
+```bash
+cargo run -p datafusion-distributed-console --example cluster
+```
+
+Or start workers individually in separate terminals:
 
 ```bash
 cargo run -p datafusion-distributed-console --example console_worker

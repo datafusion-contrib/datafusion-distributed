@@ -20,8 +20,7 @@ struct Args {
     workers: usize,
 
     /// Starting port. Workers bind to consecutive ports from this value.
-    /// If 0, the OS assigns random ports.
-    #[structopt(long, default_value = "0")]
+    #[structopt(long, default_value = "9001")]
     base_port: u16,
 }
 
@@ -36,13 +35,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..args.workers {
         let addr = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            if args.base_port == 0 {
-                0
-            } else {
-                args.base_port
-                    .checked_add(i as u16)
-                    .expect("port overflow: base_port + workers exceeds u16::MAX")
-            },
+            args.base_port
+                .checked_add(i as u16)
+                .expect("port overflow: base_port + workers exceeds u16::MAX"),
         );
         let listener = TcpListener::bind(addr).await?;
         let port = listener.local_addr()?.port();

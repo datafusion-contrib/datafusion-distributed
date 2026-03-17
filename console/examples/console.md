@@ -5,6 +5,15 @@ while running distributed queries.
 
 ## Terminal 1: Start workers with observability
 
+The easiest way is to use the cluster example, which starts 16 workers on ports
+9001-9016 (see [cluster.md](cluster.md)):
+
+```bash
+  cargo run -p datafusion-distributed-console --example cluster
+```
+
+Or start individual workers manually:
+
 ```bash
   cargo run -p datafusion-distributed-console --example console_worker
   cargo run -p datafusion-distributed-console --example console_worker -- 9002
