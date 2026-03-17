@@ -3,6 +3,7 @@ use datafusion::error::DataFusionError;
 use datafusion_distributed::{DEFAULT_WORKER_PORT, Worker, WorkerResolver};
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use structopt::StructOpt;
 use tonic::transport::Server;
 use url::Url;
@@ -13,8 +14,8 @@ use url::Url;
     about = "A localhost DataFusion worker with observability"
 )]
 struct Args {
-    #[structopt(default_value = DEFAULT_WORKER_PORT)]
-    port: u16,
+    #[structopt(long = "cluster-ports")]
+    port: Option<u16>,
 
     /// The ports holding Distributed DataFusion workers.
     #[structopt(long = "cluster-ports", use_delimiter = true)]
@@ -24,15 +25,19 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
-    let localhost_resolver = LocalhostWorkerResolver {
+
+    let localhost_resolver = Arc::new(LocalhostWorkerResolver {
         ports: args.cluster_ports.clone(),
-    };
+    });
     let worker = Worker::default();
 
     Server::builder()
         .add_service(worker.with_observability_service(localhost_resolver))
         .add_service(worker.into_flight_server())
-        .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port))
+        .serve(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            args.port.unwrap_or(DEFAULT_WORKER_PORT),
+        ))
         .await?;
 
     Ok(())

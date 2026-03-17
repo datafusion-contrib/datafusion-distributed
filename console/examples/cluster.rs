@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use datafusion::error::DataFusionError;
 use datafusion_distributed::{Worker, WorkerResolver};
 use std::error::Error;
@@ -43,20 +44,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .expect("port overflow: base_port + workers exceeds u16::MAX")
             },
         );
-        let localhost_resolver = Arc::new(LocalhostWorkerResolver { ports });
         let listener = TcpListener::bind(addr).await?;
         let port = listener.local_addr()?.port();
         ports.push(port);
         listeners.push(listener);
     }
 
-    // Create a shared resolver that knows about all workers
-    let resolver = LocalhostClusterResolver {
-        ports: Arc::new(RwLock::new(ports.clone())),
-    };
+    let localhost_resolver = Arc::new(LocalhostWorkerResolver {
+        ports: ports.clone(),
+    });
 
     for listener in listeners {
-        let resolver = resolver.clone();
+        let resolver = localhost_resolver.clone();
         tokio::spawn(async move {
             let worker = Worker::default();
 
