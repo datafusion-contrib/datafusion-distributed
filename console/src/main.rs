@@ -21,7 +21,7 @@ struct Args {
     /// URL of a worker to connect to for auto-discovery (e.g. http://localhost:9001).
     /// The console calls GetClusterWorkers on this worker to discover the full cluster.
     /// Defaults to http://localhost:9001.
-    #[arg(long = "connect")]
+    #[structopt(long = "connect")]
     connect: Option<Url>,
 
     /// Polling interval in milliseconds
