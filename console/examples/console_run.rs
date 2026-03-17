@@ -16,7 +16,6 @@ use url::Url;
 #[structopt(name = "console_run", about = "Run queries with console integration")]
 struct Args {
     /// The SQL query to run.
-    #[structopt()]
     query: String,
 
     /// The ports holding Distributed DataFusion workers.

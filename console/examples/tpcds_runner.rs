@@ -1,19 +1,26 @@
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
-use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver};
+use datafusion_distributed::{
+    DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule, WorkerResolver,
+    display_plan_ascii,
+};
+use futures::TryStreamExt;
 use std::error::Error;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use url::Url;
 
 #[derive(StructOpt)]
 #[structopt(name = "tpcds_runner", about = "Run TPC-DS with observability")]
 struct Args {
-    /// Start a worker with observability service
-    /// Run TPC-DS queries against workers
+    /// Comma-delimited list of worker ports (e.g. 8080,8081)
     #[structopt(long, use_delimiter = true)]
     cluster_ports: Vec<u16>,
 
@@ -26,6 +33,19 @@ struct Args {
     /// Specific query to run (e.g., "q1"), or "all" to run all queries
     #[structopt(long, default_value = "all")]
     query: String,
+
+    /// Maximum number of concurrent queries. Defaults to all queries at once.
+    /// Use --concurrency 1 for sequential execution.
+    #[structopt(long)]
+    concurrency: Option<NonZeroUsize>,
+
+    /// Run the query and display the plan with execution metrics (EXPLAIN ANALYZE)
+    #[structopt(long)]
+    explain_analyze: bool,
+
+    /// Whether the distributed plan should be rendered instead of executing the query.
+    #[structopt(long)]
+    show_distributed_plan: bool,
 }
 
 #[tokio::main]
@@ -37,6 +57,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.scale_factor,
         args.parquet_partitions,
         &args.query,
+        args.concurrency,
+        args.explain_analyze,
+        args.show_distributed_plan,
     )
     .await
 }
@@ -46,11 +69,12 @@ async fn run_queries(
     scale_factor: f64,
     parquet_partitions: usize,
     query_id: &str,
+    concurrency: Option<NonZeroUsize>,
+    explain_analyze: bool,
+    show_distributed_plan: bool,
 ) -> Result<(), Box<dyn Error>> {
     use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use std::fs;
-    use std::time::Instant;
-    use tokio::time::sleep;
 
     println!(
         "Running TPC-DS queries (SF={scale_factor}, partitions={parquet_partitions}) against workers: {cluster_ports:?}"
@@ -87,45 +111,65 @@ async fn run_queries(
 
     // Determine which queries to run
     let queries: Vec<String> = if query_id == "all" {
-        // Run all TPC-DS queries (q1 through q99)
         (1..=99).map(|i| format!("q{i}")).collect()
     } else {
         vec![query_id.to_string()]
     };
 
-    println!("\nRunning {} queries...\n", queries.len());
+    let max_concurrent = concurrency.map(NonZeroUsize::get).unwrap_or(queries.len());
 
-    for query in queries {
-        let query_sql = match tpcds::get_query(&query) {
-            Ok(sql) => sql,
+    println!(
+        "\nRunning {} queries (concurrency={})...\n",
+        queries.len(),
+        max_concurrent
+    );
+
+    // Resolve query SQL upfront
+    let query_sqls: Vec<(String, String)> = queries
+        .into_iter()
+        .filter_map(|query| match tpcds::get_query(&query) {
+            Ok(sql) => Some((query, sql)),
             Err(e) => {
-                println!("Skipping {query}: {e}\n");
-                continue;
+                println!("Skipping {query}: {e}");
+                None
             }
-        };
+        })
+        .collect();
 
-        // Add sleep to observe "completed" state in console
-        sleep(tokio::time::Duration::from_millis(1000)).await;
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+    let mut tasks = JoinSet::new();
 
-        println!("Running {query}");
+    for (query_id, query_sql) in query_sqls {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let ctx = ctx.clone();
 
-        let start = Instant::now();
+        tasks.spawn(async move {
+            use std::time::Instant;
 
-        match run_single_query(&ctx, &query_sql).await {
-            Ok(batches) => {
-                let duration = start.elapsed();
-                let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let start = Instant::now();
+            let result =
+                run_single_query(&ctx, &query_sql, explain_analyze, show_distributed_plan).await;
+            drop(permit);
 
-                println!("{query} completed in {duration:?}");
-                println!("\tRows returned: {row_count}");
+            let duration = start.elapsed();
+            match result {
+                Ok(batches) => {
+                    let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+                    format!("{query_id} completed in {duration:?} ({row_count} rows)")
+                }
+                Err(e) => format!("{query_id} failed: {e}"),
             }
-            Err(e) => {
-                println!("{query} failed: {e}");
-            }
-        }
-
-        println!();
+        });
     }
+
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => eprintln!("Task panicked: {e}"),
+        }
+    }
+
+    println!("\nAll queries finished.");
 
     Ok(())
 }
@@ -133,16 +177,22 @@ async fn run_queries(
 async fn run_single_query(
     ctx: &SessionContext,
     query_sql: &str,
-) -> Result<Vec<datafusion::arrow::array::RecordBatch>, Box<dyn Error>> {
-    use futures::StreamExt;
-
+    explain_analyze: bool,
+    show_distributed_plan: bool,
+) -> Result<Vec<datafusion::arrow::array::RecordBatch>, Box<dyn Error + Send + Sync>> {
     let df = ctx.sql(query_sql).await?;
-    let stream = df.execute_stream().await?;
-    let batches = stream
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+    let plan = df.create_physical_plan().await?;
+    if show_distributed_plan {
+        println!("{}", display_plan_ascii(plan.as_ref(), false));
+        return Ok(vec![]);
+    }
+    let stream = execute_stream(plan.clone(), ctx.task_ctx())?;
+    let batches = stream.try_collect::<Vec<_>>().await?;
+    if explain_analyze {
+        let output =
+            datafusion_distributed::explain_analyze(plan, DistributedMetricsFormat::Aggregated)?;
+        println!("{output}");
+    }
     Ok(batches)
 }
 

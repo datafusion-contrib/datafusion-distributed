@@ -1,10 +1,13 @@
 mod app;
+mod input;
+mod state;
 mod ui;
+mod worker;
 
 use app::App;
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use structopt::StructOpt;
 use url::Url;
 
@@ -14,9 +17,13 @@ use url::Url;
     about = "Console for monitoring DataFusion distributed workers"
 )]
 struct Args {
-    /// Comma-delimited list of worker ports (e.g. 8080,8081)
+    /// Comma-delimited list of worker ports (assumed localhost)
     #[structopt(long = "cluster-ports", use_delimiter = true)]
     cluster_ports: Vec<u16>,
+
+    /// Polling interval in milliseconds
+    #[structopt(long = "poll-interval", default_value = "100")]
+    poll_interval: u64,
 }
 
 #[tokio::main]
@@ -31,30 +38,38 @@ async fn main() -> color_eyre::Result<()> {
         .map(|port| Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL"))
         .collect();
 
+    let poll_interval = Duration::from_millis(args.poll_interval);
     let mut app = App::new(worker_urls);
 
-    // Initialize terminal
     let mut terminal = ratatui::init();
     terminal.clear()?;
 
-    // Run TUI loop
-    let result = run_app(&mut terminal, &mut app).await;
+    let result = run_app(&mut terminal, &mut app, poll_interval).await;
 
     ratatui::restore();
 
     result
 }
 
-/// Main application loop
-async fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
+async fn run_app(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    poll_interval: Duration,
+) -> color_eyre::Result<()> {
+    let mut last_poll = Instant::now();
+
     loop {
-        app.tick().await;
+        if last_poll.elapsed() >= poll_interval {
+            app.tick().await;
+            last_poll = Instant::now();
+        }
 
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(10))? {
+        // Check for keyboard input (16ms timeout ~ 60fps responsiveness)
+        if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key_event(key);
+                input::handle_key_event(app, key);
             }
         }
 
