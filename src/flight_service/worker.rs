@@ -142,11 +142,11 @@ impl Worker {
     /// Flight service — gRPC multiplexes both services on a single port.
     pub fn with_observability_service(
         &self,
-        worker_resolver: impl WorkerResolver + Send + Sync + 'static,
+        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
         ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
             self.task_data_entries.clone(),
-            Arc::new(worker_resolver),
+            worker_resolver,
         ))
     }
 
