@@ -53,6 +53,8 @@ pub use observability::{
 };
 
 pub use protobuf::StageKey;
-/// Default port for workers to listen on (Flight + Observability gRPC services).
-/// The console connects to `localhost:DEFAULT_WORKER_PORT` when no arguments are provided.
+
+#[cfg(any(feature = "integration", test))]
+pub use execution_plans::benchmarks::ShuffleBench;
+
 pub const DEFAULT_WORKER_PORT: u16 = 9001;
