@@ -1,0 +1,57 @@
+syntax = "proto3";
+package worker;
+
+service WorkerService {
+  rpc SetPlan(SetPlanRequest) returns (SetPlanResponse);
+  rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
+}
+
+message SetPlanRequest {
+  bytes plan_proto = 1;
+  StageKey stage_key = 2;
+}
+
+message SetPlanResponse {
+
+}
+
+message ExecuteTaskRequest {
+  uint64 target_task_index = 1;
+  uint64 target_task_count = 2;
+  uint64 target_partition_start = 3;
+  uint64 target_partition_end = 4;
+  StageKey stage_key = 5;
+}
+
+message StageKey {
+  bytes query_id = 1;
+  uint64 stage_id = 2;
+  uint64 task_number = 3;
+}
+
+// Messages from https://github.com/apache/arrow/blob/main/format/Flight.proto. These
+// will match the structs shipped by the `arrow-flight` crate, so that we can use its
+// tools for dealing with FlightData streams.
+
+// Matches arrow.flight.protocol.FlightDescriptor from Flight.proto.
+// Mapped to arrow_flight::FlightDescriptor via extern_path at codegen time.
+message FlightDescriptor {
+  enum DescriptorType {
+    UNKNOWN = 0;
+    PATH = 1;
+    CMD = 2;
+  }
+
+  DescriptorType type = 1;
+  bytes cmd = 2;
+  repeated string path = 3;
+}
+
+// Matches arrow.flight.protocol.FlightData from Flight.proto.
+// Mapped to arrow_flight::FlightData via extern_path at codegen time.
+message FlightData {
+  FlightDescriptor flight_descriptor = 1;
+  bytes data_header = 2;
+  bytes app_metadata = 3;
+  bytes data_body = 1000;
+}

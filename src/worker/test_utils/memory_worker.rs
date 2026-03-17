@@ -1,7 +1,7 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, StageKey, TaskData, Worker};
+use crate::worker::generated::worker::StageKey;
+use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
-use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 pub fn test_stage_key(task_number: u64) -> StageKey {
     StageKey {
-        query_id: Bytes::from(Uuid::from_u128(0).as_bytes().to_vec()),
+        query_id: Uuid::from_u128(0).as_bytes().to_vec(),
         stage_id: 0,
         task_number,
     }
@@ -97,7 +97,7 @@ impl MemoryWorker {
 
         tokio::spawn(async move {
             Server::builder()
-                .add_service(worker.into_flight_server())
+                .add_service(worker.into_worker_server())
                 .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server)))
                 .await
         });

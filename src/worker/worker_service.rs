@@ -1,22 +1,21 @@
-use crate::flight_service::WorkerSessionBuilder;
-use crate::flight_service::do_action::{INIT_ACTION_TYPE, TaskData};
-use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
-use crate::protobuf::StageKey;
-use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
-use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
-use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
-    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+use crate::worker::WorkerSessionBuilder;
+use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
+use crate::worker::generated::worker::{
+    ExecuteTaskRequest, SetPlanRequest, SetPlanResponse, StageKey,
 };
+use crate::worker::set_plan::TaskData;
+use crate::worker::single_write_multi_read::SingleWriteMultiRead;
+use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
+use arrow_flight::FlightData;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
-use futures::stream::BoxStream;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::{Request, Response, Status, Streaming};
+use tonic::codegen::BoxStream;
+use tonic::{Request, Response, Status};
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
@@ -100,9 +99,9 @@ impl Worker {
         self
     }
 
-    /// Converts this [Worker] into a [`FlightServiceServer`] with high default message size limits.
+    /// Converts this [Worker] into a [`WorkerServiceServer`] with high default message size limits.
     ///
-    /// This is a convenience method that wraps the endpoint in a [`FlightServiceServer`] and
+    /// This is a convenience method that wraps the endpoint in a [`WorkerServiceServer`] and
     /// configures it with `max_decoding_message_size(usize::MAX)` and
     /// `max_encoding_message_size(usize::MAX)` to avoid message size limitations for internal
     /// communication.
@@ -118,17 +117,17 @@ impl Worker {
     /// # async fn f() {
     ///
     /// let worker = Worker::default();
-    /// let server = worker.into_flight_server();
+    /// let server = worker.into_worker_server();
     ///
     /// Server::builder()
-    ///     .add_service(Worker::default().into_flight_server())
+    ///     .add_service(Worker::default().into_worker_server())
     ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
     ///     .await;
     ///
     /// # }
     /// ```
-    pub fn into_flight_server(self) -> FlightServiceServer<Self> {
-        FlightServiceServer::new(self)
+    pub fn into_worker_server(self) -> WorkerServiceServer<Self> {
+        WorkerServiceServer::new(self)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
@@ -152,93 +151,20 @@ impl Worker {
 }
 
 #[async_trait]
-impl FlightService for Worker {
-    type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
-
-    async fn handshake(
+impl WorkerService for Worker {
+    async fn set_plan(
         &self,
-        _: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Self::HandshakeStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        request: Request<SetPlanRequest>,
+    ) -> Result<Response<SetPlanResponse>, Status> {
+        self.set_plan(request).await
     }
 
-    type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
+    type ExecuteTaskStream = BoxStream<FlightData>;
 
-    async fn list_flights(
+    async fn execute_task(
         &self,
-        _: Request<Criteria>,
-    ) -> Result<Response<Self::ListFlightsStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn get_flight_info(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn poll_flight_info(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<PollInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn get_schema(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<SchemaResult>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
-
-    async fn do_get(
-        &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        self.get(request).await
-    }
-
-    type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
-
-    async fn do_put(
-        &self,
-        _: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoPutStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
-
-    async fn do_exchange(
-        &self,
-        _: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoExchangeStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
-
-    async fn do_action(
-        &self,
-        request: Request<Action>,
-    ) -> Result<Response<Self::DoActionStream>, Status> {
-        match request.get_ref().r#type.as_str() {
-            INIT_ACTION_TYPE => self.init(request).await,
-            v => Err(Status::unimplemented(format!(
-                "Action {v} not yet implemented"
-            ))),
-        }
-    }
-
-    type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;
-
-    async fn list_actions(
-        &self,
-        _: Request<Empty>,
-    ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        request: Request<ExecuteTaskRequest>,
+    ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
+        self.execute_task(request).await
     }
 }

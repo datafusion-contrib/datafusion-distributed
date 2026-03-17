@@ -5,9 +5,8 @@ use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::MetricsCollectorResult;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::{MetricsSetProto, metrics_set_proto_to_df};
-use crate::protobuf::StageKey;
 use crate::stage::Stage;
-use bytes::Bytes;
+use crate::worker::generated::worker::StageKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
@@ -217,7 +216,11 @@ pub fn stage_metrics_rewriter(
         let mut stage_metrics = MetricsSet::new();
 
         for task_id in 0..stage.tasks.len() {
-            let stage_key = StageKey::new(Bytes::from(stage.query_id.as_bytes().to_vec()), stage.num as u64, task_id as u64);
+            let stage_key = StageKey {
+                query_id: stage.query_id.as_bytes().to_vec(),
+                stage_id: stage.num as u64,
+                task_number: task_id as u64,
+            };
             match metrics_collection.get(&stage_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
@@ -275,7 +278,6 @@ mod tests {
         annotate_metrics_set_with_task_id, stage_metrics_rewriter,
     };
     use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
-    use crate::protobuf::StageKey;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
@@ -283,7 +285,6 @@ mod tests {
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
-    use bytes::Bytes;
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -298,6 +299,7 @@ mod tests {
 
     use crate::DistributedExt;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
+    use crate::worker::generated::worker::StageKey;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
@@ -434,11 +436,11 @@ mod tests {
         // Generate metrics for each task and store them in the map.
         let mut metrics_collection = HashMap::new();
         for task_id in 0..stage.tasks.len() {
-            let stage_key = StageKey::new(
-                Bytes::from(stage.query_id.as_bytes().to_vec()),
-                stage.num as u64,
-                task_id as u64,
-            );
+            let stage_key = StageKey {
+                query_id: stage.query_id.as_bytes().to_vec(),
+                stage_id: stage.num as u64,
+                task_number: task_id as u64,
+            };
             let metrics = (0..count_plan_nodes_up_to_network_boundary(&plan))
                 .map(|node_id| {
                     make_test_metrics_set_proto_from_seed(
@@ -475,11 +477,11 @@ mod tests {
                 .enumerate()
             {
                 let expected_task_node_metrics = metrics_collection
-                    .get(&StageKey::new(
-                        Bytes::from(stage.query_id.as_bytes().to_vec()),
-                        stage.num as u64,
-                        task_id as u64,
-                    ))
+                    .get(&StageKey {
+                        query_id: stage.query_id.as_bytes().to_vec(),
+                        stage_id: stage.num as u64,
+                        task_number: task_id as u64,
+                    })
                     .unwrap()[node_id]
                     .clone();
 

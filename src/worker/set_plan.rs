@@ -1,35 +1,16 @@
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
-use crate::{DistributedConfig, StageKey, Worker, WorkerQueryContext};
-use arrow_flight::Action;
-use arrow_flight::flight_service_server::FlightService;
-use bytes::Bytes;
+use crate::worker::generated::worker::{SetPlanRequest, SetPlanResponse};
+use crate::{DistributedConfig, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::StreamExt;
-use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tonic::{Request, Response, Status};
-
-pub(crate) const INIT_ACTION_TYPE: &str = "init";
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct InitAction {
-    /// The ExecutionPlan we are going to execute encoded as protobuf bytes.
-    #[prost(bytes, tag = "1")]
-    pub plan_proto: Bytes,
-    /// The stage key that identifies the stage.  This is useful to keep
-    /// outside of the stage proto as it is used to store the stage
-    /// and we may not need to deserialize the entire stage proto
-    /// if we already have stored it
-    #[prost(message, optional, tag = "2")]
-    pub stage_key: Option<StageKey>,
-}
 
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
@@ -61,15 +42,12 @@ impl TaskData {
 }
 
 impl Worker {
-    pub(super) async fn init(
+    pub(crate) async fn set_plan(
         &self,
-        request: Request<Action>,
-    ) -> Result<Response<<Worker as FlightService>::DoActionStream>, Status> {
+        request: Request<SetPlanRequest>,
+    ) -> Result<Response<SetPlanResponse>, Status> {
         let (metadata, _ext, body) = request.into_parts();
-        let init = InitAction::decode(body.body).map_err(|err| {
-            Status::invalid_argument(format!("Cannot decode InitAction message: {err}"))
-        })?;
-        let key = init.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = body.stage_key.ok_or_else(missing("stage_key"))?;
 
         let entry = self
             .task_data_entries
@@ -94,7 +72,7 @@ impl Worker {
 
             let codec = DistributedCodec::new_combined_with_user(session_state.config());
             let task_ctx = session_state.task_ctx();
-            let proto_node = PhysicalPlanNode::try_decode(init.plan_proto.as_ref())?;
+            let proto_node = PhysicalPlanNode::try_decode(body.plan_proto.as_ref())?;
             let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
 
             for hook in self.hooks.on_plan.iter() {
@@ -115,7 +93,7 @@ impl Worker {
                 "Logic error while setting plan for Stage key {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))
         })?;
-        Ok(Response::new(futures::stream::empty().boxed()))
+        Ok(Response::new(SetPlanResponse {}))
     }
 }
 

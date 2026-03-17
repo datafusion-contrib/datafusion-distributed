@@ -1,5 +1,9 @@
-use crate::flight_service::{SingleWriteMultiRead, TaskData};
-use crate::protobuf::StageKey;
+use super::{
+    GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
+    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
+};
+use crate::worker::generated::worker::StageKey;
+use crate::worker::{SingleWriteMultiRead, TaskData};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
@@ -13,11 +17,6 @@ use sysinfo::{Pid, ProcessRefreshKind};
 #[cfg(feature = "system-metrics")]
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
-
-use super::{
-    GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
-    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
-};
 
 type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
@@ -100,7 +99,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let output_rows = output_rows_from_plan(&task_data.plan);
 
                 tasks.push(TaskProgress {
-                    stage_key: Some(convert_stage_key(&internal_key)),
+                    stage_key: Some((*internal_key).clone()),
                     total_partitions,
                     completed_partitions,
                     status: TaskStatus::Running as i32,
@@ -127,15 +126,6 @@ impl ObservabilityServiceImpl {
 
         #[cfg(feature = "system-metrics")]
         return *self.system.borrow();
-    }
-}
-
-/// Converts internal StageKey to observability proto StageKey
-fn convert_stage_key(key: &StageKey) -> super::StageKey {
-    super::StageKey {
-        query_id: key.query_id.to_vec(),
-        stage_id: key.stage_id,
-        task_number: key.task_number,
     }
 }
 

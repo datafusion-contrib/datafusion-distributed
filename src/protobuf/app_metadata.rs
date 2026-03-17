@@ -1,5 +1,5 @@
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::distributed_codec::StageKey;
+use crate::worker::generated::worker::StageKey;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A collection of metrics for a set of tasks in an ExecutionPlan. each

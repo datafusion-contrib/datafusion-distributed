@@ -32,9 +32,9 @@ a fully formed physical plan and injects the appropriate nodes to execute the qu
 It builds the distributed plan from bottom to top, injecting network boundaries at appropriate locations based on
 the nodes present in the original plan.
 
-## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/flight_service/worker.rs)
+## [Worker](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/worker/worker_service.rs)
 
-Arrow Flight server implementation that integrates with the Tonic ecosystem and listens to serialized plans that get
+gRPC server implementation that integrates with the Tonic ecosystem and listens to serialized plans that get
 executed over the wire.
 
 Users are expected to build these and spawn them in ports so that the network boundary nodes can reach them.

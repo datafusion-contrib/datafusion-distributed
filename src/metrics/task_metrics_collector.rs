@@ -2,7 +2,7 @@ use crate::NetworkBroadcastExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::execution_plans::NetworkShuffleExec;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::StageKey;
+use crate::worker::generated::worker::StageKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;

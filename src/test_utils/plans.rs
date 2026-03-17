@@ -1,9 +1,10 @@
+use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
 use crate::distributed_ext::DistributedExt;
 use crate::execution_plans::DistributedExec;
-use crate::protobuf::StageKey;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
+use crate::worker::generated::worker::StageKey;
 #[cfg(test)]
 use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
 #[cfg(test)]
@@ -17,8 +18,6 @@ use datafusion::{
 #[cfg(test)]
 use itertools::Itertools;
 use std::sync::Arc;
-
-use super::parquet::register_parquet_tables;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
 /// This does NOT traverse child stages, only the execution plan tree within this stage.
@@ -62,11 +61,11 @@ pub fn get_stages_and_stage_keys(
 
         // Add each task.
         for j in 0..stage.tasks.len() {
-            stage_keys.insert(StageKey::new(
-                stage.query_id.as_bytes().to_vec().into(),
-                stage.num as u64,
-                j as u64,
-            ));
+            stage_keys.insert(StageKey {
+                query_id: stage.query_id.as_bytes().to_vec(),
+                stage_id: stage.num as u64,
+                task_number: j as u64,
+            });
         }
 
         // Add any child stages

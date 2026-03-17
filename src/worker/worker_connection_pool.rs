@@ -1,16 +1,15 @@
 use crate::common::on_drop_stream;
-use crate::flight_service::do_get::DoGet;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{
-    FlightAppMetadata, StageKey, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
+    FlightAppMetadata, datafusion_error_to_tonic_status, map_flight_to_datafusion_error,
 };
-use crate::{BytesMetricExt, Stage};
+use crate::worker::generated::worker::{ExecuteTaskRequest, StageKey};
+use crate::{BytesMetricExt, ChannelResolver, Stage};
+use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
-use arrow_flight::{FlightData, Ticket};
-use bytes::Bytes;
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::instant::Instant;
@@ -160,23 +159,19 @@ impl WorkerConnection {
 
         // Building the actual request that will be sent to the worker.
         let headers = get_passthrough_headers(ctx.session_config());
-        let ticket = Request::from_parts(
+        let request = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
-            Ticket {
-                ticket: DoGet {
-                    target_partition_start: target_partition_range.start as u64,
-                    target_partition_end: target_partition_range.end as u64,
-                    stage_key: Some(StageKey::new(
-                        Bytes::from(input_stage.query_id.as_bytes().to_vec()),
-                        input_stage.num as u64,
-                        target_task as u64,
-                    )),
-                    target_task_index: target_task as u64,
-                    target_task_count: input_stage.tasks.len() as u64,
-                }
-                .encode_to_vec()
-                .into(),
+            ExecuteTaskRequest {
+                target_partition_start: target_partition_range.start as u64,
+                target_partition_end: target_partition_range.end as u64,
+                stage_key: Some(StageKey {
+                    query_id: input_stage.query_id.as_bytes().to_vec(),
+                    stage_id: input_stage.num as u64,
+                    task_number: target_task as u64,
+                }),
+                target_task_index: target_task as u64,
+                target_task_count: input_stage.tasks.len() as u64,
             },
         );
 
@@ -212,14 +207,14 @@ impl WorkerConnection {
         // fan them out to the appropriate `per_partition_rx` based on the "partition" declared
         // in each individual record batch flight metadata.
         let task = SpawnedTask::spawn(async move {
-            let mut client = match channel_resolver.get_flight_client_for_url(&url).await {
+            let mut client = match channel_resolver.get_worker_client_for_url(&url).await {
                 Ok(v) => v,
                 Err(err) => {
                     return fanout(&per_partition_tx, datafusion_error_to_tonic_status(&err));
                 }
             };
 
-            let mut interleaved_stream = match client.do_get(ticket).await {
+            let mut interleaved_stream = match client.execute_task(request).await {
                 Ok(v) => v.into_inner(),
                 Err(err) => return fanout(&per_partition_tx, err),
             };

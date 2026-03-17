@@ -1,20 +1,20 @@
 use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
-use crate::flight_service::worker::Worker;
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::{
-    AppMetadata, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
+    AppMetadata, FlightAppMetadata, MetricsCollection, TaskMetrics,
     datafusion_error_to_tonic_status,
 };
+use crate::worker::worker_service::Worker;
 use crate::{DistributedConfig, DistributedTaskContext};
-use arrow_flight::Ticket;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
-use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
-use crate::flight_service::spawn_select_all::spawn_select_all;
+use crate::worker::generated::worker::worker_service_server::WorkerService;
+use crate::worker::generated::worker::{ExecuteTaskRequest, StageKey};
+use crate::worker::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
@@ -32,38 +32,14 @@ use tonic::{Request, Response, Status};
 const RECORD_BATCH_BUFFER_SIZE: usize = 2;
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DoGet {
-    /// The index to the task within the stage that we want to execute
-    #[prost(uint64, tag = "2")]
-    pub target_task_index: u64,
-    #[prost(uint64, tag = "3")]
-    pub target_task_count: u64,
-    /// lower bound for the list of partitions to execute (inclusive).
-    #[prost(uint64, tag = "4")]
-    pub target_partition_start: u64,
-    /// upper bound for the list of partitions to execute (exclusive).
-    #[prost(uint64, tag = "5")]
-    pub target_partition_end: u64,
-    /// The stage key that identifies the stage.  This is useful to keep
-    /// outside of the stage proto as it is used to store the stage
-    /// and we may not need to deserialize the entire stage proto
-    /// if we already have stored it
-    #[prost(message, optional, tag = "6")]
-    pub stage_key: Option<StageKey>,
-}
-
 impl Worker {
-    pub(super) async fn get(
+    pub(crate) async fn execute_task(
         &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Worker as FlightService>::DoGetStream>, Status> {
+        request: Request<ExecuteTaskRequest>,
+    ) -> Result<Response<<Worker as WorkerService>::ExecuteTaskStream>, Status> {
         let body = request.into_inner();
-        let doget = DoGet::decode(body.ticket).map_err(|err| {
-            Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
-        })?;
 
-        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = body.stage_key.ok_or_else(missing("stage_key"))?;
         let entry = self
             .task_data_entries
             .get_with(key.clone(), async { Default::default() })
@@ -94,8 +70,8 @@ impl Worker {
         let task_ctx = Arc::new(task_ctx_with_extension(
             &task_ctx,
             DistributedTaskContext {
-                task_index: doget.target_task_index as usize,
-                task_count: doget.target_task_count as usize,
+                task_index: body.target_task_index as usize,
+                task_count: body.target_task_count as usize,
             },
         ));
 
@@ -104,9 +80,9 @@ impl Worker {
 
         // Execute all the requested partitions at once, and collect all the streams so that they
         // can be merged into a single one at the end of this function.
-        let n_streams = doget.target_partition_end - doget.target_partition_start;
+        let n_streams = body.target_partition_end - body.target_partition_start;
         let mut streams = Vec::with_capacity(n_streams as usize);
-        for partition in doget.target_partition_start..doget.target_partition_end {
+        for partition in body.target_partition_start..body.target_partition_end {
             if partition >= partition_count as u64 {
                 return Err(datafusion_error_to_tonic_status(exec_datafusion_err!(
                     "partition {partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"

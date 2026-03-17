@@ -1,9 +1,10 @@
 use crate::common::require_one_child;
 use crate::execution_plans::common::scale_partitioning;
-use crate::flight_service::WorkerConnectionPool;
 use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::{AppMetadata, StageKey};
+use crate::protobuf::AppMetadata;
 use crate::stage::Stage;
+use crate::worker::WorkerConnectionPool;
+use crate::worker::generated::worker::StageKey;
 use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};

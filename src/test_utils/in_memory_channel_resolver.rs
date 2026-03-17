@@ -1,9 +1,9 @@
+use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use crate::{
     BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
     MappedWorkerSessionBuilderExt, Worker, WorkerResolver, WorkerSessionBuilder,
-    create_flight_client,
+    create_worker_client,
 };
-use arrow_flight::flight_service_client::FlightServiceClient;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use hyper_util::rt::TokioIo;
@@ -15,7 +15,7 @@ const DUMMY_URL: &str = "http://localhost:50051";
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
 pub struct InMemoryChannelResolver {
-    channel: FlightServiceClient<BoxCloneSyncChannel>,
+    channel: WorkerServiceClient<BoxCloneSyncChannel>,
 }
 
 impl InMemoryChannelResolver {
@@ -38,7 +38,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: create_flight_client(BoxCloneSyncChannel::new(channel)),
+            channel: create_worker_client(BoxCloneSyncChannel::new(channel)),
         };
         let this_clone = this.clone();
 
@@ -49,7 +49,7 @@ impl InMemoryChannelResolver {
 
         tokio::spawn(async move {
             Server::builder()
-                .add_service(endpoint.into_flight_server())
+                .add_service(endpoint.into_worker_server())
                 .serve_with_incoming(tokio_stream::once(Ok::<_, std::io::Error>(server)))
                 .await
         });
@@ -66,10 +66,10 @@ impl Default for InMemoryChannelResolver {
 
 #[async_trait]
 impl ChannelResolver for InMemoryChannelResolver {
-    async fn get_flight_client_for_url(
+    async fn get_worker_client_for_url(
         &self,
         _: &url::Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
         Ok(self.channel.clone())
     }
 }

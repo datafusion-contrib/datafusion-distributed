@@ -191,7 +191,6 @@ pub trait DistributedExt: Sized {
     /// Example:
     ///
     /// ```
-    /// # use arrow_flight::flight_service_client::FlightServiceClient;
     /// # use async_trait::async_trait;
     /// # use datafusion::common::DataFusionError;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -228,29 +227,28 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// This is what tells Distributed DataFusion how to build an Arrow Flight client out of a worker URL.
+    /// This is what tells Distributed DataFusion how to build a Worker gRPC client out of a worker URL.
     ///
-    /// There's a default implementation that caches the Arrow Flight client instances so that there's
+    /// There's a default implementation that caches the Worker client instances so that there's
     /// only one per URL, but users can decide to override that behavior in favor of their own solution.
     ///
     /// Example:
     ///
     /// ```
-    /// # use arrow_flight::flight_service_client::FlightServiceClient;
     /// # use async_trait::async_trait;
     /// # use datafusion::common::DataFusionError;
     /// # use datafusion::execution::{SessionState, SessionStateBuilder};
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, WorkerServiceClient};
     ///
     /// struct CustomChannelResolver;
     ///
     /// #[async_trait]
     /// impl ChannelResolver for CustomChannelResolver {
-    ///     async fn get_flight_client_for_url(&self, url: &Url) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-    ///         // Build a custom FlightServiceClient wrapped with tower layers or something similar.
+    ///     async fn get_worker_client_for_url(&self, url: &Url) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ///         // Build a custom WorkerServiceClient wrapped with tower layers or something similar.
     ///         todo!()
     ///     }
     /// }
