@@ -58,6 +58,9 @@ To run the console, SSH into any instance in the cluster and install it there
 (the console runs inside the VPC so it can reach all workers on their private IPs):
 
 ```bash
+cd benchmarks/cdk/
+npm run deploy
+
 # Connect to an instance via SSM
 aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION"
 
