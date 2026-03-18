@@ -15,26 +15,23 @@ The easiest way is to use the cluster example, which starts 16 workers on ports
 Or start individual workers manually:
 
 ```bash
-  cargo run -p datafusion-distributed-console --example console_worker
+  cargo run -p datafusion-distributed-console --example console_worker -- 9001
   cargo run -p datafusion-distributed-console --example console_worker -- 9002
 ```
-
-The first worker starts on the default port (9001). The second on 9002.
 
 ## Terminal 2: Start console
 
 ```bash
-  cargo run -p datafusion-distributed-console
+  cargo run -p datafusion-distributed-console -- 9001
 ```
 
-The console connects to `localhost:9001` by default and auto-discovers all
-workers in the cluster via `GetClusterWorkers`. It will show "Waiting for
-tasks..." until queries are executed.
+The console auto-discovers all workers in the cluster via `GetClusterWorkers`.
+It will show "Waiting for tasks..." until queries are executed.
 
-To connect to a worker on a non-default port, use `--connect`:
+To connect to a worker on a different port:
 
 ```bash
-  cargo run -p datafusion-distributed-console -- --connect http://localhost:9002
+  cargo run -p datafusion-distributed-console -- 9002
 ```
 
 ## Terminal 3: Run a query

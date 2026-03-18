@@ -10,11 +10,9 @@ console TUI or the TPC-DS runner.
 # Terminal 1 — start 16 workers
 cargo run -p datafusion-distributed-console --example cluster
 
-# Terminal 2 — open the console (auto-discovers all workers)
-cargo run -p datafusion-distributed-console
+# Terminal 2 — open the console (connect to any worker port)
+cargo run -p datafusion-distributed-console -- 9001
 ```
-
-No flags needed. The cluster connects to a worker on port 9001 by default.
 
 ## Usage
 
@@ -43,7 +41,7 @@ Workers bind to consecutive ports starting from `--base-port`
 If you change the base port, tell the console which worker to connect to:
 
 ```bash
-cargo run -p datafusion-distributed-console -- --connect http://localhost:5000
+cargo run -p datafusion-distributed-console -- 5000
 ```
 
 ## Connecting to the cluster
@@ -54,7 +52,7 @@ After starting, the example prints ready-to-use commands. For example:
 Started 16 workers on ports: 9001,9002,...,9016
 
 Console (connect to any worker for auto-discovery):
-    cargo run -p datafusion-distributed-console -- --connect http://localhost:9001
+    cargo run -p datafusion-distributed-console -- 9001
 TPC-DS runner:
     cargo run -p datafusion-distributed-console --example tpcds_runner -- --cluster-ports 9001,9002,...,9016
 Single query:

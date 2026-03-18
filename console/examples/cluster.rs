@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Started {} workers on ports: {ports_csv}\n", args.workers);
     println!("Console (connect to any worker for auto-discovery):");
     println!(
-        "\tcargo run -p datafusion-distributed-console -- --connect http://localhost:{}",
+        "\tcargo run -p datafusion-distributed-console -- {}",
         ports[0]
     );
     println!("TPC-DS runner:");

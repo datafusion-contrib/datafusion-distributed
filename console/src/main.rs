@@ -6,7 +6,6 @@ mod worker;
 
 use app::App;
 use crossterm::event::{self, Event};
-use datafusion_distributed::DEFAULT_WORKER_PORT;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
@@ -18,11 +17,9 @@ use url::Url;
     about = "Console for monitoring DataFusion distributed workers"
 )]
 struct Args {
-    /// URL of a worker to connect to for auto-discovery (e.g. http://localhost:9001).
+    /// Port of a worker to connect to for auto-discovery.
     /// The console calls GetClusterWorkers on this worker to discover the full cluster.
-    /// Defaults to http://localhost:9001.
-    #[structopt(long = "connect")]
-    connect: Option<Url>,
+    port: u16,
 
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
@@ -35,9 +32,8 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let seed_url = args.connect.unwrap_or_else(|| {
-        Url::parse(&format!("http://localhost:{DEFAULT_WORKER_PORT}")).expect("valid default URL")
-    });
+    let seed_url =
+        Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
 
     let poll_interval = Duration::from_millis(args.poll_interval);
     let mut app = App::new(seed_url);

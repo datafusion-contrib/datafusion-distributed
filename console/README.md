@@ -9,23 +9,23 @@ clusters in real time. Built with [ratatui](https://ratatui.rs).
 # Start a local cluster (16 workers on ports 9001-9016)
 cargo run -p datafusion-distributed-console --example cluster
 
-# In another terminal, open the console
-cargo run -p datafusion-distributed-console
+# In another terminal, open the console (connect to any worker port)
+cargo run -p datafusion-distributed-console -- 9001
 ```
 
-The console connects to `localhost:9001` by default and auto-discovers all
-workers in the cluster via the `GetClusterWorkers` RPC.
+The console requires a port argument and auto-discovers all workers in the
+cluster via the `GetClusterWorkers` RPC.
 
 ## Usage
 
 ```
-datafusion-distributed-console [OPTIONS]
+datafusion-distributed-console <PORT> [OPTIONS]
 ```
 
-| Flag               | Default                    | Description                                          |
-|--------------------|----------------------------|------------------------------------------------------|
-| `--connect <URL>`  | `http://localhost:9001`    | Seed worker URL for auto-discovery                   |
-| `--poll-interval`  | `100`                      | Polling interval in milliseconds                     |
+| Argument / Flag    | Required | Description                                          |
+|--------------------|----------|------------------------------------------------------|
+| `PORT`             | Yes      | Port of a seed worker for auto-discovery             |
+| `--poll-interval`  | No       | Polling interval in milliseconds (default: 100)      |
 
 ## Views
 
@@ -41,7 +41,7 @@ CPU/memory sparklines, and task durations.
 
 ## Worker Discovery
 
-The console uses a single seed URL (`--connect`) to discover the full cluster.
+The console uses a single seed port to discover the full cluster.
 On startup and every 5 seconds, it calls `GetClusterWorkers` on the seed worker,
 which returns URLs for all known workers via its `WorkerResolver`. New workers
 are added automatically; removed workers are cleaned up.
@@ -72,14 +72,8 @@ source "$HOME/.cargo/env"
 cargo install --locked --git https://github.com/datafusion-contrib/datafusion-distributed.git \
   datafusion-distributed-console
 
-# Run — auto-discovers all workers via localhost:9001
-datafusion-distributed-console
-```
-
-To connect to a specific worker (e.g. one on a different port or IP):
-
-```bash
-datafusion-distributed-console --connect http://<worker-private-ip>:9001
+# Run — connect to the local worker on port 9001
+datafusion-distributed-console 9001
 ```
 
 ## Examples

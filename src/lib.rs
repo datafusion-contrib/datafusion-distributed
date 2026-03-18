@@ -56,5 +56,3 @@ pub use protobuf::StageKey;
 
 #[cfg(any(feature = "integration", test))]
 pub use execution_plans::benchmarks::ShuffleBench;
-
-pub const DEFAULT_WORKER_PORT: u16 = 9001;

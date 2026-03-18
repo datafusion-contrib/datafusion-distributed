@@ -28,7 +28,7 @@ cargo run -p datafusion-distributed-console --example cluster
 Or start workers individually in separate terminals:
 
 ```bash
-cargo run -p datafusion-distributed-console --example console_worker
+cargo run -p datafusion-distributed-console --example console_worker -- 9001
 cargo run -p datafusion-distributed-console --example console_worker -- 9002
 cargo run -p datafusion-distributed-console --example console_worker -- 9003
 cargo run -p datafusion-distributed-console --example console_worker -- 9004
@@ -37,10 +37,8 @@ cargo run -p datafusion-distributed-console --example console_worker -- 9004
 ### Step 2: Start the Console (Terminal 5)
 
 ```bash
-cargo run -p datafusion-distributed-console
+cargo run -p datafusion-distributed-console -- 9001
 ```
-
-The console auto-discovers all workers via the default port (9001).
 
 ### Step 3: Run TPC-DS Queries (Terminal 6)
 
