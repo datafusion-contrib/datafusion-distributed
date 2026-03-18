@@ -5,8 +5,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
 use std::sync::Arc;
 #[cfg(feature = "system-metrics")]
-use std::thread;
-#[cfg(feature = "system-metrics")]
 use std::time::Duration;
 #[cfg(feature = "system-metrics")]
 use sysinfo::{Pid, ProcessRefreshKind};
@@ -39,10 +37,8 @@ impl ObservabilityServiceImpl {
             let pid = Pid::from_u32(std::process::id());
             let mut sys = sysinfo::System::new_all();
 
-            // Spawn background thread to send system metrics.
-            // This is done to prevent stalling the tokio thread
-            // due to the sys call, leading to task pool starvation.
-            thread::spawn(async move || {
+            // Spawn background task to periodically collect and send system metrics.
+            tokio::task::spawn(async move {
                 loop {
                     sys.refresh_process_specifics(
                         pid,
@@ -64,7 +60,7 @@ impl ObservabilityServiceImpl {
                         break;
                     };
 
-                    tokio::time::sleep(Duration::from_millis(100)).await
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             });
         }
