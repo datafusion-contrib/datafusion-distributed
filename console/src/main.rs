@@ -32,8 +32,7 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let seed_url =
-        Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
+    let seed_url = Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
 
     let poll_interval = Duration::from_millis(args.poll_interval);
     let mut app = App::new(seed_url);

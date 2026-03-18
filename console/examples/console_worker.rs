@@ -34,10 +34,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Server::builder()
         .add_service(worker.with_observability_service(localhost_resolver))
         .add_service(worker.into_flight_server())
-        .serve(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            args.port,
-        ))
+        .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port))
         .await?;
 
     Ok(())
