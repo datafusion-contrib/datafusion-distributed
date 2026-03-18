@@ -8,6 +8,10 @@ The `ChannelResolver` trait controls how Distributed DataFusion builds Arrow Fli
 The default implementation connects to each URL, builds an Arrow Flight client, and caches it for reuse on
 subsequent requests to the same URL.
 
+It also respects `distributed.grpc_connect_timeout_ms`, `distributed.grpc_request_timeout_ms`, and
+`distributed.grpc_tcp_keepalive_ms`. `distributed.grpc_request_timeout_ms` applies to the full
+outbound `do_get` streaming RPC, not to idle time between batches.
+
 ## Providing your own ChannelResolver
 
 For providing your own implementation, you'll need to take into account the following points:

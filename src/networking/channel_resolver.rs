@@ -72,10 +72,12 @@ pub(crate) fn set_distributed_channel_resolver(
 //
 // The Tonic channels need to be established and reused under a whole RuntimeEnv scope, not a single
 // TaskContext, which forces us to put the default implementation in a static global variable that
-// stores and reuses tonic channels per RuntimeEnv's pointer address.
+// stores and reuses tonic channels per RuntimeEnv's pointer address. The cache key also includes
+// connect timeout and TCP keepalive so sessions with different channel settings do not reuse the
+// same resolver.
 static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
     moka::sync::Cache<
-        /* Arc<RuntimeEnv> pointer address */ usize,
+        DefaultChannelResolverKey,
         /* ChannelResolver that reuses built channels */ Arc<DefaultChannelResolver>,
     >,
 > = LazyLock::new(|| moka::sync::Cache::builder().max_capacity(256).build());
@@ -84,14 +86,30 @@ pub fn get_distributed_channel_resolver(
     task_ctx: &TaskContext,
 ) -> Arc<dyn ChannelResolver + Send + Sync> {
     let opts = task_ctx.session_config().options();
-    if let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() {
+    let distributed_cfg = opts.extensions.get::<DistributedConfig>();
+    if let Some(distributed_cfg) = distributed_cfg {
         if let Some(cr) = &distributed_cfg.__private_channel_resolver.0 {
             return Arc::clone(cr);
         }
     }
-    let runtime_addr = Arc::as_ptr(&task_ctx.runtime_env()) as usize;
-    DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME
-        .get_with(runtime_addr, || Arc::new(DefaultChannelResolver::default()))
+    let default_cfg = DistributedConfig::default();
+    let grpc_connect_timeout_ms = distributed_cfg
+        .map(|cfg| cfg.grpc_connect_timeout_ms)
+        .unwrap_or(default_cfg.grpc_connect_timeout_ms);
+    let grpc_tcp_keepalive_ms = distributed_cfg
+        .map(|cfg| cfg.grpc_tcp_keepalive_ms)
+        .unwrap_or(default_cfg.grpc_tcp_keepalive_ms);
+    let key = DefaultChannelResolverKey {
+        runtime_addr: Arc::as_ptr(&task_ctx.runtime_env()) as usize,
+        grpc_connect_timeout_ms,
+        grpc_tcp_keepalive_ms,
+    };
+    DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME.get_with(key, || {
+        Arc::new(DefaultChannelResolver::new(
+            grpc_connect_timeout_ms,
+            grpc_tcp_keepalive_ms,
+        ))
+    })
 }
 
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
@@ -113,10 +131,29 @@ pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
+    grpc_connect_timeout_ms: usize,
+    grpc_tcp_keepalive_ms: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct DefaultChannelResolverKey {
+    runtime_addr: usize,
+    grpc_connect_timeout_ms: usize,
+    grpc_tcp_keepalive_ms: usize,
 }
 
 impl Default for DefaultChannelResolver {
     fn default() -> Self {
+        let default_cfg = DistributedConfig::default();
+        Self::new(
+            default_cfg.grpc_connect_timeout_ms,
+            default_cfg.grpc_tcp_keepalive_ms,
+        )
+    }
+}
+
+impl DefaultChannelResolver {
+    pub fn new(grpc_connect_timeout_ms: usize, grpc_tcp_keepalive_ms: usize) -> Self {
         Self {
             cache: Arc::new(
                 moka::sync::Cache::builder()
@@ -127,21 +164,26 @@ impl Default for DefaultChannelResolver {
                     .time_to_idle(Duration::from_secs(5 * 60))
                     .build(),
             ),
+            grpc_connect_timeout_ms,
+            grpc_tcp_keepalive_ms,
         }
     }
-}
 
-impl DefaultChannelResolver {
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
+        let grpc_connect_timeout_ms = self.grpc_connect_timeout_ms;
+        let grpc_tcp_keepalive_ms = self.grpc_tcp_keepalive_ms;
         let channel = self.cache.get_with_by_ref(url, move || {
             let url = url.to_string();
             async move {
-                let endpoint = Channel::from_shared(url.clone()).map_err(|err| {
-                    config_datafusion_err!(
-                        "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
-                    )
-                })?;
+                let endpoint = Channel::from_shared(url.clone())
+                    .map_err(|err| {
+                        config_datafusion_err!(
+                            "Invalid URL '{url}' returned by WorkerResolver implementation: {err}"
+                        )
+                    })?
+                    .connect_timeout(Duration::from_millis(grpc_connect_timeout_ms as u64))
+                    .tcp_keepalive(Some(Duration::from_millis(grpc_tcp_keepalive_ms as u64)));
                 let mut channel = endpoint.connect().await.map_err(|err| {
                     DataFusionError::Context(
                         format!("{err:?}"),
@@ -233,7 +275,10 @@ mod tests {
     use crate::Worker;
     use datafusion::common::assert_contains;
     use datafusion::common::runtime::SpawnedTask;
+    use datafusion::execution::SessionStateBuilder;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use std::error::Error;
+    use std::sync::Arc;
     use std::time::Instant;
     use tokio::net::TcpListener;
     use tonic::transport::Server;
@@ -270,6 +315,45 @@ mod tests {
         let second_call = start.elapsed();
 
         assert!(first_call > second_call);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_connect_timeout_applies_to_default_resolver() -> Result<(), Box<dyn Error>> {
+        let runtime = Arc::new(RuntimeEnv::default());
+        let mut cfg = SessionConfig::default();
+        set_distributed_option_extension(&mut cfg, DistributedConfig::default());
+        cfg.options_mut()
+            .extensions
+            .get_mut::<DistributedConfig>()
+            .expect("distributed config extension should exist")
+            .grpc_connect_timeout_ms = 100;
+
+        let task_ctx = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(cfg)
+            .with_runtime_env(runtime)
+            .build()
+            .task_ctx();
+        let channel_resolver = get_distributed_channel_resolver(&task_ctx);
+        let url = Url::parse("http://203.0.113.1:81")?;
+
+        let start = Instant::now();
+        let err = channel_resolver
+            .get_flight_client_for_url(&url)
+            .await
+            .unwrap_err();
+        let elapsed = start.elapsed();
+        let err = err.to_string();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "connect timeout was not applied; elapsed={elapsed:?}, err={err}"
+        );
+        assert_contains!(
+            &err,
+            "Execution error: Error connecting to Distributed DataFusion worker on 'http://203.0.113.1:81/'"
+        );
         Ok(())
     }
 
