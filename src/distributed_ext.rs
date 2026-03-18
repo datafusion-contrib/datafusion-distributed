@@ -535,7 +535,7 @@ pub trait DistributedExt: Sized {
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
 
-    /// Sets the maximum time spent establishing a gRPC connection to a worker.
+    /// Sets the gRPC connection timeout to a worker.
     fn with_distributed_grpc_connect_timeout_ms(
         self,
         timeout_ms: usize,
@@ -548,8 +548,6 @@ pub trait DistributedExt: Sized {
     ) -> Result<(), DataFusionError>;
 
     /// Sets the total timeout for outbound `do_get` RPCs.
-    ///
-    /// This is a full-stream deadline for the whole request, not an idle timeout.
     fn with_distributed_grpc_request_timeout_ms(
         self,
         timeout_ms: usize,
@@ -561,7 +559,7 @@ pub trait DistributedExt: Sized {
         timeout_ms: usize,
     ) -> Result<(), DataFusionError>;
 
-    /// Sets how long a worker waits for task data to become available before failing the request.
+    /// Sets how long a worker waits for task data before failing the request.
     fn with_distributed_wait_plan_timeout_ms(
         self,
         timeout_ms: usize,

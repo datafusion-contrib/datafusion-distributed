@@ -319,7 +319,6 @@ mod tests {
     };
     use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
     use bytes::Bytes;
-    use datafusion::common::assert_contains;
     use http::Extensions;
     use std::sync::Arc;
     use tonic::metadata::MetadataMap;
@@ -360,6 +359,7 @@ mod tests {
             Ok(_) => panic!("expected wait-plan timeout error"),
             Err(err) => err,
         };
-        assert_contains!(err.message(), "timed out waiting for value");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert_eq!(err.message(), "timed out waiting for value");
     }
 }

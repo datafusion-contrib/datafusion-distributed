@@ -2,46 +2,26 @@
 
 This trait is optional—a sensible default implementation exists that handles most use cases.
 
-The `ChannelResolver` trait controls how Distributed DataFusion builds Arrow Flight clients backed
-by [Tonic](https://github.com/hyperium/tonic) channels for worker URLs.
+The `ChannelResolver` trait controls how Distributed DataFusion builds Arrow Flight clients backed by
+[Tonic](https://github.com/hyperium/tonic) channels for worker URLs.
 
-The default implementation connects to each URL, builds an Arrow Flight client, and caches it for
-reuse on subsequent requests to the same URL.
+The default implementation connects to each URL, builds an Arrow Flight client, and caches it for reuse on
+subsequent requests to the same URL.
 
-## Transport config
-
-Distributed DataFusion exposes a set of transport-related config options:
-
-- `distributed.grpc_connect_timeout_ms`
-- `distributed.grpc_request_timeout_ms`
-- `distributed.grpc_tcp_keepalive_ms`
-
-Important:
-
-- `grpc_request_timeout_ms` is the total timeout for the whole outbound `do_get` streaming RPC.
-- It is not an idle timeout.
-
-Example:
-
-```rust
-let state = SessionStateBuilder::new()
-    .with_distributed_grpc_connect_timeout_ms(5_000)?
-    .with_distributed_grpc_request_timeout_ms(30_000)?
-    .with_distributed_grpc_tcp_keepalive_ms(60_000)?
-    .build();
-```
+It also respects `distributed.grpc_connect_timeout_ms`, `distributed.grpc_request_timeout_ms`, and
+`distributed.grpc_tcp_keepalive_ms`. `distributed.grpc_request_timeout_ms` applies to the full
+outbound `do_get` streaming RPC, not to idle time between batches.
 
 ## Providing your own ChannelResolver
 
 For providing your own implementation, you'll need to take into account the following points:
 
 - You will need to provide your own implementation in two places:
-  - in the `SessionContext` that first initiates and plans your queries.
-  - while instantiating the `Worker` with the `from_session_builder()` constructor.
-- If building from scratch, ensure Arrow Flight clients are reused across requests rather than
-  recreated each time.
-- You can extend `DefaultChannelResolver` as a foundation for custom implementations. This
-  automatically handles gRPC channel reuse.
+    - in the `SessionContext` that first initiates and plans your queries.
+    - while instantiating the `Worker` with the `from_session_builder()` constructor.
+- If building from scratch, ensure Arrow Flight clients are reused across requests rather than recreated each time.
+- You can extend `DefaultChannelResolver` as a foundation for custom implementations. This automatically handles
+  gRPC channel reuse.
 
 ```rust
 #[derive(Clone)]
@@ -53,7 +33,7 @@ impl ChannelResolver for CustomChannelResolver {
         &self,
         url: &Url,
     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        // Build a custom FlightServiceClient wrapped with tower
+        // Build a custom FlightServiceClient wrapped with tower 
         // layers or something similar.
         todo!()
     }

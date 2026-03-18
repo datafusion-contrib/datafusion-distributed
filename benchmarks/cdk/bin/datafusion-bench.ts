@@ -23,10 +23,6 @@ async function main() {
         .option('--max-tasks-per-stage <number>', 'Max tasks per stage', '0')
         .option('--repartition-file-min-size <number>', 'repartition_file_min_size DF option', '10485760' /* upstream default */)
         .option('--target-partitions <number>', 'target_partitions DF option', '8')
-        .option('--grpc-connect-timeout-ms <number>', 'Total timeout for establishing Flight channels', '5000')
-        .option('--grpc-request-timeout-ms <number>', 'Total do_get RPC deadline', '30000')
-        .option('--wait-plan-timeout-ms <number>', 'Worker-side wait for task data before do_get fails', '10000')
-        .option('--grpc-tcp-keepalive-ms <number>', 'TCP keepalive for Flight channels', '60000')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -44,10 +40,6 @@ async function main() {
     const maxTasksPerStage = parseInt(options.maxTasksPerStage);
     const repartitionFileMinSize = parseInt(options.repartitionFileMinSize)
     const targetPartitions = parseInt(options.targetPartitions);
-    const grpcConnectTimeoutMs = parseInt(options.grpcConnectTimeoutMs);
-    const grpcRequestTimeoutMs = parseInt(options.grpcRequestTimeoutMs);
-    const waitPlanTimeoutMs = parseInt(options.waitPlanTimeoutMs);
-    const grpcTcpKeepaliveMs = parseInt(options.grpcTcpKeepaliveMs);
     const queries = options.queries?.split(",") ?? []
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
@@ -66,11 +58,7 @@ async function main() {
         broadcastJoins,
         maxTasksPerStage,
         repartitionFileMinSize,
-        targetPartitions,
-        grpcConnectTimeoutMs,
-        grpcRequestTimeoutMs,
-        waitPlanTimeoutMs,
-        grpcTcpKeepaliveMs
+        targetPartitions
     });
 
     // Fail fast on dead port-forward/unhealthy worker before doing table setup and benchmark work.
@@ -93,20 +81,6 @@ const QueryResponse = z.object({
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
-const WorkerInfo = z.object({
-    worker_urls: z.string().array(),
-    git_commit_hash: z.string(),
-    build_time_utc: z.string(),
-    errors: z.string().array(),
-    transport_config: z.object({
-        grpc_connect_timeout_ms: z.number(),
-        grpc_request_timeout_ms: z.number(),
-        wait_plan_timeout_ms: z.number(),
-        grpc_tcp_keepalive_ms: z.number(),
-    }).optional(),
-})
-type WorkerInfo = z.infer<typeof WorkerInfo>
-
 class DataFusionRunner implements BenchmarkRunner {
     private url = 'http://localhost:9000';
 
@@ -122,18 +96,10 @@ class DataFusionRunner implements BenchmarkRunner {
         maxTasksPerStage: number;
         repartitionFileMinSize: number;
         targetPartitions: number;
-        grpcConnectTimeoutMs: number;
-        grpcRequestTimeoutMs: number;
-        waitPlanTimeoutMs: number;
-        grpcTcpKeepaliveMs: number;
     }) {
     }
 
     async assertReachable(): Promise<void> {
-        await this.info()
-    }
-
-    private async info(): Promise<WorkerInfo> {
         // `/info` is a lightweight health endpoint; timeout avoids hanging when the local tunnel is stale.
         const infoUrl = `${this.url}/info`
         const controller = new AbortController()
@@ -144,8 +110,6 @@ class DataFusionRunner implements BenchmarkRunner {
                 const msg = await response.text()
                 throw new Error(`Worker health check failed: ${response.status} ${msg}`)
             }
-            const unparsed = await response.json()
-            return WorkerInfo.parse(unparsed)
         } catch (e: any) {
             throw this.decorateConnectionError(e, infoUrl)
         } finally {
@@ -210,21 +174,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.max_tasks_per_stage=${this.options.maxTasksPerStage};
       SET datafusion.optimizer.repartition_file_min_size=${this.options.repartitionFileMinSize};
       SET datafusion.execution.target_partitions=${this.options.targetPartitions};
-      SET distributed.grpc_connect_timeout_ms=${this.options.grpcConnectTimeoutMs};
-      SET distributed.grpc_request_timeout_ms=${this.options.grpcRequestTimeoutMs};
-      SET distributed.wait_plan_timeout_ms=${this.options.waitPlanTimeoutMs};
-      SET distributed.grpc_tcp_keepalive_ms=${this.options.grpcTcpKeepaliveMs};
     `);
-
-        const info = await this.info()
-        console.log("Remote worker build:", info.git_commit_hash, info.build_time_utc)
-        if (info.transport_config) {
-            console.log("Active transport config:", info.transport_config)
-        } else {
-            console.log(
-                "Active transport config: unavailable from /info; redeploy the remote worker to verify the applied timeout settings explicitly."
-            )
-        }
     }
 
     private decorateConnectionError(err: any, url: string): Error {
