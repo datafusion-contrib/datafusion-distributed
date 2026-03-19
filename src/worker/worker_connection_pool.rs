@@ -4,7 +4,7 @@ use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
 use crate::worker::generated::worker::FlightAppMetadata;
-use crate::worker::generated::worker::{ExecuteTaskRequest, StageKey};
+use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
 use crate::{BytesMetricExt, ChannelResolver, Stage};
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -164,7 +164,7 @@ impl WorkerConnection {
             ExecuteTaskRequest {
                 target_partition_start: target_partition_range.start as u64,
                 target_partition_end: target_partition_range.end as u64,
-                stage_key: Some(StageKey {
+                task_key: Some(TaskKey {
                     query_id: input_stage.query_id.as_bytes().to_vec(),
                     stage_id: input_stage.num as u64,
                     task_number: target_task as u64,

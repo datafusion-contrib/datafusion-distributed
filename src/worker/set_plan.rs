@@ -47,7 +47,7 @@ impl Worker {
         request: Request<SetPlanRequest>,
     ) -> Result<Response<SetPlanResponse>, Status> {
         let (metadata, _ext, body) = request.into_parts();
-        let key = body.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = body.task_key.ok_or_else(missing("task_key"))?;
 
         let entry = self
             .task_data_entries

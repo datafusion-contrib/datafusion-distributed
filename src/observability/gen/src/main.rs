@@ -20,8 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .out_dir(&out_dir)
         .extern_path(
-            ".observability.StageKey",
-            "crate::worker::generated::worker::StageKey",
+            ".observability.TaskKey",
+            "crate::worker::generated::worker::TaskKey",
         )
         .compile_protos(&[proto_file], &[proto_dir])?;
 

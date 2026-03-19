@@ -1,5 +1,5 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::TaskKey;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -12,8 +12,8 @@ use std::sync::atomic::AtomicUsize;
 use tonic::transport::{Endpoint, Server};
 use uuid::Uuid;
 
-pub fn test_stage_key(task_number: u64) -> StageKey {
-    StageKey {
+pub fn test_task_key(task_number: u64) -> TaskKey {
+    TaskKey {
         query_id: Uuid::from_u128(0).as_bytes().to_vec(),
         stage_id: 0,
         task_number,
@@ -71,7 +71,7 @@ impl MemoryWorker {
             .expect("Failing to build MemorySourceConfig");
         let swmr_task_data = worker
             .task_data_entries
-            .get_with(test_stage_key(self.task_index as _), async {
+            .get_with(test_task_key(self.task_index as _), async {
                 Default::default()
             })
             .await;

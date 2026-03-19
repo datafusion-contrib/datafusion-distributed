@@ -4,7 +4,7 @@ use crate::distributed_planner::NetworkBoundary;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use dashmap::DashMap;
 use datafusion::common::internal_datafusion_err;
@@ -124,7 +124,7 @@ pub struct NetworkBroadcastExec {
     pub(crate) properties: PlanProperties,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
-    pub(crate) metrics_collection: Arc<DashMap<StageKey, Vec<pb::MetricsSet>>>,
+    pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
 }
 
 impl NetworkBroadcastExec {
@@ -250,8 +250,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
             let stream = worker_connection.stream_partition(off + partition, move |meta| {
                 if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
                     for task_metrics in m.tasks {
-                        if let Some(stage_key) = task_metrics.stage_key {
-                            metrics_collection.insert(stage_key, task_metrics.metrics);
+                        if let Some(task_key) = task_metrics.task_key {
+                            metrics_collection.insert(task_key, task_metrics.metrics);
                         };
                     }
                 }

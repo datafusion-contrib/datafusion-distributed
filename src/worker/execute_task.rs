@@ -13,7 +13,7 @@ use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch};
 
 use crate::worker::generated::worker::worker_service_server::WorkerService;
-use crate::worker::generated::worker::{ExecuteTaskRequest, StageKey};
+use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
 use crate::worker::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
@@ -39,13 +39,13 @@ impl Worker {
     ) -> Result<Response<<Worker as WorkerService>::ExecuteTaskStream>, Status> {
         let body = request.into_inner();
 
-        let key = body.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = body.task_key.ok_or_else(missing("task_key"))?;
         let entry = self
             .task_data_entries
             .get_with(key.clone(), async { Default::default() })
             .await;
 
-        // Other request is responsible for writing the plan that belongs to this StageKey, so
+        // Other request is responsible for writing the plan that belongs to this TaskKey, so
         // we'll resolve immediately if it was already there, or wait until it's ready.
         let task_data = entry
             .read(Duration::from_secs(WAIT_PLAN_TIMEOUT_SECS))
@@ -221,7 +221,7 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
 
 /// Collects metrics from the provided stage and includes it in the flight data
 fn collect_and_create_metrics_flight_data(
-    stage_key: StageKey,
+    task_key: TaskKey,
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<flight_app_metadata::Content, FlightError> {
     // Get the metrics for the task executed on this worker + child tasks.
@@ -241,13 +241,13 @@ fn collect_and_create_metrics_flight_data(
         .collect::<Result<Vec<_>, _>>()?;
     result
         .input_task_metrics
-        .insert(stage_key, proto_task_metrics);
+        .insert(task_key, proto_task_metrics);
 
     // Serialize the metrics for all tasks.
     let mut task_metrics_set = vec![];
-    for (stage_key, metrics) in result.input_task_metrics.into_iter() {
+    for (task_key, metrics) in result.input_task_metrics.into_iter() {
         task_metrics_set.push(TaskMetrics {
-            stage_key: Some(stage_key),
+            task_key: Some(task_key),
             metrics,
         });
     }

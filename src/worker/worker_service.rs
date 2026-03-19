@@ -1,7 +1,7 @@
 use crate::worker::WorkerSessionBuilder;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
 use crate::worker::generated::worker::{
-    ExecuteTaskRequest, SetPlanRequest, SetPlanResponse, StageKey,
+    ExecuteTaskRequest, SetPlanRequest, SetPlanResponse, TaskKey,
 };
 use crate::worker::set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
@@ -32,7 +32,7 @@ pub struct Worker {
     /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
     /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
     /// access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    pub(super) task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,

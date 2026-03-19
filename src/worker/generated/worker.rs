@@ -4,7 +4,7 @@ pub struct SetPlanRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub plan_proto: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "2")]
-    pub stage_key: ::core::option::Option<StageKey>,
+    pub task_key: ::core::option::Option<TaskKey>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetPlanResponse {}
@@ -19,51 +19,62 @@ pub struct ExecuteTaskRequest {
     #[prost(uint64, tag = "4")]
     pub target_partition_end: u64,
     #[prost(message, optional, tag = "5")]
-    pub stage_key: ::core::option::Option<StageKey>,
+    pub task_key: ::core::option::Option<TaskKey>,
 }
+/// A key that uniquely identifies a stage in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StageKey {
+pub struct TaskKey {
+    /// Our query id.
     #[prost(bytes = "vec", tag = "1")]
     pub query_id: ::prost::alloc::vec::Vec<u8>,
+    /// Our stage id.
     #[prost(uint64, tag = "2")]
     pub stage_id: u64,
+    /// The task number within the stage.
     #[prost(uint64, tag = "3")]
     pub task_number: u64,
 }
+/// FlightAppMetadata represents all types of app_metadata which we use in the distributed execution.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FlightAppMetadata {
     #[prost(uint64, tag = "1")]
     pub partition: u64,
+    /// Unix timestamp in nanoseconds at which this message was created.
     #[prost(uint64, tag = "2")]
     pub created_timestamp_unix_nanos: u64,
+    /// content should always be Some, but it is optional due to protobuf rules.
     #[prost(oneof = "flight_app_metadata::Content", tags = "10")]
     pub content: ::core::option::Option<flight_app_metadata::Content>,
 }
 /// Nested message and enum types in `FlightAppMetadata`.
 pub mod flight_app_metadata {
+    /// content should always be Some, but it is optional due to protobuf rules.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Content {
         #[prost(message, tag = "10")]
         MetricsCollection(super::MetricsCollection),
     }
 }
-/// A collection of metrics for a set of tasks in an ExecutionPlan.
-/// Each entry should have a distinct StageKey.
+/// A collection of metrics for a set of tasks in an ExecutionPlan. Each
+/// entry should have a distinct TaskKey.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricsCollection {
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskMetrics>,
 }
-/// Metrics for a single task.
+/// TaskMetrics represents the metrics for a single task.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskMetrics {
+    /// task_key uniquely identifies this task.
+    /// This field is always present. It's marked optional due to protobuf rules.
     #[prost(message, optional, tag = "1")]
-    pub stage_key: ::core::option::Option<StageKey>,
+    pub task_key: ::core::option::Option<TaskKey>,
     /// metrics\[i\] is the set of metrics for plan node i where plan nodes are
     /// in pre-order traversal order.
     #[prost(message, repeated, tag = "2")]
     pub metrics: ::prost::alloc::vec::Vec<MetricsSet>,
 }
+/// A Label mirrors datafusion::physical_plan::metrics::Label.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Label {
     #[prost(string, tag = "1")]
@@ -71,6 +82,7 @@ pub struct Label {
     #[prost(string, tag = "2")]
     pub value: ::prost::alloc::string::String,
 }
+/// A Metric is a protobuf mirror of datafusion::physical_plan::metrics::Metric.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Metric {
     #[prost(message, repeated, tag = "1")]
@@ -137,7 +149,8 @@ pub mod metric {
         CustomP99Latency(super::PercentileLatency),
     }
 }
-/// A collection of metrics for one ExecutionPlan node.
+/// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
+/// a collection of metrics for one ExecutionPlan node.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricsSet {
     #[prost(message, repeated, tag = "1")]

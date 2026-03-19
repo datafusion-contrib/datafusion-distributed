@@ -8,7 +8,7 @@ service WorkerService {
 
 message SetPlanRequest {
   bytes plan_proto = 1;
-  StageKey stage_key = 2;
+  TaskKey task_key = 2;
 }
 
 message SetPlanResponse {
@@ -20,12 +20,16 @@ message ExecuteTaskRequest {
   uint64 target_task_count = 2;
   uint64 target_partition_start = 3;
   uint64 target_partition_end = 4;
-  StageKey stage_key = 5;
+  TaskKey task_key = 5;
 }
 
-message StageKey {
+// A key that uniquely identifies a task in a query.
+message TaskKey {
+  // Our query id.
   bytes query_id = 1;
+  // Our stage id.
   uint64 stage_id = 2;
+  // The task number within the stage.
   uint64 task_number = 3;
 }
 
@@ -58,23 +62,28 @@ message FlightData {
 
 // --- App metadata piggybacked on FlightData messages ---
 
+// FlightAppMetadata represents all types of app_metadata which we use in the distributed execution.
 message FlightAppMetadata {
   uint64 partition = 1;
+  // Unix timestamp in nanoseconds at which this message was created.
   uint64 created_timestamp_unix_nanos = 2;
+  // content should always be Some, but it is optional due to protobuf rules.
   oneof content {
     MetricsCollection metrics_collection = 10;
   }
 }
 
-// A collection of metrics for a set of tasks in an ExecutionPlan.
-// Each entry should have a distinct StageKey.
+// A collection of metrics for a set of tasks in an ExecutionPlan. Each
+// entry should have a distinct TaskKey.
 message MetricsCollection {
   repeated TaskMetrics tasks = 1;
 }
 
-// Metrics for a single task.
+// TaskMetrics represents the metrics for a single task.
 message TaskMetrics {
-  StageKey stage_key = 1;
+  // task_key uniquely identifies this task.
+  // This field is always present. It's marked optional due to protobuf rules.
+  TaskKey task_key = 1;
   // metrics[i] is the set of metrics for plan node i where plan nodes are
   // in pre-order traversal order.
   repeated MetricsSet metrics = 2;
@@ -82,11 +91,13 @@ message TaskMetrics {
 
 // --- Metric serialization ---
 
+// A Label mirrors datafusion::physical_plan::metrics::Label.
 message Label {
   string name = 1;
   string value = 2;
 }
 
+// A Metric is a protobuf mirror of datafusion::physical_plan::metrics::Metric.
 message Metric {
   repeated Label labels = 1;
   optional uint64 partition = 2;
@@ -118,7 +129,8 @@ message Metric {
   }
 }
 
-// A collection of metrics for one ExecutionPlan node.
+// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
+// a collection of metrics for one ExecutionPlan node.
 message MetricsSet {
   repeated Metric metrics = 1;
 }

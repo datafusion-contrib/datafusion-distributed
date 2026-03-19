@@ -4,7 +4,7 @@ use crate::distributed_ext::DistributedExt;
 use crate::execution_plans::DistributedExec;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
 use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
 #[cfg(test)]
@@ -46,12 +46,12 @@ pub fn count_plan_nodes_up_to_network_boundary(plan: &Arc<dyn ExecutionPlan>) ->
 /// Returns
 /// - a map of all stages
 /// - a set of all the stage keys (one per task)
-pub fn get_stages_and_stage_keys(
+pub fn get_stages_and_task_keys(
     stage: &DistributedExec,
-) -> (HashMap<usize, &Stage>, HashSet<StageKey>) {
+) -> (HashMap<usize, &Stage>, HashSet<TaskKey>) {
     let mut i = 0;
     let mut queue = find_input_stages(stage);
-    let mut stage_keys = HashSet::new();
+    let mut task_keys = HashSet::new();
     let mut stages_map = HashMap::new();
 
     while i < queue.len() {
@@ -61,7 +61,7 @@ pub fn get_stages_and_stage_keys(
 
         // Add each task.
         for j in 0..stage.tasks.len() {
-            stage_keys.insert(StageKey {
+            task_keys.insert(TaskKey {
                 query_id: stage.query_id.as_bytes().to_vec(),
                 stage_id: stage.num as u64,
                 task_number: j as u64,
@@ -71,7 +71,7 @@ pub fn get_stages_and_stage_keys(
         // Add any child stages
         queue.extend(find_input_stages(stage.plan.as_ref().unwrap().as_ref()));
     }
-    (stages_map, stage_keys)
+    (stages_map, task_keys)
 }
 
 fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {

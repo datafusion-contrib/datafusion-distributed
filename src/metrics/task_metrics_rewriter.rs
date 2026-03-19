@@ -7,7 +7,7 @@ use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::Stage;
 use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::TaskKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
@@ -203,7 +203,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &Stage,
-    metrics_collection: Arc<HashMap<StageKey, Vec<pb::MetricsSet>>>,
+    metrics_collection: Arc<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
@@ -217,12 +217,12 @@ pub fn stage_metrics_rewriter(
         let mut stage_metrics = MetricsSet::new();
 
         for task_id in 0..stage.tasks.len() {
-            let stage_key = StageKey {
+            let task_key = TaskKey {
                 query_id: stage.query_id.as_bytes().to_vec(),
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
             };
-            match metrics_collection.get(&stage_key) {
+            match metrics_collection.get(&task_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
                         return internal_err!(
@@ -299,7 +299,7 @@ mod tests {
 
     use crate::DistributedExt;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
-    use crate::worker::generated::worker::StageKey;
+    use crate::worker::generated::worker::TaskKey;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
@@ -436,7 +436,7 @@ mod tests {
         // Generate metrics for each task and store them in the map.
         let mut metrics_collection = HashMap::new();
         for task_id in 0..stage.tasks.len() {
-            let stage_key = StageKey {
+            let task_key = TaskKey {
                 query_id: stage.query_id.as_bytes().to_vec(),
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
@@ -450,7 +450,7 @@ mod tests {
                 })
                 .collect::<Vec<pb::MetricsSet>>();
 
-            metrics_collection.insert(stage_key, metrics);
+            metrics_collection.insert(task_key, metrics);
         }
         let metrics_collection = Arc::new(metrics_collection);
 
@@ -477,7 +477,7 @@ mod tests {
                 .enumerate()
             {
                 let expected_task_node_metrics = metrics_collection
-                    .get(&StageKey {
+                    .get(&TaskKey {
                         query_id: stage.query_id.as_bytes().to_vec(),
                         stage_id: stage.num as u64,
                         task_number: task_id as u64,

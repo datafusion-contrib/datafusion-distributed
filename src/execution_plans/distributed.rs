@@ -5,7 +5,7 @@ use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
-use crate::worker::generated::worker::{SetPlanRequest, StageKey};
+use crate::worker::generated::worker::{SetPlanRequest, TaskKey};
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
 };
@@ -135,7 +135,7 @@ impl DistributedExec {
                     };
                     let request = SetPlanRequest {
                         plan_proto: bytes.clone(),
-                        stage_key: Some(StageKey {
+                        task_key: Some(TaskKey {
                             query_id: stage.query_id.as_bytes().to_vec(),
                             stage_id: stage.num as _,
                             task_number: i as _,

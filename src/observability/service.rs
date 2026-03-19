@@ -2,7 +2,7 @@ use super::{
     GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
     generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
-use crate::worker::generated::worker::StageKey;
+use crate::worker::generated::worker::TaskKey;
 use crate::worker::{SingleWriteMultiRead, TaskData};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
@@ -21,14 +21,14 @@ use tonic::{Request, Response, Status};
 type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
-    task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     #[cfg(feature = "system-metrics")]
     system: watch::Receiver<WorkerMetrics>,
 }
 
 impl ObservabilityServiceImpl {
     pub fn new(
-        task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+        task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     ) -> Self {
         #[cfg(feature = "system-metrics")]
         let (tx, rx) = tokio::sync::watch::channel(WorkerMetrics::default());
@@ -99,7 +99,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let output_rows = output_rows_from_plan(&task_data.plan);
 
                 tasks.push(TaskProgress {
-                    stage_key: Some((*internal_key).clone()),
+                    task_key: Some((*internal_key).clone()),
                     total_partitions,
                     completed_partitions,
                     status: TaskStatus::Running as i32,
