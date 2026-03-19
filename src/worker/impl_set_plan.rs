@@ -42,7 +42,7 @@ impl TaskData {
 }
 
 impl Worker {
-    pub(crate) async fn set_plan(
+    pub(crate) async fn impl_set_plan(
         &self,
         request: Request<SetPlanRequest>,
     ) -> Result<Response<SetPlanResponse>, Status> {

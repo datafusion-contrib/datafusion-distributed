@@ -1,7 +1,7 @@
-mod execute_task;
 pub(crate) mod generated;
+mod impl_execute_task;
+mod impl_set_plan;
 mod session_builder;
-mod set_plan;
 mod single_write_multi_read;
 mod spawn_select_all;
 #[cfg(any(test, feature = "integration"))]
@@ -18,4 +18,4 @@ pub use session_builder::{
 };
 pub use worker_service::Worker;
 
-pub use set_plan::TaskData;
+pub use impl_set_plan::TaskData;

@@ -3,7 +3,7 @@ use crate::worker::generated::worker::worker_service_server::{WorkerService, Wor
 use crate::worker::generated::worker::{
     ExecuteTaskRequest, SetPlanRequest, SetPlanResponse, TaskKey,
 };
-use crate::worker::set_plan::TaskData;
+use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
 use arrow_flight::FlightData;
@@ -150,13 +150,17 @@ impl Worker {
     }
 }
 
+/// Implementation of the `worker.proto` specification based on the generated Rust stubs.
+///
+/// The methods are delegated to plan `impl Worker` implementations so that they can be implemented
+/// in different files.
 #[async_trait]
 impl WorkerService for Worker {
     async fn set_plan(
         &self,
         request: Request<SetPlanRequest>,
     ) -> Result<Response<SetPlanResponse>, Status> {
-        self.set_plan(request).await
+        self.impl_set_plan(request).await
     }
 
     type ExecuteTaskStream = BoxStream<FlightData>;
@@ -165,6 +169,6 @@ impl WorkerService for Worker {
         &self,
         request: Request<ExecuteTaskRequest>,
     ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
-        self.execute_task(request).await
+        self.impl_execute_task(request).await
     }
 }
