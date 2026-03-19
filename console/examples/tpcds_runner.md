@@ -17,21 +17,27 @@ may take a few minutes).
 
 ## Usage
 
-### Step 1: Start Workers with Observability (Terminals 1-4)
+### Step 1: Start Workers with Observability
 
-Start 4 workers on different ports in different terminals:
+The quickest way is to start a cluster (defaults to 16 workers on ports 9001-9016):
 
 ```bash
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8080
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8081
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8082
-cargo run -p datafusion-distributed-console --example -- console_worker -- 8083
+cargo run -p datafusion-distributed-console --example cluster
+```
+
+Or start workers individually in separate terminals:
+
+```bash
+cargo run -p datafusion-distributed-console --example console_worker -- 9001
+cargo run -p datafusion-distributed-console --example console_worker -- 9002
+cargo run -p datafusion-distributed-console --example console_worker -- 9003
+cargo run -p datafusion-distributed-console --example console_worker -- 9004
 ```
 
 ### Step 2: Start the Console (Terminal 5)
 
 ```bash
-cargo run -p datafusion-distributed-console
+cargo run -p datafusion-distributed-console -- 9001
 ```
 
 ### Step 3: Run TPC-DS Queries (Terminal 6)
@@ -39,14 +45,14 @@ cargo run -p datafusion-distributed-console
 #### Run a single query
 
 ```bash
-cargo run -p datafusion-distributed-console --example tpcds_runner \
-  --cluster-ports 8080,8081,8082,8083 \
+cargo run -p datafusion-distributed-console --example tpcds_runner -- \
+  --cluster-ports 9001,9002,9003,9004 \
   --query q99
 ```
 
 #### Run all TPC-DS queries sequentially
 
 ```bash
-cargo run -p datafusion-distributed-console --example tpcds_runner \
-  --cluster-ports 8080,8081,8082,8083 \
+cargo run -p datafusion-distributed-console --example tpcds_runner -- \
+  --cluster-ports 9001,9002,9003,9004
 ```
