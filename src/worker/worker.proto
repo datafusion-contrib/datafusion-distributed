@@ -8,6 +8,7 @@ service WorkerService {
   rpc CoordinatorChannel(stream CoordinatorToWorkerMsg) returns (stream WorkerToCoordinatorMsg);
   // Executes the requested partition range of a subplan previously sent by the coordinator channel.
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
+  rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
 }
 
 message CoordinatorToWorkerMsg {
@@ -29,6 +30,12 @@ message SetPlanRequest {
   uint64 task_count = 2;
   // The serialized subplan the worker is expected to execute on an ExecuteTask gRPC call.
   bytes plan_proto = 3;
+}
+
+message GetWorkerInfoRequest {}
+
+message GetWorkerInfoResponse {
+  string version_number = 1;
 }
 
 message ExecuteTaskRequest {
