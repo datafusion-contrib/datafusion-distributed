@@ -349,7 +349,7 @@ mod tests {
     /// Issue: https://github.com/datafusion-contrib/datafusion-distributed/issues/187
     ///
     /// Metrics are piggybacked on the last FlightData message of the last partition stream
-    /// (see `do_get.rs`). If a LIMIT causes the client-side stream to be dropped before the
+    /// (see `impl_execute_task.rs`). If a LIMIT causes the client-side stream to be dropped before the
     /// worker finishes, the last message (carrying metrics) is never received.
     ///
     /// This uses the `flights_1m` dataset (1M rows) so the worker is still producing data

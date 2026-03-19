@@ -72,7 +72,7 @@ impl Worker {
         self
     }
 
-    /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.
+    /// Adds a callback for when an [ExecutionPlan] is received in the `set_plan` call.
     ///
     /// The callback takes the plan and returns another plan that must be either the same,
     /// or equivalent in terms of execution. Mutating the plan by adding nodes or removing them
