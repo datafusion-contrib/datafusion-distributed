@@ -35,6 +35,7 @@ pub use metrics::{
 pub use networking::{
     BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
     create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    worker_has_version,
 };
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
