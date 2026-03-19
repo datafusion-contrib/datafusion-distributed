@@ -4,6 +4,7 @@ package worker;
 service WorkerService {
   rpc SetPlan(SetPlanRequest) returns (SetPlanResponse);
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
+  rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
 }
 
 message SetPlanRequest {
@@ -13,6 +14,12 @@ message SetPlanRequest {
 
 message SetPlanResponse {
 
+}
+
+message GetWorkerInfoRequest {}
+
+message GetWorkerInfoResponse {
+  string version_number = 1;
 }
 
 message ExecuteTaskRequest {
