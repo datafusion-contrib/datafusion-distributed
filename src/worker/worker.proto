@@ -2,13 +2,20 @@ syntax = "proto3";
 package worker;
 
 service WorkerService {
+  // Sends a subplan to a worker so that a future ExecuteTask call can actually execute it. The plan is identified by
+  // a TaskKey.
   rpc SetPlan(SetPlanRequest) returns (SetPlanResponse);
+  // Executes the requested partition range of a subplan previously sent by SetPlan.
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
 }
 
 message SetPlanRequest {
-  bytes plan_proto = 1;
-  TaskKey task_key = 2;
+  // The unique identifier of the task to which the subplan belongs to.
+  TaskKey task_key = 1;
+  // The amount of tasks that share the same subplan. Necessary for building the DistributedTaskContext during execution.
+  uint64 task_count = 2;
+  // The serialized subplan the worker is expected to execute on an ExecuteTask gRPC call.
+  bytes plan_proto = 3;
 }
 
 message SetPlanResponse {
@@ -16,11 +23,12 @@ message SetPlanResponse {
 }
 
 message ExecuteTaskRequest {
-  uint64 target_task_index = 1;
-  uint64 target_task_count = 2;
-  uint64 target_partition_start = 3;
-  uint64 target_partition_end = 4;
-  TaskKey task_key = 5;
+  // The unique identifier of the task that is going to get executed.
+  TaskKey task_key = 1;
+  // The start of the partition range of the specified task that is going to be executed.
+  uint64 target_partition_start = 2;
+  // The end of the partition range of the specified task that is going to be executed.
+  uint64 target_partition_end = 3;
 }
 
 // A key that uniquely identifies a task in a query.

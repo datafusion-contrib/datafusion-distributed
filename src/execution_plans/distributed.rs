@@ -135,6 +135,7 @@ impl DistributedExec {
                     };
                     let request = SetPlanRequest {
                         plan_proto: bytes.clone(),
+                        task_count: stage.tasks.len() as _,
                         task_key: Some(TaskKey {
                             query_id: stage.query_id.as_bytes().to_vec(),
                             stage_id: stage.num as _,

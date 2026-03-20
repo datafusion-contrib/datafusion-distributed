@@ -1,7 +1,7 @@
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
 use crate::worker::generated::worker::{SetPlanRequest, SetPlanResponse};
-use crate::{DistributedConfig, Worker, WorkerQueryContext};
+use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
@@ -57,7 +57,11 @@ impl Worker {
         let task_data = || async {
             let headers = metadata.into_headers();
 
-            let mut cfg = SessionConfig::default();
+            let mut cfg =
+                SessionConfig::default().with_extension(Arc::new(DistributedTaskContext {
+                    task_index: key.task_number as usize,
+                    task_count: body.task_count as usize,
+                }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
             let session_state = self
                 .session_builder

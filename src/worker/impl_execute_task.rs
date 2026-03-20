@@ -1,4 +1,5 @@
-use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
+use crate::DistributedConfig;
+use crate::common::{map_last_stream, on_drop_stream};
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
@@ -6,7 +7,6 @@ use crate::worker::generated::worker::{
     FlightAppMetadata, MetricsCollection, TaskMetrics, flight_app_metadata,
 };
 use crate::worker::worker_service::Worker;
-use crate::{DistributedConfig, DistributedTaskContext};
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
@@ -67,14 +67,6 @@ impl Worker {
             )))?,
         };
         let send_metrics = d_cfg.collect_metrics;
-        let task_ctx = Arc::new(task_ctx_with_extension(
-            &task_ctx,
-            DistributedTaskContext {
-                task_index: body.target_task_index as usize,
-                task_count: body.target_task_count as usize,
-            },
-        ));
-
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();
 

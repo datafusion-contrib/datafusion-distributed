@@ -169,8 +169,6 @@ impl WorkerConnection {
                     stage_id: input_stage.num as u64,
                     task_number: target_task as u64,
                 }),
-                target_task_index: target_task as u64,
-                target_task_count: input_stage.tasks.len() as u64,
             },
         );
 
