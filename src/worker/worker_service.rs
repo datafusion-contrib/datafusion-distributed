@@ -17,6 +17,8 @@ use std::time::Duration;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status};
 
+use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
+
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
 pub(super) struct WorkerHooks {
@@ -36,6 +38,7 @@ pub struct Worker {
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
+    pub(super) version: String,
 }
 
 impl Default for Worker {
@@ -49,6 +52,7 @@ impl Default for Worker {
             session_builder: Arc::new(DefaultSessionBuilder),
             hooks: WorkerHooks::default(),
             max_message_size: Some(usize::MAX),
+            version: String::default(),
         }
     }
 }
@@ -140,6 +144,11 @@ impl Worker {
         ))
     }
 
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
     /// Returns the number of cached task entries currently held by this worker.
     #[cfg(any(test, feature = "integration"))]
     pub async fn tasks_running(&self) -> usize {
@@ -170,5 +179,14 @@ impl WorkerService for Worker {
         request: Request<ExecuteTaskRequest>,
     ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
         self.impl_execute_task(request).await
+    }
+
+    async fn get_worker_info(
+        &self,
+        _request: Request<GetWorkerInfoRequest>,
+    ) -> Result<Response<GetWorkerInfoResponse>, Status> {
+        Ok(Response::new(GetWorkerInfoResponse {
+            version_number: self.version.clone(),
+        }))
     }
 }

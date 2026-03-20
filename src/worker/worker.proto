@@ -7,6 +7,7 @@ service WorkerService {
   rpc SetPlan(SetPlanRequest) returns (SetPlanResponse);
   // Executes the requested partition range of a subplan previously sent by SetPlan.
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
+  rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
 }
 
 message SetPlanRequest {
@@ -20,6 +21,12 @@ message SetPlanRequest {
 
 message SetPlanResponse {
 
+}
+
+message GetWorkerInfoRequest {}
+
+message GetWorkerInfoResponse {
+  string version_number = 1;
 }
 
 message ExecuteTaskRequest {
