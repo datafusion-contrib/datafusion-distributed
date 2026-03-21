@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             Server::builder()
                 .add_service(worker.with_observability_service())
-                .add_service(worker.into_flight_server())
+                .add_service(worker.into_worker_server())
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
                 .expect("worker server failed");

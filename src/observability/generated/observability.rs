@@ -8,20 +8,11 @@ pub struct PingResponse {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTaskProgressRequest {}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StageKey {
-    #[prost(bytes = "vec", tag = "1")]
-    pub query_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag = "2")]
-    pub stage_id: u64,
-    #[prost(uint64, tag = "3")]
-    pub task_number: u64,
-}
 /// Progress information for a single task
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskProgress {
     #[prost(message, optional, tag = "1")]
-    pub stage_key: ::core::option::Option<StageKey>,
+    pub task_key: ::core::option::Option<crate::worker::generated::worker::TaskKey>,
     #[prost(uint64, tag = "2")]
     pub total_partitions: u64,
     #[prost(uint64, tag = "3")]

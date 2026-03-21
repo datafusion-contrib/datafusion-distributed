@@ -1,8 +1,8 @@
 use crate::NetworkBroadcastExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::execution_plans::NetworkShuffleExec;
-use crate::metrics::proto::MetricsSetProto;
-use crate::protobuf::StageKey;
+use crate::worker::generated::worker as pb;
+use crate::worker::generated::worker::TaskKey;
 use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
@@ -23,7 +23,7 @@ pub struct TaskMetricsCollector {
     task_metrics: Vec<MetricsSet>,
     /// input_task_metrics contains metrics for tasks from child [StageExec]s if they were
     /// collected.
-    input_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    input_task_metrics: HashMap<TaskKey, Vec<pb::MetricsSet>>,
 }
 
 /// MetricsCollectorResult is the result of collecting metrics from a task.
@@ -31,7 +31,7 @@ pub struct MetricsCollectorResult {
     // metrics is a collection of metrics for a task ordered using a pre-order traversal of the task's plan.
     pub task_metrics: Vec<MetricsSet>,
     // input_task_metrics contains metrics for child tasks if they were collected.
-    pub input_task_metrics: HashMap<StageKey, Vec<MetricsSetProto>>,
+    pub input_task_metrics: HashMap<TaskKey, Vec<pb::MetricsSet>>,
 }
 
 impl TreeNodeRewriter for TaskMetricsCollector {
@@ -62,21 +62,21 @@ impl TreeNodeRewriter for TaskMetricsCollector {
 
         if let Some(metrics_collection) = metrics_collection {
             for mut entry in metrics_collection.iter_mut() {
-                let stage_key = entry.key().clone();
+                let task_key = entry.key().clone();
                 let task_metrics = std::mem::take(entry.value_mut()); // Avoid copy.
-                match self.input_task_metrics.get(&stage_key) {
-                    // There should never be two NetworkShuffleExec with metrics for the same stage_key.
+                match self.input_task_metrics.get(&task_key) {
+                    // There should never be two NetworkShuffleExec with metrics for the same task_key.
                     // By convention, the NetworkShuffleExec which runs the last partition in a task should be
                     // sent metrics (the NetworkShuffleExec tracks it for us).
                     Some(_) => {
                         return internal_err!(
                             "duplicate task metrics for key {:?} during metrics collection",
-                            stage_key
+                            task_key
                         );
                     }
                     None => {
                         self.input_task_metrics
-                            .insert(stage_key.clone(), task_metrics);
+                            .insert(task_key.clone(), task_metrics);
                     }
                 }
             }
@@ -127,7 +127,7 @@ mod tests {
     };
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::{
-        count_plan_nodes_up_to_network_boundary, get_stages_and_stage_keys,
+        count_plan_nodes_up_to_network_boundary, get_stages_and_task_keys,
     };
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
@@ -259,9 +259,9 @@ mod tests {
             .expect("expected DistributedExec");
 
         // Assert to ensure the distributed test case is sufficiently complex.
-        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
+        let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         assert!(
-            expected_stage_keys.len() > 1,
+            expected_task_keys.len() > 1,
             "expected more than 1 stage key in test. the plan was not distributed):\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
@@ -272,20 +272,20 @@ mod tests {
         let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
-        for expected_stage_key in expected_stage_keys {
+        for expected_task_key in expected_task_keys {
             // Get the collected metrics for this task.
-            let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
+            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
             // just verify that a metrics set exists for each node. The count assertion above
             // ensures all nodes are included in the metrics collection.
-            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.as_ref().unwrap();
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
-                "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
+                "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );
         }
     }
@@ -349,7 +349,7 @@ mod tests {
     /// Issue: https://github.com/datafusion-contrib/datafusion-distributed/issues/187
     ///
     /// Metrics are piggybacked on the last FlightData message of the last partition stream
-    /// (see `do_get.rs`). If a LIMIT causes the client-side stream to be dropped before the
+    /// (see `impl_execute_task.rs`). If a LIMIT causes the client-side stream to be dropped before the
     /// worker finishes, the last message (carrying metrics) is never received.
     ///
     /// This uses the `flights_1m` dataset (1M rows) so the worker is still producing data
@@ -375,9 +375,9 @@ mod tests {
             .downcast_ref::<DistributedExec>()
             .expect("expected DistributedExec");
 
-        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
+        let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         assert!(
-            expected_stage_keys.len() > 1,
+            expected_task_keys.len() > 1,
             "expected more than 1 stage key. Plan was not distributed:\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
@@ -387,24 +387,24 @@ mod tests {
         let collector = TaskMetricsCollector::new();
         let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
-        for expected_stage_key in expected_stage_keys {
+        for expected_task_key in expected_task_keys {
             let actual_metrics = result
                 .input_task_metrics
-                .get(&expected_stage_key)
+                .get(&expected_task_key)
                 .unwrap_or_else(|| {
                     panic!(
-                        "Missing metrics for stage key {expected_stage_key:?}. \
+                        "Missing metrics for stage key {expected_task_key:?}. \
                          The LIMIT caused the stream to be dropped before the worker \
                          sent the last FlightData message with metrics."
                     )
                 });
 
-            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.as_ref().unwrap();
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
-                "Mismatch between collected metrics and actual nodes for {expected_stage_key:?}"
+                "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );
         }
     }
@@ -438,14 +438,14 @@ mod tests {
             .downcast_ref::<DistributedExec>()
             .expect("expected DistributedExec");
 
-        let (stages, expected_stage_keys) = get_stages_and_stage_keys(dist_exec);
+        let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         let collector = TaskMetricsCollector::new();
         let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
-        for expected_stage_key in expected_stage_keys {
-            let actual_metrics = result.input_task_metrics.get(&expected_stage_key).unwrap();
-            let stage = stages.get(&(expected_stage_key.stage_id as usize)).unwrap();
+        for expected_task_key in expected_task_keys {
+            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
+            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.as_ref().unwrap();
 
             // Verify metrics count matches - this ensures all nodes are included in metrics collection
@@ -453,7 +453,7 @@ mod tests {
             assert_eq!(
                 actual_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
-                "Metrics count must match plan nodes for stage {expected_stage_key:?}"
+                "Metrics count must match plan nodes for stage {expected_task_key:?}"
             );
         }
     }

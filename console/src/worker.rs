@@ -166,7 +166,7 @@ impl WorkerConn {
                 let new_task_keys: HashSet<TaskKey> = new_tasks
                     .iter()
                     .filter_map(|t| {
-                        t.stage_key
+                        t.task_key
                             .as_ref()
                             .map(|sk| (sk.query_id.clone(), sk.stage_id, sk.task_number))
                     })
@@ -175,7 +175,7 @@ impl WorkerConn {
                 // Detect completed tasks: tasks that were running but disappeared
                 for old_task in &self.tasks {
                     if old_task.status == TaskStatus::Running as i32 {
-                        if let Some(sk) = &old_task.stage_key {
+                        if let Some(sk) = &old_task.task_key {
                             let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
                             if !new_task_keys.contains(&key) {
                                 // Task disappeared — assume completed
@@ -207,7 +207,7 @@ impl WorkerConn {
                 // Track first_seen for new tasks
                 let now = Instant::now();
                 for task in &new_tasks {
-                    if let Some(sk) = &task.stage_key {
+                    if let Some(sk) = &task.task_key {
                         let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
                         self.task_first_seen.entry(key).or_insert(now);
                     }
@@ -225,7 +225,7 @@ impl WorkerConn {
                 let mut has_running = false;
 
                 for task in &self.tasks {
-                    if let Some(sk) = &task.stage_key {
+                    if let Some(sk) = &task.task_key {
                         current_query_ids.insert(sk.query_id.clone());
                         if task.status == TaskStatus::Running as i32 {
                             has_running = true;
@@ -337,7 +337,7 @@ impl WorkerConn {
         let ids: HashSet<_> = self
             .tasks
             .iter()
-            .filter_map(|t| t.stage_key.as_ref().map(|sk| &sk.query_id))
+            .filter_map(|t| t.task_key.as_ref().map(|sk| &sk.query_id))
             .collect();
         ids.len()
     }

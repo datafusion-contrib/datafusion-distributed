@@ -1,17 +1,16 @@
 use crate::common::require_one_child;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::flight_service::{INIT_ACTION_TYPE, InitAction};
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
-use crate::{
-    ChannelResolver, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, StageKey, WorkerResolver,
-    get_distributed_channel_resolver,
+use crate::worker::generated::worker::{
+    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, coordinator_to_worker_msg::Inner,
 };
-use arrow_flight::Action;
-use bytes::Bytes;
+use crate::{
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
+};
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -124,10 +123,8 @@ impl DistributedExec {
             // This assumes the plan is the same for all the tasks within a stage. This is fine for
             // now, but it should be possible to send different versions of the subplan to the
             // different tasks.
-            let bytes: Bytes =
-                PhysicalPlanNode::try_from_physical_plan(Arc::clone(input_plan), &codec)?
-                    .encode_to_vec()
-                    .into();
+            let bytes = PhysicalPlanNode::try_from_physical_plan(Arc::clone(input_plan), &codec)?
+                .encode_to_vec();
 
             let tasks = stage
                 .tasks
@@ -138,10 +135,11 @@ impl DistributedExec {
                     let execution_task = ExecutionTask {
                         url: Some(url.clone()),
                     };
-                    let action = InitAction {
+                    let request = SetPlanRequest {
                         plan_proto: bytes.clone(),
-                        stage_key: Some(StageKey {
-                            query_id: stage.query_id.as_bytes().to_vec().into(),
+                        task_count: stage.tasks.len() as _,
+                        task_key: Some(TaskKey {
+                            query_id: stage.query_id.as_bytes().to_vec(),
                             stage_id: stage.num as _,
                             task_number: i as _,
                         }),
@@ -152,7 +150,7 @@ impl DistributedExec {
                     // Spawns the task that feeds this subplan to this worker. There will be as
                     // many as this spawned tasks as workers.
                     join_set.spawn(async move {
-                        send_plan_task(ctx, url, action).await?;
+                        send_plan_task(ctx, url, request).await?;
                         plan_send_latency.record(&start);
                         Ok(())
                     });
@@ -258,24 +256,23 @@ impl ExecutionPlan for DistributedExec {
     }
 }
 
-async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, init_action: InitAction) -> Result<()> {
+async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, request: SetPlanRequest) -> Result<()> {
     let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
-    let mut client = channel_resolver.get_flight_client_for_url(&url).await?;
-
-    let body = init_action.encode_to_vec().into();
+    let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
 
     let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
     headers.extend(get_passthrough_headers(ctx.session_config()));
+
+    let msg = CoordinatorToWorkerMsg {
+        inner: Some(Inner::SetPlanRequest(request)),
+    };
     let request = Request::from_parts(
         MetadataMap::from_headers(headers),
         Extensions::default(),
-        Action {
-            r#type: INIT_ACTION_TYPE.to_string(),
-            body,
-        },
+        futures::stream::once(async { msg }),
     );
 
-    client.do_action(request).await.map_err(|e| {
+    client.coordinator_channel(request).await.map_err(|e| {
         tonic_status_to_datafusion_error(&e)
             .unwrap_or_else(|| exec_datafusion_err!("Error sending plan to worker {url}: {e}"))
     })?;

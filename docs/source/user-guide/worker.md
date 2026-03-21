@@ -1,18 +1,18 @@
 # Spawn a Worker
 
-The `Worker` is a gRPC server implementing the Arrow Flight protocol for distributed query execution. Worker nodes
+The `Worker` is a gRPC server that handles distributed query execution. Worker nodes
 run these endpoints to receive execution plans, execute them, and stream results back.
 
 ## Overview
 
 The `Worker` is the core worker component in Distributed DataFusion. It:
 
-- Receives serialized execution plans via Arrow Flight's `do_get` method
+- Receives serialized execution plans via gRPC
 - Deserializes plans using protobuf and user-provided codecs
 - Executes plans using the local DataFusion runtime
-- Streams results back as Arrow record batches through the gRPC Arrow Flight interface
+- Streams results back as Arrow record batches through the gRPC interface
 
-## Launching the Arrow Flight server
+## Launching the Worker server
 
 The default `Worker` implementation satisfies most basic use cases:
 
@@ -23,7 +23,7 @@ async fn main() {
     let endpoint = Worker::default();
 
     Server::builder()
-        .add_service(endpoint.into_flight_server())
+        .add_service(endpoint.into_worker_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))
         .await?;
 
@@ -47,7 +47,7 @@ async fn main() {
     let endpoint = Worker::from_session_builder(build_sate);
 
     Server::builder()
-        .add_service(endpoint.into_flight_server())
+        .add_service(endpoint.into_worker_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))
         .await?;
 
@@ -88,10 +88,10 @@ async fn main() {
     let endpoint = Worker::default();
 
     Server::builder()
-        .add_service(endpoint.into_flight_server())
+        .add_service(endpoint.into_worker_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
         .await?;
 }
 ```
 
-The `into_flight_server()` method builds a `FlightServiceServer` ready to be added as a Tonic service.
+The `into_worker_server()` method builds a `WorkerServiceServer` ready to be added as a Tonic service.

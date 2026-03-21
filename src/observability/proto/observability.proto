@@ -14,7 +14,7 @@ message PingResponse {
 
 message GetTaskProgressRequest {}
 
-message StageKey {
+message TaskKey {
   bytes query_id = 1;
   uint64 stage_id = 2;
   uint64 task_number = 3;
@@ -22,7 +22,7 @@ message StageKey {
 
 // Progress information for a single task
 message TaskProgress {
-  StageKey stage_key = 1;
+  TaskKey task_key = 1;
   uint64 total_partitions = 2;
   uint64 completed_partitions = 3;
   TaskStatus status = 4;

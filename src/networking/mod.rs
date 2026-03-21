@@ -2,7 +2,7 @@ mod channel_resolver;
 mod worker_resolver;
 
 pub use channel_resolver::{
-    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, create_flight_client,
+    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, create_worker_client,
     get_distributed_channel_resolver,
 };
 pub(crate) use channel_resolver::{ChannelResolverExtension, set_distributed_channel_resolver};

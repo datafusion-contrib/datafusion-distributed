@@ -1,16 +1,16 @@
 use crate::common::task_ctx_with_extension;
-use crate::flight_service::WorkerConnectionPool;
-use crate::flight_service::test_utils::memory_worker::MemoryWorker;
+use crate::worker::WorkerConnectionPool;
+use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
+use crate::worker::test_utils::memory_worker::MemoryWorker;
 use crate::{
     BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedTaskContext, ExecutionTask,
-    NetworkShuffleExec, Stage, create_flight_client,
+    NetworkShuffleExec, Stage, create_worker_client,
 };
 use arrow::datatypes::DataType::{
     Boolean, Dictionary, Float64, Int32, Int64, List, Timestamp, UInt8, Utf8,
 };
 use arrow::datatypes::{Field, Schema, TimeUnit};
 use arrow::util::data_gen::create_random_batch;
-use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_ipc::CompressionType;
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::SessionStateBuilder;
@@ -33,14 +33,14 @@ pub struct InMemoryChannelsResolver {
 
 #[async_trait::async_trait]
 impl ChannelResolver for InMemoryChannelsResolver {
-    async fn get_flight_client_for_url(
+    async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>> {
+    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>> {
         let Some(port) = url.port() else {
             return exec_err!("Missing port in url {url}");
         };
-        Ok(create_flight_client(self.channels[port as usize].clone()))
+        Ok(create_worker_client(self.channels[port as usize].clone()))
     }
 }
 
