@@ -1,6 +1,6 @@
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
-use crate::worker::generated::worker::{SetPlanRequest, SetPlanResponse};
+use crate::worker::generated::worker::SetPlanRequest;
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -10,7 +10,8 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tonic::{Request, Response, Status};
+use tonic::Status;
+use tonic::metadata::MetadataMap;
 
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
@@ -44,10 +45,10 @@ impl TaskData {
 impl Worker {
     pub(crate) async fn impl_set_plan(
         &self,
-        request: Request<SetPlanRequest>,
-    ) -> Result<Response<SetPlanResponse>, Status> {
-        let (metadata, _ext, body) = request.into_parts();
-        let key = body.task_key.ok_or_else(missing("task_key"))?;
+        request: SetPlanRequest,
+        metadata: MetadataMap,
+    ) -> Result<(), Status> {
+        let key = request.task_key.ok_or_else(missing("task_key"))?;
 
         let entry = self
             .task_data_entries
@@ -60,7 +61,7 @@ impl Worker {
             let mut cfg =
                 SessionConfig::default().with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
-                    task_count: body.task_count as usize,
+                    task_count: request.task_count as usize,
                 }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
             let session_state = self
@@ -76,7 +77,7 @@ impl Worker {
 
             let codec = DistributedCodec::new_combined_with_user(session_state.config());
             let task_ctx = session_state.task_ctx();
-            let proto_node = PhysicalPlanNode::try_decode(body.plan_proto.as_ref())?;
+            let proto_node = PhysicalPlanNode::try_decode(request.plan_proto.as_ref())?;
             let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
 
             for hook in self.hooks.on_plan.iter() {
@@ -97,7 +98,7 @@ impl Worker {
                 "Logic error while setting plan for Stage key {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))
         })?;
-        Ok(Response::new(SetPlanResponse {}))
+        Ok(())
     }
 }
 

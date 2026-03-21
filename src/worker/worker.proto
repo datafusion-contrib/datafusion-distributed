@@ -2,11 +2,24 @@ syntax = "proto3";
 package worker;
 
 service WorkerService {
-  // Sends a subplan to a worker so that a future ExecuteTask call can actually execute it. The plan is identified by
-  // a TaskKey.
-  rpc SetPlan(SetPlanRequest) returns (SetPlanResponse);
-  // Executes the requested partition range of a subplan previously sent by SetPlan.
+  // Establishes a bidirectional message stream between a coordinator and a worker, over which messages
+  // will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
+  // per task.
+  rpc CoordinatorChannel(stream CoordinatorToWorkerMsg) returns (stream WorkerToCoordinatorMsg);
+  // Executes the requested partition range of a subplan previously sent by the coordinator channel.
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
+}
+
+message CoordinatorToWorkerMsg {
+  oneof inner {
+    // Sends a subplan to a worker so that a future ExecuteTask call can actually execute it.
+    // The plan is identified by a TaskKey.
+    SetPlanRequest set_plan_request = 1;
+  }
+}
+
+message WorkerToCoordinatorMsg {
+  // For now, there are no messages that can flow back from worker to coordinator.
 }
 
 message SetPlanRequest {
@@ -16,10 +29,6 @@ message SetPlanRequest {
   uint64 task_count = 2;
   // The serialized subplan the worker is expected to execute on an ExecuteTask gRPC call.
   bytes plan_proto = 3;
-}
-
-message SetPlanResponse {
-
 }
 
 message ExecuteTaskRequest {

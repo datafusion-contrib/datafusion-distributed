@@ -1,7 +1,8 @@
 use crate::worker::WorkerSessionBuilder;
+use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
 use crate::worker::generated::worker::{
-    ExecuteTaskRequest, SetPlanRequest, SetPlanResponse, TaskKey,
+    CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
 };
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
@@ -11,11 +12,12 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
+use futures::StreamExt;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::codegen::BoxStream;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
@@ -156,11 +158,25 @@ impl Worker {
 /// in different files.
 #[async_trait]
 impl WorkerService for Worker {
-    async fn set_plan(
+    type CoordinatorChannelStream = BoxStream<WorkerToCoordinatorMsg>;
+
+    async fn coordinator_channel(
         &self,
-        request: Request<SetPlanRequest>,
-    ) -> Result<Response<SetPlanResponse>, Status> {
-        self.impl_set_plan(request).await
+        request: Request<Streaming<CoordinatorToWorkerMsg>>,
+    ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
+        let (metadata, _ext, mut body) = request.into_parts();
+        if let Some(msg) = body.next().await {
+            let Some(inner) = msg?.inner else {
+                return Err(Status::internal("Empty Coordinator message"));
+            };
+
+            match inner {
+                Inner::SetPlanRequest(request) => {
+                    self.impl_set_plan(request, metadata).await?;
+                }
+            };
+        }
+        Ok(Response::new(futures::stream::empty().boxed()))
     }
 
     type ExecuteTaskStream = BoxStream<FlightData>;

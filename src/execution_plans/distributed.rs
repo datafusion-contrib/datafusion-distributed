@@ -5,7 +5,9 @@ use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
-use crate::worker::generated::worker::{SetPlanRequest, TaskKey};
+use crate::worker::generated::worker::{
+    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, coordinator_to_worker_msg::Inner,
+};
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
 };
@@ -260,13 +262,17 @@ async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, request: SetPlanRequest
 
     let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
     headers.extend(get_passthrough_headers(ctx.session_config()));
+
+    let msg = CoordinatorToWorkerMsg {
+        inner: Some(Inner::SetPlanRequest(request)),
+    };
     let request = Request::from_parts(
         MetadataMap::from_headers(headers),
         Extensions::default(),
-        request,
+        futures::stream::once(async { msg }),
     );
 
-    client.set_plan(request).await.map_err(|e| {
+    client.coordinator_channel(request).await.map_err(|e| {
         tonic_status_to_datafusion_error(&e)
             .unwrap_or_else(|| exec_datafusion_err!("Error sending plan to worker {url}: {e}"))
     })?;
