@@ -14,7 +14,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{
-        DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
+        DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii, distribute_plan,
     };
     use datafusion_proto::physical_plan::PhysicalExtensionCodec;
     use datafusion_proto::protobuf::proto_error;
@@ -51,6 +51,7 @@ mod tests {
         let df_distributed = ctx_distributed.sql(query).await?;
         let plan = df_distributed.create_physical_plan().await?;
 
+        let plan = distribute_plan(plan, ctx_distributed.copied_config().options()).await?;
         let transformed = plan.transform_up(|plan| {
             if plan.children().is_empty() {
                 return Ok(Transformed::yes(Arc::new(StatefulPassThroughExec::new(

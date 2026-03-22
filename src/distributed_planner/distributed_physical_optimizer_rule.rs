@@ -1,41 +1,16 @@
-use crate::common::require_one_child;
-use crate::distributed_planner::batch_coalescing_below_network_boundaries;
-use crate::distributed_planner::plan_annotator::{
-    AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
-};
-use crate::{
-    DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimator,
-};
+use crate::DistributedExec;
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
 use std::fmt::Debug;
-use std::ops::AddAssign;
 use std::sync::Arc;
-use uuid::Uuid;
 
-use super::insert_broadcast::insert_broadcast_execs;
-
-/// Physical optimizer rule that inspects the plan, places the appropriate network
-/// boundaries, and breaks it down into stages that can be executed in a distributed manner.
+/// Places a [DistributedExec] on top of the plan that will lazily distribute the plan at execution
+/// time. Distributing the plan is an asynchronous process, so it cannot be implemented as a
+/// physical optimizer rule. Instead, it's done lazily at execution time.
 ///
-/// The rule has three steps:
-///
-/// 1. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
-///    many distributed tasks should be used in the stage containing them, and whether they
-///    need a network boundary below or not.
-///    For more information about this step, read [annotate_plan] docs.
-///
-/// 2. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
-///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
-///    assignation that the annotations required. After this, the plan is already a distributed
-///    executable plan.
-///
-/// 3. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
-///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
+/// [crate::distribute_plan] can be used in addition to this rule to distribute the plan whenever
+/// the user wants, instead of lazily during [DistributedExec::execute].
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule;
 
@@ -43,29 +18,13 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     fn optimize(
         &self,
         original: Arc<dyn ExecutionPlan>,
-        cfg: &ConfigOptions,
+        _cfg: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         if original.as_any().is::<DistributedExec>() {
             return Ok(original);
         }
 
-        let mut plan = Arc::clone(&original);
-        if original.output_partitioning().partition_count() > 1 {
-            plan = Arc::new(CoalescePartitionsExec::new(plan))
-        }
-
-        plan = insert_broadcast_execs(plan, cfg)?;
-
-        let annotated = annotate_plan(plan, cfg)?;
-
-        let mut stage_id = 1;
-        let distributed = distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
-        if stage_id == 1 {
-            return Ok(original);
-        }
-        let distributed = batch_coalescing_below_network_boundaries(distributed, cfg)?;
-
-        Ok(Arc::new(DistributedExec::new(distributed)))
+        Ok(Arc::new(DistributedExec::new(original)))
     }
 
     fn name(&self) -> &str {
@@ -77,98 +36,9 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
     }
 }
 
-/// Takes an [AnnotatedPlan] and returns a modified [ExecutionPlan] with all the network boundaries
-/// appropriately placed. This step performs the following modifications to the original
-/// [ExecutionPlan]:
-/// - The leaf nodes are scaled up in parallelism based on the number of distributed tasks in
-///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
-/// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
-///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
-fn distribute_plan(
-    annotated_plan: AnnotatedPlan,
-    cfg: &ConfigOptions,
-    query_id: Uuid,
-    stage_id: &mut usize,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-    let children = annotated_plan.children;
-    let task_count = annotated_plan.task_count.as_usize();
-    let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
-    let new_children = children
-        .into_iter()
-        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
-        .collect::<Result<Vec<_>, _>>()?;
-    match annotated_plan.plan_or_nb {
-        // This is a leaf node. It needs to be scaled up in order to account for it running in
-        // multiple tasks.
-        PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
-                &plan,
-                annotated_plan.task_count.as_usize(),
-                cfg,
-            );
-            Ok(scaled_up.unwrap_or(plan))
-        }
-        // This is a normal intermediate plan, just pass it through with the mapped children.
-        PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),
-        // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
-        PlanOrNetworkBoundary::Shuffle => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkShuffleExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
-        }
-        // DataFusion is trying to coalesce multiple partitions into one, so we should do the
-        // same with tasks.
-        PlanOrNetworkBoundary::Coalesce => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkCoalesceExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
-        }
-        // This is a CollectLeft HashJoinExec with the build side marked as being broadcast. we
-        // need to insert a NetworkBroadcastExec and scale up the BroadcastExec consumer_tasks.
-        PlanOrNetworkBoundary::Broadcast => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkBroadcastExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::distributed_planner::distribute_plan;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::plans::{
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
@@ -956,6 +826,10 @@ mod tests {
         let (ctx, query) = context_with_query(builder, query).await;
         let df = ctx.sql(&query).await.unwrap();
         let physical_plan = df.create_physical_plan().await.unwrap();
+        let physical_plan =
+            distribute_plan(physical_plan, ctx.task_ctx().session_config().options())
+                .await
+                .unwrap();
 
         if use_optimizer {
             display_plan_ascii(physical_plan.as_ref(), false)

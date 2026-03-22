@@ -4,7 +4,9 @@ mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
-    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
+    use datafusion_distributed::{
+        DefaultSessionBuilder, assert_snapshot, display_plan_ascii, distribute_plan,
+    };
     use futures::TryStreamExt;
     use std::error::Error;
 
@@ -21,6 +23,8 @@ mod tests {
 
         let df = ctx.sql(r#"SHOW COLUMNS from weather"#).await?;
         let physical_distributed = df.create_physical_plan().await?;
+        let physical_distributed =
+            distribute_plan(physical_distributed, ctx.copied_config().options()).await?;
 
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
