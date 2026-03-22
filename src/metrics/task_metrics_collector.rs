@@ -269,7 +269,9 @@ mod tests {
         // Collect metrics for all tasks from the root StageExec.
         let collector = TaskMetricsCollector::new();
 
-        let result = collector.collect(dist_exec.plan.clone()).unwrap();
+        let result = collector
+            .collect(dist_exec.distributed_plan().unwrap())
+            .unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
@@ -440,7 +442,9 @@ mod tests {
 
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         let collector = TaskMetricsCollector::new();
-        let result = collector.collect(dist_exec.plan.clone()).unwrap();
+        let result = collector
+            .collect(dist_exec.distributed_plan().unwrap())
+            .unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_task_key in expected_task_keys {
