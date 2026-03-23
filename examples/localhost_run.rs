@@ -4,7 +4,8 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, WorkerResolver, display_plan_ascii,
+    DefaultChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, GetWorkerInfoRequest,
+    WorkerResolver, create_worker_client, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use std::error::Error;
@@ -23,18 +24,64 @@ struct Args {
     #[structopt(long = "cluster-ports", use_delimiter = true)]
     cluster_ports: Vec<u16>,
 
+    /// Only use workers reporting this version (via GetWorkerInfo).
+    /// When omitted, all workers in --cluster-ports are used.
+    #[structopt(long)]
+    version: Option<String>,
+
     /// Whether the distributed plan should be rendered instead of executing the query.
     #[structopt(long)]
     show_distributed_plan: bool,
+}
+
+/// Returns `true` if the worker at `url` reports `expected_version` via
+/// `GetWorkerInfo`. Returns `false` if the worker is unreachable, returns
+/// an error, or reports a different version.
+async fn worker_has_version(
+    channel_resolver: &DefaultChannelResolver,
+    url: &Url,
+    expected_version: &str,
+) -> bool {
+    let Ok(channel) = channel_resolver.get_channel(url).await else {
+        return false;
+    };
+    let mut client = create_worker_client(channel);
+    let Ok(response) = client.get_worker_info(GetWorkerInfoRequest {}).await else {
+        return false;
+    };
+    response.into_inner().version_number == expected_version
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
-    let localhost_resolver = LocalhostWorkerResolver {
-        ports: args.cluster_ports,
+    let ports = if let Some(target_version) = &args.version {
+        // Filter workers by version before building the session.
+        let channel_resolver = DefaultChannelResolver::default();
+        let mut compatible = Vec::new();
+        for &port in &args.cluster_ports {
+            let url = Url::parse(&format!("http://localhost:{port}"))?;
+            if worker_has_version(&channel_resolver, &url, target_version).await {
+                compatible.push(port);
+            } else {
+                println!("Excluding worker on port {port} (version mismatch)");
+            }
+        }
+        if compatible.is_empty() {
+            return Err(format!("No workers matched version '{target_version}'").into());
+        }
+        println!(
+            "Using {}/{} workers matching version '{target_version}'\n",
+            compatible.len(),
+            args.cluster_ports.len(),
+        );
+        compatible
+    } else {
+        args.cluster_ports
     };
+
+    let localhost_resolver = LocalhostWorkerResolver { ports };
 
     let state = SessionStateBuilder::new()
         .with_default_features()
