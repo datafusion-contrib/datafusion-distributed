@@ -111,27 +111,18 @@ The version string is free-form — it can be a semver tag, a git SHA, a build n
 identifier that makes sense for your deployment workflow. Workers that don't call `with_version()`
 report an empty string.
 
-To avoid forgetting to bump the version on each deploy, derive it from an environment variable
-set by your CI/CD pipeline:
-
 ```rust
-use datafusion_distributed::Worker;
-
 let worker = Worker::default()
     .with_version("2.0.0");
-
-Server::builder()
-    .add_service(worker.into_worker_server())
-    .serve(addr)
-    .await?;
 ```
+
+One way to avoid forgetting to bump the version on each deploy, derive it from an environment variable
+set by your CI/CD pipeline:
 
 ```rust
 let worker = Worker::default()
     .with_version(std::env::var("COMMIT_HASH").unwrap_or_default());
 ```
-
-This way the version is always tied to the deployed artifact — no manual step to forget.
 
 ### Querying a worker's version
 
@@ -170,6 +161,8 @@ use datafusion::common::DataFusionError;
 use datafusion_distributed::{
     DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
 };
+
+let worker_version = std::env::var("COMMIT_HASH").unwrap_or_default();
 
 struct VersionAwareWorkerResolver {
     compatible_urls: Arc<RwLock<Vec<Url>>>,
@@ -224,7 +217,7 @@ use datafusion_distributed::{DistributedPhysicalOptimizerRule, Worker};
 // `known_urls` comes from your service discovery.
 let resolver = VersionAwareWorkerResolver::start_version_filtering(
     known_urls,
-    "2.0.0".to_string(),
+    worker_version.to_string(),
 );
 
 let state = SessionStateBuilder::new()
@@ -235,7 +228,7 @@ let state = SessionStateBuilder::new()
 
 let ctx = SessionContext::from(state);
 
-let worker = Worker::default().with_version("2.0.0");
+let worker = Worker::default().with_version(worker_version);
 
 Server::builder()
     .add_service(worker.into_worker_server())
@@ -243,5 +236,5 @@ Server::builder()
     .await?;
 ```
 
-The coordinator's resolver continously polls all known URLs in the background.
-Only workers that respond with version `"2.0.0"` will appear in `get_urls()`.
+The coordinator's resolver continuously polls all known URLs in the background.
+Only workers that respond with the correct version will appear in `get_urls()`.
