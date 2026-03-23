@@ -211,8 +211,8 @@ impl WorkerResolver for VersionAwareWorkerResolver {
 With the resolver in place, wire it into the session and tag each worker with a version.
 
 ```rust
-use datafusion_distributed::execution::SessionStateBuilder;
-use datafusion_distributed::{DistributedPhysicalOptimizerRule, Worker};
+use datafusion::execution::SessionStateBuilder;
+use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, Worker};
 
 // `known_urls` comes from your service discovery.
 let resolver = VersionAwareWorkerResolver::start_version_filtering(
