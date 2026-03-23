@@ -162,8 +162,6 @@ use datafusion_distributed::{
     DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
 };
 
-let worker_version = std::env::var("COMMIT_HASH").unwrap_or_default();
-
 struct VersionAwareWorkerResolver {
     compatible_urls: Arc<RwLock<Vec<Url>>>,
 }
@@ -214,10 +212,12 @@ With the resolver in place, wire it into the session and tag each worker with a 
 use datafusion::execution::SessionStateBuilder;
 use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, Worker};
 
+let worker_version = std::env::var("COMMIT_HASH").unwrap_or_default();
+
 // `known_urls` comes from your service discovery.
 let resolver = VersionAwareWorkerResolver::start_version_filtering(
     known_urls,
-    worker_version.to_string(),
+    worker_version.clone(),
 );
 
 let state = SessionStateBuilder::new()
