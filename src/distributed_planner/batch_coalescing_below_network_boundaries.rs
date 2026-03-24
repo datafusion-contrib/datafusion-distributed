@@ -59,6 +59,7 @@ pub(crate) fn batch_coalescing_below_network_boundaries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::distributed_planner::distribute_plan;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{
@@ -172,6 +173,10 @@ mod tests {
         let df = ctx.sql(last_query).await.unwrap();
 
         let physical_plan = df.create_physical_plan().await.unwrap();
+        let physical_plan =
+            distribute_plan(physical_plan, ctx.task_ctx().session_config().options())
+                .await
+                .unwrap();
         display_plan_ascii(physical_plan.as_ref(), false)
     }
 }

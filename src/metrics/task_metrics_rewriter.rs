@@ -52,12 +52,12 @@ pub fn rewrite_distributed_plan_with_metrics(
     let MetricsCollectorResult {
         task_metrics,       // Metrics for the DistributedExec plan
         input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
+    } = TaskMetricsCollector::new().collect(distributed_exec.head_local_plan()?)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
         format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
-        plan.children()[0].clone(),
+        distributed_exec.distributed_plan()?,
         task_metrics,
     )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;

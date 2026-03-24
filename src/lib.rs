@@ -20,7 +20,7 @@ pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator,
+    TaskCountAnnotation, TaskEstimation, TaskEstimator, distribute_plan,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,

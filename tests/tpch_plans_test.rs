@@ -3,7 +3,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::{benchmarks_common, tpch};
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii, distribute_plan,
     };
     use std::error::Error;
     use std::fs;
@@ -1152,6 +1152,7 @@ mod tests {
             df.create_physical_plan().await?
         };
 
+        let plan = distribute_plan(plan, d_ctx.copied_config().options()).await?;
         Ok(display_plan_ascii(plan.as_ref(), false))
     }
 
