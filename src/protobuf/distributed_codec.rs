@@ -2,8 +2,8 @@ use super::get_distributed_user_codecs;
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
 };
-use crate::flight_service::WorkerConnectionPool;
 use crate::stage::{ExecutionTask, Stage};
+use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
@@ -320,31 +320,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
-        }
-    }
-}
-
-/// A key that uniquely identifies a stage in a query.
-#[derive(Clone, Hash, Eq, PartialEq, ::prost::Message)]
-pub struct StageKey {
-    /// Our query id
-    #[prost(bytes, tag = "1")]
-    pub query_id: Bytes,
-    /// Our stage id
-    #[prost(uint64, tag = "2")]
-    pub stage_id: u64,
-    /// The task number within the stage
-    #[prost(uint64, tag = "3")]
-    pub task_number: u64,
-}
-
-impl StageKey {
-    /// Creates a new `StageKey`.
-    pub fn new(query_id: Bytes, stage_id: u64, task_number: u64) -> StageKey {
-        Self {
-            query_id,
-            stage_id,
-            task_number,
         }
     }
 }

@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mut errors = vec![];
                     for worker_url in worker_resolver.get_urls().map_err(err)? {
                         if let Err(err) = channel_resolver
-                            .get_flight_client_for_url(&worker_url)
+                            .get_worker_client_for_url(&worker_url)
                             .await
                         {
                             errors.push(err.to_string())
@@ -205,8 +205,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }),
             ),
     );
+    let ec2_worker_resolver = Arc::new(Ec2WorkerResolver::new());
     let grpc_server = Server::builder()
-        .add_service(worker.into_flight_server())
+        .add_service(worker.with_observability_service(ec2_worker_resolver))
+        .add_service(worker.into_worker_server())
         .serve(WORKER_ADDR.parse()?);
 
     info!("Started listener HTTP server in {LISTENER_ADDR}");

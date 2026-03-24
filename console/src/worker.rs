@@ -1,5 +1,6 @@
 use datafusion_distributed::{
-    GetTaskProgressRequest, ObservabilityServiceClient, PingRequest, TaskProgress, TaskStatus,
+    GetClusterWorkersRequest, GetTaskProgressRequest, ObservabilityServiceClient, PingRequest,
+    TaskProgress, TaskStatus,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -166,7 +167,7 @@ impl WorkerConn {
                 let new_task_keys: HashSet<TaskKey> = new_tasks
                     .iter()
                     .filter_map(|t| {
-                        t.stage_key
+                        t.task_key
                             .as_ref()
                             .map(|sk| (sk.query_id.clone(), sk.stage_id, sk.task_number))
                     })
@@ -175,7 +176,7 @@ impl WorkerConn {
                 // Detect completed tasks: tasks that were running but disappeared
                 for old_task in &self.tasks {
                     if old_task.status == TaskStatus::Running as i32 {
-                        if let Some(sk) = &old_task.stage_key {
+                        if let Some(sk) = &old_task.task_key {
                             let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
                             if !new_task_keys.contains(&key) {
                                 // Task disappeared — assume completed
@@ -207,7 +208,7 @@ impl WorkerConn {
                 // Track first_seen for new tasks
                 let now = Instant::now();
                 for task in &new_tasks {
-                    if let Some(sk) = &task.stage_key {
+                    if let Some(sk) = &task.task_key {
                         let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
                         self.task_first_seen.entry(key).or_insert(now);
                     }
@@ -225,7 +226,7 @@ impl WorkerConn {
                 let mut has_running = false;
 
                 for task in &self.tasks {
-                    if let Some(sk) = &task.stage_key {
+                    if let Some(sk) = &task.task_key {
                         current_query_ids.insert(sk.query_id.clone());
                         if task.status == TaskStatus::Running as i32 {
                             has_running = true;
@@ -337,7 +338,7 @@ impl WorkerConn {
         let ids: HashSet<_> = self
             .tasks
             .iter()
-            .filter_map(|t| t.stage_key.as_ref().map(|sk| &sk.query_id))
+            .filter_map(|t| t.task_key.as_ref().map(|sk| &sk.query_id))
             .collect();
         ids.len()
     }
@@ -363,4 +364,30 @@ fn push_history(buf: &mut VecDeque<u64>, value: u64) {
         buf.pop_front();
     }
     buf.push_back(value);
+}
+
+/// Connects to a seed worker and calls `GetClusterWorkers` to discover all worker URLs.
+pub(crate) async fn discover_cluster_workers(seed_url: &Url) -> Result<Vec<Url>, String> {
+    let mut client = ObservabilityServiceClient::connect(seed_url.to_string())
+        .await
+        .map_err(|e| format!("Failed to connect to seed worker {seed_url}: {e}"))?;
+
+    client
+        .ping(PingRequest {})
+        .await
+        .map_err(|e| format!("Seed worker {seed_url} ping failed: {e}"))?;
+
+    let response = client
+        .get_cluster_workers(GetClusterWorkersRequest {})
+        .await
+        .map_err(|e| format!("GetClusterWorkers failed on {seed_url}: {e}"))?;
+
+    let urls = response
+        .into_inner()
+        .worker_urls
+        .into_iter()
+        .filter_map(|s| Url::parse(&s).ok())
+        .collect();
+
+    Ok(urls)
 }

@@ -1,5 +1,5 @@
 use crate::state::{ClusterViewState, SortColumn, SortDirection, View, WorkerViewState};
-use crate::worker::{ConnectionStatus, WorkerConn};
+use crate::worker::{ConnectionStatus, WorkerConn, discover_cluster_workers};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -21,6 +21,10 @@ pub(crate) struct App {
     prev_output_rows_time: Option<Instant>,
     /// Smoothed cluster-wide throughput in rows/s.
     pub(crate) current_throughput: f64,
+    /// Seed URL for worker discovery via `GetClusterWorkers`.
+    seed_url: Url,
+    /// Last time we ran worker discovery.
+    last_discovery: Option<Instant>,
 }
 
 /// Cluster-wide statistics for the header.
@@ -35,13 +39,14 @@ pub(crate) struct ClusterStats {
     pub(crate) active_queries: usize,
 }
 
-impl App {
-    /// Create a new App with the given worker URLs.
-    pub(crate) fn new(worker_urls: Vec<Url>) -> Self {
-        let workers = worker_urls.into_iter().map(WorkerConn::new).collect();
+/// Interval between worker discovery polls.
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 
+impl App {
+    /// Create a new App that discovers workers via `GetClusterWorkers` on the seed URL.
+    pub(crate) fn new(seed_url: Url) -> Self {
         App {
-            workers,
+            workers: Vec::new(),
             active_query_count: 0,
             current_view: View::ClusterOverview,
             cluster_state: ClusterViewState::default(),
@@ -54,6 +59,8 @@ impl App {
             prev_output_rows_total: 0,
             prev_output_rows_time: None,
             current_throughput: 0.0,
+            seed_url,
+            last_discovery: None,
         }
     }
 
@@ -62,6 +69,9 @@ impl App {
         if self.paused {
             return;
         }
+
+        // Run worker discovery if in auto mode
+        self.maybe_discover_workers().await;
 
         // Attempt connection for workers in Connecting or Disconnected state
         for worker in &mut self.workers {
@@ -89,6 +99,39 @@ impl App {
         self.update_throughput();
     }
 
+    /// Periodically discovers workers via `GetClusterWorkers` on the seed URL.
+    async fn maybe_discover_workers(&mut self) {
+        let should_discover = match self.last_discovery {
+            None => true,
+            Some(last) => last.elapsed() >= DISCOVERY_INTERVAL,
+        };
+
+        if !should_discover {
+            return;
+        }
+
+        self.last_discovery = Some(Instant::now());
+
+        let discovered_urls = match discover_cluster_workers(&self.seed_url).await {
+            Ok(urls) => urls,
+            Err(_) => return,
+        };
+
+        // Build set of currently known URLs (owned to avoid borrow conflict)
+        let known_urls: HashSet<Url> = self.workers.iter().map(|w| w.url.clone()).collect();
+
+        // Add new workers
+        for url in &discovered_urls {
+            if !known_urls.contains(url) {
+                self.workers.push(WorkerConn::new(url.clone()));
+            }
+        }
+
+        // Remove workers that are no longer in the discovered set
+        let discovered_set: HashSet<&Url> = discovered_urls.iter().collect();
+        self.workers.retain(|w| discovered_set.contains(&w.url));
+    }
+
     /// Update cluster-wide throughput from output rows delta.
     fn update_throughput(&mut self) {
         let current_total: u64 = self.workers.iter().map(|w| w.output_rows_total).sum();
@@ -113,7 +156,7 @@ impl App {
         let mut query_ids = HashSet::new();
         for worker in &self.workers {
             for task in &worker.tasks {
-                if let Some(sk) = &task.stage_key {
+                if let Some(sk) = &task.task_key {
                     query_ids.insert(&sk.query_id);
                 }
             }

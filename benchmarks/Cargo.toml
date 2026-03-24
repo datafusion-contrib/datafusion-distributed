@@ -7,7 +7,10 @@ default-run = "dfbench"
 [dependencies]
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
-datafusion-distributed = { path = "..", features = ["integration"] }
+datafusion-distributed = { path = "..", features = [
+  "integration",
+  "system-metrics",
+] }
 tokio = { version = "1.48", features = ["full"] }
 parquet = { version = "57.1.0" }
 structopt = { version = "0.3.26" }

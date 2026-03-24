@@ -1,5 +1,10 @@
-use crate::flight_service::{SingleWriteMultiRead, TaskData};
-use crate::protobuf::StageKey;
+use super::{
+    GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
+    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
+};
+use crate::worker::generated::worker::TaskKey;
+use crate::worker::{SingleWriteMultiRead, TaskData};
+use crate::{GetClusterWorkersRequest, GetClusterWorkersResponse, WorkerResolver};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use moka::future::Cache;
@@ -12,22 +17,19 @@ use sysinfo::{Pid, ProcessRefreshKind};
 use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 
-use super::{
-    GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
-    generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
-};
-
 type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 
 pub struct ObservabilityServiceImpl {
-    task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     #[cfg(feature = "system-metrics")]
     system: watch::Receiver<WorkerMetrics>,
 }
 
 impl ObservabilityServiceImpl {
     pub fn new(
-        task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+        task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> Self {
         #[cfg(feature = "system-metrics")]
         let (tx, rx) = tokio::sync::watch::channel(WorkerMetrics::default());
@@ -64,9 +66,9 @@ impl ObservabilityServiceImpl {
                 }
             });
         }
-
         Self {
             task_data_entries,
+            worker_resolver,
             #[cfg(feature = "system-metrics")]
             system: rx,
         }
@@ -96,7 +98,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let output_rows = output_rows_from_plan(&task_data.plan);
 
                 tasks.push(TaskProgress {
-                    stage_key: Some(convert_stage_key(&internal_key)),
+                    task_key: Some((*internal_key).clone()),
                     total_partitions,
                     completed_partitions,
                     status: TaskStatus::Running as i32,
@@ -112,6 +114,20 @@ impl ObservabilityService for ObservabilityServiceImpl {
             worker_metrics,
         }))
     }
+
+    async fn get_cluster_workers(
+        &self,
+        _request: Request<GetClusterWorkersRequest>,
+    ) -> Result<Response<GetClusterWorkersResponse>, Status> {
+        let urls = self
+            .worker_resolver
+            .get_urls()
+            .map_err(|e| Status::internal(format!("Failed to resolve workers: {e}")))?;
+
+        let worker_urls = urls.into_iter().map(|url| url.to_string()).collect();
+
+        Ok(Response::new(GetClusterWorkersResponse { worker_urls }))
+    }
 }
 
 impl ObservabilityServiceImpl {
@@ -123,15 +139,6 @@ impl ObservabilityServiceImpl {
 
         #[cfg(feature = "system-metrics")]
         return *self.system.borrow();
-    }
-}
-
-/// Converts internal StageKey to observability proto StageKey
-fn convert_stage_key(key: &StageKey) -> super::StageKey {
-    super::StageKey {
-        query_id: key.query_id.to_vec(),
-        stage_id: key.stage_id,
-        task_number: key.task_number,
     }
 }
 

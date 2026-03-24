@@ -1,20 +1,20 @@
-use crate::common::{map_last_stream, on_drop_stream, task_ctx_with_extension};
-use crate::flight_service::worker::Worker;
+use crate::DistributedConfig;
+use crate::common::{map_last_stream, on_drop_stream};
 use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
-use crate::protobuf::{
-    AppMetadata, FlightAppMetadata, MetricsCollection, StageKey, TaskMetrics,
-    datafusion_error_to_tonic_status,
+use crate::protobuf::datafusion_error_to_tonic_status;
+use crate::worker::generated::worker::{
+    FlightAppMetadata, MetricsCollection, TaskMetrics, flight_app_metadata,
 };
-use crate::{DistributedConfig, DistributedTaskContext};
-use arrow_flight::Ticket;
+use crate::worker::worker_service::Worker;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
-use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
-use datafusion::arrow::array::{Array, AsArray, RecordBatch};
+use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 
-use crate::flight_service::spawn_select_all::spawn_select_all;
+use crate::worker::generated::worker::worker_service_server::WorkerService;
+use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
+use crate::worker::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
@@ -25,51 +25,27 @@ use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// How many record batches to buffer from the plan execution.
 const RECORD_BATCH_BUFFER_SIZE: usize = 2;
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DoGet {
-    /// The index to the task within the stage that we want to execute
-    #[prost(uint64, tag = "2")]
-    pub target_task_index: u64,
-    #[prost(uint64, tag = "3")]
-    pub target_task_count: u64,
-    /// lower bound for the list of partitions to execute (inclusive).
-    #[prost(uint64, tag = "4")]
-    pub target_partition_start: u64,
-    /// upper bound for the list of partitions to execute (exclusive).
-    #[prost(uint64, tag = "5")]
-    pub target_partition_end: u64,
-    /// The stage key that identifies the stage.  This is useful to keep
-    /// outside of the stage proto as it is used to store the stage
-    /// and we may not need to deserialize the entire stage proto
-    /// if we already have stored it
-    #[prost(message, optional, tag = "6")]
-    pub stage_key: Option<StageKey>,
-}
-
 impl Worker {
-    pub(super) async fn get(
+    pub(crate) async fn impl_execute_task(
         &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Worker as FlightService>::DoGetStream>, Status> {
+        request: Request<ExecuteTaskRequest>,
+    ) -> Result<Response<<Worker as WorkerService>::ExecuteTaskStream>, Status> {
         let body = request.into_inner();
-        let doget = DoGet::decode(body.ticket).map_err(|err| {
-            Status::invalid_argument(format!("Cannot decode DoGet message: {err}"))
-        })?;
 
-        let key = doget.stage_key.ok_or_else(missing("stage_key"))?;
+        let key = body.task_key.ok_or_else(missing("task_key"))?;
         let entry = self
             .task_data_entries
             .get_with(key.clone(), async { Default::default() })
             .await;
 
-        // Other request is responsible for writing the plan that belongs to this StageKey, so
+        // Other request is responsible for writing the plan that belongs to this TaskKey, so
         // we'll resolve immediately if it was already there, or wait until it's ready.
         let task_data = entry
             .read(Duration::from_secs(WAIT_PLAN_TIMEOUT_SECS))
@@ -91,22 +67,14 @@ impl Worker {
             )))?,
         };
         let send_metrics = d_cfg.collect_metrics;
-        let task_ctx = Arc::new(task_ctx_with_extension(
-            &task_ctx,
-            DistributedTaskContext {
-                task_index: doget.target_task_index as usize,
-                task_count: doget.target_task_count as usize,
-            },
-        ));
-
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();
 
         // Execute all the requested partitions at once, and collect all the streams so that they
         // can be merged into a single one at the end of this function.
-        let n_streams = doget.target_partition_end - doget.target_partition_start;
+        let n_streams = body.target_partition_end - body.target_partition_start;
         let mut streams = Vec::with_capacity(n_streams as usize);
-        for partition in doget.target_partition_start..doget.target_partition_end {
+        for partition in body.target_partition_start..body.target_partition_end {
             if partition >= partition_count as u64 {
                 return Err(datafusion_error_to_tonic_status(exec_datafusion_err!(
                     "partition {partition} not available. The head plan {plan_name} of the stage just has {partition_count} partitions"
@@ -132,7 +100,14 @@ impl Worker {
                 // partition. This stream will be merged with several others from other partitions,
                 // so marking it with the original partition allows it to be deconstructed into
                 // the original per-partition streams in later steps.
-                let mut flight_data = FlightAppMetadata::new(partition);
+                let mut flight_data = FlightAppMetadata {
+                    partition,
+                    created_timestamp_unix_nanos: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos() as u64)
+                        .unwrap_or(0),
+                    content: None,
+                };
 
                 if last_msg_in_stream {
                     // If it's the last message from the last partition, clean up the entry from
@@ -146,7 +121,7 @@ impl Worker {
                         if send_metrics {
                             // Last message of the last partition. This is the moment to send
                             // the metrics back.
-                            flight_data.set_content(collect_and_create_metrics_flight_data(
+                            flight_data.content = Some(collect_and_create_metrics_flight_data(
                                 key.clone(),
                                 plan.clone(),
                             )?);
@@ -238,9 +213,9 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
 
 /// Collects metrics from the provided stage and includes it in the flight data
 fn collect_and_create_metrics_flight_data(
-    stage_key: StageKey,
+    task_key: TaskKey,
     plan: Arc<dyn ExecutionPlan>,
-) -> Result<AppMetadata, FlightError> {
+) -> Result<flight_app_metadata::Content, FlightError> {
     // Get the metrics for the task executed on this worker + child tasks.
     let mut result = TaskMetricsCollector::new()
         .collect(plan)
@@ -258,20 +233,22 @@ fn collect_and_create_metrics_flight_data(
         .collect::<Result<Vec<_>, _>>()?;
     result
         .input_task_metrics
-        .insert(stage_key, proto_task_metrics);
+        .insert(task_key, proto_task_metrics);
 
     // Serialize the metrics for all tasks.
     let mut task_metrics_set = vec![];
-    for (stage_key, metrics) in result.input_task_metrics.into_iter() {
+    for (task_key, metrics) in result.input_task_metrics.into_iter() {
         task_metrics_set.push(TaskMetrics {
-            stage_key: Some(stage_key),
+            task_key: Some(task_key),
             metrics,
         });
     }
 
-    Ok(AppMetadata::MetricsCollection(MetricsCollection {
-        tasks: task_metrics_set,
-    }))
+    Ok(flight_app_metadata::Content::MetricsCollection(
+        MetricsCollection {
+            tasks: task_metrics_set,
+        },
+    ))
 }
 
 /// Garbage collects values sub-arrays.
@@ -282,7 +259,7 @@ fn collect_and_create_metrics_flight_data(
 /// Unused values can arise from operations such as filtering, where
 /// some keys may no longer be referenced in the filtered result.
 fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
-    let (schema, arrays, _row_count) = batch.into_parts();
+    let (schema, arrays, row_count) = batch.into_parts();
 
     let arrays = arrays
         .into_iter()
@@ -299,5 +276,9 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(RecordBatch::try_new(schema, arrays)?)
+    Ok(RecordBatch::try_new_with_options(
+        schema,
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(row_count)),
+    )?)
 }

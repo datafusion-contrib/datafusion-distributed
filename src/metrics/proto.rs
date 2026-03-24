@@ -13,264 +13,14 @@ use super::latency_metric::{
     AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric,
     P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
+use crate::worker::generated::worker as pb;
 
-/// A MetricProto is a protobuf mirror of [datafusion::physical_plan::metrics::Metric].
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MetricProto {
-    #[prost(message, repeated, tag = "1")]
-    pub labels: Vec<ProtoLabel>,
-    #[prost(uint64, optional, tag = "2")]
-    pub partition: Option<u64>,
-    #[prost(
-        oneof = "MetricValueProto",
-        tags = "10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33"
-    )]
-    // This field is *always* set. It is marked optional due to protobuf "oneof" requirements.
-    pub metric: Option<MetricValueProto>,
-}
-
-/// A MetricsSetProto is a protobuf mirror of [datafusion::physical_plan::metrics::MetricsSet]. It represents
-/// a collection of metrics for one `ExecutionPlan` node.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MetricsSetProto {
-    #[prost(message, repeated, tag = "1")]
-    pub metrics: Vec<MetricProto>,
-}
-
-impl MetricsSetProto {
-    pub fn new() -> Self {
-        Self {
-            metrics: Vec::new(),
-        }
-    }
-
-    pub fn push(&mut self, metric: MetricProto) {
-        self.metrics.push(metric)
-    }
-}
-
-/// MetricValueProto is a protobuf mirror of the [datafusion::physical_plan::metrics::MetricValue] enum.
-#[derive(Clone, PartialEq, Eq, ::prost::Oneof)]
-pub enum MetricValueProto {
-    #[prost(message, tag = "10")]
-    OutputRows(OutputRows),
-    #[prost(message, tag = "11")]
-    ElapsedCompute(ElapsedCompute),
-    #[prost(message, tag = "12")]
-    SpillCount(SpillCount),
-    #[prost(message, tag = "13")]
-    SpilledBytes(SpilledBytes),
-    #[prost(message, tag = "14")]
-    SpilledRows(SpilledRows),
-    #[prost(message, tag = "15")]
-    CurrentMemoryUsage(CurrentMemoryUsage),
-    #[prost(message, tag = "16")]
-    Count(NamedCount),
-    #[prost(message, tag = "17")]
-    Gauge(NamedGauge),
-    #[prost(message, tag = "18")]
-    Time(NamedTime),
-    #[prost(message, tag = "19")]
-    StartTimestamp(StartTimestamp),
-    #[prost(message, tag = "20")]
-    EndTimestamp(EndTimestamp),
-    #[prost(message, tag = "21")]
-    OutputBytes(OutputBytes),
-    #[prost(message, tag = "22")]
-    OutputBatches(OutputBatches),
-    #[prost(message, tag = "23")]
-    PruningMetrics(NamedPruningMetrics),
-    #[prost(message, tag = "24")]
-    Ratio(NamedRatio),
-    #[prost(message, tag = "25")]
-    CustomMinLatency(MinLatency),
-    #[prost(message, tag = "26")]
-    CustomMaxLatency(MaxLatency),
-    #[prost(message, tag = "27")]
-    CustomAvgLatency(AvgLatency),
-    #[prost(message, tag = "28")]
-    CustomFirstLatency(FirstLatency),
-    #[prost(message, tag = "29")]
-    CustomBytesCount(BytesCount),
-    #[prost(message, tag = "30")]
-    CustomP50Latency(PercentileLatency),
-    #[prost(message, tag = "31")]
-    CustomP75Latency(PercentileLatency),
-    #[prost(message, tag = "32")]
-    CustomP95Latency(PercentileLatency),
-    #[prost(message, tag = "33")]
-    CustomP99Latency(PercentileLatency),
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct OutputRows {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct ElapsedCompute {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct SpillCount {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct SpilledBytes {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct SpilledRows {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct CurrentMemoryUsage {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct NamedCount {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct NamedGauge {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct NamedTime {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct StartTimestamp {
-    #[prost(int64, optional, tag = "1")]
-    pub value: Option<i64>,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct EndTimestamp {
-    #[prost(int64, optional, tag = "1")]
-    pub value: Option<i64>,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct OutputBytes {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct OutputBatches {
-    #[prost(uint64, tag = "1")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct NamedPruningMetrics {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub pruned: u64,
-    #[prost(uint64, tag = "3")]
-    pub matched: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct NamedRatio {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub part: u64,
-    #[prost(uint64, tag = "3")]
-    pub total: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct BytesCount {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct MinLatency {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct MaxLatency {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct AvgLatency {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub nanos_sum: u64,
-    #[prost(uint64, tag = "3")]
-    pub count: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct FirstLatency {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(uint64, tag = "2")]
-    pub value: u64,
-}
-
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct PercentileLatency {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(bytes = "vec", tag = "4")]
-    pub sketch_bytes: Vec<u8>,
-}
-
-/// A ProtoLabel mirrors [datafusion::physical_plan::metrics::Label].
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
-pub struct ProtoLabel {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(string, tag = "2")]
-    pub value: String,
-}
-
-/// df_metrics_set_to_proto converts a [datafusion::physical_plan::metrics::MetricsSet] to a [MetricsSetProto].
+/// df_metrics_set_to_proto converts a [datafusion::physical_plan::metrics::MetricsSet] to a [pb::MetricsSet].
 /// Custom metrics are filtered out, but any other errors are returned.
 /// TODO(#140): Support custom metrics.
 pub fn df_metrics_set_to_proto(
     metrics_set: &MetricsSet,
-) -> Result<MetricsSetProto, DataFusionError> {
+) -> Result<pb::MetricsSet, DataFusionError> {
     let mut metrics = Vec::new();
 
     for metric in metrics_set.iter() {
@@ -290,12 +40,12 @@ pub fn df_metrics_set_to_proto(
         }
     }
 
-    Ok(MetricsSetProto { metrics })
+    Ok(pb::MetricsSet { metrics })
 }
 
-/// metrics_set_proto_to_df converts a [MetricsSetProto] to a [datafusion::physical_plan::metrics::MetricsSet].
+/// metrics_set_proto_to_df converts a [pb::MetricsSet] to a [datafusion::physical_plan::metrics::MetricsSet].
 pub fn metrics_set_proto_to_df(
-    metrics_set_proto: &MetricsSetProto,
+    metrics_set_proto: &pb::MetricsSet,
 ) -> Result<MetricsSet, DataFusionError> {
     let mut metrics_set = MetricsSet::new();
     metrics_set_proto.metrics.iter().try_for_each(|metric| {
@@ -313,75 +63,75 @@ const CUSTOM_METRICS_NOT_SUPPORTED: &str =
 /// New DataFusion metrics that are not yet supported in proto conversion.
 const UNSUPPORTED_METRICS: &str = "metric type not supported in proto conversion";
 
-/// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `MetricProto`. It does not consume the Arc<Metric>.
-pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusionError> {
+/// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `pb::Metric`. It does not consume the Arc<Metric>.
+pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionError> {
     let partition = metric.partition().map(|p| p as u64);
     let labels = metric
         .labels()
         .iter()
-        .map(|label| ProtoLabel {
+        .map(|label| pb::Label {
             name: label.name().to_string(),
             value: label.value().to_string(),
         })
         .collect();
 
     match metric.value() {
-        MetricValue::OutputRows(rows) => Ok(MetricProto {
-            metric: Some(MetricValueProto::OutputRows(OutputRows { value: rows.value() as u64 })),
+        MetricValue::OutputRows(rows) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::OutputRows(pb::OutputRows { value: rows.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::ElapsedCompute(time) => Ok(MetricProto {
-            metric: Some(MetricValueProto::ElapsedCompute(ElapsedCompute { value: time.value() as u64 })),
+        MetricValue::ElapsedCompute(time) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::ElapsedCompute(pb::ElapsedCompute { value: time.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::SpillCount(count) => Ok(MetricProto {
-            metric: Some(MetricValueProto::SpillCount(SpillCount { value: count.value() as u64 })),
+        MetricValue::SpillCount(count) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::SpillCount(pb::SpillCount { value: count.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::SpilledBytes(count) => Ok(MetricProto {
-            metric: Some(MetricValueProto::SpilledBytes(SpilledBytes { value: count.value() as u64 })),
+        MetricValue::SpilledBytes(count) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::SpilledBytes(pb::SpilledBytes { value: count.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::SpilledRows(count) => Ok(MetricProto {
-            metric: Some(MetricValueProto::SpilledRows(SpilledRows { value: count.value() as u64 })),
+        MetricValue::SpilledRows(count) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::SpilledRows(pb::SpilledRows { value: count.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::CurrentMemoryUsage(gauge) => Ok(MetricProto {
-            metric: Some(MetricValueProto::CurrentMemoryUsage(CurrentMemoryUsage { value: gauge.value() as u64 })),
+        MetricValue::CurrentMemoryUsage(gauge) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::CurrentMemoryUsage(pb::CurrentMemoryUsage { value: gauge.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::Count { name, count } => Ok(MetricProto {
-            metric: Some(MetricValueProto::Count(NamedCount {
+        MetricValue::Count { name, count } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::Count(pb::NamedCount {
                 name: name.to_string(),
                 value: count.value() as u64
             })),
             partition,
             labels,
         }),
-        MetricValue::Gauge { name, gauge } => Ok(MetricProto {
-            metric: Some(MetricValueProto::Gauge(NamedGauge {
+        MetricValue::Gauge { name, gauge } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::Gauge(pb::NamedGauge {
                 name: name.to_string(),
                 value: gauge.value() as u64
             })),
             partition,
             labels,
         }),
-        MetricValue::Time { name, time } => Ok(MetricProto {
-            metric: Some(MetricValueProto::Time(NamedTime {
+        MetricValue::Time { name, time } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::Time(pb::NamedTime {
                 name: name.to_string(),
                 value: time.value() as u64
             })),
             partition,
             labels,
         }),
-        MetricValue::StartTimestamp(timestamp) => Ok(MetricProto {
-            metric: Some(MetricValueProto::StartTimestamp(StartTimestamp {
+        MetricValue::StartTimestamp(timestamp) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::StartTimestamp(pb::StartTimestamp {
                 value: match timestamp.value() {
                     Some(dt) => Some(
                         dt.timestamp_nanos_opt().ok_or(DataFusionError::Internal(
@@ -393,8 +143,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             partition,
             labels,
         }),
-        MetricValue::EndTimestamp(timestamp) => Ok(MetricProto {
-            metric: Some(MetricValueProto::EndTimestamp(EndTimestamp {
+        MetricValue::EndTimestamp(timestamp) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::EndTimestamp(pb::EndTimestamp {
                 value: match timestamp.value() {
                     Some(dt) => Some(
                         dt.timestamp_nanos_opt().ok_or(DataFusionError::Internal(
@@ -408,8 +158,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
         }),
         MetricValue::Custom { name, value } => {
             if let Some(min) = value.as_any().downcast_ref::<MinLatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomMinLatency(MinLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomMinLatency(pb::MinLatency {
                         name: name.to_string(),
                         value: min.value() as u64,
                     })),
@@ -417,8 +167,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(max) = value.as_any().downcast_ref::<MaxLatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomMaxLatency(MaxLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomMaxLatency(pb::MaxLatency {
                         name: name.to_string(),
                         value: max.value() as u64,
                     })),
@@ -426,8 +176,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(avg) = value.as_any().downcast_ref::<AvgLatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomAvgLatency(AvgLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomAvgLatency(pb::AvgLatency {
                         name: name.to_string(),
                         nanos_sum: avg.nanos_sum() as u64,
                         count: avg.count() as u64,
@@ -436,8 +186,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(first) = value.as_any().downcast_ref::<FirstLatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomFirstLatency(FirstLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomFirstLatency(pb::FirstLatency {
                         name: name.to_string(),
                         value: first.value() as u64,
                     })),
@@ -445,8 +195,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(bytes) = value.as_any().downcast_ref::<BytesCounterMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomBytesCount(BytesCount {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomBytesCount(pb::BytesCount {
                         name: name.to_string(),
                         value: bytes.value() as u64,
                     })),
@@ -454,8 +204,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(p50) = value.as_any().downcast_ref::<P50LatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomP50Latency(PercentileLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomP50Latency(pb::PercentileLatency {
                         name: name.to_string(),
                         sketch_bytes: p50.serialize_sketch()?,
                     })),
@@ -463,8 +213,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(p75) = value.as_any().downcast_ref::<P75LatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomP75Latency(PercentileLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomP75Latency(pb::PercentileLatency {
                         name: name.to_string(),
                         sketch_bytes: p75.serialize_sketch()?,
                     })),
@@ -472,8 +222,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(p95) = value.as_any().downcast_ref::<P95LatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomP95Latency(PercentileLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomP95Latency(pb::PercentileLatency {
                         name: name.to_string(),
                         sketch_bytes: p95.serialize_sketch()?,
                     })),
@@ -481,8 +231,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                     labels,
                 })
             } else if let Some(p99) = value.as_any().downcast_ref::<P99LatencyMetric>() {
-                Ok(MetricProto {
-                    metric: Some(MetricValueProto::CustomP99Latency(PercentileLatency {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomP99Latency(pb::PercentileLatency {
                         name: name.to_string(),
                         sketch_bytes: p99.serialize_sketch()?,
                     })),
@@ -493,18 +243,18 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
                 internal_err!("{}", CUSTOM_METRICS_NOT_SUPPORTED)
             }
         }
-        MetricValue::OutputBytes(count) => Ok(MetricProto {
-            metric: Some(MetricValueProto::OutputBytes(OutputBytes { value: count.value() as u64 })),
+        MetricValue::OutputBytes(count) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::OutputBytes(pb::OutputBytes { value: count.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::OutputBatches(count) => Ok(MetricProto {
-            metric: Some(MetricValueProto::OutputBatches(OutputBatches { value: count.value() as u64 })),
+        MetricValue::OutputBatches(count) => Ok(pb::Metric {
+            value: Some(pb::metric::Value::OutputBatches(pb::OutputBatches { value: count.value() as u64 })),
             partition,
             labels,
         }),
-        MetricValue::PruningMetrics { name, pruning_metrics } => Ok(MetricProto {
-            metric: Some(MetricValueProto::PruningMetrics(NamedPruningMetrics {
+        MetricValue::PruningMetrics { name, pruning_metrics } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::PruningMetrics(pb::NamedPruningMetrics {
                 name: name.to_string(),
                 pruned: pruning_metrics.pruned() as u64,
                 matched: pruning_metrics.matched() as u64,
@@ -512,8 +262,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
             partition,
             labels,
         }),
-        MetricValue::Ratio { name, ratio_metrics } => Ok(MetricProto {
-            metric: Some(MetricValueProto::Ratio(NamedRatio {
+        MetricValue::Ratio { name, ratio_metrics } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::Ratio(pb::NamedRatio {
                 name: name.to_string(),
                 part: ratio_metrics.part() as u64,
                 total: ratio_metrics.total() as u64,
@@ -524,8 +274,8 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<MetricProto, DataFusion
     }
 }
 
-/// metric_proto_to_df converts a `MetricProto` to a `datafusion::physical_plan::metrics::Metric`. It consumes the MetricProto.
-pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusionError> {
+/// metric_proto_to_df converts a `pb::Metric` to a `datafusion::physical_plan::metrics::Metric`. It consumes the pb::Metric.
+pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionError> {
     let partition = metric.partition.map(|p| p as usize);
     let labels = metric
         .labels
@@ -533,8 +283,8 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
         .map(|proto_label| Label::new(proto_label.name, proto_label.value))
         .collect();
 
-    match metric.metric {
-        Some(MetricValueProto::OutputRows(rows)) => {
+    match metric.value {
+        Some(pb::metric::Value::OutputRows(rows)) => {
             let count = Count::new();
             count.add(rows.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -543,7 +293,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::ElapsedCompute(elapsed)) => {
+        Some(pb::metric::Value::ElapsedCompute(elapsed)) => {
             let time = Time::new();
             time.add_duration(std::time::Duration::from_nanos(elapsed.value));
             Ok(Arc::new(Metric::new_with_labels(
@@ -552,7 +302,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::SpillCount(spill_count)) => {
+        Some(pb::metric::Value::SpillCount(spill_count)) => {
             let count = Count::new();
             count.add(spill_count.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -561,7 +311,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::SpilledBytes(spilled_bytes)) => {
+        Some(pb::metric::Value::SpilledBytes(spilled_bytes)) => {
             let count = Count::new();
             count.add(spilled_bytes.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -570,7 +320,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::SpilledRows(spilled_rows)) => {
+        Some(pb::metric::Value::SpilledRows(spilled_rows)) => {
             let count = Count::new();
             count.add(spilled_rows.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -579,7 +329,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CurrentMemoryUsage(memory)) => {
+        Some(pb::metric::Value::CurrentMemoryUsage(memory)) => {
             let gauge = Gauge::new();
             gauge.set(memory.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -588,7 +338,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::Count(named_count)) => {
+        Some(pb::metric::Value::Count(named_count)) => {
             let count = Count::new();
             count.add(named_count.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -600,7 +350,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::Gauge(named_gauge)) => {
+        Some(pb::metric::Value::Gauge(named_gauge)) => {
             let gauge = Gauge::new();
             gauge.set(named_gauge.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -612,7 +362,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::Time(named_time)) => {
+        Some(pb::metric::Value::Time(named_time)) => {
             let time = Time::new();
             time.add_duration(std::time::Duration::from_nanos(named_time.value));
             Ok(Arc::new(Metric::new_with_labels(
@@ -624,7 +374,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::StartTimestamp(start_ts)) => {
+        Some(pb::metric::Value::StartTimestamp(start_ts)) => {
             let timestamp = Timestamp::new();
             if let Some(value) = start_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
@@ -635,7 +385,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::EndTimestamp(end_ts)) => {
+        Some(pb::metric::Value::EndTimestamp(end_ts)) => {
             let timestamp = Timestamp::new();
             if let Some(value) = end_ts.value {
                 timestamp.set(DateTime::from_timestamp_nanos(value));
@@ -646,7 +396,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::OutputBytes(output_bytes)) => {
+        Some(pb::metric::Value::OutputBytes(output_bytes)) => {
             let count = Count::new();
             count.add(output_bytes.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -655,7 +405,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::OutputBatches(output_batches)) => {
+        Some(pb::metric::Value::OutputBatches(output_batches)) => {
             let count = Count::new();
             count.add(output_batches.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
@@ -664,7 +414,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::PruningMetrics(named_pruning)) => {
+        Some(pb::metric::Value::PruningMetrics(named_pruning)) => {
             let pruning_metrics = DfPruningMetrics::new();
             pruning_metrics.add_pruned(named_pruning.pruned as usize);
             pruning_metrics.add_matched(named_pruning.matched as usize);
@@ -677,7 +427,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::Ratio(named_ratio)) => {
+        Some(pb::metric::Value::Ratio(named_ratio)) => {
             let ratio_metrics = RatioMetrics::new();
             ratio_metrics.set_part(named_ratio.part as usize);
             ratio_metrics.set_total(named_ratio.total as usize);
@@ -690,7 +440,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomMinLatency(min_latency)) => {
+        Some(pb::metric::Value::CustomMinLatency(min_latency)) => {
             let value = MinLatencyMetric::from_nanos(min_latency.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -701,7 +451,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomMaxLatency(max_latency)) => {
+        Some(pb::metric::Value::CustomMaxLatency(max_latency)) => {
             let value = MaxLatencyMetric::from_nanos(max_latency.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -712,7 +462,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomAvgLatency(avg_latency)) => {
+        Some(pb::metric::Value::CustomAvgLatency(avg_latency)) => {
             let value = AvgLatencyMetric::from_raw(
                 avg_latency.nanos_sum as usize,
                 avg_latency.count as usize,
@@ -726,7 +476,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomFirstLatency(first_latency)) => {
+        Some(pb::metric::Value::CustomFirstLatency(first_latency)) => {
             let value = FirstLatencyMetric::from_nanos(first_latency.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -737,7 +487,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomBytesCount(bytes_count)) => {
+        Some(pb::metric::Value::CustomBytesCount(bytes_count)) => {
             let value = BytesCounterMetric::from_value(bytes_count.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
@@ -748,7 +498,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomP50Latency(p)) => {
+        Some(pb::metric::Value::CustomP50Latency(p)) => {
             let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
                 DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
             })?;
@@ -762,7 +512,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomP75Latency(p)) => {
+        Some(pb::metric::Value::CustomP75Latency(p)) => {
             let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
                 DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
             })?;
@@ -776,7 +526,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomP95Latency(p)) => {
+        Some(pb::metric::Value::CustomP95Latency(p)) => {
             let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
                 DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
             })?;
@@ -790,7 +540,7 @@ pub fn metric_proto_to_df(metric: MetricProto) -> Result<Arc<Metric>, DataFusion
                 labels,
             )))
         }
-        Some(MetricValueProto::CustomP99Latency(p)) => {
+        Some(pb::metric::Value::CustomP99Latency(p)) => {
             let sketch: DDSketch = bincode::deserialize(&p.sketch_bytes).map_err(|e| {
                 DataFusionError::Internal(format!("failed to deserialize DDSketch: {e}"))
             })?;
@@ -1258,8 +1008,8 @@ mod tests {
 
         let remaining_metric = &metrics_set_proto.metrics[0];
         assert!(matches!(
-            remaining_metric.metric,
-            Some(MetricValueProto::OutputRows(_))
+            remaining_metric.value,
+            Some(pb::metric::Value::OutputRows(_))
         ));
     }
 
