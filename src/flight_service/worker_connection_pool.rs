@@ -1,4 +1,6 @@
+use crate::DistributedConfig;
 use crate::common::on_drop_stream;
+use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::flight_service::do_get::DoGet;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
@@ -158,9 +160,19 @@ impl WorkerConnection {
         let elapsed_compute_clone = elapsed_compute.clone();
         MetricBuilder::new(metrics).build(MetricValue::ElapsedCompute(elapsed_compute.clone()));
 
+        let default_cfg = DistributedConfig::default();
+        let grpc_request_timeout_ms = ctx
+            .session_config()
+            .options()
+            .extensions
+            .get::<DistributedConfig>()
+            .map(|cfg| cfg.grpc_request_timeout_ms)
+            .unwrap_or(default_cfg.grpc_request_timeout_ms);
+
         // Building the actual request that will be sent to the worker.
-        let headers = get_passthrough_headers(ctx.session_config());
-        let ticket = Request::from_parts(
+        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        headers.extend(get_passthrough_headers(ctx.session_config()));
+        let mut ticket = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
             Ticket {
@@ -179,6 +191,7 @@ impl WorkerConnection {
                 .into(),
             },
         );
+        ticket.set_timeout(Duration::from_millis(grpc_request_timeout_ms as u64));
 
         let Some(task) = input_stage.tasks.get(target_task) else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
@@ -495,8 +508,15 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_extension_ext::set_distributed_option_extension;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::{DistributedConfig, DistributedExt, ExecutionTask, Stage};
+    use datafusion::common::assert_contains;
+    use datafusion::execution::SessionStateBuilder;
     use futures::StreamExt;
     use futures::stream::unfold;
+    use url::Url;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn elapsed_compute_future() {
@@ -569,5 +589,46 @@ mod tests {
         println!("expensive future: {}", expensive_time.value());
 
         assert!(expensive_time.value() > cheap_time.value());
+    }
+
+    #[tokio::test]
+    async fn do_get_request_timeout_fails_slow_stream() -> Result<()> {
+        let stage = Stage {
+            query_id: Uuid::from_u128(42),
+            num: 0,
+            plan: None,
+            tasks: vec![ExecutionTask {
+                url: Some(Url::parse("http://localhost:50051").expect("valid url")),
+            }],
+        };
+
+        let fast_fail_ctx = build_task_ctx_with_request_timeout(50)?;
+
+        let fail_pool = WorkerConnectionPool::new(1);
+        let fail_conn = fail_pool.get_or_init_worker_connection(&stage, 0..1, 0, &fast_fail_ctx)?;
+        let mut fail_stream = Box::pin(fail_conn.stream_partition(0, |_| {})?);
+        let err = fail_stream
+            .next()
+            .await
+            .expect("expected timeout error")
+            .unwrap_err();
+        let err = err.to_string();
+        assert_contains!(&err, "code: 'The operation was cancelled'");
+        assert_contains!(&err, "message: \"Timeout expired\"");
+        Ok(())
+    }
+
+    fn build_task_ctx_with_request_timeout(
+        grpc_request_timeout_ms: usize,
+    ) -> Result<Arc<datafusion::execution::TaskContext>> {
+        let mut cfg = datafusion::prelude::SessionConfig::default();
+        set_distributed_option_extension(&mut cfg, DistributedConfig::default());
+        cfg.set_distributed_grpc_request_timeout_ms(grpc_request_timeout_ms)?;
+        Ok(SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(cfg)
+            .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+            .build()
+            .task_ctx())
     }
 }
