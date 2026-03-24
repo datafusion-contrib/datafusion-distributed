@@ -12,7 +12,7 @@ use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEnco
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
-use datafusion::arrow::array::{Array, AsArray, RecordBatch};
+use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 
 use crate::flight_service::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
@@ -282,7 +282,7 @@ fn collect_and_create_metrics_flight_data(
 /// Unused values can arise from operations such as filtering, where
 /// some keys may no longer be referenced in the filtered result.
 fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
-    let (schema, arrays, _row_count) = batch.into_parts();
+    let (schema, arrays, row_count) = batch.into_parts();
 
     let arrays = arrays
         .into_iter()
@@ -299,5 +299,9 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(RecordBatch::try_new(schema, arrays)?)
+    Ok(RecordBatch::try_new_with_options(
+        schema,
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(row_count)),
+    )?)
 }
