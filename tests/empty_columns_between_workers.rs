@@ -18,20 +18,8 @@ mod tests {
         let (ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
         register_parquet_tables(&ctx).await?;
 
-        // Scalar subqueries produce all output columns, so the main table scan
-        // (GROUP BY "RainToday") ends up with a ProjectionExec: expr=[] — zero
-        // columns — that gets sent through NetworkCoalesceExec. Arrow IPC rejects
-        // zero-column batches with "must either specify a row count or at least
-        // one column".
         let query = r#"
-            SELECT
-                CASE WHEN (SELECT count(*) FROM weather WHERE "RainToday" = 'Yes') > 10
-                     THEN (SELECT avg("Rainfall") FROM weather WHERE "RainToday" = 'Yes')
-                     ELSE (SELECT avg("Rainfall") FROM weather WHERE "RainToday" = 'No')
-                END as result
-            FROM weather
-            GROUP BY "RainToday"
-            LIMIT 1
+            SELECT (SELECT count(*) FROM weather) FROM weather GROUP BY "RainToday"
         "#;
 
         let df = ctx.sql(query).await?;
