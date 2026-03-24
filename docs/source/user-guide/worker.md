@@ -153,10 +153,11 @@ The recommended pattern is:
    compatible URLs from the resolved set.
 
 ```rust
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use url::Url;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use futures::future::join_all;
 use datafusion::common::DataFusionError;
 use datafusion_distributed::{
@@ -174,14 +175,18 @@ async fn background_version_resolver(
     expected_version: String,
     compatible_urls: Arc<RwLock<Vec<Url>>>,
 ) {
+    let Some(capacity) = NonZeroUsize::new(known_urls.len()) else {
+        return; // No workers to resolve.
+    };
+
     let channel_resolver = DefaultChannelResolver::default();
     // Cache of URL : version for workers that have already responded.
-    let mut resolved: HashMap<Url, String> = HashMap::new();
+    let mut resolved = LruCache::new(capacity);
 
     loop {
         let unresolved: Vec<&Url> = known_urls
             .iter()
-            .filter(|url| !resolved.contains_key(*url))
+            .filter(|url| !resolved.contains(url))
             .collect();
 
         if unresolved.is_empty() {
@@ -206,7 +211,7 @@ async fn background_version_resolver(
             .collect();
 
         for (url, version) in join_all(futures).await.into_iter().flatten() {
-            resolved.insert(url, version);
+            resolved.put(url, version);
         }
 
         let filtered = resolved
