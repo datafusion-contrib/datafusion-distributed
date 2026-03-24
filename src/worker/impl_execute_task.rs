@@ -10,7 +10,7 @@ use crate::worker::worker_service::Worker;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
-use datafusion::arrow::array::{Array, AsArray, RecordBatch};
+use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 
 use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
@@ -259,7 +259,7 @@ fn collect_and_create_metrics_flight_data(
 /// Unused values can arise from operations such as filtering, where
 /// some keys may no longer be referenced in the filtered result.
 fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
-    let (schema, arrays, _row_count) = batch.into_parts();
+    let (schema, arrays, row_count) = batch.into_parts();
 
     let arrays = arrays
         .into_iter()
@@ -276,5 +276,9 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(RecordBatch::try_new(schema, arrays)?)
+    Ok(RecordBatch::try_new_with_options(
+        schema,
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(row_count)),
+    )?)
 }
