@@ -1,23 +1,24 @@
-use crate::flight_service::WorkerSessionBuilder;
-use crate::flight_service::do_action::{INIT_ACTION_TYPE, TaskData};
-use crate::flight_service::single_write_multi_read::SingleWriteMultiRead;
-use crate::protobuf::StageKey;
+use crate::worker::WorkerSessionBuilder;
+use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
+use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
+use crate::worker::generated::worker::{
+    CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
+};
+use crate::worker::impl_set_plan::TaskData;
+use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{
     DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
 };
-use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
-use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
-    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
-};
+use arrow_flight::FlightData;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
-use futures::stream::BoxStream;
+use futures::StreamExt;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
 #[allow(clippy::type_complexity)]
@@ -35,7 +36,7 @@ pub struct Worker {
     /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
     /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
     /// access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<Cache<StageKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    pub(super) task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
@@ -75,7 +76,7 @@ impl Worker {
         self
     }
 
-    /// Adds a callback for when an [ExecutionPlan] is received in the `do_get` call.
+    /// Adds a callback for when an [ExecutionPlan] is received in the `set_plan` call.
     ///
     /// The callback takes the plan and returns another plan that must be either the same,
     /// or equivalent in terms of execution. Mutating the plan by adding nodes or removing them
@@ -102,9 +103,9 @@ impl Worker {
         self
     }
 
-    /// Converts this [Worker] into a [`FlightServiceServer`] with high default message size limits.
+    /// Converts this [Worker] into a [`WorkerServiceServer`] with high default message size limits.
     ///
-    /// This is a convenience method that wraps the endpoint in a [`FlightServiceServer`] and
+    /// This is a convenience method that wraps the endpoint in a [`WorkerServiceServer`] and
     /// configures it with `max_decoding_message_size(usize::MAX)` and
     /// `max_encoding_message_size(usize::MAX)` to avoid message size limitations for internal
     /// communication.
@@ -120,17 +121,17 @@ impl Worker {
     /// # async fn f() {
     ///
     /// let worker = Worker::default();
-    /// let server = worker.into_flight_server();
+    /// let server = worker.into_worker_server();
     ///
     /// Server::builder()
-    ///     .add_service(Worker::default().into_flight_server())
+    ///     .add_service(Worker::default().into_worker_server())
     ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
     ///     .await;
     ///
     /// # }
     /// ```
-    pub fn into_flight_server(self) -> FlightServiceServer<Self> {
-        FlightServiceServer::new(self)
+    pub fn into_worker_server(self) -> WorkerServiceServer<Self> {
+        WorkerServiceServer::new(self)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
@@ -160,94 +161,39 @@ impl Worker {
     }
 }
 
+/// Implementation of the `worker.proto` specification based on the generated Rust stubs.
+///
+/// The methods are delegated to plan `impl Worker` implementations so that they can be implemented
+/// in different files.
 #[async_trait]
-impl FlightService for Worker {
-    type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
+impl WorkerService for Worker {
+    type CoordinatorChannelStream = BoxStream<WorkerToCoordinatorMsg>;
 
-    async fn handshake(
+    async fn coordinator_channel(
         &self,
-        _: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Self::HandshakeStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
+        request: Request<Streaming<CoordinatorToWorkerMsg>>,
+    ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
+        let (metadata, _ext, mut body) = request.into_parts();
+        if let Some(msg) = body.next().await {
+            let Some(inner) = msg?.inner else {
+                return Err(Status::internal("Empty Coordinator message"));
+            };
 
-    type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
-
-    async fn list_flights(
-        &self,
-        _: Request<Criteria>,
-    ) -> Result<Response<Self::ListFlightsStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn get_flight_info(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn poll_flight_info(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<PollInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    async fn get_schema(
-        &self,
-        _: Request<FlightDescriptor>,
-    ) -> Result<Response<SchemaResult>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
-
-    async fn do_get(
-        &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        self.get(request).await
-    }
-
-    type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
-
-    async fn do_put(
-        &self,
-        _: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoPutStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
-
-    async fn do_exchange(
-        &self,
-        _: Request<Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoExchangeStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
-    }
-
-    type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
-
-    async fn do_action(
-        &self,
-        request: Request<Action>,
-    ) -> Result<Response<Self::DoActionStream>, Status> {
-        match request.get_ref().r#type.as_str() {
-            INIT_ACTION_TYPE => self.init(request).await,
-            v => Err(Status::unimplemented(format!(
-                "Action {v} not yet implemented"
-            ))),
+            match inner {
+                Inner::SetPlanRequest(request) => {
+                    self.impl_set_plan(request, metadata).await?;
+                }
+            };
         }
+        Ok(Response::new(futures::stream::empty().boxed()))
     }
 
-    type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;
+    type ExecuteTaskStream = BoxStream<FlightData>;
 
-    async fn list_actions(
+    async fn execute_task(
         &self,
-        _: Request<Empty>,
-    ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        request: Request<ExecuteTaskRequest>,
+    ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
+        self.impl_execute_task(request).await
     }
 }

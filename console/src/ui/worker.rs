@@ -94,12 +94,12 @@ fn render_active_tasks(frame: &mut Frame, area: Rect, app: &mut App, idx: usize)
     let mut task_indices: Vec<usize> = (0..worker.tasks.len()).collect();
     task_indices.sort_by(|&a, &b| {
         let dur_a = worker.tasks[a]
-            .stage_key
+            .task_key
             .as_ref()
             .map(|sk| worker.task_duration(&sk.query_id, sk.stage_id, sk.task_number))
             .unwrap_or_default();
         let dur_b = worker.tasks[b]
-            .stage_key
+            .task_key
             .as_ref()
             .map(|sk| worker.task_duration(&sk.query_id, sk.stage_id, sk.task_number))
             .unwrap_or_default();
@@ -110,7 +110,7 @@ fn render_active_tasks(frame: &mut Frame, area: Rect, app: &mut App, idx: usize)
         .iter()
         .map(|&i| {
             let task = &worker.tasks[i];
-            if let Some(sk) = &task.stage_key {
+            if let Some(sk) = &task.task_key {
                 let query_hex = hex_prefix(&sk.query_id, 8);
                 let duration = worker.task_duration(&sk.query_id, sk.stage_id, sk.task_number);
                 let dur_str = format_duration(duration);

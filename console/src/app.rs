@@ -156,7 +156,7 @@ impl App {
         let mut query_ids = HashSet::new();
         for worker in &self.workers {
             for task in &worker.tasks {
-                if let Some(sk) = &task.stage_key {
+                if let Some(sk) = &task.task_key {
                     query_ids.insert(&sk.query_id);
                 }
             }

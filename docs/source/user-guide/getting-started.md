@@ -11,7 +11,7 @@ Rather than imposing constraints on your infrastructure or query serving pattern
 allows you to plug in your own networking stack and spawn your own gRPC servers that act as workers in the cluster.
 
 This project heavily relies on the [Tonic](https://github.com/hyperium/tonic) ecosystem for the networking layer.
-Users of this library are responsible for building their own Tonic server, adding the Arrow Flight distributed
+Users of this library are responsible for building their own Tonic server, adding the distributed
 DataFusion service to it and spawning it on a port so that it can be reached by other workers in the cluster. A very
 basic example of this would be:
 
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let worker = Worker::default();
 
     Server::builder()
-        .add_service(worker.into_flight_server())
+        .add_service(worker.into_worker_server())
         .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))
         .await?;
 
@@ -74,7 +74,7 @@ This will leave a DataFusion `SessionContext` ready for executing distributed qu
 Depending on your needs, your setup can get more complicated, for example:
 
 - You may want to resolve worker URLs dynamically using the Kubernetes API.
-- You may want to wrap the Arrow Flight clients that connect workers with an observability layer.
+- You may want to wrap the Worker clients that connect workers with an observability layer.
 - You may want to be able to execute your own custom ExecutionPlans in a distributed manner.
 - etc...
 

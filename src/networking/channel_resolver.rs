@@ -1,6 +1,6 @@
 use crate::DistributedConfig;
 use crate::config_extension_ext::set_distributed_option_extension;
-use arrow_flight::flight_service_client::FlightServiceClient;
+use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use async_trait::async_trait;
 use datafusion::common::{DataFusionError, config_datafusion_err, exec_datafusion_err};
 use datafusion::execution::TaskContext;
@@ -15,36 +15,35 @@ use tonic::transport::Channel;
 use tower::ServiceExt;
 use url::Url;
 
-/// Allows users to customize the way Arrow Flight clients are created. A common use case is to
+/// Allows users to customize the way Worker clients are created. A common use case is to
 /// wrap the client with tower layers or schedule it in an IO-specific tokio runtime.
 ///
 /// There is a default implementation of this trait that should be enough for the most common
 /// use-cases.
 ///
 /// # Implementation Notes
-/// - This is called per Arrow Flight request, so implementors of this trait should make sure that
-///   clients are reused across method calls instead of building a new Arrow Flight client
-///   every time.
+/// - This is called per gRPC request, so implementors of this trait should make sure that
+///   clients are reused across method calls instead of building a new Worker client every time.
 ///
-/// - When implementing `get_flight_client_for_url`, it is recommended to use the
-///   [`create_flight_client`] helper function to ensure clients are configured with
+/// - When implementing `get_worker_client_for_url`, it is recommended to use the
+///   [`create_worker_client`] helper function to ensure clients are configured with
 ///   appropriate message size limits for internal communication. This helps avoid message
 ///   size errors when transferring large datasets.
 #[async_trait]
 pub trait ChannelResolver {
-    /// For a given URL, get an Arrow Flight client for communicating to it.
+    /// For a given URL, get a Worker gRPC client for communicating to it.
     ///
-    /// *WARNING*: This method is called for every Arrow Flight gRPC request, so to not create
+    /// *WARNING*: This method is called for every gRPC request, so to not create
     /// one client connection for each request, users are required to reuse generated clients.
     /// It's recommended to rely on [DefaultChannelResolver] either by delegating method calls
     /// to it or by copying the implementation.
     ///
-    /// Consider using [`create_flight_client`] to create the client with appropriate
+    /// Consider using [`create_worker_client`] to create the client with appropriate
     /// default message size limits.
-    async fn get_flight_client_for_url(
+    async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError>;
+    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError>;
 }
 
 pub(crate) fn set_distributed_channel_resolver(
@@ -109,7 +108,7 @@ pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send
 /// and stores the connection instance in a TTI cache.
 ///
 /// Sane default over which other [ChannelResolver] can be built for better customization of the
-/// [FlightServiceClient]s.
+/// [WorkerServiceClient]s.
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
@@ -173,56 +172,55 @@ impl DefaultChannelResolver {
 
 #[async_trait]
 impl ChannelResolver for DefaultChannelResolver {
-    async fn get_flight_client_for_url(
+    async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        self.get_channel(url).await.map(create_flight_client)
+    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        self.get_channel(url).await.map(create_worker_client)
     }
 }
 
 #[async_trait]
 impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
-    async fn get_flight_client_for_url(
+    async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        self.as_ref().get_flight_client_for_url(url).await
+    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+        self.as_ref().get_worker_client_for_url(url).await
     }
 }
 
-/// Creates a [`FlightServiceClient`] with high default message size limits.
+/// Creates a [`WorkerServiceClient`] with high default message size limits.
 ///
-/// This is a convenience function that wraps [`FlightServiceClient::new`] and configures
+/// This is a convenience function that wraps [`WorkerServiceClient::new`] and configures
 /// it with `max_decoding_message_size(usize::MAX)` and `max_encoding_message_size(usize::MAX)`
 /// to avoid message size limitations for internal communication.
 ///
 /// Users implementing custom [`ChannelResolver`]s should use this function in their
-/// `get_flight_client_for_url` implementations to ensure consistent behavior with built-in
+/// `get_worker_client_for_url` implementations to ensure consistent behavior with built-in
 /// implementations.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use datafusion_distributed::{create_flight_client, BoxCloneSyncChannel, ChannelResolver};
-/// use arrow_flight::flight_service_client::FlightServiceClient;
-/// use tonic::transport::Channel;
+/// use datafusion_distributed::{create_worker_client, BoxCloneSyncChannel, ChannelResolver};
+/// /// use tonic::transport::Channel;
 ///
 /// #[async_trait]
 /// impl ChannelResolver for MyResolver {
-///     async fn get_flight_client_for_url(
+///     async fn get_worker_client_for_url(
 ///         &self,
 ///         url: &Url,
-///     ) -> Result<FlightServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+///     ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
 ///         let channel = Channel::from_shared(url.to_string())?.connect().await?;
-///         Ok(create_flight_client(BoxCloneSyncChannel::new(channel)))
+///         Ok(create_worker_client(BoxCloneSyncChannel::new(channel)))
 ///     }
 /// }
 /// ```
-pub fn create_flight_client(
+pub fn create_worker_client(
     channel: BoxCloneSyncChannel,
-) -> FlightServiceClient<BoxCloneSyncChannel> {
-    FlightServiceClient::new(channel)
+) -> WorkerServiceClient<BoxCloneSyncChannel> {
+    WorkerServiceClient::new(channel)
         .max_decoding_message_size(usize::MAX)
         .max_encoding_message_size(usize::MAX)
 }
@@ -285,7 +283,7 @@ mod tests {
             let worker = Worker::default();
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             if let Err(err) = Server::builder()
-                .add_service(worker.into_flight_server())
+                .add_service(worker.into_worker_server())
                 .serve_with_incoming(incoming)
                 .await
             {

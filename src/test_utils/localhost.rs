@@ -57,7 +57,7 @@ where
 
         join_set.spawn(async move {
             Server::builder()
-                .add_service(worker.into_flight_server())
+                .add_service(worker.into_worker_server())
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -103,7 +103,7 @@ impl WorkerResolver for LocalHostWorkerResolver {
     }
 }
 
-pub async fn spawn_flight_service(
+pub async fn spawn_worker_service(
     session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
     incoming: TcpListener,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -112,7 +112,7 @@ pub async fn spawn_flight_service(
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(incoming);
 
     Ok(Server::builder()
-        .add_service(endpoint.into_flight_server())
+        .add_service(endpoint.into_worker_server())
         .serve_with_incoming(incoming)
         .await?)
 }

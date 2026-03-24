@@ -1,35 +1,17 @@
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
-use crate::{DistributedConfig, StageKey, Worker, WorkerQueryContext};
-use arrow_flight::Action;
-use arrow_flight::flight_service_server::FlightService;
-use bytes::Bytes;
+use crate::worker::generated::worker::SetPlanRequest;
+use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::StreamExt;
-use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tonic::{Request, Response, Status};
-
-pub(crate) const INIT_ACTION_TYPE: &str = "init";
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct InitAction {
-    /// The ExecutionPlan we are going to execute encoded as protobuf bytes.
-    #[prost(bytes, tag = "1")]
-    pub plan_proto: Bytes,
-    /// The stage key that identifies the stage.  This is useful to keep
-    /// outside of the stage proto as it is used to store the stage
-    /// and we may not need to deserialize the entire stage proto
-    /// if we already have stored it
-    #[prost(message, optional, tag = "2")]
-    pub stage_key: Option<StageKey>,
-}
+use tonic::Status;
+use tonic::metadata::MetadataMap;
 
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
@@ -61,15 +43,12 @@ impl TaskData {
 }
 
 impl Worker {
-    pub(super) async fn init(
+    pub(crate) async fn impl_set_plan(
         &self,
-        request: Request<Action>,
-    ) -> Result<Response<<Worker as FlightService>::DoActionStream>, Status> {
-        let (metadata, _ext, body) = request.into_parts();
-        let init = InitAction::decode(body.body).map_err(|err| {
-            Status::invalid_argument(format!("Cannot decode InitAction message: {err}"))
-        })?;
-        let key = init.stage_key.ok_or_else(missing("stage_key"))?;
+        request: SetPlanRequest,
+        metadata: MetadataMap,
+    ) -> Result<(), Status> {
+        let key = request.task_key.ok_or_else(missing("task_key"))?;
 
         let entry = self
             .task_data_entries
@@ -79,7 +58,11 @@ impl Worker {
         let task_data = || async {
             let headers = metadata.into_headers();
 
-            let mut cfg = SessionConfig::default();
+            let mut cfg =
+                SessionConfig::default().with_extension(Arc::new(DistributedTaskContext {
+                    task_index: key.task_number as usize,
+                    task_count: request.task_count as usize,
+                }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
             let session_state = self
                 .session_builder
@@ -94,7 +77,7 @@ impl Worker {
 
             let codec = DistributedCodec::new_combined_with_user(session_state.config());
             let task_ctx = session_state.task_ctx();
-            let proto_node = PhysicalPlanNode::try_decode(init.plan_proto.as_ref())?;
+            let proto_node = PhysicalPlanNode::try_decode(request.plan_proto.as_ref())?;
             let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
 
             for hook in self.hooks.on_plan.iter() {
@@ -112,10 +95,10 @@ impl Worker {
 
         entry.write(task_data().await.map_err(Arc::new)).map_err(|_| {
             Status::internal(format!(
-                "Logic error while setting plan for Stage key {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
+                "Logic error while setting plan for TaskKey {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))
         })?;
-        Ok(Response::new(futures::stream::empty().boxed()))
+        Ok(())
     }
 }
 

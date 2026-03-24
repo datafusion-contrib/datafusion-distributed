@@ -10,3 +10,5 @@ testdata/clickbench/*
 !testdata/clickbench/queries
 src/observability/gen/target/*
 src/observability/gen/Cargo.lock
+src/worker/gen/target/*
+src/worker/gen/Cargo.lock
