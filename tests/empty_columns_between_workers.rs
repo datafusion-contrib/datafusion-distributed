@@ -99,7 +99,13 @@ mod tests {
             .await?;
 
         let formatted = pretty_format_batches(&batches)?;
-        assert_snapshot!(formatted, @"");
+        assert_snapshot!(formatted, @r"
+        +-------------------+
+        | result            |
+        +-------------------+
+        | 7.663636363636365 |
+        +-------------------+
+        ");
 
         Ok(())
     }
