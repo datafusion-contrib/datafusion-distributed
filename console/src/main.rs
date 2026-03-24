@@ -17,9 +17,9 @@ use url::Url;
     about = "Console for monitoring DataFusion distributed workers"
 )]
 struct Args {
-    /// Comma-delimited list of worker ports (assumed localhost)
-    #[structopt(long = "cluster-ports", use_delimiter = true)]
-    cluster_ports: Vec<u16>,
+    /// Port of a worker to connect to for auto-discovery.
+    /// The console calls GetClusterWorkers on this worker to discover the full cluster.
+    port: u16,
 
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
@@ -32,14 +32,10 @@ async fn main() -> color_eyre::Result<()> {
 
     let args = Args::from_args();
 
-    let worker_urls: Vec<Url> = args
-        .cluster_ports
-        .iter()
-        .map(|port| Url::parse(&format!("http://localhost:{port}")).expect("valid localhost URL"))
-        .collect();
+    let seed_url = Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
 
     let poll_interval = Duration::from_millis(args.poll_interval);
-    let mut app = App::new(worker_urls);
+    let mut app = App::new(seed_url);
 
     let mut terminal = ratatui::init();
     terminal.clear()?;

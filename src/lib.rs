@@ -47,9 +47,10 @@ pub use worker::{
 };
 
 pub use observability::{
-    GetTaskProgressRequest, GetTaskProgressResponse, ObservabilityService,
-    ObservabilityServiceClient, ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest,
-    PingResponse, TaskProgress, TaskStatus, WorkerMetrics,
+    GetClusterWorkersRequest, GetClusterWorkersResponse, GetTaskProgressRequest,
+    GetTaskProgressResponse, ObservabilityService, ObservabilityServiceClient,
+    ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest, PingResponse, TaskProgress,
+    TaskStatus, WorkerMetrics,
 };
 
 #[cfg(any(feature = "integration", test))]

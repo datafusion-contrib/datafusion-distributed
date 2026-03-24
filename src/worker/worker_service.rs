@@ -6,7 +6,9 @@ use crate::worker::generated::worker::{
 };
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
-use crate::{DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer};
+use crate::{
+    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
+};
 use arrow_flight::FlightData;
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -134,11 +136,18 @@ impl Worker {
             .max_encoding_message_size(usize::MAX)
     }
 
+    /// Creates an [`ObservabilityServiceServer`] that exposes task progress and cluster
+    /// worker discovery via the provided [`WorkerResolver`].
+    ///
+    /// The returned server is meant to be added to the same [`tonic::transport::Server`] as the
+    /// Flight service — gRPC multiplexes both services on a single port.
     pub fn with_observability_service(
         &self,
+        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
     ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
         ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
             self.task_data_entries.clone(),
+            worker_resolver,
         ))
     }
 

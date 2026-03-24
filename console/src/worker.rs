@@ -1,5 +1,6 @@
 use datafusion_distributed::{
-    GetTaskProgressRequest, ObservabilityServiceClient, PingRequest, TaskProgress, TaskStatus,
+    GetClusterWorkersRequest, GetTaskProgressRequest, ObservabilityServiceClient, PingRequest,
+    TaskProgress, TaskStatus,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -363,4 +364,30 @@ fn push_history(buf: &mut VecDeque<u64>, value: u64) {
         buf.pop_front();
     }
     buf.push_back(value);
+}
+
+/// Connects to a seed worker and calls `GetClusterWorkers` to discover all worker URLs.
+pub(crate) async fn discover_cluster_workers(seed_url: &Url) -> Result<Vec<Url>, String> {
+    let mut client = ObservabilityServiceClient::connect(seed_url.to_string())
+        .await
+        .map_err(|e| format!("Failed to connect to seed worker {seed_url}: {e}"))?;
+
+    client
+        .ping(PingRequest {})
+        .await
+        .map_err(|e| format!("Seed worker {seed_url} ping failed: {e}"))?;
+
+    let response = client
+        .get_cluster_workers(GetClusterWorkersRequest {})
+        .await
+        .map_err(|e| format!("GetClusterWorkers failed on {seed_url}: {e}"))?;
+
+    let urls = response
+        .into_inner()
+        .worker_urls
+        .into_iter()
+        .filter_map(|s| Url::parse(&s).ok())
+        .collect();
+
+    Ok(urls)
 }
