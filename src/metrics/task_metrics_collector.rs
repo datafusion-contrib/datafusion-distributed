@@ -262,7 +262,7 @@ mod tests {
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         assert!(
             expected_task_keys.len() > 1,
-            "expected more than 1 stage key in test. the plan was not distributed):\n{}",
+            "expected more than 1 task key in test. the plan was not distributed):\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
 
@@ -378,7 +378,7 @@ mod tests {
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         assert!(
             expected_task_keys.len() > 1,
-            "expected more than 1 stage key. Plan was not distributed:\n{}",
+            "expected more than 1 task key. Plan was not distributed:\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
 
@@ -393,7 +393,7 @@ mod tests {
                 .get(&expected_task_key)
                 .unwrap_or_else(|| {
                     panic!(
-                        "Missing metrics for stage key {expected_task_key:?}. \
+                        "Missing metrics for task key {expected_task_key:?}. \
                          The LIMIT caused the stream to be dropped before the worker \
                          sent the last FlightData message with metrics."
                     )

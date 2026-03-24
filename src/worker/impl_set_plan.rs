@@ -95,7 +95,7 @@ impl Worker {
 
         entry.write(task_data().await.map_err(Arc::new)).map_err(|_| {
             Status::internal(format!(
-                "Logic error while setting plan for Stage key {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
+                "Logic error while setting plan for TaskKey {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))
         })?;
         Ok(())

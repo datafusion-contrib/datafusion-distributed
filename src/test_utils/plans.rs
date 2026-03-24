@@ -45,7 +45,7 @@ pub fn count_plan_nodes_up_to_network_boundary(plan: &Arc<dyn ExecutionPlan>) ->
 
 /// Returns
 /// - a map of all stages
-/// - a set of all the stage keys (one per task)
+/// - a set of all the task keys (one per task)
 pub fn get_stages_and_task_keys(
     stage: &DistributedExec,
 ) -> (HashMap<usize, &Stage>, HashSet<TaskKey>) {
