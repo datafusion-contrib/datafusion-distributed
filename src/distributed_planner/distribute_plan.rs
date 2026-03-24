@@ -1,80 +1,83 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::batch_coalescing_below_network_boundaries;
+use crate::distributed_planner::batch_coalescing_below_network_boundaries::batch_coalescing_below_network_boundaries;
+use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
 use crate::{
-    DistributedConfig, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec, TaskEstimator,
 };
+use datafusion::common::DataFusionError;
+use datafusion::common::tree_node::TreeNode;
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use std::fmt::Debug;
 use std::ops::AddAssign;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::insert_broadcast::insert_broadcast_execs;
-
-/// Physical optimizer rule that inspects the plan, places the appropriate network
-/// boundaries, and breaks it down into stages that can be executed in a distributed manner.
+/// Inspects the plan, places the appropriate network boundaries, and breaks it down into stages
+/// that can be executed in a distributed manner.
 ///
-/// The rule has three steps:
+/// It performs the following operations:
 ///
-/// 1. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
+/// 1. It prepares the plan for distribution, adding some extra single-node nodes like
+///    [BroadcastExec] or [CoalescePartitionsExec] that will signal the following steps to
+///    introduce network boundaries in the appropriate places.
+///
+/// 2. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
 ///    many distributed tasks should be used in the stage containing them, and whether they
 ///    need a network boundary below or not.
 ///    For more information about this step, read [annotate_plan] docs.
 ///
-/// 2. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
+/// 3. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
 ///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
 ///    assignation that the annotations required. After this, the plan is already a distributed
 ///    executable plan.
 ///
-/// 3. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
+/// 4. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
 ///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
-#[derive(Debug, Default)]
-pub struct DistributedPhysicalOptimizerRule;
-
-impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
-    fn optimize(
-        &self,
-        original: Arc<dyn ExecutionPlan>,
-        cfg: &ConfigOptions,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        if original.as_any().is::<DistributedExec>() {
-            return Ok(original);
-        }
-
-        let mut plan = Arc::clone(&original);
-        if original.output_partitioning().partition_count() > 1 {
-            plan = Arc::new(CoalescePartitionsExec::new(plan))
-        }
-
-        plan = insert_broadcast_execs(plan, cfg)?;
-
-        let annotated = annotate_plan(plan, cfg)?;
-
-        let mut stage_id = 1;
-        let distributed = distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
-        if stage_id == 1 {
-            return Ok(original);
-        }
-        let distributed = batch_coalescing_below_network_boundaries(distributed, cfg)?;
-
-        Ok(Arc::new(DistributedExec::new(distributed)))
+///
+/// This function returns None if the plan was left undistributed.
+pub(super) async fn distribute_plan(
+    original: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+    // This function should be idempotent, as people need to be able to call this function at will,
+    // and the DistributedExec node should not execute it's content again if it was already called.
+    if original.exists(|plan| Ok(plan.is_network_boundary()))? {
+        return Ok(None);
     }
 
-    fn name(&self) -> &str {
-        "DistributedPhysicalOptimizer"
+    let mut plan = Arc::clone(&original);
+
+    // Add a CoalescePartitionsExec on top of the plan if necessary. The plan annotator will see
+    // this and will place a NetworkCoalesceExec below it.
+    if plan.output_partitioning().partition_count() > 1 {
+        plan = Arc::new(CoalescePartitionsExec::new(plan));
     }
 
-    fn schema_check(&self) -> bool {
-        true
+    // Insert BroadcastExec nodes in collect left joins so that the plan annotator can inject
+    // broadcast network boundaries above.
+    plan = insert_broadcast_execs(plan, cfg)?;
+
+    // Annotate the plan with network boundary and task count information.
+    let annotated = annotate_plan(plan, cfg).await?;
+
+    // Based on the annotations, place the actual network boundaries with the appropriate dimensions.
+    let mut stage_id = 1;
+    let plan = _distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
+    if stage_id == 1 {
+        return Ok(None);
     }
+
+    // Place some batch coalescing nodes before network boundaries in order to send big batches
+    // over the wire.
+    // TODO: This should be removed after DataFusion 53 upgrade, as CoalesceBatchesExec is deprecated.
+    let plan = batch_coalescing_below_network_boundaries(plan, cfg)?;
+
+    Ok(Some(plan))
 }
 
 /// Takes an [AnnotatedPlan] and returns a modified [ExecutionPlan] with all the network boundaries
@@ -84,7 +87,7 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 ///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
 /// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
 ///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
-fn distribute_plan(
+fn _distribute_plan(
     annotated_plan: AnnotatedPlan,
     cfg: &ConfigOptions,
     query_id: Uuid,
@@ -96,7 +99,7 @@ fn distribute_plan(
     let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
     let new_children = children
         .into_iter()
-        .map(|child| distribute_plan(child, cfg, query_id, stage_id))
+        .map(|child| _distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
     match annotated_plan.plan_or_nb {
         // This is a leaf node. It needs to be scaled up in order to account for it running in
@@ -174,12 +177,9 @@ mod tests {
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
         sql_to_physical_plan,
     };
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
-    };
+    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::displayable;
-    use std::sync::Arc;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -227,7 +227,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
@@ -257,7 +257,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
@@ -310,7 +310,7 @@ mod tests {
                 .unwrap()
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
@@ -360,7 +360,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
@@ -427,7 +427,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
@@ -470,7 +470,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
@@ -492,7 +492,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -589,7 +589,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(6))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=6
@@ -621,7 +621,7 @@ mod tests {
             b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
         })
         .await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
@@ -732,7 +732,7 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let annotated = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(annotated, @"
+        assert_snapshot!(annotated, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
@@ -761,7 +761,7 @@ mod tests {
         INNER JOIN weather c ON b."RainToday" = c."RainToday"
         "#;
         let plan = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
@@ -806,7 +806,7 @@ mod tests {
         ");
 
         let plan = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
@@ -877,7 +877,7 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let plan = sql_to_explain_with_broadcast_one_to_many(query, 3).await;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
@@ -949,8 +949,7 @@ mod tests {
             options.broadcast_enabled,
         );
         if use_optimizer {
-            builder =
-                builder.with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule));
+            builder = builder.with_distributed_planner()
         }
         let builder = configure(builder);
         let (ctx, query) = context_with_query(builder, query).await;

@@ -28,9 +28,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
-use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, Worker,
-};
+use datafusion_distributed::{DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker};
 use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
 use std::error::Error;
 use std::fs;
@@ -178,7 +176,7 @@ impl RunOpt {
             .with_default_features()
             .with_config(self.config()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_planner()
             .with_distributed_files_per_task(
                 self.files_per_task.unwrap_or(get_available_parallelism()),
             )?

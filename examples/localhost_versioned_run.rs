@@ -4,12 +4,11 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    DefaultChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, GetWorkerInfoRequest,
+    DefaultChannelResolver, DistributedExt, GetWorkerInfoRequest, SessionStateBuilderExt,
     WorkerResolver, create_worker_client, display_plan_ascii,
 };
 use futures::TryStreamExt;
 use std::error::Error;
-use std::sync::Arc;
 use structopt::StructOpt;
 use url::Url;
 
@@ -93,7 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_worker_resolver(localhost_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_planner()
         .with_distributed_files_per_task(1)?
         .build();
 

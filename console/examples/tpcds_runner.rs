@@ -4,7 +4,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule, WorkerResolver,
+    DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, WorkerResolver,
     display_plan_ascii,
 };
 use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
@@ -97,7 +97,7 @@ async fn run_queries(
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_worker_resolver(localhost_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_planner()
         .build();
 
     let ctx = SessionContext::from(state);
