@@ -44,7 +44,7 @@ pub fn get_distributed_worker_resolver(
 ) -> Result<Arc<dyn WorkerResolver + Send + Sync>, DataFusionError> {
     let opts = cfg.options();
     let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return exec_err!("ChannelResolver not present in the session config");
+        return exec_err!("WorkerResolver not present in the session config");
     };
     Ok(Arc::clone(&distributed_cfg.__private_worker_resolver.0))
 }
