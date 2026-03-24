@@ -17,7 +17,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::{
         DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
-        display_plan_ascii, distribute_plan,
+        display_plan_ascii,
     };
     use futures::TryStreamExt;
     use std::any::Any;
@@ -58,10 +58,9 @@ mod tests {
 
         let node = wrap(wrap(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))));
 
-        let cfg = ctx.copied_config();
-        let cfg = cfg.options();
-        let physical_distributed = DistributedPhysicalOptimizerRule.optimize(node, cfg)?;
-        let physical_distributed = distribute_plan(physical_distributed, cfg).await?;
+        let physical_distributed =
+            DistributedPhysicalOptimizerRule.optimize(node, ctx.copied_config().options())?;
+
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,

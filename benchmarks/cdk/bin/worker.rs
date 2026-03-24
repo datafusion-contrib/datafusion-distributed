@@ -10,7 +10,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt,
     Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
     get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
 };
@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_default_features()
         .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_planner()
         .with_distributed_broadcast_joins(cmd.broadcast_joins)?
         .build();
     let ctx = SessionContext::from(state);

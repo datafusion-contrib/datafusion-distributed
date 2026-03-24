@@ -52,12 +52,12 @@ pub fn rewrite_distributed_plan_with_metrics(
     let MetricsCollectorResult {
         task_metrics,       // Metrics for the DistributedExec plan
         input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new().collect(distributed_exec.head_local_plan()?)?;
+    } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
         format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
-        distributed_exec.distributed_plan()?,
+        plan.children()[0].clone(),
         task_metrics,
     )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
@@ -284,7 +284,7 @@ mod tests {
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::worker::generated::worker as pb;
-    use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
+    use crate::{DistributedExec, SessionStateBuilderExt};
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -328,7 +328,7 @@ mod tests {
                 .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_planner()
                 .with_distributed_task_estimator(2)
         }
 

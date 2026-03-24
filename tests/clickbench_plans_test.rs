@@ -4,8 +4,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::{benchmarks_common, clickbench};
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot,
-        display_plan_ascii, distribute_plan,
+        DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
     use std::ops::Range;
     use std::path::Path;
@@ -925,7 +924,6 @@ mod tests {
 
         let df = d_ctx.sql(&query_sql).await?;
         let plan = df.create_physical_plan().await?;
-        let plan = distribute_plan(plan, d_ctx.copied_config().options()).await?;
 
         if !plan.as_any().is::<DistributedExec>() {
             Ok("".to_string())

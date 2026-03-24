@@ -24,7 +24,7 @@ impl WorkerResolver for CustomWorkerResolver {
 async fn main() {
     let state = SessionStateBuilder::new()
         .with_distributed_worker_resolver(CustomWorkerResolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_planner()
         .build();
 }
 ```

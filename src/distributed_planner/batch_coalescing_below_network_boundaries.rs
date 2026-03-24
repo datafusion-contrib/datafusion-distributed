@@ -58,13 +58,10 @@ pub(crate) fn batch_coalescing_below_network_boundaries(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::distributed_planner::distribute_plan;
+    use crate::distributed_planner::session_state_builder_ext::SessionStateBuilderExt;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
-    };
+    use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use itertools::Itertools;
@@ -159,7 +156,7 @@ mod tests {
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_planner()
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
             .build();
 
@@ -173,10 +170,6 @@ mod tests {
         let df = ctx.sql(last_query).await.unwrap();
 
         let physical_plan = df.create_physical_plan().await.unwrap();
-        let physical_plan =
-            distribute_plan(physical_plan, ctx.task_ctx().session_config().options())
-                .await
-                .unwrap();
         display_plan_ascii(physical_plan.as_ref(), false)
     }
 }

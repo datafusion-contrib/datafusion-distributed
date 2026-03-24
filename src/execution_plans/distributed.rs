@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::{NetworkBoundaryExt, distribute_plan};
+use crate::distributed_planner::NetworkBoundaryExt;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
@@ -18,7 +18,6 @@ use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, Label, MetricBuilder, MetricValue, Time,
@@ -50,57 +49,28 @@ use url::Url;
 #[derive(Debug)]
 pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
-    /// The `distributed_plan` is the result of lazily applying all the modifications to `plan`
-    /// at execution time. Transforming a plan from single-node to distributed is an asynchronous
-    /// process, so it cannot be implemented as a normal [datafusion::physical_optimizer::PhysicalOptimizerRule],
-    /// so instead it's handled by [DistributedExec], and the modified plan is placed in this
-    /// `distributed_plan` field upon calling `.execute()`.
-    ///
-    /// A reference to the distributed version of the plan needs be held here, as the metric
-    /// collection system will use it as skeleton for placing the collected distributed metrics
-    /// over the network.
-    pub(crate) distributed_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
-    /// The top slice of the `distributed_plan` that runs in the same process at this node, what's
-    /// typically referred as the "head" or "coordinating" local stage.
-    pub(crate) head_local_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
-    properties: PlanProperties,
+    pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
 }
 
 struct PreparedPlan {
-    head_local_plan: Arc<dyn ExecutionPlan>,
+    plan: Arc<dyn ExecutionPlan>,
     join_set: JoinSet<Result<()>>,
 }
 
 impl DistributedExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        let mut properties = plan.properties().clone();
-        properties.partitioning = Partitioning::UnknownPartitioning(1);
         Self {
-            properties,
             plan,
-            distributed_plan: Arc::new(Mutex::new(None)),
-            head_local_plan: Arc::new(Mutex::new(None)),
+            prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
-    /// Returns the plan which is lazily distributed on execute().
+    /// Returns the plan which is lazily prepared on execute() and actually gets executed.
     /// It is updated on every call to execute(). Returns an error if .execute() has not been called.
-    pub(crate) fn distributed_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        self.distributed_plan
-            .lock()
-            .map_err(|e| internal_datafusion_err!("Failed to lock distributed plan: {}", e))?
-            .clone()
-            .ok_or_else(|| {
-                internal_datafusion_err!("No distributed plan found. Was execute() called?")
-            })
-    }
-
-    /// Returns the slice of the plan corresponding to the "head" or "coordinating" stage.
-    /// It is updated on every call to execute(). Returns an error if .execute() has not been called.
-    pub(crate) fn head_local_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        self.head_local_plan
+    pub(crate) fn prepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        self.prepared_plan
             .lock()
             .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?
             .clone()
@@ -116,18 +86,14 @@ impl DistributedExec {
     ///    network call feeding the subplan is necessary.
     /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
     ///    become nodes without children and traversing them will not go further down in.
-    fn prepare_plan(
-        plan: Arc<dyn ExecutionPlan>,
-        metrics: ExecutionPlanMetricsSet,
-        ctx: &Arc<TaskContext>,
-    ) -> Result<PreparedPlan> {
+    fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
         let urls = worker_resolver.get_urls()?;
 
         // Metric that measures to total sum of bytes worth of subplans sent.
-        let plan_bytes_sent = MetricBuilder::new(&metrics)
+        let plan_bytes_sent = MetricBuilder::new(&self.metrics)
             .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
             .global_counter("plan_bytes_sent");
 
@@ -136,11 +102,11 @@ impl DistributedExec {
         let plan_send_latency = Arc::new(LatencyMetric::new(
             "plan_send_latency",
             |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
-            &metrics,
+            &self.metrics,
         ));
 
         let mut join_set = JoinSet::new();
-        let prepared = plan.transform_up(|plan| {
+        let prepared = Arc::clone(&self.plan).transform_up(|plan| {
             // The following logic is just applied on network boundaries.
             let Some(plan) = plan.as_network_boundary() else {
                 return Ok(Transformed::no(plan));
@@ -200,7 +166,7 @@ impl DistributedExec {
             })?))
         })?;
         Ok(PreparedPlan {
-            head_local_plan: prepared.data,
+            plan: prepared.data,
             join_set,
         })
     }
@@ -222,7 +188,7 @@ impl ExecutionPlan for DistributedExec {
     }
 
     fn properties(&self) -> &PlanProperties {
-        &self.properties
+        self.plan.properties()
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -233,9 +199,11 @@ impl ExecutionPlan for DistributedExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let mut new_self = Self::new(require_one_child(&children)?);
-        new_self.metrics = self.metrics.clone();
-        Ok(Arc::new(new_self))
+        Ok(Arc::new(DistributedExec {
+            plan: require_one_child(&children)?,
+            prepared_plan: self.prepared_plan.clone(),
+            metrics: self.metrics.clone(),
+        }))
     }
 
     fn execute(
@@ -253,43 +221,28 @@ impl ExecutionPlan for DistributedExec {
             );
         }
 
+        let PreparedPlan { plan, join_set } = self.prepare_plan(&context)?;
+        {
+            let mut guard = self
+                .prepared_plan
+                .lock()
+                .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {e}"))?;
+            *guard = Some(plan.clone());
+        }
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
         // Spawn the task that pulls data from child...
-        let plan = Arc::clone(&self.plan);
-        let head_local_plan_lock = Arc::clone(&self.head_local_plan);
-        let distributed_plan_lock = Arc::clone(&self.distributed_plan);
-        let metrics = self.metrics.clone();
         builder.spawn(async move {
-            // First, distribute the plan if it was not already distributed. `distribute_plan()` is
-            // idempotent, so it's fine if the user called this function before, as here it will
-            // just do nothing.
-            let cfg = context.session_config().options();
-            let distributed_plan = distribute_plan(plan, cfg).await?;
-            distributed_plan_lock
-                .lock()
-                .unwrap()
-                .replace(Arc::clone(&distributed_plan));
-
-            // Prepare the head slice of the plan that will run locally, and spawn the tasks that
-            // send the different subplans to the workers for remote execution.
-            let PreparedPlan {
-                head_local_plan,
-                join_set,
-            } = Self::prepare_plan(distributed_plan, metrics, &context)?;
-            head_local_plan_lock
-                .lock()
-                .unwrap()
-                .replace(Arc::clone(&head_local_plan));
-
-            // Execute the head local plan. This is just the top slice of the plan that is supposed
-            // to run locally, until the first encountered network boundary.
-            let mut stream = head_local_plan.execute(partition, context)?;
+            let mut stream = plan.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
                 if tx.send(msg).await.is_err() {
                     break; // channel closed
                 }
             }
+            Ok(())
+        });
+        // ...in parallel to the one that feeds the plan to workers.
+        builder.spawn(async move {
             for res in join_set.join_all().await {
                 res?;
             }

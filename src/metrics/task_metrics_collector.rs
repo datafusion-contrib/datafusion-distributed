@@ -130,7 +130,7 @@ mod tests {
         count_plan_nodes_up_to_network_boundary, get_stages_and_task_keys,
     };
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::{DistributedExt, DistributedPhysicalOptimizerRule};
+    use crate::{DistributedExt, SessionStateBuilderExt};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -151,7 +151,7 @@ mod tests {
             .with_config(config)
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
             .with_distributed_channel_resolver(InMemoryChannelResolver::default())
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_planner()
             .with_distributed_task_estimator(2)
             .with_distributed_metrics_collection(true)
             .unwrap()
@@ -269,9 +269,7 @@ mod tests {
         // Collect metrics for all tasks from the root StageExec.
         let collector = TaskMetricsCollector::new();
 
-        let result = collector
-            .collect(dist_exec.distributed_plan().unwrap())
-            .unwrap();
+        let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
@@ -442,9 +440,7 @@ mod tests {
 
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         let collector = TaskMetricsCollector::new();
-        let result = collector
-            .collect(dist_exec.distributed_plan().unwrap())
-            .unwrap();
+        let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_task_key in expected_task_keys {

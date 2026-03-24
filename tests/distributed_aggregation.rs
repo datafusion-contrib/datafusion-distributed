@@ -9,9 +9,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::session_context::register_temp_parquet_table;
-    use datafusion_distributed::{
-        DefaultSessionBuilder, assert_snapshot, display_plan_ascii, distribute_plan,
-    };
+    use datafusion_distributed::{DefaultSessionBuilder, assert_snapshot, display_plan_ascii};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::sync::Arc;
@@ -34,8 +32,6 @@ mod tests {
         register_parquet_tables(&ctx_distributed).await?;
         let df_distributed = ctx_distributed.sql(query).await?;
         let physical_distributed = df_distributed.create_physical_plan().await?;
-        let physical_distributed =
-            distribute_plan(physical_distributed, ctx.copied_config().options()).await?;
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,
@@ -121,8 +117,6 @@ mod tests {
         register_parquet_tables(&ctx_distributed).await?;
         let df_distributed = ctx_distributed.sql(query).await?;
         let physical_distributed = df_distributed.create_physical_plan().await?;
-        let physical_distributed =
-            distribute_plan(physical_distributed, ctx.copied_config().options()).await?;
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,

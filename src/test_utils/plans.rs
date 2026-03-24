@@ -48,15 +48,15 @@ pub fn count_plan_nodes_up_to_network_boundary(plan: &Arc<dyn ExecutionPlan>) ->
 /// - a set of all the task keys (one per task)
 pub fn get_stages_and_task_keys(
     stage: &DistributedExec,
-) -> (HashMap<usize, Stage>, HashSet<TaskKey>) {
+) -> (HashMap<usize, &Stage>, HashSet<TaskKey>) {
     let mut i = 0;
-    let mut queue = find_input_stages(&stage.distributed_plan().unwrap());
+    let mut queue = find_input_stages(stage);
     let mut task_keys = HashSet::new();
     let mut stages_map = HashMap::new();
 
     while i < queue.len() {
-        let stage = &queue[i];
-        stages_map.insert(stage.num, stage.clone());
+        let stage = queue[i];
+        stages_map.insert(stage.num, stage);
         i += 1;
 
         // Add each task.
@@ -69,18 +69,18 @@ pub fn get_stages_and_task_keys(
         }
 
         // Add any child stages
-        queue.extend(find_input_stages(stage.plan.as_ref().unwrap()));
+        queue.extend(find_input_stages(stage.plan.as_ref().unwrap().as_ref()));
     }
     (stages_map, task_keys)
 }
 
-fn find_input_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<Stage> {
+fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     let mut result = vec![];
     for child in plan.children() {
         if let Some(plan) = child.as_network_boundary() {
-            result.push(plan.input_stage().clone());
+            result.push(plan.input_stage());
         } else {
-            result.extend(find_input_stages(child));
+            result.extend(find_input_stages(child.as_ref()));
         }
     }
     result

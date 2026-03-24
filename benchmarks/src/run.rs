@@ -31,7 +31,7 @@ use datafusion_distributed::test_utils::benchmarks_common;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, Worker,
+    DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
 };
 use std::error::Error;
 use std::fs;
@@ -179,7 +179,7 @@ impl RunOpt {
             .with_default_features()
             .with_config(self.config()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_planner()
             .with_distributed_files_per_task(
                 self.files_per_task.unwrap_or(get_available_parallelism()),
             )?
