@@ -323,10 +323,10 @@ pub mod worker_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct WorkerServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -365,14 +365,13 @@ pub mod worker_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    http::Request<tonic::body::Body>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             WorkerServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -412,28 +411,22 @@ pub mod worker_service_client {
         /// per task.
         pub async fn coordinator_channel(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<
-                Message = super::CoordinatorToWorkerMsg,
-            >,
+            request: impl tonic::IntoStreamingRequest<Message = super::CoordinatorToWorkerMsg>,
         ) -> std::result::Result<
             tonic::Response<tonic::codec::Streaming<super::WorkerToCoordinatorMsg>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/worker.WorkerService/CoordinatorChannel",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/worker.WorkerService/CoordinatorChannel");
             let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("worker.WorkerService", "CoordinatorChannel"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "worker.WorkerService",
+                "CoordinatorChannel",
+            ));
             self.inner.streaming(req, path, codec).await
         }
         /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
@@ -444,18 +437,11 @@ pub mod worker_service_client {
             tonic::Response<tonic::codec::Streaming<::arrow_flight::FlightData>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/worker.WorkerService/ExecuteTask",
-            );
+            let path = http::uri::PathAndQuery::from_static("/worker.WorkerService/ExecuteTask");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("worker.WorkerService", "ExecuteTask"));
@@ -465,22 +451,13 @@ pub mod worker_service_client {
         pub async fn get_worker_info(
             &mut self,
             request: impl tonic::IntoRequest<super::GetWorkerInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetWorkerInfoResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::GetWorkerInfoResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/worker.WorkerService/GetWorkerInfo",
-            );
+            let path = http::uri::PathAndQuery::from_static("/worker.WorkerService/GetWorkerInfo");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("worker.WorkerService", "GetWorkerInfo"));
@@ -495,7 +472,7 @@ pub mod worker_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with WorkerServiceServer.
@@ -504,8 +481,7 @@ pub mod worker_service_server {
         /// Server streaming response type for the CoordinatorChannel method.
         type CoordinatorChannelStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::WorkerToCoordinatorMsg, tonic::Status>,
-            >
-            + std::marker::Send
+            > + std::marker::Send
             + 'static;
         /// Establishes a bidirectional message stream between a coordinator and a worker, over which messages
         /// will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
@@ -513,32 +489,22 @@ pub mod worker_service_server {
         async fn coordinator_channel(
             &self,
             request: tonic::Request<tonic::Streaming<super::CoordinatorToWorkerMsg>>,
-        ) -> std::result::Result<
-            tonic::Response<Self::CoordinatorChannelStream>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<Self::CoordinatorChannelStream>, tonic::Status>;
         /// Server streaming response type for the ExecuteTask method.
         type ExecuteTaskStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<::arrow_flight::FlightData, tonic::Status>,
-            >
-            + std::marker::Send
+            > + std::marker::Send
             + 'static;
         /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
         async fn execute_task(
             &self,
             request: tonic::Request<super::ExecuteTaskRequest>,
-        ) -> std::result::Result<
-            tonic::Response<Self::ExecuteTaskStream>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<Self::ExecuteTaskStream>, tonic::Status>;
         /// Returns metadata about a worker. Currently only used for worker versioning.
         async fn get_worker_info(
             &self,
             request: tonic::Request<super::GetWorkerInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetWorkerInfoResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetWorkerInfoResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct WorkerServiceServer<T> {
@@ -561,10 +527,7 @@ pub mod worker_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -619,16 +582,14 @@ pub mod worker_service_server {
                 "/worker.WorkerService/CoordinatorChannel" => {
                     #[allow(non_camel_case_types)]
                     struct CoordinatorChannelSvc<T: WorkerService>(pub Arc<T>);
-                    impl<
-                        T: WorkerService,
-                    > tonic::server::StreamingService<super::CoordinatorToWorkerMsg>
-                    for CoordinatorChannelSvc<T> {
+                    impl<T: WorkerService>
+                        tonic::server::StreamingService<super::CoordinatorToWorkerMsg>
+                        for CoordinatorChannelSvc<T>
+                    {
                         type Response = super::WorkerToCoordinatorMsg;
                         type ResponseStream = T::CoordinatorChannelStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<
@@ -637,8 +598,7 @@ pub mod worker_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as WorkerService>::coordinator_channel(&inner, request)
-                                    .await
+                                <T as WorkerService>::coordinator_channel(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -668,16 +628,14 @@ pub mod worker_service_server {
                 "/worker.WorkerService/ExecuteTask" => {
                     #[allow(non_camel_case_types)]
                     struct ExecuteTaskSvc<T: WorkerService>(pub Arc<T>);
-                    impl<
-                        T: WorkerService,
-                    > tonic::server::ServerStreamingService<super::ExecuteTaskRequest>
-                    for ExecuteTaskSvc<T> {
+                    impl<T: WorkerService>
+                        tonic::server::ServerStreamingService<super::ExecuteTaskRequest>
+                        for ExecuteTaskSvc<T>
+                    {
                         type Response = ::arrow_flight::FlightData;
                         type ResponseStream = T::ExecuteTaskStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::ExecuteTaskRequest>,
@@ -714,15 +672,11 @@ pub mod worker_service_server {
                 "/worker.WorkerService/GetWorkerInfo" => {
                     #[allow(non_camel_case_types)]
                     struct GetWorkerInfoSvc<T: WorkerService>(pub Arc<T>);
-                    impl<
-                        T: WorkerService,
-                    > tonic::server::UnaryService<super::GetWorkerInfoRequest>
-                    for GetWorkerInfoSvc<T> {
+                    impl<T: WorkerService> tonic::server::UnaryService<super::GetWorkerInfoRequest>
+                        for GetWorkerInfoSvc<T>
+                    {
                         type Response = super::GetWorkerInfoResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetWorkerInfoRequest>,
@@ -756,25 +710,19 @@ pub mod worker_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
