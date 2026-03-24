@@ -10,8 +10,8 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt,
-    Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, Worker,
+    WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
     get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};

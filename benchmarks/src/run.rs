@@ -30,9 +30,7 @@ use datafusion::prelude::*;
 use datafusion_distributed::test_utils::benchmarks_common;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
-use datafusion_distributed::{
-    DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
-};
+use datafusion_distributed::{DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
