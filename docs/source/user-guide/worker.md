@@ -116,11 +116,8 @@ let worker = Worker::default()
 ```
 
 One way to avoid forgetting to bump the version on each deploy, is to derive it from an environment variable
-set by your CI/CD pipeline:
+set by your infrastructure at runtime;
 
-```rust
-let worker = Worker::default()
-    .with_version(std::env::var("COMMIT_HASH").unwrap_or_default());
 ```
 
 ### Querying a worker's version
