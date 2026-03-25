@@ -1,5 +1,5 @@
 use crate::TaskEstimator;
-use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
+use crate::distributed_planner::task_estimator::{CombinedTaskEstimator, ErasedTaskEstimator};
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
@@ -90,7 +90,7 @@ impl DistributedConfig {
     ) -> Self {
         self.__private_task_estimator
             .user_provided
-            .push(Arc::new(task_estimator));
+            .push(Arc::new(task_estimator) as Arc<dyn ErasedTaskEstimator>);
         self
     }
 

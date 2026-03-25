@@ -1,6 +1,7 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
+use crate::distributed_planner::task_estimator::CombinedEstimationData;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
-use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
+use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation};
 use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
@@ -52,6 +53,9 @@ pub(super) struct AnnotatedPlan {
     // annotation fields
     /// How many distributed tasks this plan should run on.
     pub(super) task_count: TaskCountAnnotation,
+    /// Data produced by the [TaskEstimator] that estimated this node, to be passed back
+    /// to the same estimator's `scale_up_leaf_node`.
+    pub(super) user_data: Option<CombinedEstimationData>,
 }
 
 impl Debug for AnnotatedPlan {
@@ -196,6 +200,7 @@ async fn _annotate_plan(
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
                 task_count: estimate.task_count.limit(max_tasks),
+                user_data: Some(estimate.user_data),
             })
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -204,6 +209,7 @@ async fn _annotate_plan(
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
                 task_count: Maximum(1),
+                user_data: None,
             })
         };
     }
@@ -249,6 +255,7 @@ async fn _annotate_plan(
         plan_or_nb: PlanOrNetworkBoundary::Plan(Arc::clone(&plan)),
         children: annotated_children,
         task_count: task_count.clone(),
+        user_data: None,
     };
 
     // Upon reaching a hash repartition, we need to introduce a shuffle right above it.
@@ -258,6 +265,7 @@ async fn _annotate_plan(
                 plan_or_nb: PlanOrNetworkBoundary::Shuffle,
                 children: vec![annotation],
                 task_count,
+                user_data: None,
             };
         }
     } else if let Some(parent) = parent
@@ -275,12 +283,14 @@ async fn _annotate_plan(
                 plan_or_nb: PlanOrNetworkBoundary::Broadcast,
                 children: vec![annotation],
                 task_count,
+                user_data: None,
             };
         } else {
             annotation = AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Coalesce,
                 children: vec![annotation],
                 task_count,
+                user_data: None,
             };
         }
     }
@@ -877,6 +887,8 @@ mod tests {
     }
 
     impl TaskEstimator for CallbackEstimator {
+        type Data = ();
+
         fn task_estimation(
             &self,
             plan: &Arc<dyn ExecutionPlan>,
@@ -888,7 +900,7 @@ mod tests {
         fn scale_up_leaf_node(
             &self,
             _: &Arc<dyn ExecutionPlan>,
-            _: usize,
+            _: TaskEstimation<Self::Data>,
             _: &ConfigOptions,
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None
@@ -899,6 +911,8 @@ mod tests {
     struct BroadcastBuildCoalesceMaxEstimator;
 
     impl TaskEstimator for BroadcastBuildCoalesceMaxEstimator {
+        type Data = ();
+
         fn task_estimation(
             &self,
             plan: &Arc<dyn ExecutionPlan>,
@@ -915,7 +929,7 @@ mod tests {
         fn scale_up_leaf_node(
             &self,
             _: &Arc<dyn ExecutionPlan>,
-            _: usize,
+            _: TaskEstimation<Self::Data>,
             _: &ConfigOptions,
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None

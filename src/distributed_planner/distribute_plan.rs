@@ -6,7 +6,7 @@ use crate::distributed_planner::plan_annotator::{
 };
 use crate::{
     DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimator,
+    NetworkShuffleExec, TaskEstimation,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::TreeNode;
@@ -105,11 +105,18 @@ fn _distribute_plan(
         // This is a leaf node. It needs to be scaled up in order to account for it running in
         // multiple tasks.
         PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
-                &plan,
-                annotated_plan.task_count.as_usize(),
-                cfg,
-            );
+            let scaled_up = if let Some(estimation_data) = annotated_plan.user_data {
+                d_cfg.__private_task_estimator.scale_up_leaf_node(
+                    &plan,
+                    TaskEstimation {
+                        task_count: annotated_plan.task_count,
+                        user_data: estimation_data,
+                    },
+                    cfg,
+                )
+            } else {
+                None
+            };
             Ok(scaled_up.unwrap_or(plan))
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
