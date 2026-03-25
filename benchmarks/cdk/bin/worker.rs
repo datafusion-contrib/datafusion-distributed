@@ -10,9 +10,10 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule,
-    Worker, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
-    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DefaultChannelResolver, DistributedExt, DistributedMetricsFormat,
+    DistributedPhysicalOptimizerRule, GetWorkerInfoRequest, Worker, WorkerResolver,
+    display_plan_ascii, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -258,7 +259,11 @@ struct Ec2WorkerResolver {
     urls: Arc<RwLock<Vec<Url>>>,
 }
 
+const EXPECTED_VERSION: &str = "V1";
+
 async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
+    let ch_resolver = DefaultChannelResolver::default();
+
     tokio::spawn(async move {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
         let ec2_client = Ec2Client::new(&config);
@@ -297,17 +302,35 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
                     }
                 }
             }
-            if !urls.read().unwrap().eq(&workers) {
-                info!(
-                    "New set of workers found: {}",
-                    workers
-                        .iter()
-                        .map(|url| url.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                *urls.write().unwrap() = workers;
+
+            let prev_workers = urls.read().unwrap().clone();
+            let mut tasks = vec![];
+            for worker in workers {
+                tasks.push(async {
+                    if prev_workers.contains(&worker) {
+                        // This is an old worker, we already checked its version
+                        return Some(worker);
+                    }
+                    // We need to check this worker's version:
+                    // - If it matches, it will start being part of the cluster
+                    // - If it does not match, it will be ignored.
+                    let mut client = ch_resolver.get_worker_client_for_url(&worker).await.ok()?;
+                    let worker_info = client.get_worker_info(GetWorkerInfoRequest {}).await.ok()?;
+                    match worker_info.get_ref().version == EXPECTED_VERSION {
+                        true => {
+                            info!("New worker found: {worker}");
+                            Some(worker)
+                        }
+                        false => None,
+                    }
+                });
             }
+            *urls.write().unwrap() = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
