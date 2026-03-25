@@ -310,6 +310,8 @@ impl ConfigExtension for NumbersConfig {
 struct NumbersTaskEstimator;
 
 impl TaskEstimator for NumbersTaskEstimator {
+    type Data = ();
+
     fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
@@ -326,9 +328,10 @@ impl TaskEstimator for NumbersTaskEstimator {
     fn scale_up_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
+        task_estimation: TaskEstimation,
         _cfg: &datafusion::config::ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
+        let task_count = task_estimation.task_count.as_usize();
         let plan = plan.as_any().downcast_ref::<NumbersExec>()?;
         let range = &plan.ranges_per_task[0];
         let chunk_size = ((range.end - range.start) as f64 / task_count as f64).ceil() as i64;

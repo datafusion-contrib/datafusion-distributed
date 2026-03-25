@@ -177,6 +177,8 @@ pub(crate) struct BuildSideOneTaskEstimator;
 
 #[cfg(test)]
 impl TaskEstimator for BuildSideOneTaskEstimator {
+    type Data = ();
+
     fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
@@ -198,7 +200,7 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
     fn scale_up_leaf_node(
         &self,
         _: &Arc<dyn ExecutionPlan>,
-        _: usize,
+        _: TaskEstimation<Self::Data>,
         _: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
         None
