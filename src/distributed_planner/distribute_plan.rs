@@ -39,8 +39,7 @@ use uuid::Uuid;
 /// 4. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
 ///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
 ///
-/// This function is idempotent: if a plan was already distributed, it will not be distributed
-/// again.
+/// This function returns None if the plan was left undistributed.
 pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
