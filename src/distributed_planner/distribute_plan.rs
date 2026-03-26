@@ -117,7 +117,7 @@ fn _distribute_plan(
             } else {
                 None
             };
-            Ok(scaled_up.unwrap_or(plan))
+            Ok(scaled_up.map_or(plan, |v| v.plan))
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
         PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),

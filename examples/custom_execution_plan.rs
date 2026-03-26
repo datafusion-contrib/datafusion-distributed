@@ -39,8 +39,8 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedTaskContext, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-    WorkerQueryContext, display_plan_ascii,
+    DistributedExt, DistributedPlan, DistributedTaskContext, SessionStateBuilderExt,
+    TaskEstimation, TaskEstimator, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -325,12 +325,12 @@ impl TaskEstimator for NumbersTaskEstimator {
         Some(TaskEstimation::desired(task_count.ceil() as usize))
     }
 
-    fn scale_up_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_estimation: TaskEstimation,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
+    ) -> Option<DistributedPlan> {
         let task_count = task_estimation.task_count.as_usize();
         let plan = plan.as_any().downcast_ref::<NumbersExec>()?;
         let range = &plan.ranges_per_task[0];
@@ -342,7 +342,9 @@ impl TaskEstimator for NumbersTaskEstimator {
             start..end
         });
 
-        Some(Arc::new(NumbersExec::new(ranges_per_task, plan.schema())))
+        Some(DistributedPlan {
+            plan: Arc::new(NumbersExec::new(ranges_per_task, plan.schema())),
+        })
     }
 }
 

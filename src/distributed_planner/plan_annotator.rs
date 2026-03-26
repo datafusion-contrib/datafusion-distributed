@@ -425,31 +425,32 @@ mod tests {
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::filter::FilterExec;
+    use crate::distributed_planner::task_estimator::DistributedPlan;
     /* schema for the "weather" table
 
-     MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
-     MaxTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Rainfall [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Evaporation [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Sunshine [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindGustDir [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindGustSpeed [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindDir9am [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindDir3pm [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindSpeed9am [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     WindSpeed3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
-     Humidity9am [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
-     Humidity3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
-     Pressure9am [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Pressure3pm [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Cloud9am [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
-     Cloud3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
-     Temp9am [type=DOUBLE] [repetitiontype=OPTIONAL]
-     Temp3pm [type=DOUBLE] [repetitiontype=OPTIONAL]
-     RainToday [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-     RISK_MM [type=DOUBLE] [repetitiontype=OPTIONAL]
-     RainTomorrow [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
-    */
+         MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
+         MaxTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Rainfall [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Evaporation [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Sunshine [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindGustDir [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindGustSpeed [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindDir9am [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindDir3pm [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindSpeed9am [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         WindSpeed3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
+         Humidity9am [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
+         Humidity3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
+         Pressure9am [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Pressure3pm [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Cloud9am [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
+         Cloud3pm [type=INT64] [convertedtype=INT_64] [repetitiontype=OPTIONAL]
+         Temp9am [type=DOUBLE] [repetitiontype=OPTIONAL]
+         Temp3pm [type=DOUBLE] [repetitiontype=OPTIONAL]
+         RainToday [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+         RISK_MM [type=DOUBLE] [repetitiontype=OPTIONAL]
+         RainTomorrow [type=BYTE_ARRAY] [convertedtype=UTF8] [repetitiontype=OPTIONAL]
+        */
 
     #[tokio::test]
     async fn test_select_all() {
@@ -897,12 +898,12 @@ mod tests {
             (self.f)(plan.as_ref())
         }
 
-        fn scale_up_leaf_node(
+        fn distribute_plan(
             &self,
             _: &Arc<dyn ExecutionPlan>,
             _: TaskEstimation<Self::Data>,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
+        ) -> Option<DistributedPlan> {
             None
         }
     }
@@ -926,12 +927,12 @@ mod tests {
             }
         }
 
-        fn scale_up_leaf_node(
+        fn distribute_plan(
             &self,
             _: &Arc<dyn ExecutionPlan>,
             _: TaskEstimation<Self::Data>,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
+        ) -> Option<DistributedPlan> {
             None
         }
     }

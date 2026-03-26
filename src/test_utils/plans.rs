@@ -1,5 +1,4 @@
 use super::parquet::register_parquet_tables;
-use crate::NetworkBoundaryExt;
 use crate::distributed_ext::DistributedExt;
 use crate::execution_plans::DistributedExec;
 use crate::stage::Stage;
@@ -7,6 +6,7 @@ use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
 use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
+use crate::{DistributedPlan, NetworkBoundaryExt};
 #[cfg(test)]
 use datafusion::config::ConfigOptions;
 use datafusion::{
@@ -197,12 +197,12 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         }
     }
 
-    fn scale_up_leaf_node(
+    fn distribute_plan(
         &self,
         _: &Arc<dyn ExecutionPlan>,
         _: TaskEstimation<Self::Data>,
         _: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
+    ) -> Option<DistributedPlan> {
         None
     }
 }
