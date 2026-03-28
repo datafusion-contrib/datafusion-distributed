@@ -187,7 +187,7 @@ impl ExecutionPlan for DistributedExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         self.plan.properties()
     }
 

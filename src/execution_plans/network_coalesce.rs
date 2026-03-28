@@ -78,7 +78,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct NetworkCoalesceExec {
     /// the properties we advertise for this execution plan
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     /// metrics_collection is used to collect metrics from child tasks. It is initially
@@ -115,7 +115,7 @@ impl NetworkCoalesceExec {
         // smaller groups.
         let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
         Ok(Self {
-            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
+            properties: scale_partitioning_props(input.properties().into(), |p| p * max_input_task_count),
             input_stage: Stage {
                 query_id,
                 num,
@@ -161,7 +161,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

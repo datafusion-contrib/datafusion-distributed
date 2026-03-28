@@ -106,7 +106,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     /// metrics_collection is used to collect metrics from child tasks. It is initially
@@ -204,7 +204,7 @@ impl ExecutionPlan for NetworkShuffleExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
