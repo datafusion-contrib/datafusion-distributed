@@ -71,18 +71,18 @@ mod tests {
     /// This tests that custom user codecs work correctly in distributed execution.
     #[derive(Debug)]
     pub struct CustomPassThroughExec {
-        plan_properties: PlanProperties,
+        plan_properties: Arc<PlanProperties>,
         child: Arc<dyn ExecutionPlan>,
     }
 
     impl CustomPassThroughExec {
         fn new(child: Arc<dyn ExecutionPlan>) -> Self {
-            let plan_properties = PlanProperties::new(
+            let plan_properties = Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(child.schema()),
                 child.output_partitioning().clone(),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            );
+            ));
             Self {
                 plan_properties,
                 child,
@@ -105,7 +105,7 @@ mod tests {
             self
         }
 
-        fn properties(&self) -> &PlanProperties {
+        fn properties(&self) -> &Arc<PlanProperties> {
             &self.plan_properties
         }
 

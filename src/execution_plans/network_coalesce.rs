@@ -115,7 +115,7 @@ impl NetworkCoalesceExec {
         // smaller groups.
         let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
         Ok(Self {
-            properties: scale_partitioning_props(input.properties().into(), |p| p * max_input_task_count),
+            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
             input_stage: Stage {
                 query_id,
                 num,

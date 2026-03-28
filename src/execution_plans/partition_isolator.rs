@@ -65,9 +65,7 @@ impl PartitionIsolatorExec {
 
         let partition_count = Self::partition_groups(input_partitions, n_tasks)[0].len();
 
-        let properties = <PlanProperties as Clone>::clone(&input
-            .properties()
-            .clone())
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(partition_count));
 
         Self {

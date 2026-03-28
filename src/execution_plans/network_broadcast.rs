@@ -151,9 +151,7 @@ impl NetworkBroadcastExec {
         let broadcast_exec: Arc<dyn ExecutionPlan> =
             Arc::new(super::BroadcastExec::new(child, consumer_task_count));
 
-        let properties = <PlanProperties as Clone>::clone(&input
-            .properties()
-            .clone())
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
 
         let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);

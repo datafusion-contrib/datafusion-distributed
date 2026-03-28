@@ -136,7 +136,10 @@ impl ChildrenIsolatorUnionExec {
         // It's not supper efficient to build a UnionExec just to get the properties out, but the
         // other solution is to copy-paste a bunch of code from upstream for computing the properties
         // of a union, so we prefer to just reuse it like this.
-        let mut properties = UnionExec::try_new(children.clone())?.properties().as_ref().clone();
+        let mut properties = UnionExec::try_new(children.clone())?
+            .properties()
+            .as_ref()
+            .clone();
         properties.partitioning = Partitioning::UnknownPartitioning(*partition_count);
         Ok(Self {
             properties: Arc::new(properties),

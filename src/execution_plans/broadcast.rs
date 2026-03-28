@@ -83,9 +83,7 @@ impl BroadcastExec {
         let input_partition_count = input.properties().partitioning.partition_count();
         let output_partition_count = input_partition_count * consumer_task_count;
 
-        let properties = <PlanProperties as Clone>::clone(&input
-            .properties()
-            .clone())
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(output_partition_count));
 
         let queues = (0..input_partition_count)
