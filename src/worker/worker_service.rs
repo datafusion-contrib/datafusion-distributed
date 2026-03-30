@@ -7,8 +7,8 @@ use crate::worker::generated::worker::{
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{
-    ChannelResolver, DefaultSessionBuilder, ObservabilityServiceImpl,
-    ObservabilityServiceServer, WorkerResolver,
+    ChannelResolver, DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer,
+    WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
