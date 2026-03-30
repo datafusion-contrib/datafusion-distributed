@@ -153,7 +153,10 @@ The recommended pattern is:
 2. **Version-aware WorkerResolver**: Implement `WorkerResolver::get_urls()` to return only the
    compatible URLs from the resolved set.
 
-**NOTE**: In the following example, we are assuming that the version change event is a new IP address, this may be different depending on your set up.
+**Note**: This example assumes that a version change corresponds to a new IP address
+(e.g. Kubernetes pods). If your infrastructure reuses IPs across deploys (e.g. EC2 instances
+restarting in-place), you will need to invalidate cached entries when the underlying process
+restarts.
 
 ```rust
 use std::collections::HashMap;
@@ -269,8 +272,3 @@ Server::builder()
 The coordinator's resolver concurrently polls only unresolved workers in the background.
 Once a worker responds, its version is cached and not queried again. Only workers whose
 version matches the expected version will appear in `get_urls()`.
-
-**Note**: This example assumes that a version change corresponds to a new IP address
-(e.g. Kubernetes pods). If your infrastructure reuses IPs across deploys (e.g. EC2 instances
-restarting in-place), you will need to invalidate cached entries when the underlying process
-restarts.
