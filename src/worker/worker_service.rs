@@ -7,20 +7,23 @@ use crate::worker::generated::worker::{
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{
-    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
+    ChannelResolver, DefaultSessionBuilder, ObservabilityServiceImpl,
+    ObservabilityServiceServer, WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, HashSet, exec_datafusion_err};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::StreamExt;
 use moka::future::Cache;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
+use url::Url;
 
 use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
 
@@ -215,5 +218,70 @@ impl WorkerService for Worker {
         Ok(Response::new(GetWorkerInfoResponse {
             version: self.version.to_string(),
         }))
+    }
+}
+
+/// Queries a worker for it's version string via `GetWorkerInfo` RPC with a 2-second timeout.
+pub async fn get_worker_version(
+    channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
+    url: &url::Url,
+) -> Result<String, DataFusionError> {
+    let mut client = channel_resolver.get_worker_client_for_url(url).await?;
+    let fut = client.get_worker_info(tonic::Request::new(GetWorkerInfoRequest {}));
+    let response = tokio::time::timeout(Duration::from_secs(2), fut)
+        .await
+        .map_err(|_| exec_datafusion_err!("Timeout getting worker info from {url}"))?
+        .map_err(|e| exec_datafusion_err!("Error getting worker info from {url}: {e}"))?;
+    Ok(response.into_inner().version)
+}
+
+async fn background_version_resolver(
+    all_worker_urls: Vec<Url>,
+    local_version: String,
+    compatible_urls: Arc<RwLock<Vec<Url>>>,
+    channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
+) {
+    // Cache of worker URLs mapped to their versions.
+    let mut version_cache: HashMap<Url, String> = HashMap::new();
+
+    let compatible_urls_clone = Arc::clone(&compatible_urls);
+
+    loop {
+        // Stale worker eviction step
+        version_cache.retain(|url, _| all_worker_urls.iter().collect::<HashSet<_>>().contains(url));
+
+        let new_worker_urls = all_worker_urls
+            .iter()
+            .filter(|url| !version_cache.contains_key(*url))
+            .collect::<Vec<_>>();
+
+        let version_checks = futures::future::join_all(
+            new_worker_urls
+                .iter()
+                .map(|url| get_worker_version(Arc::clone(&channel_resolver), url)),
+        )
+        .await;
+
+        for (url, result) in new_worker_urls.iter().zip(version_checks) {
+            match result {
+                Ok(version) => {
+                    version_cache.insert((*url).clone(), version);
+                }
+                Err(e) => {
+                    println!("Failed version check for worker {url}: {e}");
+                }
+            }
+        }
+
+        let matching_urls = all_worker_urls
+            .iter()
+            .filter(|url| version_cache.get(*url).is_some_and(|v| v == &local_version))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Here we opt to always write and fail fast rather than routing to stale mismatched workers.
+        *compatible_urls_clone.write().unwrap() = matching_urls;
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }

@@ -116,8 +116,11 @@ let worker = Worker::default()
 ```
 
 One way to avoid forgetting to bump the version on each deploy, is to derive it from an environment variable
-set by your infrastructure at runtime;
+set by your infrastructure at runtime:
 
+```rust
+let worker = Worker::default()
+    .with_version(std::env::var("COMMIT_HASH").unwrap_or_default());
 ```
 
 ### Querying a worker's version
@@ -133,7 +136,7 @@ let channel = channel_resolver.get_channel(&worker_url).await?;
 let mut client = create_worker_client(channel);
 
 let response = client.get_worker_info(GetWorkerInfoRequest {}).await?;
-println!("version: {}", response.into_inner().version_number);
+println!("version: {}", response.into_inner().version);
 ```
 
 ### Zero-downtime rolling deployments
@@ -144,79 +147,63 @@ the planner sees them.
 
 The recommended pattern is:
 
-1. **Background polling loop**: Concurrently query only workers whose version is still unknown.
-   Once a worker's version is resolved, it is never polled again.
+1. **Background polling loop**: Concurrently query **only workers whose version is still unknown**.
+   Once a worker's version is resolved, it is never polled again. Clean up stale workers (e.g. disappeared from DNS).
+   This can also happen within your implementation's discovery loop if that's desirable.
 2. **Version-aware WorkerResolver**: Implement `WorkerResolver::get_urls()` to return only the
    compatible URLs from the resolved set.
 
+**NOTE**: In the following example, we are assuming that the version change event is a new IP address, this may be different depending on your set up.
+
 ```rust
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use url::Url;
-use lru::LruCache;
-use std::num::NonZeroUsize;
-use futures::future::join_all;
 use datafusion::common::DataFusionError;
 use datafusion_distributed::{
-    DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
+    ChannelResolver, WorkerResolver, get_worker_version,
 };
 
 struct VersionAwareWorkerResolver {
     compatible_urls: Arc<RwLock<Vec<Url>>>,
 }
 
-/// Polls only unresolved workers and caches their versions permanently.
-/// Once every worker has responded, the loop exits, no further network calls.
+/// Polls only unresolved workers and caches their versions.
+/// Workers that respond successfully are never polled again.
 async fn background_version_resolver(
-    known_urls: Vec<Url>,
-    expected_version: String,
+    all_worker_urls: Vec<Url>,
+    local_version: String,
     compatible_urls: Arc<RwLock<Vec<Url>>>,
+    channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
 ) {
-    let Some(capacity) = NonZeroUsize::new(known_urls.len()) else {
-        return; // No workers to resolve.
-    };
-
-    let channel_resolver = DefaultChannelResolver::default();
-    // Cache of URL : version for workers that have already responded.
-    let mut resolved = LruCache::new(capacity);
+    let mut version_cache: HashMap<Url, String> = HashMap::new();
 
     loop {
-        let unresolved: Vec<&Url> = known_urls
+        let new_worker_urls: Vec<_> = all_worker_urls
             .iter()
-            .filter(|url| !resolved.contains(url))
+            .filter(|url| !version_cache.contains_key(*url))
             .collect();
 
-        if unresolved.is_empty() {
-            break;
+        let version_checks = futures::future::join_all(
+            new_worker_urls
+                .iter()
+                .map(|url| get_worker_version(Arc::clone(&channel_resolver), url)),
+        )
+        .await;
+
+        for (url, result) in new_worker_urls.iter().zip(version_checks) {
+            if let Ok(version) = result {
+                version_cache.insert((*url).clone(), version);
+            }
         }
 
-        // Fire all unresolved version checks concurrently.
-        let futures: Vec<_> = unresolved
-            .into_iter()
-            .map(|url| {
-                let channel_resolver = &channel_resolver;
-                async move {
-                    let channel = channel_resolver.get_channel(url).await.ok()?;
-                    let mut client = create_worker_client(channel);
-                    let resp = client
-                        .get_worker_info(GetWorkerInfoRequest {})
-                        .await
-                        .ok()?;
-                    Some((url.clone(), resp.into_inner().version))
-                }
-            })
-            .collect();
-
-        for (url, version) in join_all(futures).await.into_iter().flatten() {
-            resolved.put(url, version);
-        }
-
-        let filtered = resolved
+        let matching_urls = all_worker_urls
             .iter()
-            .filter(|(_, v)| **v == expected_version)
-            .map(|(url, _)| url.clone())
+            .filter(|url| version_cache.get(*url).is_some_and(|v| v == &local_version))
+            .cloned()
             .collect();
-        *compatible_urls.write().unwrap() = filtered;
+        *compatible_urls.write().unwrap() = matching_urls;
 
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
@@ -224,15 +211,17 @@ async fn background_version_resolver(
 
 impl VersionAwareWorkerResolver {
     fn start_version_filtering(
-        known_urls: Vec<Url>,
+        all_worker_urls: Vec<Url>,
         expected_version: String,
+        channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
     ) -> Self {
         let compatible_urls = Arc::new(RwLock::new(vec![]));
 
         tokio::spawn(background_version_resolver(
-            known_urls,
+            all_worker_urls,
             expected_version,
             compatible_urls.clone(),
+            channel_resolver,
         ));
 
         Self { compatible_urls }
@@ -254,10 +243,11 @@ use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, W
 
 let worker_version = std::env::var("COMMIT_HASH").unwrap_or_default();
 
-// `known_urls` comes from your service discovery.
+// `all_worker_urls` and `channel_resolver` come from your service discovery.
 let resolver = VersionAwareWorkerResolver::start_version_filtering(
-    known_urls,
+    all_worker_urls,
     worker_version.clone(),
+    channel_resolver,
 );
 
 let state = SessionStateBuilder::new()
@@ -277,6 +267,10 @@ Server::builder()
 ```
 
 The coordinator's resolver concurrently polls only unresolved workers in the background.
-Once a worker responds, its version is cached permanently and never queried again.
-When every worker has responded, the background loop exits. Only workers whose version
-matches the expected version will appear in `get_urls()`.
+Once a worker responds, its version is cached and not queried again. Only workers whose
+version matches the expected version will appear in `get_urls()`.
+
+**Note**: This example assumes that a version change corresponds to a new IP address
+(e.g. Kubernetes pods). If your infrastructure reuses IPs across deploys (e.g. EC2 instances
+restarting in-place), you will need to invalidate cached entries when the underlying process
+restarts.
