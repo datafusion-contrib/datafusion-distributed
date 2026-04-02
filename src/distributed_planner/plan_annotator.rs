@@ -110,11 +110,7 @@ impl Debug for AnnotatedPlan {
 ///
 /// ```text
 ///
-///           ┌──────────────────────┐ task_count: Desired(3) (inherited from child)
-///           │   CoalesceBatches    │ network_boundary: None
-///           └───────────▲──────────┘
-///                       │
-///           ┌───────────┴──────────┐ task_count: Desired(3) (inherits from probe child)
+///           ┌──────────────────────┐ task_count: Desired(3) (inherits from probe child)
 ///           │       HashJoin       │ network_boundary: None
 ///           │ (CollectLeft Inner)  │
 ///           └─▲──────────────────▲─┘

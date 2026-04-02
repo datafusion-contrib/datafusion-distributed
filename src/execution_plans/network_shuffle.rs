@@ -146,7 +146,7 @@ impl NetworkShuffleExec {
                 )?);
                 Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
             } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
-                // This might be a passthrough node, like a CoalesceBatchesExec or something like that.
+                // This might be a passthrough node that preserves the hash partitioning.
                 // This is fine, we can let the node be here.
                 Ok(Transformed::no(plan))
             } else {

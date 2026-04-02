@@ -39,8 +39,7 @@ cargo run \
 SortPreservingMergeExec: [number@0 ASC NULLS LAST]
   SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
     AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
-      CoalesceBatchesExec: target_batch_size=8192
-        RepartitionExec: partitioning=Hash([number@0], 16), input_partitions=16
+      RepartitionExec: partitioning=Hash([number@0], 16), input_partitions=16
           AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
             RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
               CooperativeExec
@@ -73,8 +72,7 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=2
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
+    │ RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
     │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
     │         CooperativeExec
@@ -105,8 +103,7 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=4
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p47] t1:[p0..p47] t2:[p0..p47] t3:[p0..p47] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
+    │ RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
     │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
     │         CooperativeExec
@@ -137,8 +134,7 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=10
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p111] t1:[p0..p111] t2:[p0..p111] t3:[p0..p111] t4:[p0..p111] t5:[p0..p111] t6:[p0..p111] t7:[p0..p111] t8:[p0..p111] t9:[p0..p111] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
+    │ RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
     │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
     │         CooperativeExec

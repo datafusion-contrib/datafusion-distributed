@@ -1,4 +1,3 @@
-mod batch_coalescing_below_network_boundaries;
 mod distributed_config;
 mod distributed_physical_optimizer_rule;
 mod insert_broadcast;
@@ -6,7 +5,6 @@ mod network_boundary;
 mod plan_annotator;
 mod task_estimator;
 
-pub(crate) use batch_coalescing_below_network_boundaries::batch_coalescing_below_network_boundaries;
 pub use distributed_config::DistributedConfig;
 pub use distributed_physical_optimizer_rule::DistributedPhysicalOptimizerRule;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};

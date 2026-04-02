@@ -7,10 +7,9 @@ Everything starts with a simple single-node plan, for example:
 ```shell
 ProjectionExec: expr=[...]
   AggregateExec: mode=FinalPartitioned, gby=[...], aggr=[...]
-    CoalesceBatchesExec: target_batch_size=8192
-      RepartitionExec: partitioning=Hash([...], 12), input_partitions=12
-        AggregateExec: mode=Partial, gby=[...], aggr=[...]
-          DataSourceExec: files=[data1, data2, data3, data4]
+    RepartitionExec: partitioning=Hash([...], 12), input_partitions=12
+      AggregateExec: mode=Partial, gby=[...], aggr=[...]
+        DataSourceExec: files=[data1, data2, data3, data4]
 ```
 
 To better understand what happens with the plan in the distribution process, we will represent it graphically:
@@ -55,12 +54,7 @@ handles a non-overlapping subset of grouping keys for the aggregation.
 While `RepartitionExec` redistributes data across threads on a single machine in vanilla DataFusion, it redistributes
 data across threads on different machines in the distributed context—requiring a network shuffle.
 
-As we are about to send data over the network, it's convenient to coalesce smaller batches into larger ones to avoid
-the overhead of sending many small messages, and instead send fewer but larger messages:
-
-![img_5.png](../_static/images/img_5.png)
-
-After this, we are ready to perform the shuffle over the network. For that, a new `ExecutionPlan` implementation is
+For that, a new `ExecutionPlan` implementation is
 provided: `NetworkShuffleExec`:
 
 ![img_6.png](../_static/images/img_6.png)

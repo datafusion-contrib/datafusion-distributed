@@ -1,5 +1,4 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::batch_coalescing_below_network_boundaries;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
@@ -22,7 +21,7 @@ use super::insert_broadcast::insert_broadcast_execs;
 /// Physical optimizer rule that inspects the plan, places the appropriate network
 /// boundaries, and breaks it down into stages that can be executed in a distributed manner.
 ///
-/// The rule has three steps:
+/// The rule has two steps:
 ///
 /// 1. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
 ///    many distributed tasks should be used in the stage containing them, and whether they
@@ -33,9 +32,6 @@ use super::insert_broadcast::insert_broadcast_execs;
 ///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
 ///    assignation that the annotations required. After this, the plan is already a distributed
 ///    executable plan.
-///
-/// 3. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
-///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
 #[derive(Debug, Default)]
 pub struct DistributedPhysicalOptimizerRule;
 
@@ -63,8 +59,6 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
         if stage_id == 1 {
             return Ok(original);
         }
-        let distributed = batch_coalescing_below_network_boundaries(distributed, cfg)?;
-
         Ok(Arc::new(DistributedExec::new(distributed)))
     }
 
