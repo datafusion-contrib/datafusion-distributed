@@ -1,5 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
+use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
@@ -66,6 +67,9 @@ pub(super) async fn distribute_plan(
     if stage_id == 1 {
         return Ok(None);
     }
+
+    // Insert PartialReduce aggregation nodes above hash repartitions to reduce shuffle data volume.
+    let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
 
     Ok(Some(plan))
 }
