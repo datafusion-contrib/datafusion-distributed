@@ -1,7 +1,7 @@
 use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use crate::{
     BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
-    MappedWorkerSessionBuilderExt, Worker, WorkerInfo, WorkerResolver, WorkerSessionBuilder,
+    MappedWorkerSessionBuilderExt, Worker, WorkerResolver, WorkerSessionBuilder,
     create_worker_client,
 };
 use async_trait::async_trait;
@@ -89,11 +89,5 @@ impl WorkerResolver for InMemoryWorkerResolver {
         // Set to a high number so that the distributed planner does not limit the maximum
         // spawned tasks to just 1.
         Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); self.n_workers])
-    }
-
-    fn get_workers(&self) -> Result<Vec<WorkerInfo>, DataFusionError> {
-        Ok((0..self.n_workers)
-            .map(|i| WorkerInfo::new(format!("worker-{i}"), url::Url::parse(DUMMY_URL).unwrap()))
-            .collect())
     }
 }

@@ -1,9 +1,7 @@
 use crate::common::require_one_child;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::networking::{
-    TaskRouteRequest, WorkerInfo, get_distributed_task_router, get_distributed_worker_resolver,
-};
+use crate::networking::{get_distributed_task_router, get_distributed_worker_resolver};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
@@ -90,9 +88,9 @@ impl DistributedExec {
         let task_router = get_distributed_task_router(ctx.session_config());
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let workers = worker_resolver.get_workers()?;
-        if workers.is_empty() {
-            return exec_err!("WorkerResolver returned zero workers");
+        let urls = worker_resolver.get_urls()?;
+        if urls.is_empty() {
+            return exec_err!("WorkerResolver returned zero urls");
         }
 
         // Metric that measures to total sum of bytes worth of subplans sent.
@@ -120,28 +118,21 @@ impl DistributedExec {
                 return internal_err!("Plan is not set for stage {}", stage.num);
             };
 
+            // Right now, we assign random workers to tasks. This might change in the future.
+            let start_idx = rand::rng().random_range(0..urls.len());
+
             // This assumes the plan is the same for all the tasks within a stage. This is fine for
             // now, but it should be possible to send different versions of the subplan to the
             // different tasks.
             let bytes = PhysicalPlanNode::try_from_physical_plan(Arc::clone(input_plan), &codec)?
                 .encode_to_vec();
-            let fallback_start_idx = rand::rng().random_range(0..workers.len());
 
             let tasks = stage
                 .tasks
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let worker = choose_worker(
-                        &workers,
-                        task_router.as_ref(),
-                        &self.plan,
-                        stage,
-                        input_plan,
-                        fallback_start_idx,
-                        i,
-                    )?;
-                    let url = worker.url.clone();
+                    let url = task_router.route_task(start_idx, i, &urls);
                     let execution_task = ExecutionTask {
                         url: Some(url.clone()),
                     };
@@ -180,40 +171,6 @@ impl DistributedExec {
             join_set,
         })
     }
-}
-
-fn choose_worker<'a>(
-    workers: &'a [WorkerInfo],
-    task_router: Option<&Arc<dyn crate::TaskRouter + Send + Sync>>,
-    query_plan: &Arc<dyn ExecutionPlan>,
-    stage: &Stage,
-    input_plan: &Arc<dyn ExecutionPlan>,
-    fallback_start_idx: usize,
-    task_number: usize,
-) -> Result<&'a WorkerInfo> {
-    if let Some(task_router) = task_router {
-        let route = task_router.route_task(&TaskRouteRequest {
-            query_plan,
-            stage,
-            stage_plan: input_plan,
-            task_number,
-            available_workers: workers,
-        })?;
-        if let Some(worker_id) = route {
-            return workers
-                .iter()
-                .find(|worker| worker.id == worker_id)
-                .ok_or_else(|| {
-                    exec_datafusion_err!(
-                        "TaskRouter returned unknown worker id '{worker_id}' for stage {} task {}",
-                        stage.num,
-                        task_number
-                    )
-                });
-        }
-    }
-
-    Ok(&workers[(fallback_start_idx + task_number) % workers.len()])
 }
 
 impl DisplayAs for DistributedExec {
@@ -375,67 +332,5 @@ impl LatencyMetric {
         self.max_latency_micros.fetch_max(micros, Ordering::Relaxed);
         self.sum_latency_micros.fetch_add(micros, Ordering::Relaxed);
         self.count_latency_micros.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{TaskRouter, WorkerInfo};
-    use datafusion::common::DataFusionError;
-
-    struct ReverseTaskRouter;
-
-    impl TaskRouter for ReverseTaskRouter {
-        fn route_task(
-            &self,
-            request: &TaskRouteRequest<'_>,
-        ) -> Result<Option<String>, DataFusionError> {
-            Ok(Some(
-                request.available_workers
-                    [request.available_workers.len() - request.task_number - 1]
-                    .id
-                    .clone(),
-            ))
-        }
-    }
-
-    fn test_workers() -> Vec<WorkerInfo> {
-        vec![
-            WorkerInfo::new("worker-a", Url::parse("http://worker-a:50051").unwrap()),
-            WorkerInfo::new("worker-b", Url::parse("http://worker-b:50051").unwrap()),
-            WorkerInfo::new("worker-c", Url::parse("http://worker-c:50051").unwrap()),
-        ]
-    }
-
-    #[test]
-    fn choose_worker_uses_task_router() {
-        let workers = test_workers();
-        let stage = Stage {
-            query_id: uuid::Uuid::new_v4(),
-            num: 7,
-            plan: None,
-            tasks: vec![ExecutionTask { url: None }; 3],
-        };
-        let query_plan = Arc::new(
-            datafusion::physical_plan::placeholder_row::PlaceholderRowExec::new(Arc::new(
-                datafusion::arrow::datatypes::Schema::empty(),
-            )),
-        ) as Arc<dyn ExecutionPlan>;
-        let stage_plan = Arc::clone(&query_plan);
-        let router: Arc<dyn crate::TaskRouter + Send + Sync> = Arc::new(ReverseTaskRouter);
-
-        let worker = choose_worker(
-            &workers,
-            Some(&router),
-            &query_plan,
-            &stage,
-            &stage_plan,
-            0,
-            0,
-        )
-        .unwrap();
-
-        assert_eq!(worker.id, "worker-c");
     }
 }
