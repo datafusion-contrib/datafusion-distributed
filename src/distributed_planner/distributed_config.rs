@@ -1,6 +1,6 @@
 use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
-use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
+use crate::networking::{ChannelResolverExtension, TaskRouterExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
@@ -61,6 +61,9 @@ extensions_options! {
         /// [WorkerResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_worker_resolver: WorkerResolverExtension, default = WorkerResolverExtension::not_implemented()
+        /// [TaskRouter] implementation that can choose a specific worker for each task during
+        /// execution-time worker assignment.
+        pub(crate) __private_task_router: TaskRouterExtension, default = TaskRouterExtension::default()
     }
 }
 
@@ -168,5 +171,21 @@ impl ConfigField for CombinedTaskEstimator {
 impl Debug for CombinedTaskEstimator {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "TaskEstimators")
+    }
+}
+
+impl ConfigField for TaskRouterExtension {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        // nothing to do.
+    }
+
+    fn set(&mut self, _: &str, _: &str) -> Result<(), DataFusionError> {
+        not_impl_err!("not implemented")
+    }
+}
+
+impl Debug for TaskRouterExtension {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TaskRouterExtension")
     }
 }

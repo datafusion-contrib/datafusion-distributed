@@ -5,6 +5,18 @@ use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
 use url::Url;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerInfo {
+    pub id: String,
+    pub url: Url,
+}
+
+impl WorkerInfo {
+    pub fn new(id: impl Into<String>, url: Url) -> Self {
+        Self { id: id.into(), url }
+    }
+}
+
 /// Resolves a list of worker URLs in the cluster available for executing parts of the plan.
 pub trait WorkerResolver {
     /// Gets all available worker URLs in the cluster. Note how this method is not async, which
@@ -18,6 +30,19 @@ pub trait WorkerResolver {
     ///   plan. This is done as close to execution in order to have fresh worker URLs as updated
     ///   as possible.
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError>;
+
+    /// Same as [WorkerResolver::get_urls], but allows implementors to provide a stable worker id
+    /// in addition to the URL.
+    ///
+    /// By default, the URL string itself is used as worker id to remain backwards compatible with
+    /// existing [WorkerResolver] implementations.
+    fn get_workers(&self) -> Result<Vec<WorkerInfo>, DataFusionError> {
+        self.get_urls().map(|urls| {
+            urls.into_iter()
+                .map(|url| WorkerInfo::new(url.to_string(), url))
+                .collect()
+        })
+    }
 }
 
 pub(crate) fn set_distributed_worker_resolver(
@@ -69,5 +94,9 @@ impl WorkerResolverExtension {
 impl WorkerResolver for Arc<dyn WorkerResolver + Send + Sync> {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         self.as_ref().get_urls()
+    }
+
+    fn get_workers(&self) -> Result<Vec<WorkerInfo>, DataFusionError> {
+        self.as_ref().get_workers()
     }
 }

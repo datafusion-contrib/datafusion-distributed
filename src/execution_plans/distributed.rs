@@ -1,16 +1,16 @@
 use crate::common::require_one_child;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::networking::get_distributed_worker_resolver;
+use crate::networking::{
+    TaskRouteRequest, WorkerInfo, get_distributed_task_router, get_distributed_worker_resolver,
+};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, coordinator_to_worker_msg::Inner,
 };
-use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
-};
+use crate::{DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, get_distributed_channel_resolver};
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -42,8 +42,7 @@ use url::Url;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
-/// 1. Assigns worker URLs to all the stages. A random set of URLs are sampled from the
-///    channel resolver and assigned to each task in each stage.
+/// 1. Assigns worker URLs to all the stages.
 /// 2. Encodes all the plans in protobuf format so that network boundary nodes can send them
 ///    over the wire.
 #[derive(Debug)]
@@ -88,9 +87,13 @@ impl DistributedExec {
     ///    become nodes without children and traversing them will not go further down in.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
+        let task_router = get_distributed_task_router(ctx.session_config());
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let urls = worker_resolver.get_urls()?;
+        let workers = worker_resolver.get_workers()?;
+        if workers.is_empty() {
+            return exec_err!("WorkerResolver returned zero workers");
+        }
 
         // Metric that measures to total sum of bytes worth of subplans sent.
         let plan_bytes_sent = MetricBuilder::new(&self.metrics)
@@ -117,9 +120,6 @@ impl DistributedExec {
                 return internal_err!("Plan is not set for stage {}", stage.num);
             };
 
-            // Right now, we assign random workers to tasks. This might change in the future.
-            let start_idx = rand::rng().random_range(0..urls.len());
-
             // This assumes the plan is the same for all the tasks within a stage. This is fine for
             // now, but it should be possible to send different versions of the subplan to the
             // different tasks.
@@ -131,7 +131,15 @@ impl DistributedExec {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let url = urls[(start_idx + i) % urls.len()].clone();
+                    let worker = choose_worker(
+                        &workers,
+                        task_router.as_ref(),
+                        &self.plan,
+                        stage,
+                        input_plan,
+                        i,
+                    )?;
+                    let url = worker.url.clone();
                     let execution_task = ExecutionTask {
                         url: Some(url.clone()),
                     };
@@ -154,9 +162,9 @@ impl DistributedExec {
                         plan_send_latency.record(&start);
                         Ok(())
                     });
-                    execution_task
+                    Ok(execution_task)
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
 
             Ok(Transformed::yes(plan.with_input_stage(Stage {
                 query_id: stage.query_id,
@@ -170,6 +178,40 @@ impl DistributedExec {
             join_set,
         })
     }
+}
+
+fn choose_worker<'a>(
+    workers: &'a [WorkerInfo],
+    task_router: Option<&Arc<dyn crate::TaskRouter + Send + Sync>>,
+    query_plan: &Arc<dyn ExecutionPlan>,
+    stage: &Stage,
+    input_plan: &Arc<dyn ExecutionPlan>,
+    task_number: usize,
+) -> Result<&'a WorkerInfo> {
+    if let Some(task_router) = task_router {
+        let route = task_router.route_task(&TaskRouteRequest {
+            query_plan,
+            stage,
+            stage_plan: input_plan,
+            task_number,
+            available_workers: workers,
+        })?;
+        if let Some(worker_id) = route {
+            return workers
+                .iter()
+                .find(|worker| worker.id == worker_id)
+                .ok_or_else(|| {
+                    exec_datafusion_err!(
+                        "TaskRouter returned unknown worker id '{worker_id}' for stage {} task {}",
+                        stage.num,
+                        task_number
+                    )
+                });
+        }
+    }
+
+    let start_idx = rand::rng().random_range(0..workers.len());
+    Ok(&workers[(start_idx + task_number) % workers.len()])
 }
 
 impl DisplayAs for DistributedExec {
@@ -331,5 +373,219 @@ impl LatencyMetric {
         self.max_latency_micros.fetch_max(micros, Ordering::Relaxed);
         self.sum_latency_micros.fetch_add(micros, Ordering::Relaxed);
         self.count_latency_micros.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryChannelResolver;
+    use crate::test_utils::parquet::register_parquet_tables;
+    use crate::{DistributedExt, DistributedPhysicalOptimizerRule, TaskRouter, WorkerInfo};
+    use datafusion::common::DataFusionError;
+    use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+    use datafusion::prelude::SessionContext;
+    use futures::TryStreamExt;
+
+    #[derive(Clone)]
+    struct StaticWorkerResolver {
+        workers: Vec<WorkerInfo>,
+    }
+
+    impl crate::WorkerResolver for StaticWorkerResolver {
+        fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+            Ok(self
+                .workers
+                .iter()
+                .map(|worker| worker.url.clone())
+                .collect())
+        }
+
+        fn get_workers(&self) -> Result<Vec<WorkerInfo>, DataFusionError> {
+            Ok(self.workers.clone())
+        }
+    }
+
+    struct ReverseTaskRouter;
+
+    impl TaskRouter for ReverseTaskRouter {
+        fn route_task(
+            &self,
+            request: &TaskRouteRequest<'_>,
+        ) -> Result<Option<String>, DataFusionError> {
+            Ok(Some(
+                request.available_workers
+                    [request.available_workers.len() - request.task_number - 1]
+                    .id
+                    .clone(),
+            ))
+        }
+    }
+
+    struct UnknownTaskRouter;
+
+    impl TaskRouter for UnknownTaskRouter {
+        fn route_task(&self, _: &TaskRouteRequest<'_>) -> Result<Option<String>, DataFusionError> {
+            Ok(Some("does-not-exist".to_string()))
+        }
+    }
+
+    fn find_first_input_stage(plan: &dyn ExecutionPlan) -> Option<&Stage> {
+        for child in plan.children() {
+            if let Some(boundary) = child.as_network_boundary() {
+                return Some(boundary.input_stage());
+            }
+            if let Some(stage) = find_first_input_stage(child.as_ref()) {
+                return Some(stage);
+            }
+        }
+        None
+    }
+
+    fn test_workers() -> Vec<WorkerInfo> {
+        vec![
+            WorkerInfo::new("worker-a", Url::parse("http://worker-a:50051").unwrap()),
+            WorkerInfo::new("worker-b", Url::parse("http://worker-b:50051").unwrap()),
+            WorkerInfo::new("worker-c", Url::parse("http://worker-c:50051").unwrap()),
+        ]
+    }
+
+    #[test]
+    fn choose_worker_uses_task_router() {
+        let workers = test_workers();
+        let stage = Stage {
+            query_id: uuid::Uuid::new_v4(),
+            num: 7,
+            plan: None,
+            tasks: vec![ExecutionTask { url: None }; 3],
+        };
+        let query_plan = Arc::new(
+            datafusion::physical_plan::placeholder_row::PlaceholderRowExec::new(Arc::new(
+                datafusion::arrow::datatypes::Schema::empty(),
+            )),
+        ) as Arc<dyn ExecutionPlan>;
+        let stage_plan = Arc::clone(&query_plan);
+        let router: Arc<dyn crate::TaskRouter + Send + Sync> = Arc::new(ReverseTaskRouter);
+
+        let worker =
+            choose_worker(&workers, Some(&router), &query_plan, &stage, &stage_plan, 0).unwrap();
+
+        assert_eq!(worker.id, "worker-c");
+    }
+
+    #[test]
+    fn choose_worker_rejects_unknown_worker_ids() {
+        let workers = test_workers();
+        let stage = Stage {
+            query_id: uuid::Uuid::new_v4(),
+            num: 3,
+            plan: None,
+            tasks: vec![ExecutionTask { url: None }; 1],
+        };
+        let query_plan = Arc::new(
+            datafusion::physical_plan::placeholder_row::PlaceholderRowExec::new(Arc::new(
+                datafusion::arrow::datatypes::Schema::empty(),
+            )),
+        ) as Arc<dyn ExecutionPlan>;
+        let stage_plan = Arc::clone(&query_plan);
+        let router: Arc<dyn crate::TaskRouter + Send + Sync> = Arc::new(UnknownTaskRouter);
+
+        let err = choose_worker(&workers, Some(&router), &query_plan, &stage, &stage_plan, 0)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("unknown worker id"));
+    }
+
+    #[tokio::test]
+    async fn distributed_exec_routes_visible_stage_tasks() {
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+            .with_distributed_worker_resolver(StaticWorkerResolver {
+                workers: test_workers(),
+            })
+            .with_distributed_task_router(ReverseTaskRouter)
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx
+            .sql(r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#)
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+
+        let _ = execute_stream(plan.clone(), ctx.task_ctx())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let distributed = plan.as_any().downcast_ref::<DistributedExec>().unwrap();
+        let prepared = distributed.prepared_plan().unwrap();
+        let stage = find_first_input_stage(prepared.as_ref()).unwrap();
+        let urls = stage
+            .tasks
+            .iter()
+            .map(|task| task.url.as_ref().unwrap().as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://worker-c:50051/".to_string(),
+                "http://worker-b:50051/".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn distributed_exec_without_router_uses_resolved_workers() {
+        let workers = test_workers();
+        let expected_urls = workers
+            .iter()
+            .map(|worker| worker.url.as_str().to_string())
+            .collect::<std::collections::HashSet<_>>();
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+            .with_distributed_worker_resolver(StaticWorkerResolver { workers })
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+
+        let df = ctx
+            .sql(r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#)
+            .await
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+
+        let _ = execute_stream(plan.clone(), ctx.task_ctx())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let distributed = plan.as_any().downcast_ref::<DistributedExec>().unwrap();
+        let prepared = distributed.prepared_plan().unwrap();
+        let stage = find_first_input_stage(prepared.as_ref()).unwrap();
+        let assigned_urls = stage
+            .tasks
+            .iter()
+            .map(|task| task.url.as_ref().unwrap().as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(assigned_urls.len(), stage.tasks.len());
+        assert!(assigned_urls.iter().all(|url| expected_urls.contains(url)));
+        assert_eq!(
+            assigned_urls.iter().collect::<std::collections::HashSet<_>>().len(),
+            assigned_urls.len()
+        );
     }
 }

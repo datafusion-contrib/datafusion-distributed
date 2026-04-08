@@ -33,8 +33,9 @@ pub use metrics::{
     rewrite_distributed_plan_with_metrics,
 };
 pub use networking::{
-    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
-    create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, TaskRouteRequest, TaskRouter,
+    WorkerInfo, WorkerResolver, create_worker_client, get_distributed_channel_resolver,
+    get_distributed_task_router, get_distributed_worker_resolver,
 };
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
