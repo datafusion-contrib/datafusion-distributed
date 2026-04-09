@@ -76,13 +76,12 @@ impl DistributedExec {
             })
     }
 
-    /// Prepares the distributed plan for execution, which implies:
-    /// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-    ///    URL per task.
-    /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-    ///    network call feeding the subplan is necessary.
-    /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-    ///    become nodes without children and traversing them will not go further down in.
+    /// Prepares the distributed plan by applying these steps to each network boundary:
+    /// 1. Perform worker assignation according to the task router.
+    /// 2. Send the sliced subplans to the assigned URLs. For each URL assigned to a task,
+    ///    perform a network call feeding the subplan to the specified URL.
+    /// 3. Set the node's input plan to `None`. That way, network boundaries appear as leaf
+    ///    nodes, halting further traversal during execution.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let task_router = get_distributed_task_router(ctx.session_config());
@@ -118,7 +117,7 @@ impl DistributedExec {
                 return internal_err!("Plan is not set for stage {}", stage.num);
             };
 
-            // Right now, we assign random workers to tasks. This might change in the future.
+            // The default task router assigns workers to tasks using a random seed.
             let start_idx = rand::rng().random_range(0..urls.len());
 
             // This assumes the plan is the same for all the tasks within a stage. This is fine for
@@ -149,15 +148,15 @@ impl DistributedExec {
                     let plan_send_latency = Arc::clone(&plan_send_latency);
                     let ctx = Arc::clone(ctx);
                     // Spawns the task that feeds this subplan to this worker. There will be as
-                    // many as this spawned tasks as workers.
+                    // many spawned tasks as workers.
                     join_set.spawn(async move {
                         send_plan_task(ctx, url, request).await?;
                         plan_send_latency.record(&start);
                         Ok(())
                     });
-                    Ok(execution_task)
+                    execution_task
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Vec<_>>();
 
             Ok(Transformed::yes(plan.with_input_stage(Stage {
                 query_id: stage.query_id,

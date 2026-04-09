@@ -5,7 +5,8 @@ use url::Url;
 
 /// Allows users to choose which worker should execute a given distributed task.
 pub trait TaskRouter {
-    /// Returns the url of the worker that should execute the task.
+    /// Returns the index of the worker that should execute the task. The default implementation
+    /// assigns tasks to workers round-robin starting from start_index.
     fn route_fn(&self, start_index: usize, task_number: usize, num_urls: usize) -> usize {
         (start_index + task_number) % num_urls
     }

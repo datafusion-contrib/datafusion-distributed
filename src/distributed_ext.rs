@@ -229,14 +229,6 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
-    /// Allows users to select the worker that should execute each task when a distributed query
-    /// is about to run.
-    fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(self, router: T)
-    -> Self;
-
-    /// Same as [DistributedExt::with_distributed_task_router] but with an in-place mutation.
-    fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
-
     /// This is what tells Distributed DataFusion how to build a Worker gRPC client out of a worker URL.
     ///
     /// There's a default implementation that caches the Worker client instances so that there's
@@ -332,6 +324,14 @@ pub trait DistributedExt: Sized {
         &mut self,
         estimator: T,
     );
+
+    /// Allows users to select the worker that should execute each task when a distributed query
+    /// is about to run.
+    fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(self, router: T)
+    -> Self;
+
+    /// Same as [DistributedExt::with_distributed_task_router] but with an in-place mutation.
+    fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
 
     /// Sets the maximum number of files each task in a stage with a FileScanConfig node will
     /// handle. Reducing this number will increment the amount of tasks. By default, this
@@ -572,10 +572,6 @@ impl DistributedExt for SessionConfig {
         set_distributed_worker_resolver(self, resolver);
     }
 
-    fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T) {
-        set_distributed_task_router(self, router);
-    }
-
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
@@ -588,6 +584,10 @@ impl DistributedExt for SessionConfig {
         estimator: T,
     ) {
         set_distributed_task_estimator(self, estimator)
+    }
+
+    fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T) {
+        set_distributed_task_router(self, router);
     }
 
     fn set_distributed_files_per_task(
@@ -689,10 +689,6 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            #[call(set_distributed_task_router)]
-            #[expr($;self)]
-            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
-
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
@@ -700,6 +696,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            #[call(set_distributed_task_router)]
+            #[expr($;self)]
+            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
 
             #[call(set_distributed_files_per_task)]
             #[expr($?;Ok(self))]
@@ -768,11 +768,6 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
-            #[call(set_distributed_task_router)]
-            #[expr($;self)]
-            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
-
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -782,6 +777,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
+            #[call(set_distributed_task_router)]
+            #[expr($;self)]
+            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
 
             fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_files_per_task)]
@@ -859,11 +859,6 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
-            #[call(set_distributed_task_router)]
-            #[expr($;self)]
-            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
-
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -873,6 +868,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
+
+            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
+            #[call(set_distributed_task_router)]
+            #[expr($;self)]
+            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(mut self, router: T) -> Self;
 
             fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_files_per_task)]
@@ -950,11 +950,6 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
 
-            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
-            #[call(set_distributed_task_router)]
-            #[expr($;self)]
-            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(self, router: T) -> Self;
-
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -964,6 +959,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(self, estimator: T) -> Self;
+
+            fn set_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(&mut self, router: T);
+            #[call(set_distributed_task_router)]
+            #[expr($;self)]
+            fn with_distributed_task_router<T: TaskRouter + Send + Sync + 'static>(self, router: T) -> Self;
 
             fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_files_per_task)]
