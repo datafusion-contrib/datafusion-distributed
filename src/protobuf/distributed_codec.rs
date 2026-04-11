@@ -1,15 +1,17 @@
 use super::get_distributed_user_codecs;
+use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    PartitionFeeds,
 };
 use crate::stage::{ExecutionTask, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedTaskContext, NetworkBoundary, PartitionFeedExec};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::{exec_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
@@ -24,8 +26,10 @@ use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use itertools::Itertools;
 use prost::Message;
+use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
+use uuid::Uuid;
 
 /// DataFusion [PhysicalExtensionCodec] implementation that allows serializing and
 /// deserializing the custom ExecutionPlans in this project
@@ -65,8 +69,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             Ok(Stage {
-                query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
-                    .map_err(|_| proto_error("Invalid query_id in StageProto"))?,
+                query_id: deserialize_uuid(&proto.query_id)?,
                 num: proto.num as usize,
                 plan: None,
                 tasks: decode_tasks(proto.tasks)?,
@@ -213,6 +216,27 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         .collect(),
                 }))
             }
+            DistributedExecNode::PartitionFeed(PartitionFeedExecProto { id }) => {
+                let Some(map) = ctx
+                    .session_config()
+                    // TODO: this struct should be declared somewhere else.
+                    .get_extension::<HashMap<Uuid, PartitionFeeds>>()
+                else {
+                    return exec_err!(
+                        "Found a PartitionFeedExec plan, but metadata context is missing"
+                    );
+                };
+                let id = deserialize_uuid(&id)?;
+                let Some(partition_feeds) = map.get(&id) else {
+                    return exec_err!("Partition feed with id {id} not found in context");
+                };
+
+                Ok(Arc::new(PartitionFeedExec {
+                    id,
+                    input: require_one_child(inputs)?,
+                    partition_feeds: partition_feeds.take_all()?,
+                }))
+            }
         }
     }
 
@@ -223,7 +247,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
     ) -> datafusion::common::Result<()> {
         fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
             Ok(StageProto {
-                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
+                query_id: serialize_uuid(&stage.query_id).into(),
                 num: stage.num as u64,
                 tasks: encode_tasks(&stage.tasks),
             })
@@ -318,6 +342,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.as_any().downcast_ref::<PartitionFeedExec>() {
+            let inner = PartitionFeedExecProto {
+                id: serialize_uuid(&node.id),
+            };
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::PartitionFeed(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
@@ -348,7 +382,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -366,6 +400,8 @@ pub enum DistributedExecNode {
     NetworkBroadcast(NetworkBroadcastExecProto),
     #[prost(message, tag = "6")]
     Broadcast(BroadcastExecProto),
+    #[prost(message, tag = "7")]
+    PartitionFeed(PartitionFeedExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -474,6 +510,12 @@ pub struct NetworkBroadcastExecProto {
 pub struct BroadcastExecProto {
     #[prost(uint64, tag = "1")]
     pub consumer_task_count: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PartitionFeedExecProto {
+    #[prost(bytes, tag = "1")]
+    pub id: Vec<u8>,
 }
 
 fn new_network_broadcast_exec(

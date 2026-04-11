@@ -1,19 +1,22 @@
-use crate::common::require_one_child;
+use crate::common::{require_one_child, serialize_uuid};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
+use crate::worker::generated::worker::set_plan_request::PartitionFeedDeclaration;
 use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, coordinator_to_worker_msg::Inner,
+    CoordinatorToWorkerMsg, PartitionFeedMessage, SetPlanRequest, TaskKey,
+    coordinator_to_worker_msg::Inner,
 };
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, PartitionFeedExec, WorkerResolver,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
@@ -23,7 +26,9 @@ use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, Label, MetricBuilder, MetricValue, Time,
 };
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
@@ -36,6 +41,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
@@ -131,26 +137,25 @@ impl DistributedExec {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
+                    let ctx = Arc::clone(ctx);
                     let url = urls[(start_idx + i) % urls.len()].clone();
-                    let execution_task = ExecutionTask {
-                        url: Some(url.clone()),
-                    };
-                    let request = SetPlanRequest {
-                        plan_proto: bytes.clone(),
-                        task_count: stage.tasks.len() as _,
-                        task_key: Some(TaskKey {
-                            query_id: stage.query_id.as_bytes().to_vec(),
-                            stage_id: stage.num as _,
-                            task_number: i as _,
-                        }),
+                    let bytes = bytes.clone();
+                    let plan = Arc::clone(input_plan);
+                    let task_count = stage.tasks.len();
+                    let task_key = TaskKey {
+                        query_id: serialize_uuid(&stage.query_id),
+                        stage_id: stage.num as _,
+                        task_number: i as _,
                     };
                     plan_bytes_sent.add(bytes.len());
                     let plan_send_latency = Arc::clone(&plan_send_latency);
-                    let ctx = Arc::clone(ctx);
+                    let execution_task = ExecutionTask {
+                        url: Some(url.clone()),
+                    };
                     // Spawns the task that feeds this subplan to this worker. There will be as
                     // many as this spawned tasks as workers.
                     join_set.spawn(async move {
-                        send_plan_task(ctx, url, request).await?;
+                        send_plan_task(ctx, url, plan, bytes, task_count, task_key).await?;
                         plan_send_latency.record(&start);
                         Ok(())
                     });
@@ -256,7 +261,54 @@ impl ExecutionPlan for DistributedExec {
     }
 }
 
-async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, request: SetPlanRequest) -> Result<()> {
+async fn send_plan_task(
+    ctx: Arc<TaskContext>,
+    url: Url,
+    plan: Arc<dyn ExecutionPlan>,
+    plan_proto: Vec<u8>,
+    task_count: usize,
+    task_key: TaskKey,
+) -> Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let mut partition_feed_declarations = vec![];
+    let mut futures = vec![];
+    plan.apply(|plan| {
+        let Some(node) = plan.as_any().downcast_ref::<PartitionFeedExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let partitions = plan.output_partitioning().partition_count() as u64;
+        let task_i = task_key.task_number;
+        let id = node.id;
+        for (partition, feed_idx) in (task_i * partitions..(task_i + 1) * partitions).enumerate() {
+            let partition_feed = node.partition_feeds.take(feed_idx as usize)?;
+            let tx = tx.clone();
+            futures.push(Box::pin(async move {
+                let mut remote_stream = partition_feed.into_remote()?;
+                while let Some(data_or_err) = remote_stream.next().await {
+                    if tx
+                        .send(CoordinatorToWorkerMsg {
+                            inner: Some(Inner::PartitionFeedMessage(PartitionFeedMessage {
+                                id: serialize_uuid(&id),
+                                partition: partition as u64,
+                                body: data_or_err?,
+                            })),
+                        })
+                        .is_err()
+                    {
+                        break; // channel closed.
+                    };
+                }
+                Ok::<_, DataFusionError>(())
+            }));
+        }
+        partition_feed_declarations.push(PartitionFeedDeclaration {
+            id: serialize_uuid(&node.id),
+            partitions,
+        });
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
     let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
     let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
 
@@ -264,18 +316,27 @@ async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, request: SetPlanRequest
     headers.extend(get_passthrough_headers(ctx.session_config()));
 
     let msg = CoordinatorToWorkerMsg {
-        inner: Some(Inner::SetPlanRequest(request)),
+        inner: Some(Inner::SetPlanRequest(SetPlanRequest {
+            plan_proto,
+            task_count: task_count as u64,
+            task_key: Some(task_key),
+            partition_feed_declarations,
+        })),
     };
     let request = Request::from_parts(
         MetadataMap::from_headers(headers),
         Extensions::default(),
-        futures::stream::once(async { msg }),
+        futures::stream::once(async { msg }).chain(UnboundedReceiverStream::new(rx)),
     );
 
     client.coordinator_channel(request).await.map_err(|e| {
         tonic_status_to_datafusion_error(&e)
             .unwrap_or_else(|| exec_datafusion_err!("Error sending plan to worker {url}: {e}"))
     })?;
+
+    // TODO: not sure if it's right to call the .await here. At minimum, the send plan latency
+    //  metric will be wrong.
+    futures::future::select_all(futures).await.0?;
     Ok(())
 }
 

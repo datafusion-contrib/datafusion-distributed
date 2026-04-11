@@ -1,10 +1,15 @@
 use crate::config_extension_ext::set_distributed_option_extension;
+use crate::execution_plans::AnyMessage;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::Result;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt, TryStreamExt};
+use prost::Message;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -105,7 +110,37 @@ impl<Any> TaskEstimation<Any> {
 /// Details about how the plan should be executed in a distributed context.
 pub struct DistributedPlan {
     /// The modified plan, adapted to be executed in a distributed context.
-    pub plan: Arc<dyn ExecutionPlan>,
+    pub(crate) plan: Arc<dyn ExecutionPlan>,
+    /// User-defined data that will be streamed to the different workers and injected into the
+    /// provided `plan` at runtime.
+    ///
+    /// If not empty, the vector is expected to have a length of P*T, where P is the
+    /// number of partitions in the plan, and T is the number of tasks provided as argument in
+    /// [TaskEstimator::distribute_plan]
+    pub(crate) partition_feeds: Vec<BoxStream<'static, Result<Box<dyn AnyMessage>>>>,
+}
+
+impl DistributedPlan {
+    /// TODO: docs
+    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            plan,
+            partition_feeds: vec![],
+        }
+    }
+
+    /// TODO: docs
+    pub fn with_partition_feeds<T: Message + 'static>(
+        mut self,
+        feeds: Vec<impl Stream<Item = Result<T>> + Send + 'static>,
+    ) -> Self {
+        self.partition_feeds = feeds
+            .into_iter()
+            .map(|stream| stream.map_ok(|msg| Box::new(msg) as Box<dyn AnyMessage>))
+            .map(|boxed| boxed.boxed())
+            .collect();
+        self
+    }
 }
 
 /// Given a leaf node, provides an estimation about how many tasks should be used in the
@@ -193,7 +228,7 @@ pub(crate) trait ErasedTaskEstimator: Send + Sync {
         cfg: &ConfigOptions,
     ) -> Option<TaskEstimation<Box<dyn Any + Send + Sync>>>;
 
-    fn scale_up_leaf_node_erased(
+    fn distribute_plan_erased(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_estimation: TaskEstimation<Box<dyn Any + Send + Sync>>,
@@ -213,7 +248,7 @@ impl<T: TaskEstimator + Send + Sync> ErasedTaskEstimator for T {
         })
     }
 
-    fn scale_up_leaf_node_erased(
+    fn distribute_plan_erased(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_estimation: TaskEstimation<Box<dyn Any + Send + Sync>>,
@@ -232,7 +267,7 @@ impl<T: TaskEstimator + Send + Sync> ErasedTaskEstimator for T {
 }
 
 /// Data produced by [CombinedTaskEstimator::task_estimation] that tracks which estimator
-/// produced the result so that [CombinedTaskEstimator::scale_up_leaf_node] can route back
+/// produced the result so that [CombinedTaskEstimator::distribute_plan] can route back
 /// to the correct estimator.
 pub(crate) struct CombinedEstimationData {
     estimator: Arc<dyn ErasedTaskEstimator>,
@@ -324,9 +359,9 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
                 .extend(file_group.split_files(task_count));
         }
         let plan = DataSourceExec::from_data_source(new_file_scan);
-        Some(DistributedPlan {
-            plan: Arc::new(PartitionIsolatorExec::new(plan, task_count)),
-        })
+        Some(DistributedPlan::new(Arc::new(PartitionIsolatorExec::new(
+            plan, task_count,
+        ))))
     }
 }
 
@@ -371,14 +406,14 @@ impl CombinedTaskEstimator {
         None
     }
 
-    pub(crate) fn scale_up_leaf_node(
+    pub(crate) fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_estimation: TaskEstimation<CombinedEstimationData>,
         cfg: &ConfigOptions,
     ) -> Option<DistributedPlan> {
         let CombinedEstimationData { estimator, data } = task_estimation.user_data;
-        estimator.scale_up_leaf_node_erased(
+        estimator.distribute_plan_erased(
             plan,
             TaskEstimation {
                 task_count: task_estimation.task_count,

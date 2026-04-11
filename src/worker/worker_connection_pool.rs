@@ -1,4 +1,4 @@
-use crate::common::on_drop_stream;
+use crate::common::{on_drop_stream, serialize_uuid};
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -165,7 +165,7 @@ impl WorkerConnection {
                 target_partition_start: target_partition_range.start as u64,
                 target_partition_end: target_partition_range.end as u64,
                 task_key: Some(TaskKey {
-                    query_id: input_stage.query_id.as_bytes().to_vec(),
+                    query_id: serialize_uuid(&input_stage.query_id),
                     stage_id: input_stage.num as u64,
                     task_number: target_task as u64,
                 }),

@@ -1,7 +1,8 @@
-use crate::DistributedExec;
 use crate::distributed_planner::distribute_plan::distribute_plan;
+use crate::{DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::Result;
+use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
@@ -52,9 +53,10 @@ impl QueryPlanner for DistributedQueryPlanner {
                     .await?
             }
         };
-        match distribute_plan(Arc::clone(&s_plan), session_state.config_options()).await? {
-            Some(d_plan) => Ok(Arc::new(DistributedExec::new(d_plan))),
-            None => Ok(s_plan),
+        let d_plan = distribute_plan(Arc::clone(&s_plan), session_state.config_options()).await?;
+        match d_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+            true => Ok(Arc::new(DistributedExec::new(d_plan))),
+            false => Ok(d_plan),
         }
     }
 }

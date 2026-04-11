@@ -1,17 +1,26 @@
+use crate::common::deserialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
+use crate::execution_plans::{PartitionFeed, PartitionFeeds};
 use crate::protobuf::DistributedCodec;
-use crate::worker::generated::worker::SetPlanRequest;
+use crate::worker::generated::worker::set_plan_request::PartitionFeedDeclaration;
+use crate::worker::generated::worker::{PartitionFeedMessage, SetPlanRequest};
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Status;
 use tonic::metadata::MetadataMap;
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
@@ -27,6 +36,8 @@ pub struct TaskData {
     /// complete because it's possible that the same partition was retried and this count was
     /// decremented more than once for the same partition.
     pub(super) num_partitions_remaining: Arc<AtomicUsize>,
+    /// Background task associated to this TaskData instance.
+    pub(super) _task: Arc<SpawnedTask<()>>,
 }
 
 impl TaskData {
@@ -46,7 +57,8 @@ impl Worker {
     pub(crate) async fn impl_set_plan(
         &self,
         request: SetPlanRequest,
-        metadata: MetadataMap,
+        grpc_headers: MetadataMap,
+        mut partition_feeds_rx: UnboundedReceiver<PartitionFeedMessage>,
     ) -> Result<(), Status> {
         let key = request.task_key.ok_or_else(missing("task_key"))?;
 
@@ -56,10 +68,42 @@ impl Worker {
             .await;
 
         let task_data = || async {
-            let headers = metadata.into_headers();
+            let mut partition_feed_senders = HashMap::new();
+            // TODO: this struct should be declared somewhere else.
+            let mut all_partition_feeds = HashMap::<Uuid, PartitionFeeds>::new();
 
-            let mut cfg =
-                SessionConfig::default().with_extension(Arc::new(DistributedTaskContext {
+            for PartitionFeedDeclaration { id, partitions } in &request.partition_feed_declarations
+            {
+                let mut partition_feeds = Vec::with_capacity(*partitions as usize);
+                for partition in 0..*partitions {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    partition_feed_senders.insert((id.clone(), partition), tx);
+
+                    let stream = UnboundedReceiverStream::new(rx).boxed();
+                    partition_feeds.push(PartitionFeed::Remote(stream));
+                }
+                all_partition_feeds.insert(
+                    deserialize_uuid(id)?,
+                    PartitionFeeds::from_vec(partition_feeds),
+                );
+            }
+
+            let task = SpawnedTask::spawn(async move {
+                while let Some(msg) = partition_feeds_rx.recv().await {
+                    let Some(tx) = partition_feed_senders.get(&(msg.id, msg.partition)) else {
+                        continue;
+                    };
+                    if tx.send(Ok(msg.body)).is_err() {
+                        break; // channel closed.
+                    };
+                }
+            });
+
+            let headers = grpc_headers.into_headers();
+
+            let mut cfg = SessionConfig::default()
+                .with_extension(Arc::new(all_partition_feeds))
+                .with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
                     task_count: request.task_count as usize,
                 }));
@@ -90,6 +134,7 @@ impl Worker {
                 plan,
                 task_ctx,
                 num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
+                _task: Arc::new(task),
             })
         };
 

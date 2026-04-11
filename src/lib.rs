@@ -19,12 +19,12 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator, DistributedPlan
+    DistributedConfig, DistributedPlan, NetworkBoundary, NetworkBoundaryExt,
+    SessionStateBuilderExt, TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec,
+    PartitionFeedExec, PartitionIsolatorExec, partition_feed,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,

@@ -1,9 +1,11 @@
+use crate::common::serialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::worker::generated::worker::TaskKey;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::SessionStateBuilder;
 use hyper_util::rt::TokioIo;
@@ -14,7 +16,7 @@ use uuid::Uuid;
 
 pub fn test_task_key(task_number: u64) -> TaskKey {
     TaskKey {
-        query_id: Uuid::from_u128(0).as_bytes().to_vec(),
+        query_id: serialize_uuid(&Uuid::from_u128(0)),
         stage_id: 0,
         task_number,
     }
@@ -80,6 +82,7 @@ impl MemoryWorker {
                 task_ctx: task_ctx.clone(),
                 plan: plan.clone(),
                 num_partitions_remaining: Arc::new(AtomicUsize::new(self.partitions_batches.len())),
+                _task: Arc::new(SpawnedTask::spawn(async move {})),
             }))
             .expect("failed to write to task data");
 

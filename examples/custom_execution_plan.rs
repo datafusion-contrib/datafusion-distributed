@@ -342,9 +342,10 @@ impl TaskEstimator for NumbersTaskEstimator {
             start..end
         });
 
-        Some(DistributedPlan {
-            plan: Arc::new(NumbersExec::new(ranges_per_task, plan.schema())),
-        })
+        Some(DistributedPlan::new(Arc::new(NumbersExec::new(
+            ranges_per_task,
+            plan.schema(),
+        ))))
     }
 }
 

@@ -6,6 +6,7 @@ pub mod localhost;
 pub mod metrics;
 pub mod mock_exec;
 pub mod parquet;
+pub mod partition_feed;
 pub mod plans;
 pub mod property_based;
 pub mod session_context;

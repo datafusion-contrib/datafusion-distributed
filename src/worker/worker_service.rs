@@ -173,7 +173,8 @@ impl WorkerService for Worker {
         &self,
         request: Request<Streaming<CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        let (metadata, _ext, mut body) = request.into_parts();
+        let (grpc_headers, _ext, mut body) = request.into_parts();
+        let (partition_feed_tx, partition_feed_rx) = tokio::sync::mpsc::unbounded_channel();
         if let Some(msg) = body.next().await {
             let Some(inner) = msg?.inner else {
                 return Err(Status::internal("Empty Coordinator message"));
@@ -181,7 +182,11 @@ impl WorkerService for Worker {
 
             match inner {
                 Inner::SetPlanRequest(request) => {
-                    self.impl_set_plan(request, metadata).await?;
+                    self.impl_set_plan(request, grpc_headers, partition_feed_rx)
+                        .await?;
+                }
+                Inner::PartitionFeedMessage(msg) => {
+                    let _ = partition_feed_tx.send(msg);
                 }
             };
         }

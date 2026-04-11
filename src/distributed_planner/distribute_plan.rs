@@ -6,10 +6,10 @@ use crate::distributed_planner::plan_annotator::{
 };
 use crate::{
     DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimation,
+    NetworkShuffleExec, PartitionFeedExec, TaskEstimation,
 };
-use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::TreeNode;
+use datafusion::common::{DataFusionError, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -43,11 +43,11 @@ use uuid::Uuid;
 pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
-) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     // This function should be idempotent, as people need to be able to call this function at will,
     // and the DistributedExec node should not execute it's content again if it was already called.
     if original.exists(|plan| Ok(plan.is_network_boundary()))? {
-        return Ok(None);
+        return Ok(original);
     }
 
     let mut plan = Arc::clone(&original);
@@ -68,16 +68,13 @@ pub(super) async fn distribute_plan(
     // Based on the annotations, place the actual network boundaries with the appropriate dimensions.
     let mut stage_id = 1;
     let plan = _distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
-    if stage_id == 1 {
-        return Ok(None);
-    }
 
     // Place some batch coalescing nodes before network boundaries in order to send big batches
     // over the wire.
     // TODO: This should be removed after DataFusion 53 upgrade, as CoalesceBatchesExec is deprecated.
     let plan = batch_coalescing_below_network_boundaries(plan, cfg)?;
 
-    Ok(Some(plan))
+    Ok(plan)
 }
 
 /// Takes an [AnnotatedPlan] and returns a modified [ExecutionPlan] with all the network boundaries
@@ -105,11 +102,11 @@ fn _distribute_plan(
         // This is a leaf node. It needs to be scaled up in order to account for it running in
         // multiple tasks.
         PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let scaled_up = if let Some(estimation_data) = annotated_plan.user_data {
-                d_cfg.__private_task_estimator.scale_up_leaf_node(
+            let distributed_plan = if let Some(estimation_data) = annotated_plan.user_data {
+                d_cfg.__private_task_estimator.distribute_plan(
                     &plan,
                     TaskEstimation {
-                        task_count: annotated_plan.task_count,
+                        task_count: annotated_plan.task_count.clone(),
                         user_data: estimation_data,
                     },
                     cfg,
@@ -117,7 +114,22 @@ fn _distribute_plan(
             } else {
                 None
             };
-            Ok(scaled_up.map_or(plan, |v| v.plan))
+            Ok(match distributed_plan {
+                None => plan,
+                Some(d_plan) if d_plan.partition_feeds.is_empty() => d_plan.plan,
+                Some(d_plan) => {
+                    let partition_feeds = d_plan.partition_feeds.len();
+                    let partition_count = d_plan.plan.output_partitioning().partition_count();
+                    let task_count = annotated_plan.task_count.as_usize();
+                    if partition_feeds != partition_count * task_count {
+                        return plan_err!(
+                            "Expected {partition_count} * {task_count} = {} partition feeds (num partitions * num tasks), but got {partition_feeds} partition feeds.",
+                            partition_count * task_count
+                        );
+                    }
+                    Arc::new(PartitionFeedExec::new(d_plan.plan, d_plan.partition_feeds))
+                }
+            })
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
         PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),

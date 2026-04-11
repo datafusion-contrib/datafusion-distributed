@@ -78,7 +78,7 @@ impl PartitionIsolatorExec {
         }
     }
 
-    fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
+    pub(crate) fn partition_groups(input_partitions: usize, n_tasks: usize) -> Vec<Vec<usize>> {
         let q = input_partitions / n_tasks;
         let r = input_partitions % n_tasks;
 
