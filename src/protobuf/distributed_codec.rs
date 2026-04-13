@@ -2,11 +2,11 @@ use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
-    PartitionFeeds,
+    WorkUnitFeeds,
 };
 use crate::stage::{ExecutionTask, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary, PartitionFeedExec};
+use crate::{DistributedTaskContext, NetworkBoundary, WorkUnitFeedExec};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -216,25 +216,25 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         .collect(),
                 }))
             }
-            DistributedExecNode::PartitionFeed(PartitionFeedExecProto { id }) => {
+            DistributedExecNode::WorkUnitFeed(WorkUnitFeedExecProto { id }) => {
                 let Some(map) = ctx
                     .session_config()
                     // TODO: this struct should be declared somewhere else.
-                    .get_extension::<HashMap<Uuid, PartitionFeeds>>()
+                    .get_extension::<HashMap<Uuid, WorkUnitFeeds>>()
                 else {
                     return exec_err!(
-                        "Found a PartitionFeedExec plan, but metadata context is missing"
+                        "Found a WorkUnitFeedExec plan, but metadata context is missing"
                     );
                 };
                 let id = deserialize_uuid(&id)?;
-                let Some(partition_feeds) = map.get(&id) else {
+                let Some(work_unit_feeds) = map.get(&id) else {
                     return exec_err!("Partition feed with id {id} not found in context");
                 };
 
-                Ok(Arc::new(PartitionFeedExec {
+                Ok(Arc::new(WorkUnitFeedExec {
                     id,
                     input: require_one_child(inputs)?,
-                    partition_feeds: partition_feeds.take_all()?,
+                    work_unit_feeds: work_unit_feeds.take_all()?,
                 }))
             }
         }
@@ -342,13 +342,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
-        } else if let Some(node) = node.as_any().downcast_ref::<PartitionFeedExec>() {
-            let inner = PartitionFeedExecProto {
+        } else if let Some(node) = node.as_any().downcast_ref::<WorkUnitFeedExec>() {
+            let inner = WorkUnitFeedExecProto {
                 id: serialize_uuid(&node.id),
             };
 
             let wrapper = DistributedExecProto {
-                node: Some(DistributedExecNode::PartitionFeed(inner)),
+                node: Some(DistributedExecNode::WorkUnitFeed(inner)),
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
@@ -401,7 +401,7 @@ pub enum DistributedExecNode {
     #[prost(message, tag = "6")]
     Broadcast(BroadcastExecProto),
     #[prost(message, tag = "7")]
-    PartitionFeed(PartitionFeedExecProto),
+    WorkUnitFeed(WorkUnitFeedExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -513,7 +513,7 @@ pub struct BroadcastExecProto {
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PartitionFeedExecProto {
+pub struct WorkUnitFeedExecProto {
     #[prost(bytes, tag = "1")]
     pub id: Vec<u8>,
 }

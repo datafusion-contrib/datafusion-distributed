@@ -6,7 +6,7 @@ use crate::distributed_planner::plan_annotator::{
 };
 use crate::{
     DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, PartitionFeedExec, TaskEstimation,
+    NetworkShuffleExec, WorkUnitFeedExec, TaskEstimation,
 };
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{DataFusionError, plan_err};
@@ -116,18 +116,18 @@ fn _distribute_plan(
             };
             Ok(match distributed_plan {
                 None => plan,
-                Some(d_plan) if d_plan.partition_feeds.is_empty() => d_plan.plan,
+                Some(d_plan) if d_plan.work_unit_feeds.is_empty() => d_plan.plan,
                 Some(d_plan) => {
-                    let partition_feeds = d_plan.partition_feeds.len();
+                    let work_unit_feeds = d_plan.work_unit_feeds.len();
                     let partition_count = d_plan.plan.output_partitioning().partition_count();
                     let task_count = annotated_plan.task_count.as_usize();
-                    if partition_feeds != partition_count * task_count {
+                    if work_unit_feeds != partition_count * task_count {
                         return plan_err!(
-                            "Expected {partition_count} * {task_count} = {} partition feeds (num partitions * num tasks), but got {partition_feeds} partition feeds.",
+                            "Expected {partition_count} * {task_count} = {} partition feeds (num partitions * num tasks), but got {work_unit_feeds} partition feeds.",
                             partition_count * task_count
                         );
                     }
-                    Arc::new(PartitionFeedExec::new(d_plan.plan, d_plan.partition_feeds))
+                    Arc::new(WorkUnitFeedExec::new(d_plan.plan, d_plan.work_unit_feeds))
                 }
             })
         }

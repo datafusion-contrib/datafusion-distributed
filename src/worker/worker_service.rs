@@ -174,22 +174,31 @@ impl WorkerService for Worker {
         request: Request<Streaming<CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
         let (grpc_headers, _ext, mut body) = request.into_parts();
-        let (partition_feed_tx, partition_feed_rx) = tokio::sync::mpsc::unbounded_channel();
-        if let Some(msg) = body.next().await {
-            let Some(inner) = msg?.inner else {
-                return Err(Status::internal("Empty Coordinator message"));
-            };
+        let (work_unit_feed_tx, work_unit_feed_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            match inner {
-                Inner::SetPlanRequest(request) => {
-                    self.impl_set_plan(request, grpc_headers, partition_feed_rx)
-                        .await?;
+        // The first message must be a SetPlanRequest.
+        let Some(msg) = body.next().await else {
+            return Err(Status::internal("Empty Coordinator stream"));
+        };
+        let Some(Inner::SetPlanRequest(request)) = msg?.inner else {
+            return Err(Status::internal(
+                "First Coordinator message must be SetPlanRequest",
+            ));
+        };
+        self.impl_set_plan(request, grpc_headers, work_unit_feed_rx)
+            .await?;
+
+        // Continue reading remaining messages (work unit feed data) in the background.
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = body.next().await {
+                if let Some(Inner::WorkUnit(msg)) = msg.inner {
+                    if work_unit_feed_tx.send(msg).is_err() {
+                        break;
+                    }
                 }
-                Inner::PartitionFeedMessage(msg) => {
-                    let _ = partition_feed_tx.send(msg);
-                }
-            };
-        }
+            }
+        });
+
         Ok(Response::new(futures::stream::empty().boxed()))
     }
 

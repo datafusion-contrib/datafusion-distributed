@@ -12,11 +12,11 @@ pub mod coordinator_to_worker_msg {
         /// The plan is identified by a TaskKey.
         #[prost(message, tag = "1")]
         SetPlanRequest(super::SetPlanRequest),
-        /// A single message from a partition feed belonging to one partition from one node from the plan set in
-        /// set_plan_request. A partition feed is a per-partition stream of information that tells the node what should
+        /// A single message from a work unit feed belonging to one partition from one node from the plan set in
+        /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
         /// be executed within a partition, for example, a stream of file addresses that should be read.
         #[prost(message, tag = "2")]
-        PartitionFeedMessage(super::PartitionFeedMessage),
+        WorkUnit(super::WorkUnit),
     }
 }
 /// For now, there are no messages that can flow back from worker to coordinator.
@@ -33,17 +33,17 @@ pub struct SetPlanRequest {
     /// The serialized subplan the worker is expected to execute on an ExecuteTask gRPC call.
     #[prost(bytes = "vec", tag = "3")]
     pub plan_proto: ::prost::alloc::vec::Vec<u8>,
-    /// Information about all the partition feeds that will be stream from coordinator to worker.
+    /// Information about all the work unit feeds that will be stream from coordinator to worker.
     #[prost(message, repeated, tag = "4")]
-    pub partition_feed_declarations: ::prost::alloc::vec::Vec<
-        set_plan_request::PartitionFeedDeclaration,
+    pub work_unit_feed_declarations: ::prost::alloc::vec::Vec<
+        set_plan_request::WorkUnitFeedDeclaration,
     >,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-    pub struct PartitionFeedDeclaration {
-        /// Unique identifier of the node to which partition feeds are expected to be streamed.
+    pub struct WorkUnitFeedDeclaration {
+        /// Unique identifier of the node to which work unit feeds are expected to be streamed.
         #[prost(bytes = "vec", tag = "1")]
         pub id: ::prost::alloc::vec::Vec<u8>,
         /// The amount of partitions expected to be streamed.
@@ -52,11 +52,11 @@ pub mod set_plan_request {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PartitionFeedMessage {
-    /// Identifier of the node to which this partition feed belongs to.
+pub struct WorkUnit {
+    /// Identifier of the node to which this work unit feed belongs to.
     #[prost(bytes = "vec", tag = "1")]
     pub id: ::prost::alloc::vec::Vec<u8>,
-    /// The partition index withing the node to which the partition feed belongs to.
+    /// The partition index withing the node to which the work unit feed belongs to.
     #[prost(uint64, tag = "2")]
     pub partition: u64,
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.

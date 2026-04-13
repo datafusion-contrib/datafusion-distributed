@@ -1,9 +1,9 @@
 use crate::common::deserialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
-use crate::execution_plans::{PartitionFeed, PartitionFeeds};
+use crate::execution_plans::{WorkUnitFeed, WorkUnitFeeds};
 use crate::protobuf::DistributedCodec;
-use crate::worker::generated::worker::set_plan_request::PartitionFeedDeclaration;
-use crate::worker::generated::worker::{PartitionFeedMessage, SetPlanRequest};
+use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
+use crate::worker::generated::worker::{WorkUnit, SetPlanRequest};
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::DataFusionError;
@@ -58,7 +58,7 @@ impl Worker {
         &self,
         request: SetPlanRequest,
         grpc_headers: MetadataMap,
-        mut partition_feeds_rx: UnboundedReceiver<PartitionFeedMessage>,
+        mut work_unit_feeds_rx: UnboundedReceiver<WorkUnit>,
     ) -> Result<(), Status> {
         let key = request.task_key.ok_or_else(missing("task_key"))?;
 
@@ -68,29 +68,29 @@ impl Worker {
             .await;
 
         let task_data = || async {
-            let mut partition_feed_senders = HashMap::new();
+            let mut work_unit_feed_senders = HashMap::new();
             // TODO: this struct should be declared somewhere else.
-            let mut all_partition_feeds = HashMap::<Uuid, PartitionFeeds>::new();
+            let mut all_work_unit_feeds = HashMap::<Uuid, WorkUnitFeeds>::new();
 
-            for PartitionFeedDeclaration { id, partitions } in &request.partition_feed_declarations
+            for WorkUnitFeedDeclaration { id, partitions } in &request.work_unit_feed_declarations
             {
-                let mut partition_feeds = Vec::with_capacity(*partitions as usize);
+                let mut work_unit_feeds = Vec::with_capacity(*partitions as usize);
                 for partition in 0..*partitions {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    partition_feed_senders.insert((id.clone(), partition), tx);
+                    work_unit_feed_senders.insert((id.clone(), partition), tx);
 
                     let stream = UnboundedReceiverStream::new(rx).boxed();
-                    partition_feeds.push(PartitionFeed::Remote(stream));
+                    work_unit_feeds.push(WorkUnitFeed::Encoded(stream));
                 }
-                all_partition_feeds.insert(
+                all_work_unit_feeds.insert(
                     deserialize_uuid(id)?,
-                    PartitionFeeds::from_vec(partition_feeds),
+                    WorkUnitFeeds::from_vec(work_unit_feeds),
                 );
             }
 
             let task = SpawnedTask::spawn(async move {
-                while let Some(msg) = partition_feeds_rx.recv().await {
-                    let Some(tx) = partition_feed_senders.get(&(msg.id, msg.partition)) else {
+                while let Some(msg) = work_unit_feeds_rx.recv().await {
+                    let Some(tx) = work_unit_feed_senders.get(&(msg.id, msg.partition)) else {
                         continue;
                     };
                     if tx.send(Ok(msg.body)).is_err() {
@@ -102,7 +102,7 @@ impl Worker {
             let headers = grpc_headers.into_headers();
 
             let mut cfg = SessionConfig::default()
-                .with_extension(Arc::new(all_partition_feeds))
+                .with_extension(Arc::new(all_work_unit_feeds))
                 .with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
                     task_count: request.task_count as usize,

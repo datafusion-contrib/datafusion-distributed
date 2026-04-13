@@ -117,7 +117,7 @@ pub struct DistributedPlan {
     /// If not empty, the vector is expected to have a length of P*T, where P is the
     /// number of partitions in the plan, and T is the number of tasks provided as argument in
     /// [TaskEstimator::distribute_plan]
-    pub(crate) partition_feeds: Vec<BoxStream<'static, Result<Box<dyn AnyMessage>>>>,
+    pub(crate) work_unit_feeds: Vec<BoxStream<'static, Result<Box<dyn AnyMessage>>>>,
 }
 
 impl DistributedPlan {
@@ -125,16 +125,16 @@ impl DistributedPlan {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             plan,
-            partition_feeds: vec![],
+            work_unit_feeds: vec![],
         }
     }
 
     /// TODO: docs
-    pub fn with_partition_feeds<T: Message + 'static>(
+    pub fn with_work_unit_feeds<T: Message + 'static>(
         mut self,
         feeds: Vec<impl Stream<Item = Result<T>> + Send + 'static>,
     ) -> Self {
-        self.partition_feeds = feeds
+        self.work_unit_feeds = feeds
             .into_iter()
             .map(|stream| stream.map_ok(|msg| Box::new(msg) as Box<dyn AnyMessage>))
             .map(|boxed| boxed.boxed())

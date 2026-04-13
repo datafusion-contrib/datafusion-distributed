@@ -1,5 +1,5 @@
 use crate::{
-    DistributedPlan, DistributedTaskContext, TaskEstimation, TaskEstimator, partition_feed,
+    DistributedPlan, DistributedTaskContext, TaskEstimation, TaskEstimator, work_unit_feed,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::{Int64Array, StringArray};
@@ -24,24 +24,24 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TestMessage {
+pub struct TestWorkUnit {
     #[prost(uint64, tag = "1")]
     n_rows: u64,
 }
 
 #[derive(Debug, Clone)]
-pub struct TestPartitionFeedExec {
+pub struct TestWorkUnitFeedExec {
     properties: PlanProperties,
     task_count: usize,
-    test_messages: Vec<Vec<TestMessage>>,
+    test_messages: Vec<Vec<TestWorkUnit>>,
 }
 
-impl TestPartitionFeedExec {
+impl TestWorkUnitFeedExec {
     pub fn new(task_count: usize, row_count_per_partition: Vec<Vec<usize>>) -> Self {
         let partitions_per_task = row_count_per_partition.len() / task_count;
         Self {
             properties: PlanProperties::new(
-                EquivalenceProperties::new(test_partition_feed_schema()),
+                EquivalenceProperties::new(test_work_unit_feed_schema()),
                 Partitioning::UnknownPartitioning(partitions_per_task),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
@@ -50,7 +50,7 @@ impl TestPartitionFeedExec {
                 .into_iter()
                 .map(|msgs| {
                     msgs.into_iter()
-                        .map(|n_rows| TestMessage {
+                        .map(|n_rows| TestWorkUnit {
                             n_rows: n_rows as u64,
                         })
                         .collect()
@@ -61,7 +61,7 @@ impl TestPartitionFeedExec {
     }
 }
 
-fn test_partition_feed_schema() -> SchemaRef {
+fn test_work_unit_feed_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("task", DataType::Int64, false),
         Field::new("partition", DataType::Int64, false),
@@ -69,9 +69,9 @@ fn test_partition_feed_schema() -> SchemaRef {
     ]))
 }
 
-/// Table function that creates a `TestPartitionFeedExec`.
+/// Table function that creates a `TestWorkUnitFeedExec`.
 ///
-/// Called in SQL as: `SELECT * FROM test_partition_feed(2, '3,1', '5', '2', '')`
+/// Called in SQL as: `SELECT * FROM test_work_unit_feed(2, '3,1', '5', '2', '')`
 /// where the first argument is the task count (integer) and the remaining arguments are
 /// comma-separated row counts for each partition's feed messages. An empty string means
 /// an empty partition (no messages). The number of partition arguments must be divisible
@@ -80,13 +80,13 @@ fn test_partition_feed_schema() -> SchemaRef {
 /// String encoding is used for partitions because DataFusion 52.x has a bug where array
 /// literal arguments are silently dropped by the table-function SQL planner.
 #[derive(Debug)]
-pub struct TestPartitionFeedFunction;
+pub struct TestWorkUnitFeedFunction;
 
-impl TableFunctionImpl for TestPartitionFeedFunction {
+impl TableFunctionImpl for TestWorkUnitFeedFunction {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         if exprs.len() < 2 {
             return plan_err!(
-                "test_partition_feed(task_count, partitions...) requires at least 2 arguments"
+                "test_work_unit_feed(task_count, partitions...) requires at least 2 arguments"
             );
         }
         let task_count = match &exprs[0] {
@@ -105,7 +105,7 @@ impl TableFunctionImpl for TestPartitionFeedFunction {
                         .map(|v| {
                             v.trim().parse::<usize>().map_err(|e| {
                                 datafusion::error::DataFusionError::Plan(format!(
-                                    "Invalid integer in test_partition_feed(): {e}"
+                                    "Invalid integer in test_work_unit_feed(): {e}"
                                 ))
                             })
                         })
@@ -120,28 +120,28 @@ impl TableFunctionImpl for TestPartitionFeedFunction {
                 row_counts.len()
             );
         }
-        Ok(Arc::new(TestPartitionFeedTableProvider {
+        Ok(Arc::new(TestWorkUnitFeedTableProvider {
             task_count,
             row_counts,
         }))
     }
 }
 
-/// TableProvider that creates a `TestPartitionFeedExec` in `scan()`.
+/// TableProvider that creates a `TestWorkUnitFeedExec` in `scan()`.
 #[derive(Debug)]
-struct TestPartitionFeedTableProvider {
+struct TestWorkUnitFeedTableProvider {
     task_count: usize,
     row_counts: Vec<Vec<usize>>,
 }
 
 #[async_trait]
-impl TableProvider for TestPartitionFeedTableProvider {
+impl TableProvider for TestWorkUnitFeedTableProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn schema(&self) -> SchemaRef {
-        test_partition_feed_schema()
+        test_work_unit_feed_schema()
     }
 
     fn table_type(&self) -> TableType {
@@ -155,17 +155,17 @@ impl TableProvider for TestPartitionFeedTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let _ = projection; // TestPartitionFeedExec always produces the full schema
-        Ok(Arc::new(TestPartitionFeedExec::new(
+        let _ = projection; // TestWorkUnitFeedExec always produces the full schema
+        Ok(Arc::new(TestWorkUnitFeedExec::new(
             self.task_count,
             self.row_counts.clone(),
         )))
     }
 }
 
-pub struct TestPartitionFeedTaskEstimator;
+pub struct TestWorkUnitFeedTaskEstimator;
 
-impl TaskEstimator for TestPartitionFeedTaskEstimator {
+impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
     type Data = ();
 
     fn task_estimation(
@@ -173,7 +173,7 @@ impl TaskEstimator for TestPartitionFeedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         _cfg: &ConfigOptions,
     ) -> Option<TaskEstimation<Self::Data>> {
-        let plan = plan.as_any().downcast_ref::<TestPartitionFeedExec>()?;
+        let plan = plan.as_any().downcast_ref::<TestWorkUnitFeedExec>()?;
         Some(TaskEstimation::desired(plan.task_count))
     }
 
@@ -183,14 +183,14 @@ impl TaskEstimator for TestPartitionFeedTaskEstimator {
         task_estimation: TaskEstimation<Self::Data>,
         _cfg: &ConfigOptions,
     ) -> Option<DistributedPlan> {
-        let metadata_exec = plan.as_any().downcast_ref::<TestPartitionFeedExec>()?;
+        let metadata_exec = plan.as_any().downcast_ref::<TestWorkUnitFeedExec>()?;
         let task_count = task_estimation.task_count.as_usize();
         let partitions_per_task = metadata_exec.test_messages.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
-        let new_exec = Arc::new(TestPartitionFeedExec {
+        let new_exec = Arc::new(TestWorkUnitFeedExec {
             properties: PlanProperties::new(
-                EquivalenceProperties::new(test_partition_feed_schema()),
+                EquivalenceProperties::new(test_work_unit_feed_schema()),
                 Partitioning::UnknownPartitioning(partitions_per_task),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
@@ -200,21 +200,21 @@ impl TaskEstimator for TestPartitionFeedTaskEstimator {
         });
 
         // P_per_task * T feeds, distributed: task 0 gets the first P_per_task, task 1 the next, etc.
-        let partition_feeds: Vec<_> = metadata_exec
+        let work_unit_feeds: Vec<_> = metadata_exec
             .test_messages
             .iter()
             .map(|msgs| futures::stream::iter(msgs.iter().cloned().map(Ok).collect::<Vec<_>>()))
             .collect();
 
-        Some(DistributedPlan::new(new_exec).with_partition_feeds(partition_feeds))
+        Some(DistributedPlan::new(new_exec).with_work_unit_feeds(work_unit_feeds))
     }
 }
 
-impl DisplayAs for TestPartitionFeedExec {
+impl DisplayAs for TestWorkUnitFeedExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "TestPartitionFeedExec: tasks={}, rows_per_partition=[",
+            "TestWorkUnitFeedExec: tasks={}, rows_per_partition=[",
             self.task_count
         )?;
         for (i, msgs) in self.test_messages.iter().enumerate() {
@@ -234,7 +234,7 @@ impl DisplayAs for TestPartitionFeedExec {
     }
 }
 
-impl ExecutionPlan for TestPartitionFeedExec {
+impl ExecutionPlan for TestWorkUnitFeedExec {
     fn name(&self) -> &str {
         Self::static_name()
     }
@@ -263,10 +263,10 @@ impl ExecutionPlan for TestPartitionFeedExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let partition_feed = match partition_feed::<TestMessage>(&context) {
+        let work_unit_feed = match work_unit_feed::<TestWorkUnit>(&context)? {
             Some(feed) => feed,
             None => {
-                // No PartitionFeedExec wrapping us (non-distributed), use own messages.
+                // No WorkUnitFeedExec wrapping us (non-distributed), use own messages.
                 let msgs = self
                     .test_messages
                     .get(partition)
@@ -281,7 +281,7 @@ impl ExecutionPlan for TestPartitionFeedExec {
         let partition_idx = partition as i64;
         let schema = self.schema();
 
-        let stream = partition_feed.map(move |msg_result| {
+        let stream = work_unit_feed.map(move |msg_result| {
             let msg = msg_result?;
             let n_rows = msg.n_rows as usize;
             let batch = RecordBatch::try_new(
@@ -310,23 +310,23 @@ const ABC: [&str; 27] = [
 ];
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-struct TestPartitionFeedExecProto {
+struct TestWorkUnitFeedExecProto {
     #[prost(uint64, tag = "1")]
     task_count: u64,
     #[prost(message, repeated, tag = "2")]
-    partitions: Vec<TestPartitionMessages>,
+    partitions: Vec<TestWorkUnitMessages>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-struct TestPartitionMessages {
+struct TestWorkUnitMessages {
     #[prost(message, repeated, tag = "1")]
-    messages: Vec<TestMessage>,
+    messages: Vec<TestWorkUnit>,
 }
 
 #[derive(Debug)]
-pub struct TestPartitionFeedExecCodec;
+pub struct TestWorkUnitFeedExecCodec;
 
-impl PhysicalExtensionCodec for TestPartitionFeedExecCodec {
+impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
     fn try_decode(
         &self,
         buf: &[u8],
@@ -335,12 +335,12 @@ impl PhysicalExtensionCodec for TestPartitionFeedExecCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
-                "TestPartitionFeedExec should have no children, got {}",
+                "TestWorkUnitFeedExec should have no children, got {}",
                 inputs.len()
             );
         }
-        let proto = TestPartitionFeedExecProto::decode(buf)
-            .map_err(|e| proto_error(format!("Failed to decode TestPartitionFeedExec: {e}")))?;
+        let proto = TestWorkUnitFeedExecProto::decode(buf)
+            .map_err(|e| proto_error(format!("Failed to decode TestWorkUnitFeedExec: {e}")))?;
 
         let row_counts: Vec<Vec<usize>> = proto
             .partitions
@@ -348,23 +348,23 @@ impl PhysicalExtensionCodec for TestPartitionFeedExecCodec {
             .map(|p| p.messages.into_iter().map(|m| m.n_rows as usize).collect())
             .collect();
 
-        Ok(Arc::new(TestPartitionFeedExec::new(
+        Ok(Arc::new(TestWorkUnitFeedExec::new(
             proto.task_count as usize,
             row_counts,
         )))
     }
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
-        let Some(exec) = node.as_any().downcast_ref::<TestPartitionFeedExec>() else {
-            return internal_err!("Expected TestPartitionFeedExec, but was {}", node.name());
+        let Some(exec) = node.as_any().downcast_ref::<TestWorkUnitFeedExec>() else {
+            return internal_err!("Expected TestWorkUnitFeedExec, but was {}", node.name());
         };
 
-        let proto = TestPartitionFeedExecProto {
+        let proto = TestWorkUnitFeedExecProto {
             task_count: exec.task_count as u64,
             partitions: exec
                 .test_messages
                 .iter()
-                .map(|msgs| TestPartitionMessages {
+                .map(|msgs| TestWorkUnitMessages {
                     messages: msgs.clone(),
                 })
                 .collect(),
@@ -372,6 +372,6 @@ impl PhysicalExtensionCodec for TestPartitionFeedExecCodec {
 
         proto
             .encode(buf)
-            .map_err(|e| proto_error(format!("Failed to encode TestPartitionFeedExec: {e}")))
+            .map_err(|e| proto_error(format!("Failed to encode TestWorkUnitFeedExec: {e}")))
     }
 }
