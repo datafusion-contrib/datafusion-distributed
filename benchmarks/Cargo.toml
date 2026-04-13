@@ -12,7 +12,7 @@ datafusion-distributed = { path = "..", features = [
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-parquet = { version = "57.1.0" }
+parquet = { version = "58" }
 structopt = { version = "0.3.26" }
 log = "0.4.27"
 serde = "1.0.219"
