@@ -2,8 +2,8 @@
 members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { version = "52.0.0", default-features = false }
-datafusion-proto = { version = "52.0.0" }
+datafusion = { version = "53.0.0", default-features = false }
+datafusion-proto = { version = "53.0.0" }
 
 [package]
 name = "datafusion-distributed"
@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = { version = "0.4.42" }
+chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [
   "parquet",
   "sql",
@@ -19,9 +19,9 @@ datafusion = { workspace = true, features = [
   "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
-arrow-flight = "57.1.0"
-arrow-select = "57.1.0"
-arrow-ipc = { version = "57.1.0", features = ["zstd"] }
+arrow-flight = "58"
+arrow-select = "58"
+arrow-ipc = { version = "58", features = ["zstd"] }
 async-trait = "0.1.89"
 tokio = { version = "1.48", features = ["full"] }
 tonic = { version = "0.14.1", features = ["transport"] }
@@ -35,7 +35,7 @@ delegate = "0.13.4"
 dashmap = "6.0.1"
 prost = "0.14.1"
 rand = "0.9"
-object_store = "0.12.4"
+object_store = "0.13"
 bytes = "1.11"
 pin-project = "1.1.10"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
@@ -48,10 +48,10 @@ bincode = "1"
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf", optional = true }
-parquet = { version = "57.1.0", optional = true }
-arrow = { version = "57.1.0", optional = true, features = ["test_utils"] }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f", optional = true }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f", optional = true }
+parquet = { version = "58", optional = true }
+arrow = { version = "58", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
 pretty_assertions = { version = "1.4", optional = true }
 reqwest = { version = "0.12", optional = true }
@@ -82,10 +82,10 @@ sysinfo = ["dep:sysinfo"]
 [dev-dependencies]
 structopt = "0.3"
 insta = { version = "1.46.0", features = ["filters"] }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "e83365a5a9101906eb9f78c5607b83bc59849acf" }
-parquet = "57.1.0"
-arrow = { version = "57.1.0", features = ["test_utils"] }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
+parquet = "58"
+arrow = { version = "58", features = ["test_utils"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"

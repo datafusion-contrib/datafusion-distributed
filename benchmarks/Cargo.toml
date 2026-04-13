@@ -12,7 +12,7 @@ datafusion-distributed = { path = "..", features = [
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-parquet = { version = "57.1.0" }
+parquet = { version = "58" }
 structopt = { version = "0.3.26" }
 log = "0.4.27"
 serde = "1.0.219"
@@ -24,10 +24,10 @@ futures = "0.3.31"
 dashmap = "6.0.1"
 prost = "0.14.1"
 url = "2.5.7"
-arrow-flight = "57.1.0"
+arrow-flight = "58"
 tonic = { version = "0.14.1", features = ["transport"] }
 axum = "0.7"
-object_store = { version = "0.12.4", features = ["aws"] }
+object_store = { version = "0.13", features = ["aws"] }
 aws-config = "1"
 aws-sdk-ec2 = "1"
 openssl = { version = "0.10", features = ["vendored"] }

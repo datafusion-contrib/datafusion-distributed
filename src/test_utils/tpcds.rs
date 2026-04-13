@@ -92,10 +92,10 @@ async fn repartition_parquet_file(
     }
     let table_name = file_name.trim_end_matches(".parquet");
 
-    if let Ok(dir) = fs::read_dir(&dest_path) {
-        if dir.count() >= 1 {
-            return Ok(());
-        }
+    if let Ok(dir) = fs::read_dir(&dest_path)
+        && dir.count() >= 1
+    {
+        return Ok(());
     }
 
     let ctx = SessionContext::new();

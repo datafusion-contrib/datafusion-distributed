@@ -83,7 +83,7 @@ use std::vec;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ChildrenIsolatorUnionExec {
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
     pub(crate) task_idx_map: Vec<
@@ -136,10 +136,13 @@ impl ChildrenIsolatorUnionExec {
         // It's not supper efficient to build a UnionExec just to get the properties out, but the
         // other solution is to copy-paste a bunch of code from upstream for computing the properties
         // of a union, so we prefer to just reuse it like this.
-        let mut properties = UnionExec::try_new(children.clone())?.properties().clone();
+        let mut properties = UnionExec::try_new(children.clone())?
+            .properties()
+            .as_ref()
+            .clone();
         properties.partitioning = Partitioning::UnknownPartitioning(*partition_count);
         Ok(Self {
-            properties,
+            properties: Arc::new(properties),
             metrics: ExecutionPlanMetricsSet::default(),
             children,
             task_idx_map,
@@ -187,7 +190,7 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

@@ -72,7 +72,7 @@ use tokio_stream::wrappers::WatchStream;
 pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     queues: Vec<OnceLock<Result<StreamAndTask, Arc<DataFusionError>>>>,
 }
 
@@ -83,9 +83,7 @@ impl BroadcastExec {
         let input_partition_count = input.properties().partitioning.partition_count();
         let output_partition_count = input_partition_count * consumer_task_count;
 
-        let properties = input
-            .properties()
-            .clone()
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(output_partition_count));
 
         let queues = (0..input_partition_count)
@@ -95,7 +93,7 @@ impl BroadcastExec {
         Self {
             input,
             consumer_task_count,
-            properties,
+            properties: Arc::new(properties),
             queues,
         }
     }
@@ -131,7 +129,7 @@ impl ExecutionPlan for BroadcastExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -179,7 +177,7 @@ impl ExecutionPlan for BroadcastExec {
                 while let Some(msg) = stream.next().await {
                     match msg {
                         Ok(record_batch) => {
-                            let mut reservation = mem_consumer.clone_with_new_id().register(&pool);
+                            let reservation = mem_consumer.clone_with_new_id().register(&pool);
                             reservation.grow(record_batch.get_array_memory_size());
                             queue.push(Ok((record_batch, Arc::new(reservation))));
                         }

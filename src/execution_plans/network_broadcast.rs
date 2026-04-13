@@ -121,7 +121,7 @@ use uuid::Uuid;
 /// job to merge these partial partitions to then broadcast complete data to the consumers.
 #[derive(Debug, Clone)]
 pub struct NetworkBroadcastExec {
-    pub(crate) properties: PlanProperties,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
@@ -151,15 +151,13 @@ impl NetworkBroadcastExec {
         let broadcast_exec: Arc<dyn ExecutionPlan> =
             Arc::new(super::BroadcastExec::new(child, consumer_task_count));
 
-        let properties = broadcast_exec
-            .properties()
-            .clone()
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
 
         let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
 
         Ok(Self {
-            properties,
+            properties: properties.into(),
             input_stage,
             worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),
@@ -209,7 +207,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

@@ -92,17 +92,17 @@ struct SyntheticExec {
     schema: SchemaRef,
     partitions: usize,
     batches: Arc<Vec<Arc<RecordBatch>>>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl SyntheticExec {
     fn new(schema: SchemaRef, partitions: usize, batches: Arc<Vec<Arc<RecordBatch>>>) -> Self {
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             schema,
             partitions,
@@ -130,7 +130,7 @@ impl ExecutionPlan for SyntheticExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -161,10 +161,6 @@ impl ExecutionPlan for SyntheticExec {
         }));
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-    }
-
-    fn statistics(&self) -> Result<Statistics> {
-        Ok(Statistics::new_unknown(&self.schema))
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {

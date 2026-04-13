@@ -40,7 +40,7 @@ where
                 };
                 let Some(msg) = msg else { return };
 
-                let mut reservation = consumer.clone_with_new_id().register(&pool);
+                let reservation = consumer.clone_with_new_id().register(&pool);
                 if let Ok(msg) = &msg {
                     reservation.grow(msg.get_memory_size());
                 }

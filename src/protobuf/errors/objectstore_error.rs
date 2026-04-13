@@ -129,7 +129,10 @@ impl ObjectStoreErrorProto {
                     },
                 )),
             },
-            object_store::Error::NotImplemented => ObjectStoreErrorProto {
+            object_store::Error::NotImplemented {
+                operation: _,
+                implementer: _,
+            } => ObjectStoreErrorProto {
                 inner: Some(ObjectStoreErrorInnerProto::NotImplemented(true)),
             },
             object_store::Error::PermissionDenied { path, source } => ObjectStoreErrorProto {
@@ -210,7 +213,12 @@ impl ObjectStoreErrorProto {
                 path: msg.path.clone(),
                 source: msg.source.clone().into(),
             },
-            ObjectStoreErrorInnerProto::NotImplemented(_) => object_store::Error::NotImplemented,
+            ObjectStoreErrorInnerProto::NotImplemented(_msg) => {
+                object_store::Error::NotImplemented {
+                    operation: "unknown_operation".to_string(),
+                    implementer: "unknown_implementer".to_string(),
+                }
+            }
             ObjectStoreErrorInnerProto::PermissionDenied(msg) => {
                 object_store::Error::PermissionDenied {
                     path: msg.path.clone(),
@@ -288,7 +296,10 @@ mod tests {
                 path: "not/modified".to_string(),
                 source: Box::new(std::io::Error::other("not modified")),
             },
-            ObjectStoreError::NotImplemented,
+            object_store::Error::NotImplemented {
+                operation: "unknown_operation".to_string(),
+                implementer: "unknown_implementer".to_string(),
+            },
             ObjectStoreError::PermissionDenied {
                 path: "denied/path".to_string(),
                 source: Box::new(std::io::Error::new(

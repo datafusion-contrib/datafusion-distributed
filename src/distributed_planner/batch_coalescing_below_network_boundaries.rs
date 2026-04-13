@@ -4,6 +4,7 @@ use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::ExecutionPlan;
+#[expect(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ pub(crate) fn batch_coalescing_below_network_boundaries(
         }
 
         let input = require_one_child(plan.children())?;
+        #[expect(deprecated)]
         if let Some(existing_coalesce) = input.as_any().downcast_ref::<CoalesceBatchesExec>() {
             // There was already a CoalesceBatchesExec below...
             if existing_coalesce.target_batch_size() == d_cfg.shuffle_batch_size {
@@ -47,6 +49,7 @@ pub(crate) fn batch_coalescing_below_network_boundaries(
         } else {
             // No CoalesceBatchesExec below, need to put one.
             let coalesce_input = input;
+            #[expect(deprecated)]
             let new_coalesce = CoalesceBatchesExec::new(coalesce_input, d_cfg.shuffle_batch_size);
             let new_plan = plan.with_new_children(vec![Arc::new(new_coalesce)])?;
             Ok(Transformed::yes(new_plan))
