@@ -2,8 +2,8 @@
 members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { git = "https://github.com/apache/datafusion", branch = "branch-53", default-features = false }
-datafusion-proto = { git = "https://github.com/apache/datafusion", branch = "branch-53" }
+datafusion = { version = "53.0.0", default-features = false }
+datafusion-proto = { version = "53.0.0" }
 
 [package]
 name = "datafusion-distributed"
