@@ -225,10 +225,9 @@ pub async fn get_worker_version(
     url: &url::Url,
 ) -> Result<String, DataFusionError> {
     let mut client = channel_resolver.get_worker_client_for_url(url).await?;
-    let fut = client.get_worker_info(tonic::Request::new(GetWorkerInfoRequest {}));
-    let response = tokio::time::timeout(Duration::from_secs(2), fut)
+    let response = client
+        .get_worker_info(tonic::Request::new(GetWorkerInfoRequest {}))
         .await
-        .map_err(|_| exec_datafusion_err!("Timeout getting worker info from {url}"))?
         .map_err(|e| exec_datafusion_err!("Error getting worker info from {url}: {e}"))?;
     Ok(response.into_inner().version)
 }
