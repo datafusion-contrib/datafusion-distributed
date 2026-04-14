@@ -1,5 +1,5 @@
-use crate::common::require_one_child;
 use crate::NetworkBoundaryExt;
+use crate::common::require_one_child;
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
@@ -51,7 +51,8 @@ pub(crate) fn partial_reduce_below_network_shuffles(
                 .enumerate()
                 .map(|(i, (_, name))| {
                     (
-                        std::sync::Arc::new(Column::new(name, i)) as std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+                        std::sync::Arc::new(Column::new(name, i))
+                            as std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
                         name.clone(),
                     )
                 })
@@ -62,12 +63,18 @@ pub(crate) fn partial_reduce_below_network_shuffles(
                 .enumerate()
                 .map(|(i, (_, name))| {
                     (
-                        std::sync::Arc::new(Column::new(name, i)) as std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+                        std::sync::Arc::new(Column::new(name, i))
+                            as std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
                         name.clone(),
                     )
                 })
                 .collect();
-            PhysicalGroupBy::new(exprs, null_exprs, orig.groups().to_vec(), orig.has_grouping_set())
+            PhysicalGroupBy::new(
+                exprs,
+                null_exprs,
+                orig.groups().to_vec(),
+                orig.has_grouping_set(),
+            )
         };
 
         // PartialReduce wraps the existing RepartitionExec, running on
@@ -93,7 +100,9 @@ mod tests {
     use super::*;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii};
+    use crate::{
+        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
+    };
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -114,10 +123,9 @@ mod tests {
 
     #[tokio::test]
     async fn grouped_aggregation() {
-        let explain = sql_to_explain(
-            r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#,
-        )
-        .await;
+        let explain =
+            sql_to_explain(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
+                .await;
         assert_snapshot!(explain, @"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
