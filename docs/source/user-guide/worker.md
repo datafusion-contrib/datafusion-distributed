@@ -165,7 +165,7 @@ use std::time::Duration;
 use url::Url;
 use datafusion::common::DataFusionError;
 use datafusion_distributed::{
-    ChannelResolver, WorkerResolver, get_worker_version,
+    DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
 };
 
 struct VersionAwareWorkerResolver {
@@ -178,7 +178,7 @@ async fn background_version_resolver(
     all_worker_urls: Vec<Url>,
     local_version: String,
     compatible_urls: Arc<RwLock<Vec<Url>>>,
-    channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
+    channel_resolver: Arc<DefaultChannelResolver>,
 ) {
     let mut version_cache: HashMap<Url, String> = HashMap::new();
 
@@ -189,14 +189,20 @@ async fn background_version_resolver(
             .collect();
 
         let version_checks = futures::future::join_all(
-            new_worker_urls
-                .iter()
-                .map(|url| get_worker_version(Arc::clone(&channel_resolver), url)),
+            new_worker_urls.iter().map(|url| {
+                let cr = Arc::clone(&channel_resolver);
+                async move {
+                    let channel = cr.get_channel(url).await.ok()?;
+                    let mut client = create_worker_client(channel);
+                    let resp = client.get_worker_info(GetWorkerInfoRequest {}).await.ok()?;
+                    Some(resp.into_inner().version)
+                }
+            }),
         )
         .await;
 
         for (url, result) in new_worker_urls.iter().zip(version_checks) {
-            if let Ok(version) = result {
+            if let Some(version) = result {
                 version_cache.insert((*url).clone(), version);
             }
         }
@@ -216,7 +222,7 @@ impl VersionAwareWorkerResolver {
     fn start_version_filtering(
         all_worker_urls: Vec<Url>,
         expected_version: String,
-        channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
+        channel_resolver: Arc<DefaultChannelResolver>,
     ) -> Self {
         let compatible_urls = Arc::new(RwLock::new(vec![]));
 

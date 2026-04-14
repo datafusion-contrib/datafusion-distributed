@@ -44,7 +44,7 @@ pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
 pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
-    Worker, WorkerQueryContext, WorkerSessionBuilder, get_worker_version,
+    Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 
 pub use observability::{

@@ -16,6 +16,6 @@ pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,
     WorkerQueryContext, WorkerSessionBuilder,
 };
-pub use worker_service::{Worker, get_worker_version};
+pub use worker_service::Worker;
 
 pub use impl_set_plan::TaskData;

@@ -7,12 +7,11 @@ use crate::worker::generated::worker::{
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{
-    ChannelResolver, DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer,
-    WorkerResolver,
+    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
-use datafusion::common::{DataFusionError, exec_datafusion_err};
+use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::StreamExt;
@@ -217,17 +216,4 @@ impl WorkerService for Worker {
             version: self.version.to_string(),
         }))
     }
-}
-
-/// Queries a worker for it's version string via `GetWorkerInfo` RPC with a 2-second timeout.
-pub async fn get_worker_version(
-    channel_resolver: Arc<dyn ChannelResolver + Send + Sync>,
-    url: &url::Url,
-) -> Result<String, DataFusionError> {
-    let mut client = channel_resolver.get_worker_client_for_url(url).await?;
-    let response = client
-        .get_worker_info(tonic::Request::new(GetWorkerInfoRequest {}))
-        .await
-        .map_err(|e| exec_datafusion_err!("Error getting worker info from {url}: {e}"))?;
-    Ok(response.into_inner().version)
 }
