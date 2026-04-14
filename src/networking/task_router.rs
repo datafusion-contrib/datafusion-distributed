@@ -3,17 +3,20 @@ use datafusion::prelude::SessionConfig;
 use std::sync::Arc;
 use url::Url;
 
-/// Allows users to choose which worker should execute a given distributed task.
-pub trait TaskRouter {
-    /// Returns the index of the worker that should execute the task. The default implementation
-    /// assigns tasks to workers round-robin starting from start_index.
-    fn route_fn(&self, start_index: usize, task_number: usize, num_urls: usize) -> usize {
-        (start_index + task_number) % num_urls
-    }
+pub struct RouterInfo {
+    pub task_number: usize,
+    pub urls: Vec<Url>,
+    pub stage_seed: usize,
+}
 
-    /// Returns the url of the worker that should execute the task.
-    fn route_task(&self, start_index: usize, task_number: usize, urls: &[Url]) -> Url {
-        urls[self.route_fn(start_index, task_number, urls.len())].clone()
+/// Allows users to route tasks to worker nodes.
+pub trait TaskRouter {
+    /// Returns the url of the worker that should execute the task. The default implementation
+    /// assigns tasks to workers round-robin starting from stage_seed.
+    fn route(&self, router_info: RouterInfo) -> Url {
+        router_info.urls
+            [(router_info.stage_seed + router_info.task_number) % router_info.urls.len()]
+        .clone()
     }
 }
 

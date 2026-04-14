@@ -1,7 +1,7 @@
 use crate::common::require_one_child;
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::networking::{get_distributed_task_router, get_distributed_worker_resolver};
+use crate::networking::{RouterInfo, get_distributed_task_router, get_distributed_worker_resolver};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
@@ -131,7 +131,11 @@ impl DistributedExec {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let url = task_router.route_task(start_idx, i, &urls);
+                    let url = task_router.route(RouterInfo {
+                        task_number: i,
+                        urls: urls.clone(),
+                        stage_seed: start_idx,
+                    });
                     let execution_task = ExecutionTask {
                         url: Some(url.clone()),
                     };
