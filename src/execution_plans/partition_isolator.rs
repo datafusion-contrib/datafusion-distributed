@@ -101,22 +101,30 @@ impl PartitionIsolatorExec {
 }
 
 impl DisplayAs for PartitionIsolatorExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         let input_partitions = self.input.output_partitioning().partition_count();
-        let partition_groups = Self::partition_groups(input_partitions, self.n_tasks);
-
-        let n: usize = partition_groups.iter().map(|v| v.len()).sum();
-        let mut partitions = vec![];
-        for _ in 0..self.n_tasks {
-            partitions.push(vec!["__".to_string(); n]);
-        }
-
         write!(f, "PartitionIsolatorExec: ")?;
-        for (i, partition_group) in partition_groups.iter().enumerate() {
-            for (j, p) in partition_group.iter().enumerate() {
-                partitions[i][*p] = format!("p{j}")
+
+        match t {
+            DisplayFormatType::Verbose => {
+                let partition_groups = Self::partition_groups(input_partitions, self.n_tasks);
+
+                let n: usize = partition_groups.iter().map(|v| v.len()).sum();
+                let mut partitions = vec![];
+                for _ in 0..self.n_tasks {
+                    partitions.push(vec!["__".to_string(); n]);
+                }
+
+                for (i, partition_group) in partition_groups.iter().enumerate() {
+                    for (j, p) in partition_group.iter().enumerate() {
+                        partitions[i][*p] = format!("p{j}")
+                    }
+                    write!(f, "t{i}:[{}] ", partitions[i].join(","))?;
+                }
             }
-            write!(f, "t{i}:[{}] ", partitions[i].join(","))?;
+            _ => {
+                write!(f, "tasks={} partitions={}", self.n_tasks, input_partitions)?;
+            }
         }
         Ok(())
     }

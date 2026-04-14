@@ -80,7 +80,7 @@ mod tests {
         "#;
         let explain = sql_to_explain(query).await;
         // No CoalesceBatchExec is placed before sending data over the network.
-        assert_snapshot!(explain, @r"
+        assert_snapshot!(explain, @"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -93,7 +93,7 @@ mod tests {
             │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 8), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
             │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
+            │       PartitionIsolatorExec: tasks=3 partitions=3
             │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
             └──────────────────────────────────────────────────
         ");
@@ -108,7 +108,7 @@ mod tests {
         "#;
         let explain = sql_to_explain(query).await;
         // No CoalesceBatchExec is placed before sending data over the network.
-        assert_snapshot!(explain, @r"
+        assert_snapshot!(explain, @"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -121,7 +121,7 @@ mod tests {
             │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 8), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
             │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
+            │       PartitionIsolatorExec: tasks=3 partitions=3
             │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
             └──────────────────────────────────────────────────
         ");
@@ -136,7 +136,7 @@ mod tests {
         "#;
         let explain = sql_to_explain(query).await;
         // CoalesceBatchExec is placed before sending data over the network.
-        assert_snapshot!(explain, @r"
+        assert_snapshot!(explain, @"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -151,7 +151,7 @@ mod tests {
             │   RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 8), input_partitions=4
             │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
             │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-            │         PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
+            │         PartitionIsolatorExec: tasks=3 partitions=3
             │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday, WindGustDir], file_type=parquet
             └──────────────────────────────────────────────────
         ");
