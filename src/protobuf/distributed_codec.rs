@@ -708,8 +708,11 @@ mod tests {
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage_with_plan()));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            schema,
+            dummy_stage_with_plan(),
+        ));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
