@@ -60,7 +60,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
         fn parse_stage_proto(
             proto: Option<StageProto>,
-            _inputs: &[Arc<dyn ExecutionPlan>],
+            inputs: &[Arc<dyn ExecutionPlan>],
         ) -> Result<Stage, DataFusionError> {
             let Some(proto) = proto else {
                 return Err(proto_error("Empty StageProto"));
@@ -70,7 +70,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
                     .map_err(|_| proto_error("Invalid query_id in StageProto"))?,
                 num: proto.num as usize,
-                plan: None,
+                plan: inputs.first().cloned(),
                 tasks: decode_tasks(proto.tasks)?,
             })
         }
@@ -556,6 +556,15 @@ mod tests {
         }
     }
 
+    fn dummy_stage_with_plan() -> Stage {
+        Stage {
+            query_id: Default::default(),
+            num: 0,
+            plan: Some(empty_exec()),
+            tasks: vec![],
+        }
+    }
+
     fn schema_i32(name: &str) -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new(name, DataType::Int32, false)]))
     }
@@ -581,7 +590,7 @@ mod tests {
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
 
-        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[], &ctx)?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -681,6 +690,46 @@ mod tests {
             Partitioning::RoundRobinBatch(3),
             schema,
             dummy_stage(),
+        ));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_single_flight_with_plan() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage_with_plan()));
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_single_flight_coalesce_with_plan() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("e");
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_coalesce_tasks_exec(
+            Partitioning::RoundRobinBatch(3),
+            schema,
+            dummy_stage_with_plan(),
         ));
 
         let mut buf = Vec::new();

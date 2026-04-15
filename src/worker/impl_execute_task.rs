@@ -33,7 +33,7 @@ const RECORD_BATCH_BUFFER_SIZE: usize = 2;
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 
 impl Worker {
-    pub(crate) async fn impl_execute_task(
+    pub async fn impl_execute_task(
         &self,
         request: Request<ExecuteTaskRequest>,
     ) -> Result<Response<<Worker as WorkerService>::ExecuteTaskStream>, Status> {
