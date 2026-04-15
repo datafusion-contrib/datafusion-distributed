@@ -40,8 +40,8 @@ pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
     explain_analyze,
 };
-pub use worker::generated::worker::TaskKey;
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
+pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
     Worker, WorkerQueryContext, WorkerSessionBuilder,

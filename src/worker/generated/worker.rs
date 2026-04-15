@@ -17,6 +17,13 @@ pub mod coordinator_to_worker_msg {
 /// For now, there are no messages that can flow back from worker to coordinator.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetWorkerInfoRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetWorkerInfoResponse {
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetPlanRequest {
     /// The unique identifier of the task to which the subplan belongs to.
@@ -400,7 +407,8 @@ pub mod worker_service_client {
             self
         }
         /// Establishes a bidirectional message stream between a coordinator and a worker, over which messages
-        /// will be exchanged at any time during a query's lifetime.
+        /// will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
+        /// per task.
         pub async fn coordinator_channel(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::CoordinatorToWorkerMsg>,
@@ -439,6 +447,22 @@ pub mod worker_service_client {
                 .insert(GrpcMethod::new("worker.WorkerService", "ExecuteTask"));
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Returns metadata about a worker. Currently only used for worker versioning.
+        pub async fn get_worker_info(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetWorkerInfoRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetWorkerInfoResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/worker.WorkerService/GetWorkerInfo");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("worker.WorkerService", "GetWorkerInfo"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -460,7 +484,8 @@ pub mod worker_service_server {
             > + std::marker::Send
             + 'static;
         /// Establishes a bidirectional message stream between a coordinator and a worker, over which messages
-        /// will be exchanged at any time during a query's lifetime.
+        /// will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
+        /// per task.
         async fn coordinator_channel(
             &self,
             request: tonic::Request<tonic::Streaming<super::CoordinatorToWorkerMsg>>,
@@ -475,6 +500,11 @@ pub mod worker_service_server {
             &self,
             request: tonic::Request<super::ExecuteTaskRequest>,
         ) -> std::result::Result<tonic::Response<Self::ExecuteTaskStream>, tonic::Status>;
+        /// Returns metadata about a worker. Currently only used for worker versioning.
+        async fn get_worker_info(
+            &self,
+            request: tonic::Request<super::GetWorkerInfoRequest>,
+        ) -> std::result::Result<tonic::Response<super::GetWorkerInfoResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct WorkerServiceServer<T> {
@@ -635,6 +665,47 @@ pub mod worker_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/worker.WorkerService/GetWorkerInfo" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetWorkerInfoSvc<T: WorkerService>(pub Arc<T>);
+                    impl<T: WorkerService> tonic::server::UnaryService<super::GetWorkerInfoRequest>
+                        for GetWorkerInfoSvc<T>
+                    {
+                        type Response = super::GetWorkerInfoResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetWorkerInfoRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WorkerService>::get_worker_info(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetWorkerInfoSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

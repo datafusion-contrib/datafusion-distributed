@@ -87,3 +87,25 @@ RainToday [BYTE_ARRAY]
 RISK_MM [DOUBLE]
 RainTomorrow [BYTE_ARRAY]
 ```
+
+## Worker Versioning
+
+For an example of worker version filtering during rolling deployments, see `localhost_versioned_worker.rs` and `localhost_versioned_run.rs`.
+
+### Spawning versioned workers
+
+```shell
+cargo run --example localhost_versioned_worker -- 8080 --version v2
+```
+
+```shell
+cargo run --example localhost_versioned_worker -- 8081 --version v2
+```
+
+### Running with version filtering
+
+```shell
+cargo run --example localhost_versioned_run -- 'SELECT count(*), "MinTemp" FROM weather GROUP BY "MinTemp"' --cluster-ports 8080,8081 --version v2
+```
+
+Workers that don't match the requested version are excluded from the cluster.
