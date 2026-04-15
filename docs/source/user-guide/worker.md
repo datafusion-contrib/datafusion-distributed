@@ -44,7 +44,7 @@ async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusion
 }
 
 async fn main() {
-    let endpoint = Worker::from_session_builder(build_sate);
+    let endpoint = Worker::from_session_builder(build_state);
 
     Server::builder()
         .add_service(endpoint.into_worker_server())
