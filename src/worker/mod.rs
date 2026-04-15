@@ -1,4 +1,4 @@
-pub mod generated;
+pub(crate) mod generated;
 mod impl_execute_task;
 mod impl_set_plan;
 mod session_builder;
