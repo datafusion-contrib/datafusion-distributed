@@ -9,6 +9,10 @@ datafusion-proto = { version = "53.0.0" }
 name = "datafusion-distributed"
 version = "1.0.0"
 edition = "2024"
+description = "Framework for enhancing Apache DataFusion with distributed capabilities"
+license = "Apache-2.0"
+documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
+repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
 [dependencies]
 chrono = { version = "0.4.44" }
