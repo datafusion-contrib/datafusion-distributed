@@ -1,0 +1,386 @@
+use crate::execution_plans::{WorkUnit, WorkUnitFeedProvider};
+use crate::{
+    DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeedExec, work_unit_feed,
+};
+use async_trait::async_trait;
+use datafusion::arrow::array::{Int64Array, StringArray};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::{Session, TableFunctionImpl};
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{Result, ScalarValue, exec_err, internal_err, plan_err};
+use datafusion::config::ConfigOptions;
+use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::logical_expr::Expr;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::protobuf::proto_error;
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use prost::Message;
+use std::any::Any;
+use std::fmt::Formatter;
+use std::sync::Arc;
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RowGeneratorWorkUnit {
+    #[prost(uint64, tag = "1")]
+    n_rows: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RowGeneratorExec {
+    properties: Arc<PlanProperties>,
+}
+
+impl RowGeneratorExec {
+    pub fn new(partitions: usize) -> Self {
+        Self {
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(row_generator_schema()),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RowGeneratorFeedProvider {
+    per_partition_work_units: Vec<Vec<RowGeneratorWorkUnit>>,
+    task_count: usize,
+}
+
+impl RowGeneratorFeedProvider {
+    pub fn new(task_count: usize, row_count_per_partition: Vec<Vec<usize>>) -> Self {
+        Self {
+            per_partition_work_units: row_count_per_partition
+                .into_iter()
+                .map(|msgs| {
+                    msgs.into_iter()
+                        .map(|n_rows| RowGeneratorWorkUnit {
+                            n_rows: n_rows as u64,
+                        })
+                        .collect()
+                })
+                .collect(),
+            task_count,
+        }
+    }
+}
+
+impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "RowGeneratorFeedProvider: tasks={}, rows_per_partition=[",
+            self.task_count
+        )?;
+        for (i, msgs) in self.per_partition_work_units.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "[")?;
+            for (j, msg) in msgs.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", msg.n_rows)?;
+            }
+            write!(f, "]")?;
+        }
+        write!(f, "]")
+    }
+
+    fn feed(
+        &self,
+        partition: usize,
+        _ctx: Arc<TaskContext>,
+    ) -> Result<BoxStream<'static, Result<Box<dyn WorkUnit>>>> {
+        let messages = self.per_partition_work_units[partition]
+            .clone()
+            .into_iter()
+            .map(|msg| Ok(Box::new(msg) as Box<dyn WorkUnit>));
+        Ok(futures::stream::iter(messages).boxed())
+    }
+}
+
+fn row_generator_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("task", DataType::Int64, false),
+        Field::new("partition", DataType::Int64, false),
+        Field::new("string", DataType::Utf8, false),
+    ]))
+}
+
+/// Table function that creates a `TestWorkUnitFeedExec`.
+///
+/// Called in SQL as: `SELECT * FROM test_work_unit_feed(2, '3,1', '5', '2', '')`
+/// where the first argument is the task count (integer) and the remaining arguments are
+/// comma-separated row counts for each partition's feed messages. An empty string means
+/// an empty partition (no messages). The number of partition arguments must be divisible
+/// by the task count — they are distributed evenly across tasks.
+///
+/// String encoding is used for partitions because DataFusion 52.x has a bug where array
+/// literal arguments are silently dropped by the table-function SQL planner.
+#[derive(Debug)]
+pub struct TestWorkUnitFeedFunction;
+
+impl TableFunctionImpl for TestWorkUnitFeedFunction {
+    fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+        if exprs.len() < 2 {
+            return plan_err!(
+                "test_work_unit_feed(task_count, partitions...) requires at least 2 arguments"
+            );
+        }
+        let task_count = match &exprs[0] {
+            Expr::Literal(ScalarValue::Int64(Some(v)), _) => *v as usize,
+            Expr::Literal(ScalarValue::Int32(Some(v)), _) => *v as usize,
+            v => return plan_err!("task_count must be an integer literal, got {v:?}"),
+        };
+        let row_counts = exprs[1..]
+            .iter()
+            .map(|expr| match expr {
+                Expr::Literal(ScalarValue::Utf8(Some(s)), _) => {
+                    if s.is_empty() {
+                        return Ok(vec![]);
+                    }
+                    s.split(',')
+                        .map(|v| {
+                            v.trim().parse::<usize>().map_err(|e| {
+                                datafusion::error::DataFusionError::Plan(format!(
+                                    "Invalid integer in test_work_unit_feed(): {e}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                }
+                v => plan_err!("partition args must be string literals, got {v:?}"),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if row_counts.len() % task_count != 0 {
+            return plan_err!(
+                "number of partitions ({}) must be divisible by task_count ({task_count})",
+                row_counts.len()
+            );
+        }
+        Ok(Arc::new(TestWorkUnitFeedTableProvider {
+            task_count,
+            row_counts,
+        }))
+    }
+}
+
+/// TableProvider that creates a `TestWorkUnitFeedExec` in `scan()`.
+#[derive(Debug)]
+struct TestWorkUnitFeedTableProvider {
+    task_count: usize,
+    row_counts: Vec<Vec<usize>>,
+}
+
+#[async_trait]
+impl TableProvider for TestWorkUnitFeedTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        row_generator_schema()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let _ = projection; // TestWorkUnitFeedExec always produces the full schema
+
+        let node = Arc::new(RowGeneratorExec::new(self.row_counts.len()));
+        let node = Arc::new(WorkUnitFeedExec::new(
+            node,
+            Arc::new(RowGeneratorFeedProvider::new(
+                self.task_count,
+                self.row_counts.clone(),
+            )),
+        ));
+        Ok(node)
+    }
+}
+
+pub struct TestWorkUnitFeedTaskEstimator;
+
+impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
+    fn task_estimation(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        _cfg: &ConfigOptions,
+    ) -> Option<TaskEstimation> {
+        let work_unit_feed_exec = plan.as_any().downcast_ref::<WorkUnitFeedExec>()?;
+        let feed_provider = work_unit_feed_exec
+            .provider()
+            .as_any()
+            .downcast_ref::<RowGeneratorFeedProvider>()?;
+        Some(TaskEstimation::desired(feed_provider.task_count))
+    }
+
+    fn scale_up_leaf_node(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        task_count: usize,
+        _cfg: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        let work_unit_feed_exec = plan.as_any().downcast_ref::<WorkUnitFeedExec>()?;
+        let feed_provider = work_unit_feed_exec
+            .provider()
+            .as_any()
+            .downcast_ref::<RowGeneratorFeedProvider>()?;
+        let partitions_per_task = feed_provider.per_partition_work_units.len() / task_count;
+
+        // Rebuild the exec with the decided task count so its partition count matches.
+        let transformed = Arc::clone(plan).transform_down(|plan| {
+            if plan.as_any().is::<RowGeneratorExec>() {
+                return Ok(Transformed::yes(Arc::new(RowGeneratorExec {
+                    properties: Arc::new(PlanProperties::new(
+                        EquivalenceProperties::new(row_generator_schema()),
+                        Partitioning::UnknownPartitioning(partitions_per_task),
+                        EmissionType::Incremental,
+                        Boundedness::Bounded,
+                    )),
+                })));
+            };
+            Ok(Transformed::no(plan))
+        });
+
+        Some(transformed.ok()?.data)
+    }
+}
+
+impl DisplayAs for RowGeneratorExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "RowGeneratorExec")
+    }
+}
+
+impl ExecutionPlan for RowGeneratorExec {
+    fn name(&self) -> &str {
+        Self::static_name()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(self.as_ref().clone()))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let Some(work_unit_feed) = work_unit_feed::<RowGeneratorWorkUnit>(&context) else {
+            return exec_err!("Missing TestWorkUnit work unit feed");
+        };
+
+        let distributed_ctx = DistributedTaskContext::from_ctx(&context);
+        let task_index = distributed_ctx.task_index as i64;
+        let partition_idx = partition as i64;
+        let schema = self.schema();
+
+        let stream = work_unit_feed.map(move |msg_result| {
+            let msg = msg_result?;
+            let n_rows = msg.n_rows as usize;
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![task_index; n_rows])),
+                    Arc::new(Int64Array::from(vec![partition_idx; n_rows])),
+                    Arc::new(StringArray::from(
+                        (0..n_rows).map(|i| ABC[i % ABC.len()]).collect::<Vec<_>>(),
+                    )),
+                ],
+            )?;
+            Ok(batch)
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            stream,
+        )))
+    }
+}
+
+const ABC: [&str; 27] = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "ñ", "o", "p", "q", "r",
+    "s", "t", "u", "v", "w", "x", "y", "z",
+];
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RowGeneratorExecProto {
+    #[prost(uint64, tag = "1")]
+    partitions: u64,
+}
+
+#[derive(Debug)]
+pub struct TestWorkUnitFeedExecCodec;
+
+impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        _ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !inputs.is_empty() {
+            return internal_err!(
+                "TestWorkUnitFeedExec should have no children, got {}",
+                inputs.len()
+            );
+        }
+        let proto = RowGeneratorExecProto::decode(buf)
+            .map_err(|e| proto_error(format!("Failed to decode RowGeneratorExecProto: {e}")))?;
+
+        Ok(Arc::new(RowGeneratorExec::new(proto.partitions as usize)))
+    }
+
+    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+        let Some(exec) = node.as_any().downcast_ref::<RowGeneratorExec>() else {
+            return internal_err!("Expected TestWorkUnitFeedExec, but was {}", node.name());
+        };
+
+        let proto = RowGeneratorExecProto {
+            partitions: exec.properties.partitioning.partition_count() as u64,
+        };
+
+        proto
+            .encode(buf)
+            .map_err(|e| proto_error(format!("Failed to encode TestWorkUnitFeedExec: {e}")))
+    }
+}
