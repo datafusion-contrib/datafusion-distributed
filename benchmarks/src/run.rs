@@ -27,12 +27,11 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
-use datafusion_distributed::test_utils::benchmarks_common;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
-use datafusion_distributed::test_utils::{clickbench, tpcds, tpch};
 use datafusion_distributed::{
     DistributedExt, DistributedPhysicalOptimizerRule, NetworkBoundaryExt, Worker,
 };
+use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -198,7 +197,7 @@ impl RunOpt {
             .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .build();
         let ctx = SessionContext::new_with_state(state);
-        benchmarks_common::register_tables(&ctx, &self.get_path()?).await?;
+        register_tables(&ctx, &self.get_path()?).await?;
 
         println!("Running benchmarks with the following options: {self:?}");
         let mut benchmark_run = BenchmarkRun::new(

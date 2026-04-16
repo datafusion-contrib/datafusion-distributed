@@ -1,5 +1,5 @@
 use datafusion::error::DataFusionError;
-use datafusion_distributed::test_utils::tpcds;
+use datafusion_distributed_benchmarks::datasets::tpcds;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 

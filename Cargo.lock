@@ -2165,6 +2165,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "datafusion",
+ "datafusion-distributed-benchmarks",
  "datafusion-proto",
  "delegate",
  "futures",
@@ -2179,7 +2180,6 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "rand 0.9.2",
- "reqwest",
  "sketches-ddsketch",
  "structopt",
  "sysinfo",
@@ -2190,30 +2190,23 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tower",
- "tpchgen",
- "tpchgen-arrow",
  "url",
  "uuid",
- "zip",
 ]
 
 [[package]]
 name = "datafusion-distributed-benchmarks"
 version = "0.1.0"
 dependencies = [
- "arrow-flight",
+ "arrow",
  "async-trait",
  "aws-config",
  "aws-sdk-ec2",
  "axum 0.7.9",
  "built",
- "chrono",
- "clap 4.5.60",
  "criterion",
- "dashmap",
  "datafusion",
  "datafusion-distributed",
- "datafusion-proto",
  "env_logger",
  "futures",
  "log",
@@ -2221,35 +2214,30 @@ dependencies = [
  "object_store",
  "openssl",
  "parquet",
- "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "structopt",
  "sysinfo",
  "tokio",
  "tonic",
+ "tpchgen",
+ "tpchgen-arrow",
  "url",
+ "zip",
 ]
 
 [[package]]
 name = "datafusion-distributed-cli"
 version = "0.1.0"
 dependencies = [
- "arrow-flight",
- "async-trait",
  "clap 4.5.60",
  "datafusion",
  "datafusion-cli",
  "datafusion-distributed",
  "dirs",
  "env_logger",
- "hyper-util",
- "object_store",
  "tokio",
- "tokio-stream",
- "tonic",
- "tower",
- "url",
 ]
 
 [[package]]
@@ -2257,12 +2245,12 @@ name = "datafusion-distributed-console"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "arrow-flight",
  "async-trait",
  "color-eyre",
  "crossterm",
  "datafusion",
  "datafusion-distributed",
+ "datafusion-distributed-benchmarks",
  "futures",
  "ratatui",
  "structopt",

@@ -3,8 +3,8 @@ mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::test_utils::{benchmarks_common, tpch};
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
+    use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use futures::TryStreamExt;
     use std::error::Error;
     use std::fmt::Display;
@@ -157,7 +157,7 @@ mod tests {
             .execution
             .target_partitions = PARTITIONS;
 
-        benchmarks_common::register_tables(&ctx, &data_dir).await?;
+        register_tables(&ctx, &data_dir).await?;
 
         // Query 15 has three queries in it, one creating the view, the second
         // executing, which we want to capture the output of, and the third

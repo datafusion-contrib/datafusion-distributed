@@ -1,4 +1,4 @@
-use crate::test_utils::benchmarks_common;
+use super::common;
 use datafusion::common::DataFusionError;
 use std::fs;
 use std::io::Write;
@@ -10,11 +10,11 @@ const URL: &str =
     "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_{}.parquet";
 
 pub fn get_queries() -> Vec<String> {
-    benchmarks_common::get_queries("testdata/clickbench/queries")
+    common::get_queries("testdata/clickbench/queries")
 }
 
 pub fn get_query(id: &str) -> Result<String, DataFusionError> {
-    benchmarks_common::get_query("testdata/clickbench/queries", id)
+    common::get_query("testdata/clickbench/queries", id)
 }
 
 /// Downloads the datafusion-benchmarks repository as a zip file

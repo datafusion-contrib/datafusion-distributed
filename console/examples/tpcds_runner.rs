@@ -7,8 +7,10 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, DistributedPhysicalOptimizerRule, WorkerResolver,
     display_plan_ascii,
 };
+use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
 use futures::TryStreamExt;
 use std::error::Error;
+use std::fs;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -73,9 +75,6 @@ async fn run_queries(
     explain_analyze: bool,
     show_distributed_plan: bool,
 ) -> Result<(), Box<dyn Error>> {
-    use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
-    use std::fs;
-
     println!(
         "Running TPC-DS queries (SF={scale_factor}, partitions={parquet_partitions}) against workers: {cluster_ports:?}"
     );
@@ -107,7 +106,7 @@ async fn run_queries(
         .with_distributed_cardinality_effect_task_scale_factor(2.0)?
         .with_distributed_broadcast_joins(true)?;
 
-    benchmarks_common::register_tables(&ctx, &data_dir).await?;
+    register_tables(&ctx, &data_dir).await?;
 
     // Determine which queries to run
     let queries: Vec<String> = if query_id == "all" {

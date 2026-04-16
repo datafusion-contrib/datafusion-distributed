@@ -1,5 +1,3 @@
-pub mod benchmarks_common;
-pub mod clickbench;
 pub mod in_memory_channel_resolver;
 pub mod insta;
 pub mod localhost;
@@ -9,5 +7,3 @@ pub mod parquet;
 pub mod plans;
 pub mod property_based;
 pub mod session_context;
-pub mod tpcds;
-pub mod tpch;
