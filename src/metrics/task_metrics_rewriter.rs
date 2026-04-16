@@ -1,3 +1,4 @@
+use crate::common::serialize_uuid;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
 use crate::execution_plans::MetricsWrapperExec;
@@ -218,7 +219,7 @@ pub fn stage_metrics_rewriter(
 
         for task_id in 0..stage.tasks.len() {
             let task_key = TaskKey {
-                query_id: stage.query_id.as_bytes().to_vec(),
+                query_id: serialize_uuid(&stage.query_id),
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
             };
@@ -298,6 +299,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::DistributedExt;
+    use crate::common::serialize_uuid;
     use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use crate::worker::generated::worker::TaskKey;
     use datafusion::physical_plan::empty::EmptyExec;
@@ -437,7 +439,7 @@ mod tests {
         let mut metrics_collection = HashMap::new();
         for task_id in 0..stage.tasks.len() {
             let task_key = TaskKey {
-                query_id: stage.query_id.as_bytes().to_vec(),
+                query_id: serialize_uuid(&stage.query_id),
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
             };
@@ -478,7 +480,7 @@ mod tests {
             {
                 let expected_task_node_metrics = metrics_collection
                     .get(&TaskKey {
-                        query_id: stage.query_id.as_bytes().to_vec(),
+                        query_id: serialize_uuid(&stage.query_id),
                         stage_id: stage.num as u64,
                         task_number: task_id as u64,
                     })

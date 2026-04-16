@@ -1,4 +1,5 @@
 use super::get_distributed_user_codecs;
+use crate::common::{deserialize_uuid, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
 };
@@ -67,8 +68,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             Ok(Stage {
-                query_id: uuid::Uuid::from_slice(proto.query_id.as_ref())
-                    .map_err(|_| proto_error("Invalid query_id in StageProto"))?,
+                query_id: deserialize_uuid(proto.query_id.as_ref())?,
                 num: proto.num as usize,
                 plan: inputs.first().cloned(),
                 tasks: decode_tasks(proto.tasks)?,
@@ -231,7 +231,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
     ) -> datafusion::common::Result<()> {
         fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
             Ok(StageProto {
-                query_id: Bytes::from(stage.query_id.as_bytes().to_vec()),
+                query_id: serialize_uuid(&stage.query_id).into(),
                 num: stage.num as u64,
                 tasks: encode_tasks(&stage.tasks),
             })

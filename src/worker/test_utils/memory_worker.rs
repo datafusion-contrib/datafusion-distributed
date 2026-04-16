@@ -1,3 +1,4 @@
+use crate::common::serialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::worker::generated::worker::TaskKey;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 pub fn test_task_key(task_number: u64) -> TaskKey {
     TaskKey {
-        query_id: Uuid::from_u128(0).as_bytes().to_vec(),
+        query_id: serialize_uuid(&Uuid::from_u128(0)),
         stage_id: 0,
         task_number,
     }
