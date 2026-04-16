@@ -35,17 +35,25 @@ pub struct RowGeneratorWorkUnit {
 #[derive(Debug, Clone)]
 pub struct RowGeneratorExec {
     properties: Arc<PlanProperties>,
+    tag: String,
+    projection: Option<Vec<usize>>,
 }
 
 impl RowGeneratorExec {
-    pub fn new(partitions: usize) -> Self {
+    pub fn new(tag: String, partitions: usize, projection: Option<Vec<usize>>) -> Self {
+        let schema = match &projection {
+            Some(indices) => Arc::new(row_generator_schema().project(indices).unwrap()),
+            None => row_generator_schema(),
+        };
         Self {
             properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(row_generator_schema()),
+                EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(partitions),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             )),
+            tag,
+            projection,
         }
     }
 }
@@ -116,19 +124,21 @@ impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
 
 fn row_generator_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
+        Field::new("tag", DataType::Utf8, false),
         Field::new("task", DataType::Int64, false),
         Field::new("partition", DataType::Int64, false),
-        Field::new("string", DataType::Utf8, false),
+        Field::new("letter", DataType::Utf8, false),
     ]))
 }
 
 /// Table function that creates a `TestWorkUnitFeedExec`.
 ///
-/// Called in SQL as: `SELECT * FROM test_work_unit_feed(2, '3,1', '5', '2', '')`
-/// where the first argument is the task count (integer) and the remaining arguments are
-/// comma-separated row counts for each partition's feed messages. An empty string means
-/// an empty partition (no messages). The number of partition arguments must be divisible
-/// by the task count — they are distributed evenly across tasks.
+/// Called in SQL as: `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2', '')`
+/// where the first argument is a tag string, the second is the task count (integer),
+/// and the remaining arguments are comma-separated row counts for each partition's feed
+/// messages. An empty string means an empty partition (no messages). The number of
+/// partition arguments must be divisible by the task count — they are distributed evenly
+/// across tasks.
 ///
 /// String encoding is used for partitions because DataFusion 52.x has a bug where array
 /// literal arguments are silently dropped by the table-function SQL planner.
@@ -137,17 +147,21 @@ pub struct TestWorkUnitFeedFunction;
 
 impl TableFunctionImpl for TestWorkUnitFeedFunction {
     fn call(&self, exprs: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-        if exprs.len() < 2 {
+        if exprs.len() < 3 {
             return plan_err!(
-                "test_work_unit_feed(task_count, partitions...) requires at least 2 arguments"
+                "test_work_unit(tag, task_count, partitions...) requires at least 3 arguments"
             );
         }
-        let task_count = match &exprs[0] {
+        let tag = match &exprs[0] {
+            Expr::Literal(ScalarValue::Utf8(Some(s)), _) => s.clone(),
+            v => return plan_err!("tag must be a string literal, got {v:?}"),
+        };
+        let task_count = match &exprs[1] {
             Expr::Literal(ScalarValue::Int64(Some(v)), _) => *v as usize,
             Expr::Literal(ScalarValue::Int32(Some(v)), _) => *v as usize,
             v => return plan_err!("task_count must be an integer literal, got {v:?}"),
         };
-        let row_counts = exprs[1..]
+        let row_counts = exprs[2..]
             .iter()
             .map(|expr| match expr {
                 Expr::Literal(ScalarValue::Utf8(Some(s)), _) => {
@@ -174,6 +188,7 @@ impl TableFunctionImpl for TestWorkUnitFeedFunction {
             );
         }
         Ok(Arc::new(TestWorkUnitFeedTableProvider {
+            tag,
             task_count,
             row_counts,
         }))
@@ -183,6 +198,7 @@ impl TableFunctionImpl for TestWorkUnitFeedFunction {
 /// TableProvider that creates a `TestWorkUnitFeedExec` in `scan()`.
 #[derive(Debug)]
 struct TestWorkUnitFeedTableProvider {
+    tag: String,
     task_count: usize,
     row_counts: Vec<Vec<usize>>,
 }
@@ -208,17 +224,18 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let _ = projection; // TestWorkUnitFeedExec always produces the full schema
-
-        let node = Arc::new(RowGeneratorExec::new(self.row_counts.len()));
-        let node = Arc::new(WorkUnitFeedExec::new(
+        let node = Arc::new(RowGeneratorExec::new(
+            self.tag.clone(),
+            self.row_counts.len(),
+            projection.cloned(),
+        ));
+        Ok(Arc::new(WorkUnitFeedExec::new(
             node,
             Arc::new(RowGeneratorFeedProvider::new(
                 self.task_count,
                 self.row_counts.clone(),
             )),
-        ));
-        Ok(node)
+        )))
     }
 }
 
@@ -253,15 +270,12 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
 
         // Rebuild the exec with the decided task count so its partition count matches.
         let transformed = Arc::clone(plan).transform_down(|plan| {
-            if plan.as_any().is::<RowGeneratorExec>() {
-                return Ok(Transformed::yes(Arc::new(RowGeneratorExec {
-                    properties: Arc::new(PlanProperties::new(
-                        EquivalenceProperties::new(row_generator_schema()),
-                        Partitioning::UnknownPartitioning(partitions_per_task),
-                        EmissionType::Incremental,
-                        Boundedness::Bounded,
-                    )),
-                })));
+            if let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() {
+                return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
+                    exec.tag.clone(),
+                    partitions_per_task,
+                    exec.projection.clone(),
+                ))));
             };
             Ok(Transformed::no(plan))
         });
@@ -313,20 +327,29 @@ impl ExecutionPlan for RowGeneratorExec {
         let task_index = distributed_ctx.task_index as i64;
         let partition_idx = partition as i64;
         let schema = self.schema();
+        let tag = self.tag.clone();
+        let projection = self.projection.clone();
 
         let stream = work_unit_feed.map(move |msg_result| {
             let msg = msg_result?;
             let n_rows = msg.n_rows as usize;
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![
-                    Arc::new(Int64Array::from(vec![task_index; n_rows])),
-                    Arc::new(Int64Array::from(vec![partition_idx; n_rows])),
-                    Arc::new(StringArray::from(
-                        (0..n_rows).map(|i| ABC[i % ABC.len()]).collect::<Vec<_>>(),
-                    )),
-                ],
-            )?;
+            // Build all columns, then select only the projected ones.
+            let all_columns: Vec<Arc<dyn datafusion::arrow::array::Array>> = vec![
+                Arc::new(StringArray::from(vec![tag.as_str(); n_rows])),
+                Arc::new(Int64Array::from(vec![task_index; n_rows])),
+                Arc::new(Int64Array::from(vec![partition_idx; n_rows])),
+                Arc::new(StringArray::from(
+                    (0..n_rows).map(|i| ABC[i % ABC.len()]).collect::<Vec<_>>(),
+                )),
+            ];
+            let columns = match &projection {
+                Some(indices) => indices
+                    .iter()
+                    .map(|&i| Arc::clone(&all_columns[i]))
+                    .collect(),
+                None => all_columns,
+            };
+            let batch = RecordBatch::try_new(Arc::clone(&schema), columns)?;
             Ok(batch)
         });
 
@@ -346,6 +369,10 @@ const ABC: [&str; 27] = [
 struct RowGeneratorExecProto {
     #[prost(uint64, tag = "1")]
     partitions: u64,
+    #[prost(uint64, repeated, tag = "2")]
+    projection: Vec<u64>,
+    #[prost(string, tag = "3")]
+    tag: String,
 }
 
 #[derive(Debug)]
@@ -367,7 +394,16 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
         let proto = RowGeneratorExecProto::decode(buf)
             .map_err(|e| proto_error(format!("Failed to decode RowGeneratorExecProto: {e}")))?;
 
-        Ok(Arc::new(RowGeneratorExec::new(proto.partitions as usize)))
+        let projection = if proto.projection.is_empty() {
+            None
+        } else {
+            Some(proto.projection.iter().map(|&i| i as usize).collect())
+        };
+        Ok(Arc::new(RowGeneratorExec::new(
+            proto.tag,
+            proto.partitions as usize,
+            projection,
+        )))
     }
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
@@ -377,6 +413,12 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
 
         let proto = RowGeneratorExecProto {
             partitions: exec.properties.partitioning.partition_count() as u64,
+            projection: exec
+                .projection
+                .as_ref()
+                .map(|p| p.iter().map(|&i| i as u64).collect())
+                .unwrap_or_default(),
+            tag: exec.tag.clone(),
         };
 
         proto
