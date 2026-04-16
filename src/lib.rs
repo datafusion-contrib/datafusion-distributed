@@ -42,6 +42,7 @@ pub use stage::{
     explain_analyze,
 };
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
+pub use worker::generated::worker::worker_service_server::WorkerServiceServer;
 pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
