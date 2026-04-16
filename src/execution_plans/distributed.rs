@@ -20,13 +20,14 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::metrics::{
-    ExecutionPlanMetricsSet, Label, MetricBuilder, MetricValue, Time,
+    Count, ExecutionPlanMetricsSet, Label, MetricBuilder, MetricValue, Time,
 };
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use http::Extensions;
 use prost::Message;
 use rand::Rng;
@@ -39,6 +40,7 @@ use std::time::Duration;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
+use uuid::Uuid;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -92,18 +94,18 @@ impl DistributedExec {
 
         let urls = worker_resolver.get_urls()?;
 
-        // Metric that measures to total sum of bytes worth of subplans sent.
-        let plan_bytes_sent = MetricBuilder::new(&self.metrics)
-            .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-            .global_counter("plan_bytes_sent");
-
-        // Latency statistics about the network calls issued to the workers for feeding subplans.
-        let start = Instant::now();
-        let plan_send_latency = Arc::new(LatencyMetric::new(
-            "plan_send_latency",
-            |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
-            &self.metrics,
-        ));
+        let metrics = CoordinatorToWorkerMetrics {
+            // Metric that measures to total sum of bytes worth of subplans sent.
+            plan_bytes_sent: MetricBuilder::new(&self.metrics)
+                .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
+                .global_counter("plan_bytes_sent"),
+            // Latency statistics about the network calls issued to the workers for feeding subplans.
+            plan_send_latency: Arc::new(LatencyMetric::new(
+                "plan_send_latency",
+                |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
+                &self.metrics,
+            )),
+        };
 
         let mut join_set = JoinSet::new();
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
@@ -113,50 +115,24 @@ impl DistributedExec {
             };
 
             let stage = plan.input_stage();
-            let Some(input_plan) = &stage.plan else {
-                return internal_err!("Plan is not set for stage {}", stage.num);
-            };
+
+            let send_task_builder =
+                CoordinatorToWorkerTaskBuilder::new(stage, metrics.clone(), &codec)?;
 
             // Right now, we assign random workers to tasks. This might change in the future.
             let start_idx = rand::rng().random_range(0..urls.len());
 
-            // This assumes the plan is the same for all the tasks within a stage. This is fine for
-            // now, but it should be possible to send different versions of the subplan to the
-            // different tasks.
-            let bytes = PhysicalPlanNode::try_from_physical_plan(Arc::clone(input_plan), &codec)?
-                .encode_to_vec();
-
-            let tasks = stage
-                .tasks
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    let url = urls[(start_idx + i) % urls.len()].clone();
-                    let execution_task = ExecutionTask {
-                        url: Some(url.clone()),
-                    };
-                    let request = SetPlanRequest {
-                        plan_proto: bytes.clone(),
-                        task_count: stage.tasks.len() as _,
-                        task_key: Some(TaskKey {
-                            query_id: serialize_uuid(&stage.query_id),
-                            stage_id: stage.num as _,
-                            task_number: i as _,
-                        }),
-                    };
-                    plan_bytes_sent.add(bytes.len());
-                    let plan_send_latency = Arc::clone(&plan_send_latency);
-                    let ctx = Arc::clone(ctx);
-                    // Spawns the task that feeds this subplan to this worker. There will be as
-                    // many as this spawned tasks as workers.
-                    join_set.spawn(async move {
-                        send_plan_task(ctx, url, request).await?;
-                        plan_send_latency.record(&start);
-                        Ok(())
-                    });
-                    execution_task
-                })
-                .collect::<Vec<_>>();
+            let mut tasks = Vec::with_capacity(stage.tasks.len());
+            for i in 0..stage.tasks.len() {
+                let url = urls[(start_idx + i) % urls.len()].clone();
+                tasks.push(ExecutionTask {
+                    url: Some(url.clone()),
+                });
+                let send_plan_task = send_task_builder.send_plan_task(Arc::clone(ctx), i, url)?;
+                // Spawns the task that feeds this subplan to this worker. There will be as
+                // many as this spawned tasks as workers.
+                join_set.spawn(send_plan_task);
+            }
 
             Ok(Transformed::yes(plan.with_input_stage(Stage {
                 query_id: stage.query_id,
@@ -256,27 +232,100 @@ impl ExecutionPlan for DistributedExec {
     }
 }
 
-async fn send_plan_task(ctx: Arc<TaskContext>, url: Url, request: SetPlanRequest) -> Result<()> {
-    let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
-    let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
+/// Metrics that measure network details about communications between [DistributedExec] and a
+/// worker.
+#[derive(Clone)]
+struct CoordinatorToWorkerMetrics {
+    plan_bytes_sent: Count,
+    plan_send_latency: Arc<LatencyMetric>,
+}
 
-    let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
-    headers.extend(get_passthrough_headers(ctx.session_config()));
+/// Builder for the different kind of tasks that handle the communications between the
+/// [DistributedExec] node to the workers. This struct is responsible for instantiating the tasks
+/// as boxed futures so that [DistributedExec] can tokio-spawn them at will.
+///
+/// This struct is responsible for building tasks that communicate a serialized plan to multiple
+/// workers for further execution.
+struct CoordinatorToWorkerTaskBuilder {
+    plan_proto: Vec<u8>,
+    query_id: Uuid,
+    stage_id: usize,
+    task_count: usize,
+    metrics: CoordinatorToWorkerMetrics,
+}
 
-    let msg = CoordinatorToWorkerMsg {
-        inner: Some(Inner::SetPlanRequest(request)),
-    };
-    let request = Request::from_parts(
-        MetadataMap::from_headers(headers),
-        Extensions::default(),
-        futures::stream::once(async { msg }),
-    );
+impl CoordinatorToWorkerTaskBuilder {
+    /// Builds a new [CoordinatorToWorkerTaskBuilder] based on the [Stage] that needs to be
+    /// fanned out to multiple workers.
+    fn new(
+        stage: &Stage,
+        metrics: CoordinatorToWorkerMetrics,
+        codec: &dyn PhysicalExtensionCodec,
+    ) -> Result<Self> {
+        let Some(plan) = &stage.plan else {
+            return internal_err!("Plan is not set for stage {}", stage.num);
+        };
 
-    client.coordinator_channel(request).await.map_err(|e| {
-        tonic_status_to_datafusion_error(&e)
-            .unwrap_or_else(|| exec_datafusion_err!("Error sending plan to worker {url}: {e}"))
-    })?;
-    Ok(())
+        let plan_proto =
+            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
+
+        Ok(Self {
+            plan_proto,
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_count: stage.tasks.len(),
+            metrics,
+        })
+    }
+
+    /// Instantiates and returns the task sends a serialized plan to specific worker. The returned
+    /// task is just a future that does nothing unless polled.
+    fn send_plan_task(
+        &self,
+        ctx: Arc<TaskContext>,
+        task_i: usize,
+        url: Url,
+    ) -> Result<BoxFuture<'static, Result<()>>> {
+        let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
+
+        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        headers.extend(get_passthrough_headers(ctx.session_config()));
+
+        let msg = CoordinatorToWorkerMsg {
+            inner: Some(Inner::SetPlanRequest(SetPlanRequest {
+                plan_proto: self.plan_proto.clone(),
+                task_count: self.task_count as u64,
+                task_key: Some(TaskKey {
+                    query_id: serialize_uuid(&self.query_id),
+                    stage_id: self.stage_id as u64,
+                    task_number: task_i as u64,
+                }),
+            })),
+        };
+        let plan_size = self.plan_proto.len();
+
+        let request = Request::from_parts(
+            MetadataMap::from_headers(headers),
+            Extensions::default(),
+            futures::stream::once(async { msg }),
+        );
+
+        let metrics = self.metrics.clone();
+        let send_plan_task = async move {
+            let start = Instant::now();
+            let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
+            client.coordinator_channel(request).await.map_err(|e| {
+                tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
+                    exec_datafusion_err!("Error sending plan to worker {url}: {e}")
+                })
+            })?;
+            metrics.plan_send_latency.record(&start);
+            metrics.plan_bytes_sent.add(plan_size);
+            Ok::<_, DataFusionError>(())
+        };
+
+        Ok(Box::pin(send_plan_task))
+    }
 }
 
 /// DataFusion metrics system is pretty limited from an API standpoint. This intermediate struct
