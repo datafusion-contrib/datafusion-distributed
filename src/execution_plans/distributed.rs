@@ -130,15 +130,15 @@ impl DistributedExec {
                 .tasks
                 .iter()
                 .enumerate()
-                .map(|(i, _)| {
+                .map(|(i, task)| {
                     let url = task_router.route(RouterInfo {
                         task_number: i,
                         urls: urls.clone(),
                         stage_seed: start_idx,
+                        affinity_key: task.affinity_key.clone(),
                     });
-                    let execution_task = ExecutionTask {
-                        url: Some(url.clone()),
-                    };
+                    let execution_task =
+                        ExecutionTask::new(Some(url.clone()), task.affinity_key.clone());
                     let request = SetPlanRequest {
                         plan_proto: bytes.clone(),
                         task_count: stage.tasks.len() as _,

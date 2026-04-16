@@ -81,11 +81,19 @@ pub struct Stage {
     pub tasks: Vec<ExecutionTask>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
     pub(crate) url: Option<Url>,
+    // Affinity key that can be used for consistent routing with the task router.
+    pub(crate) affinity_key: Option<Vec<u8>>,
+}
+
+impl ExecutionTask {
+    pub(crate) fn new(url: Option<Url>, affinity_key: Option<Vec<u8>>) -> Self {
+        Self { url, affinity_key }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,7 +126,7 @@ impl Stage {
             query_id,
             num,
             plan: Some(plan),
-            tasks: vec![ExecutionTask { url: None }; n_tasks],
+            tasks: vec![ExecutionTask::default(); n_tasks],
         }
     }
 }
@@ -439,7 +447,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             query_id: Default::default(),
             num: max_num + 1,
             plan: Some(plan.clone()),
-            tasks: vec![ExecutionTask { url: None }],
+            tasks: vec![ExecutionTask::default()],
         };
         all_stages.insert(0, &head_stage);
 

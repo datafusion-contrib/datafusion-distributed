@@ -131,8 +131,11 @@ impl ShuffleBench {
             num: 0,
             plan: None,
             tasks: (0..self.producer_tasks)
-                .map(|i| ExecutionTask {
-                    url: Some(Url::parse(&format!("http://localhost:{i}")).unwrap()),
+                .map(|i| {
+                    ExecutionTask::new(
+                        Some(Url::parse(&format!("http://localhost:{i}")).unwrap()),
+                        None,
+                    )
                 })
                 .collect(),
         };

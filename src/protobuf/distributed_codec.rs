@@ -344,6 +344,9 @@ pub struct ExecutionTaskProto {
     /// unassigned.
     #[prost(string, optional, tag = "1")]
     pub url_str: Option<String>,
+    /// An optional affinity key. Used in the task router for consistent routing.
+    #[prost(bytes, optional, tag = "2")]
+    pub affinity_key: Option<Vec<u8>>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -499,6 +502,7 @@ fn encode_tasks(tasks: &[ExecutionTask]) -> Vec<ExecutionTaskProto> {
         .iter()
         .map(|task| ExecutionTaskProto {
             url_str: task.url.as_ref().map(|v| v.to_string()),
+            affinity_key: task.affinity_key.clone(),
         })
         .collect()
 }
@@ -514,6 +518,7 @@ fn decode_tasks(tasks: Vec<ExecutionTaskProto>) -> Result<Vec<ExecutionTask>, Da
                         Url::parse(&u).map_err(|_| internal_datafusion_err!("Invalid URL: {u}"))
                     })
                     .transpose()?,
+                affinity_key: task.affinity_key,
             })
         })
         .collect()

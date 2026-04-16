@@ -120,7 +120,7 @@ impl NetworkCoalesceExec {
                 query_id,
                 num,
                 plan: Some(input),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
+                tasks: vec![ExecutionTask::default(); input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),

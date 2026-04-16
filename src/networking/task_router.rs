@@ -5,11 +5,17 @@ use url::Url;
 
 pub struct RouterInfo {
     pub task_number: usize,
-    pub urls: Vec<Url>,
     pub stage_seed: usize,
+    pub urls: Vec<Url>,
+    pub affinity_key: Option<Vec<u8>>,
 }
 
-/// Allows users to route tasks to worker nodes.
+/// Allows users to consistently route tasks to URLs. Defining a custom routing function may be
+/// useful for users that want to ensure that e.g. repeated file reads are directed to the same
+/// physical machines to allow for proper caching rather than repeatedly reading from object storage.
+///
+/// To implement this, include routing information as bytes in `affinity_key`. These bytes can
+/// then be hashed to consistently point to a specific URL.
 pub trait TaskRouter {
     /// Returns the url of the worker that should execute the task. The default implementation
     /// assigns tasks to workers round-robin starting from stage_seed.
