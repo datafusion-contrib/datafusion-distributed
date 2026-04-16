@@ -5,8 +5,8 @@ mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::test_utils::{benchmarks_common, tpch};
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
+    use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use futures::TryStreamExt;
     use std::fs;
     use std::path::Path;
@@ -72,7 +72,7 @@ mod tests {
         let d_ctx = d_ctx
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?;
 
-        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
+        register_tables(&d_ctx, &data_dir).await?;
 
         let df = d_ctx.sql(&query_sql).await?;
         let task_ctx = d_ctx.task_ctx();

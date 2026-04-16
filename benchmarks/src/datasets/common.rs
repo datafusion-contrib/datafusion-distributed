@@ -3,8 +3,15 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use std::fs;
 use std::path::Path;
 
-pub(crate) fn get_queries(path: &str) -> Vec<String> {
-    let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+/// Returns the workspace root directory (parent of the benchmarks crate).
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("benchmarks crate should be inside a workspace")
+}
+
+pub fn get_queries(path: &str) -> Vec<String> {
+    let queries_dir = workspace_root().join(path);
     let mut result = vec![];
     for file in queries_dir.read_dir().unwrap() {
         let file = file.unwrap();
@@ -36,8 +43,8 @@ pub(crate) fn get_queries(path: &str) -> Vec<String> {
     result
 }
 
-pub(crate) fn get_query(path: &str, id: &str) -> Result<String, DataFusionError> {
-    let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+pub fn get_query(path: &str, id: &str) -> Result<String, DataFusionError> {
+    let queries_dir = workspace_root().join(path);
 
     if !queries_dir.exists() {
         return internal_err!(

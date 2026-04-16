@@ -45,31 +45,21 @@ crossbeam-queue = "0.3"
 sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 bincode = "1"
+tonic-prost = "0.14.2"
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f", optional = true }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f", optional = true }
 parquet = { version = "58", optional = true }
 arrow = { version = "58", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
-pretty_assertions = { version = "1.4", optional = true }
-reqwest = { version = "0.12", optional = true }
-zip = { version = "6.0", optional = true }
-tonic-prost = "0.14.2"
 
 [features]
 avro = ["datafusion/avro"]
 integration = [
   "insta",
-  "tpchgen",
-  "tpchgen-arrow",
   "parquet",
   "arrow",
   "hyper-util",
-  "pretty_assertions",
-  "reqwest",
-  "zip",
 ]
 
 system-metrics = ["sysinfo"]
@@ -80,15 +70,12 @@ clickbench = ["integration"]
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
+datafusion-distributed-benchmarks = { path = "benchmarks" }
 structopt = "0.3"
 insta = { version = "1.46.0", features = ["filters"] }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
 parquet = "58"
 arrow = { version = "58", features = ["test_utils"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
-reqwest = "0.12"
-zip = "6.0"
 test-case = "3.3.1"

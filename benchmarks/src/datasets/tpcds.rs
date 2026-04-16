@@ -1,4 +1,4 @@
-use crate::test_utils::benchmarks_common;
+use super::common;
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
@@ -18,11 +18,11 @@ use std::sync::Arc;
 const URL: &str = "https://github.com/apache/datafusion-benchmarks/archive/refs/heads/main.zip";
 
 pub fn get_queries() -> Vec<String> {
-    benchmarks_common::get_queries("testdata/tpcds/queries")
+    common::get_queries("testdata/tpcds/queries")
 }
 
 pub fn get_query(id: &str) -> Result<String, DataFusionError> {
-    benchmarks_common::get_query("testdata/tpcds/queries", id)
+    common::get_query("testdata/tpcds/queries", id)
 }
 
 /// Downloads the datafusion-benchmarks repository as a zip file

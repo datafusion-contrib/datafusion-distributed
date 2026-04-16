@@ -2,10 +2,10 @@
 mod tests {
     use datafusion::error::Result;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::test_utils::{benchmarks_common, tpcds};
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
+    use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
     use std::env;
     use std::fs;
     use std::path::Path;
@@ -10596,7 +10596,7 @@ mod tests {
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
             .with_distributed_broadcast_joins(true)?;
 
-        benchmarks_common::register_tables(&d_ctx, &data_dir).await?;
+        register_tables(&d_ctx, &data_dir).await?;
 
         let df = d_ctx.sql(&query_sql).await?;
         let plan = df.create_physical_plan().await?;

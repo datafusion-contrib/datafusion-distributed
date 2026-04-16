@@ -6,7 +6,6 @@ default-run = "dfbench"
 
 [dependencies]
 datafusion = { workspace = true }
-datafusion-proto = { workspace = true }
 datafusion-distributed = { path = "..", features = [
   "integration",
   "system-metrics",
@@ -19,19 +18,19 @@ serde = "1.0.219"
 serde_json = "1.0.141"
 env_logger = "0.11.8"
 async-trait = "0.1.89"
-chrono = "0.4.42"
 futures = "0.3.31"
-dashmap = "6.0.1"
-prost = "0.14.1"
 url = "2.5.7"
-arrow-flight = "58"
+arrow = { version = "58", features = ["test_utils"] }
 tonic = { version = "0.14.1", features = ["transport"] }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
+reqwest = "0.12"
+zip = "6.0"
 axum = "0.7"
 object_store = { version = "0.13", features = ["aws"] }
 aws-config = "1"
 aws-sdk-ec2 = "1"
-openssl = { version = "0.10", features = ["vendored"] }
-clap = "4.5"
+openssl = { version = "0.10", features = ["vendored"] } # Keep this. Necessary for the remote benchmarks worker.
 mimalloc = "0.1"
 
 [dev-dependencies]
