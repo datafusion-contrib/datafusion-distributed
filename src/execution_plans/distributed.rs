@@ -27,6 +27,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use http::Extensions;
 use prost::Message;
 use rand::Rng;
