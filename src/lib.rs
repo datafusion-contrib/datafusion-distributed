@@ -13,6 +13,7 @@ mod distributed_planner;
 mod networking;
 mod observability;
 mod protobuf;
+pub use protobuf::DistributedCodec;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 
