@@ -55,3 +55,11 @@ harness = false
 [[bench]]
 name = "shuffle"
 harness = false
+
+[[bench]]
+name = "local_repartition"
+harness = false
+
+[[bench]]
+name = "transport"
+harness = false
