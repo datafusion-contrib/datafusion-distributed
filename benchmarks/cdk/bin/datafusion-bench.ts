@@ -15,6 +15,7 @@ async function main() {
         .option('--files-per-task <number>', 'Files per task', '8')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
+        .option('--shuffle-batch-size <number>', 'Override RepartitionExec batch size on worker stages (0 = no override)', '0')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
         .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'true')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
@@ -34,6 +35,7 @@ async function main() {
     const filesPerTask = parseInt(options.filesPerTask);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const batchSize = parseInt(options.batchSize);
+    const shuffleBatchSize = parseInt(options.shuffleBatchSize);
     const compression = options.compression;
     const maxTasksPerStage = parseInt(options.maxTasksPerStage);
     const repartitionFileMinSize = parseInt(options.repartitionFileMinSize)
@@ -49,6 +51,7 @@ async function main() {
         filesPerTask,
         cardinalityTaskSf,
         batchSize,
+        shuffleBatchSize,
         collectMetrics,
         childrenIsolatorUnions,
         compression,
@@ -85,6 +88,7 @@ class DataFusionRunner implements BenchmarkRunner {
         filesPerTask: number;
         cardinalityTaskSf: number;
         batchSize: number;
+        shuffleBatchSize: number;
         collectMetrics: boolean;
         compression: string;
         childrenIsolatorUnions: boolean;
@@ -162,6 +166,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.files_per_task=${this.options.filesPerTask};
       SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
       SET datafusion.execution.batch_size=${this.options.batchSize};
+      SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};
       SET distributed.collect_metrics=${this.options.collectMetrics};
       SET distributed.compression=${this.options.compression};
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};

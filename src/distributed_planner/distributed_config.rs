@@ -41,6 +41,13 @@ extensions_options! {
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
+        /// Overrides `datafusion.execution.batch_size` for worker-executed stages. Because
+        /// `RepartitionExec` reads `session_config().batch_size()` at execute time to size its
+        /// output batches (via its internal `LimitedBatchCoalescer`), this knob lets users tune
+        /// shuffle batch sizes independently of the global `datafusion.execution.batch_size`.
+        ///
+        /// Set to 0 (the default) to apply no override and inherit `datafusion.execution.batch_size`.
+        pub shuffle_batch_size: usize, default = 0
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
