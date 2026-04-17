@@ -1,4 +1,3 @@
-mod batch_coalescing_below_network_boundaries;
 mod distribute_plan;
 mod distributed_config;
 mod insert_broadcast;

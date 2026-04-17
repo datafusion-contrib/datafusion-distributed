@@ -39,12 +39,10 @@ cargo run \
 SortPreservingMergeExec: [number@0 ASC NULLS LAST]
   SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
     AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
-      CoalesceBatchesExec: target_batch_size=8192
-        RepartitionExec: partitioning=Hash([number@0], 16), input_partitions=16
-          AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-            RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-              CooperativeExec
-                NumbersExec: t0:[0-10)
+      RepartitionExec: partitioning=Hash([number@0], 16), input_partitions=16
+        AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+          RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
+            NumbersExec: t0:[0-10)
 ```
 
 This will print a non-distributed plan, as the range of numbers we are querying (`numbers(0, 10)`) is small.
@@ -73,12 +71,11 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=2
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
-    │           NumbersExec: t0:[0-6), t1:[6-11)
+    │ RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
+    │       CooperativeExec
+    │         NumbersExec: t0:[0-6), t1:[6-11)
     └──────────────────────────────────────────────────
 ```
 
@@ -105,11 +102,10 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=4
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p47] t1:[p0..p47] t2:[p0..p47] t3:[p0..p47] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
+    │ RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
+    │       CooperativeExec
     │           NumbersExec: t0:[0-25), t1:[25-50), t2:[50-75), t3:[75-100)
     └──────────────────────────────────────────────────
 ```
@@ -137,11 +133,10 @@ cargo run \
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=10
   └──────────────────────────────────────────────────
     ┌───── Stage 1 ── Tasks: t0:[p0..p111] t1:[p0..p111] t2:[p0..p111] t3:[p0..p111] t4:[p0..p111] t5:[p0..p111] t6:[p0..p111] t7:[p0..p111] t8:[p0..p111] t9:[p0..p111] 
-    │ CoalesceBatchesExec: target_batch_size=8192
-    │   RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
-    │     AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
-    │       RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
-    │         CooperativeExec
+    │ RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
+    │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
+    │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
+    │       CooperativeExec
     │           NumbersExec: t0:[0-10), t1:[10-20), t2:[20-30), t3:[30-40), t4:[40-50), t5:[50-60), t6:[60-70), t7:[70-80), t8:[80-90), t9:[90-100)
     └──────────────────────────────────────────────────
 ```
