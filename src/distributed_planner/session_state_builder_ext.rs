@@ -14,9 +14,9 @@ pub trait SessionStateBuilderExt {
     /// Injects a [QueryPlanner] implementation that attempts to distribute the plan after the
     /// normal planning passes are performed.
     ///
-    /// It will wrap the existing query planner, if one, adding the distribution logic at the end
-    /// of it, so while setting up the [SessionStateBuilder], it's important to call
-    /// [SessionStateBuilderExt::with_distributed_planner] *after* calling
+    /// It will wrap the existing query planner if one, so while setting up DataFusion's
+    /// [SessionStateBuilder], it's important to inject the custom user query planner implementation
+    /// with [SessionStateBuilderExt::with_distributed_planner] strictly *before* calling
     /// [SessionStateBuilder::with_query_planner].
     fn with_distributed_planner(self) -> Self;
 }

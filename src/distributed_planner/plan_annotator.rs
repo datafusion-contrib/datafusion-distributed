@@ -180,12 +180,12 @@ async fn _annotate_plan(
     };
 
     let children = plan.children();
-    let mut tasks = Vec::with_capacity(children.len());
+    let mut futures = Vec::with_capacity(children.len());
     for child in children {
         let child = Arc::clone(child);
-        tasks.push(Box::pin(_annotate_plan(child, Some(&plan), cfg, false)));
+        futures.push(Box::pin(_annotate_plan(child, Some(&plan), cfg, false)));
     }
-    let annotated_children = futures::future::try_join_all(tasks).await?;
+    let annotated_children = futures::future::try_join_all(futures).await?;
 
     if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the

@@ -44,8 +44,7 @@ pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
-    // This function should be idempotent, as people need to be able to call this function at will,
-    // and the DistributedExec node should not execute it's content again if it was already called.
+    // Keep this function idempotent.
     if original.exists(|plan| Ok(plan.is_network_boundary()))? {
         return Ok(None);
     }
