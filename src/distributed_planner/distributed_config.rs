@@ -52,6 +52,9 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
+        /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
+        pub partial_reduce: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

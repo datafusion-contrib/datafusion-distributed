@@ -1,3 +1,4 @@
+use crate::distributed_planner::distributed_config::DistributedConfig;
 use crate::NetworkBoundaryExt;
 use crate::common::require_one_child;
 use datafusion::common::DataFusionError;
@@ -15,9 +16,15 @@ use std::sync::Arc;
 /// same keys into the same partition.
 pub(crate) fn partial_reduce_below_network_shuffles(
     plan: Arc<dyn ExecutionPlan>,
-    _cfg: &ConfigOptions,
+    cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let partial_reduce_enabled = DistributedConfig::from_config_options(cfg)?.partial_reduce;
+
     let transformed = plan.transform_up(|plan| {
+        if !partial_reduce_enabled {
+            return Ok(Transformed::no(plan));
+        }
+
         if !plan.is_network_boundary() {
             return Ok(Transformed::no(plan));
         }
@@ -97,20 +104,31 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::distributed_planner::session_state_builder_ext::SessionStateBuilderExt;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
-    use crate::{
-        DistributedExt, DistributedPhysicalOptimizerRule, assert_snapshot, display_plan_ascii,
-    };
+    use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
 
     async fn sql_to_explain(query: &str) -> String {
+        sql_to_explain_impl(query, true).await
+    }
+
+    async fn sql_to_explain_default(query: &str) -> String {
+        sql_to_explain_impl(query, false).await
+    }
+
+    async fn sql_to_explain_impl(query: &str, partial_reduce: bool) -> String {
         let state = SessionStateBuilder::new()
             .with_default_features()
-            .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+            .with_config(
+                SessionConfig::new()
+                    .with_target_partitions(4)
+                    .with_distributed_partial_reduce(partial_reduce)
+                    .unwrap(),
+            )
+            .with_distributed_planner()
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
             .build();
 
@@ -140,7 +158,7 @@ mod tests {
             │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │   RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=1
             │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-            │       PartitionIsolatorExec: t0:[p0,__,__] t1:[__,p0,__] t2:[__,__,p0]
+            │       PartitionIsolatorExec: tasks=3 partitions=3
             │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
             └──────────────────────────────────────────────────
         ");
@@ -161,6 +179,17 @@ mod tests {
         assert!(
             !explain.contains("PartialReduce"),
             "PartialReduce should not be present in:\n{explain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_reduce_disabled_by_default() {
+        let explain =
+            sql_to_explain_default(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
+                .await;
+        assert!(
+            !explain.contains("PartialReduce"),
+            "PartialReduce should not be present when flag is off:\n{explain}"
         );
     }
 }
