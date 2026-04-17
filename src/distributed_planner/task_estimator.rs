@@ -1,13 +1,16 @@
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::internal_datafusion_err;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
 use std::fmt::Debug;
 use std::sync::Arc;
+use url::Url;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
@@ -86,6 +89,34 @@ impl TaskEstimation {
     }
 }
 
+pub struct PlannedLeafNode {
+    pub plan: Arc<dyn ExecutionPlan>,
+    // Optionally used for routing tasks to URLs. If this field is Some,
+    // we should assert urls.len() == task_count.
+    pub urls: Option<Vec<Url>>,
+}
+
+impl PlannedLeafNode {
+    pub fn from_plan(plan: &Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            plan: plan.clone(),
+            urls: None,
+        }
+    }
+
+    pub fn with_urls(&mut self, urls: Option<Vec<Url>>, task_count: usize) -> Result<()> {
+        if let Some(urls_ref) = &urls {
+            if urls_ref.len() != task_count {
+                return Err(internal_datafusion_err!(
+                    "number of urls not equal to number of tasks"
+                ));
+            }
+        }
+        self.urls = urls;
+        Ok(())
+    }
+}
+
 /// Given a leaf node, provides an estimation about how many tasks should be used in the
 /// stage containing it, and if the leaf node should be replaced by some other.
 ///
@@ -110,17 +141,17 @@ pub trait TaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation>;
+    ) -> Result<Option<TaskEstimation>>;
 
     /// After a final task_count is decided, taking into account all the leaf nodes in the [Stage],
     /// this allows performing a transformation in the leaf nodes for accounting for the fact that
-    /// they are going to run in multiple tasks.
-    fn scale_up_leaf_node(
+    /// they are going to run in multiple tasks, including scaling and routing tasks to specific URLs.
+    fn plan_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>>;
+    ) -> Result<Option<PlannedLeafNode>>;
 }
 
 impl TaskEstimator for usize {
@@ -128,31 +159,31 @@ impl TaskEstimator for usize {
         &self,
         inputs: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
+    ) -> Result<Option<TaskEstimation>> {
         if inputs.children().is_empty() {
-            Some(TaskEstimation {
+            Ok(Some(TaskEstimation {
                 task_count: TaskCountAnnotation::Desired(*self),
-            })
+            }))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    fn scale_up_leaf_node(
+    fn plan_leaf_node(
         &self,
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        None
+    ) -> Result<Option<PlannedLeafNode>> {
+        Ok(None)
     }
 }
 
 impl TaskEstimator for Arc<dyn TaskEstimator> {
     delegate! {
         to self.as_ref() {
-            fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
-            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
+            fn plan_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<PlannedLeafNode>>;
         }
     }
 }
@@ -160,8 +191,8 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
 impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
     delegate! {
         to self.as_ref() {
-            fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
-            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
+            fn plan_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<PlannedLeafNode>>;
         }
     }
 }
@@ -171,8 +202,8 @@ pub(crate) fn set_distributed_task_estimator(
     estimator: impl TaskEstimator + Send + Sync + 'static,
 ) {
     let opts = cfg.options_mut();
-    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
-        distributed_cfg
+    if let Some(d_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
+        d_cfg
             .__private_task_estimator
             .user_provided
             .push(Arc::new(estimator));
@@ -201,11 +232,16 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
-        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
-
-        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() else {
+            return Ok(None);
+        };
+        let Some(file_scan) = exec.data_source().as_any().downcast_ref::<FileScanConfig>() else {
+            return Ok(None);
+        };
+        let Some(d_cfg) = cfg.extensions.get::<DistributedConfig>() else {
+            return Ok(None);
+        };
 
         // Count how many partitioned files we have in the FileScanConfig.
         let mut partitioned_files = 0;
@@ -217,25 +253,29 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         // how many tasks should be used, without surpassing the number of available workers.
         let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
 
-        Some(TaskEstimation {
+        Ok(Some(TaskEstimation {
             task_count: TaskCountAnnotation::Desired(task_count),
-        })
+        }))
     }
 
-    fn scale_up_leaf_node(
+    fn plan_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Option<PlannedLeafNode>> {
         if task_count == 1 {
-            return Some(Arc::clone(plan));
+            return Ok(Some(PlannedLeafNode::from_plan(plan)));
         }
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of
         // partitions, but as we are going to wrap it with PartitionIsolatorExec, that's fine.
-        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
-        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() else {
+            return Ok(None);
+        };
+        let Some(file_scan) = exec.data_source().as_any().downcast_ref::<FileScanConfig>() else {
+            return Ok(None);
+        };
 
         let mut new_file_scan = file_scan.clone();
         new_file_scan.file_groups.clear();
@@ -245,7 +285,8 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
                 .extend(file_group.split_files(task_count));
         }
         let plan = DataSourceExec::from_data_source(new_file_scan);
-        Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(plan, task_count));
+        Ok(Some(PlannedLeafNode::from_plan(&plan)))
     }
 }
 
@@ -262,43 +303,43 @@ impl TaskEstimator for CombinedTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
+    ) -> Result<Option<TaskEstimation>> {
         for estimator in &self.user_provided {
-            if let Some(result) = estimator.task_estimation(plan, cfg) {
-                return Some(result);
+            if let Some(result) = estimator.task_estimation(plan, cfg)? {
+                return Ok(Some(result));
             }
         }
         // We want to execute the default estimators last so that the user-provided ones have
         // a chance of providing an estimation.
         // If none of the user-provided returned an estimation, the default ones are used.
         for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
-            if let Some(result) = default_estimator.task_estimation(plan, cfg) {
-                return Some(result);
+            if let Some(result) = default_estimator.task_estimation(plan, cfg)? {
+                return Ok(Some(result));
             }
         }
-        None
+        Ok(None)
     }
 
-    fn scale_up_leaf_node(
+    fn plan_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Option<PlannedLeafNode>> {
         for estimator in &self.user_provided {
-            if let Some(result) = estimator.scale_up_leaf_node(plan, task_count, cfg) {
-                return Some(result);
+            if let Some(result) = estimator.plan_leaf_node(plan, task_count, cfg)? {
+                return Ok(Some(result));
             }
         }
         // We want to execute the default estimators last so that the user-provided ones have
         // a chance of providing an estimation.
         // If none of the user-provided returned an estimation, the default ones are used.
         for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
-            if let Some(result) = default_estimator.scale_up_leaf_node(plan, task_count, cfg) {
-                return Some(result);
+            if let Some(result) = default_estimator.plan_leaf_node(plan, task_count, cfg)? {
+                return Ok(Some(result));
             }
         }
-        None
+        Ok(None)
     }
 }
 
@@ -364,6 +405,7 @@ mod tests {
             cfg.extensions.insert(f(d_cfg));
             self.task_estimation(&node, &cfg)
                 .unwrap()
+                .unwrap()
                 .task_count
                 .as_usize()
         }
@@ -388,17 +430,17 @@ mod tests {
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             cfg: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            self(plan, cfg)
+        ) -> Result<Option<TaskEstimation>> {
+            Ok(self(plan, cfg))
         }
 
-        fn scale_up_leaf_node(
+        fn plan_leaf_node(
             &self,
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<PlannedLeafNode>> {
+            Ok(None)
         }
     }
 }

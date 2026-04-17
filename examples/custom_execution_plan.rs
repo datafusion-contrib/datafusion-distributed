@@ -39,8 +39,8 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, DistributedTaskContext, TaskEstimation,
-    TaskEstimator, WorkerQueryContext, display_plan_ascii,
+    DistributedExt, DistributedPhysicalOptimizerRule, DistributedTaskContext, PlannedLeafNode,
+    TaskEstimation, TaskEstimator, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -314,22 +314,28 @@ impl TaskEstimator for NumbersTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let plan = plan.as_any().downcast_ref::<NumbersExec>()?;
-        let cfg: &NumbersConfig = cfg.extensions.get()?;
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(plan) = plan.as_any().downcast_ref::<NumbersExec>() else {
+            return Ok(None);
+        };
+        let Some(cfg) = cfg.extensions.get::<NumbersConfig>() else {
+            return Ok(None);
+        };
         let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
             / cfg.numbers_per_task as f64;
 
-        Some(TaskEstimation::desired(task_count.ceil() as usize))
+        Ok(Some(TaskEstimation::desired(task_count.ceil() as usize)))
     }
 
-    fn scale_up_leaf_node(
+    fn plan_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = plan.as_any().downcast_ref::<NumbersExec>()?;
+    ) -> Result<Option<PlannedLeafNode>> {
+        let Some(plan) = plan.as_any().downcast_ref::<NumbersExec>() else {
+            return Ok(None);
+        };
         let range = &plan.ranges_per_task[0];
         let chunk_size = ((range.end - range.start) as f64 / task_count as f64).ceil() as i64;
 
@@ -339,7 +345,9 @@ impl TaskEstimator for NumbersTaskEstimator {
             start..end
         });
 
-        Some(Arc::new(NumbersExec::new(ranges_per_task, plan.schema())))
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(NumbersExec::new(ranges_per_task, plan.schema()));
+        Ok(Some(PlannedLeafNode::from_plan(&plan)))
     }
 }
 

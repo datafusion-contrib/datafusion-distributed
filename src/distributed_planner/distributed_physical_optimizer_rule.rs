@@ -81,7 +81,8 @@ impl PhysicalOptimizerRule for DistributedPhysicalOptimizerRule {
 /// appropriately placed. This step performs the following modifications to the original
 /// [ExecutionPlan]:
 /// - The leaf nodes are scaled up in parallelism based on the number of distributed tasks in
-///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
+///   which they are going to run, and tasks are optionally mapped to specific worker URLs.
+///   This is configurable by the user via the [TaskEstimator] trait.
 /// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
 ///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
 fn distribute_plan(
@@ -102,12 +103,12 @@ fn distribute_plan(
         // This is a leaf node. It needs to be scaled up in order to account for it running in
         // multiple tasks.
         PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
+            let planned_leaf_node = d_cfg.__private_task_estimator.plan_leaf_node(
                 &plan,
                 annotated_plan.task_count.as_usize(),
                 cfg,
-            );
-            Ok(scaled_up.unwrap_or(plan))
+            )?;
+            Ok(planned_leaf_node.map(|node| node.plan).unwrap_or(plan))
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
         PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),

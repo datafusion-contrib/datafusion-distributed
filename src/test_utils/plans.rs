@@ -181,26 +181,26 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
+    ) -> datafusion::error::Result<Option<TaskEstimation>> {
         if !plan.children().is_empty() {
-            return None;
+            return Ok(None);
         }
         let schema = plan.schema();
         let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
         let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
         if has_min_temp && !has_max_temp {
-            Some(TaskEstimation::maximum(1))
+            Ok(Some(TaskEstimation::maximum(1)))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    fn scale_up_leaf_node(
+    fn plan_leaf_node(
         &self,
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        None
+    ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+        Ok(None)
     }
 }

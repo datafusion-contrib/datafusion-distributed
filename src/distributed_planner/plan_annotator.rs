@@ -189,7 +189,7 @@ fn _annotate_plan(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        return if let Some(estimate) = estimator.task_estimation(&plan, cfg) {
+        return if let Ok(Some(estimate)) = estimator.task_estimation(&plan, cfg) {
             Ok(AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
@@ -207,7 +207,7 @@ fn _annotate_plan(
     }
 
     let mut task_count = estimator
-        .task_estimation(&plan, cfg)
+        .task_estimation(&plan, cfg)?
         .map_or(Desired(1), |v| v.task_count);
     if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
@@ -879,17 +879,17 @@ mod tests {
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            (self.f)(plan.as_ref())
+        ) -> datafusion::error::Result<Option<TaskEstimation>> {
+            Ok((self.f)(plan.as_ref()))
         }
 
-        fn scale_up_leaf_node(
+        fn plan_leaf_node(
             &self,
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+            Ok(None)
         }
     }
 
@@ -901,22 +901,24 @@ mod tests {
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            let coalesce = plan.as_any().downcast_ref::<CoalescePartitionsExec>()?;
+        ) -> datafusion::error::Result<Option<TaskEstimation>> {
+            let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() else {
+                return Ok(None);
+            };
             if coalesce.input().as_any().is::<BroadcastExec>() {
-                Some(TaskEstimation::maximum(1))
+                Ok(Some(TaskEstimation::maximum(1)))
             } else {
-                None
+                Ok(None)
             }
         }
 
-        fn scale_up_leaf_node(
+        fn plan_leaf_node(
             &self,
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+            Ok(None)
         }
     }
 
