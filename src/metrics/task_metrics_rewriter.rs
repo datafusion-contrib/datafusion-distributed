@@ -284,7 +284,7 @@ mod tests {
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::worker::generated::worker as pb;
-    use crate::{DistributedExec, DistributedPhysicalOptimizerRule};
+    use crate::{DistributedExec, SessionStateBuilderExt};
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -328,7 +328,7 @@ mod tests {
                 .with_distributed_channel_resolver(InMemoryChannelResolver::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
-                .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+                .with_distributed_planner()
                 .with_distributed_task_estimator(2)
         }
 

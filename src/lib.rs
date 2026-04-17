@@ -20,7 +20,7 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
+    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
     TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{

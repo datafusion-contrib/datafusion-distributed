@@ -248,7 +248,7 @@ With the resolver in place, wire it into the session and tag each worker with a 
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
-use datafusion_distributed::{DistributedExt, DistributedPhysicalOptimizerRule, Worker};
+use datafusion_distributed::{DistributedExt, Worker};
 
 let worker_version = std::env::var("COMMIT_HASH").unwrap_or_default();
 
@@ -262,7 +262,7 @@ let resolver = VersionAwareWorkerResolver::start_version_filtering(
 let state = SessionStateBuilder::new()
     .with_default_features()
     .with_distributed_worker_resolver(resolver)
-    .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    .with_distributed_planner()
     .build();
 
 let ctx = SessionContext::from(state);

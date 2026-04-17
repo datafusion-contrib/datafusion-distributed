@@ -1,7 +1,7 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
-use datafusion::common::{DataFusionError, plan_datafusion_err};
+use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
@@ -158,19 +158,19 @@ impl Debug for AnnotatedPlan {
 /// ```
 ///
 /// ```
-pub(super) fn annotate_plan(
+pub(super) async fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
-    _annotate_plan(plan, None, cfg, true)
+    _annotate_plan(plan, None, cfg, true).await
 }
 
-fn _annotate_plan(
+async fn _annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     parent: Option<&Arc<dyn ExecutionPlan>>,
     cfg: &ConfigOptions,
     root: bool,
-) -> Result<AnnotatedPlan, DataFusionError> {
+) -> Result<AnnotatedPlan> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
     let broadcast_joins = d_cfg.broadcast_joins;
     let estimator = &d_cfg.__private_task_estimator;
@@ -179,11 +179,13 @@ fn _annotate_plan(
         v => v,
     };
 
-    let annotated_children = plan
-        .children()
-        .iter()
-        .map(|child| _annotate_plan(Arc::clone(child), Some(&plan), cfg, false))
-        .collect::<Result<Vec<_>, _>>()?;
+    let children = plan.children();
+    let mut futures = Vec::with_capacity(children.len());
+    for child in children {
+        let child = Arc::clone(child);
+        futures.push(Box::pin(_annotate_plan(child, Some(&plan), cfg, false)));
+    }
+    let annotated_children = futures::future::try_join_all(futures).await?;
 
     if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
@@ -265,7 +267,7 @@ fn _annotate_plan(
         // If the parent is trying to coalesce all partitions into one, we need to introduce
         // a network coalesce right below it (or in other words, above the current node)
         && (parent.as_any().is::<CoalescePartitionsExec>()
-            || parent.as_any().is::<SortPreservingMergeExec>())
+        || parent.as_any().is::<SortPreservingMergeExec>())
     {
         // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
         if plan.as_any().is::<BroadcastExec>() {
@@ -980,10 +982,12 @@ mod tests {
         let df = ctx.sql(&query).await.unwrap();
         let mut plan = df.create_physical_plan().await.unwrap();
 
-        plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
+        let session_config = ctx.copied_config();
+        plan = insert_broadcast_execs(plan, session_config.options())
             .expect("failed to insert broadcasts");
 
-        let annotated = annotate_plan(plan, ctx.state_ref().read().config_options().as_ref())
+        let annotated = annotate_plan(plan, session_config.options())
+            .await
             .expect("failed to annotate plan");
         format!("{annotated:?}")
     }

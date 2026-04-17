@@ -1,6 +1,5 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use arrow::datatypes::{Field, Schema};
     use arrow::util::pretty::pretty_format_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::error::DataFusionError;
@@ -8,17 +7,10 @@ mod tests {
     use datafusion::logical_expr::{
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
     };
-    use datafusion::physical_expr::expressions::lit;
-    use datafusion::physical_expr::{Partitioning, ScalarFunctionExpr};
-    use datafusion::physical_optimizer::PhysicalOptimizerRule;
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+    use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{
-        DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, assert_snapshot,
-        display_plan_ascii,
-    };
+    use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::{WorkerQueryContext, assert_snapshot, display_plan_ascii};
     use futures::TryStreamExt;
     use std::any::Any;
     use std::error::Error;
@@ -30,48 +22,39 @@ mod tests {
             Ok(ctx.builder.with_scalar_functions(vec![udf()]).build())
         }
 
-        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
-        ctx = SessionStateBuilder::from(ctx.state())
-            .with_distributed_task_estimator(2)
+        let (ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        let ctx = SessionStateBuilder::from(ctx.state())
             .with_scalar_functions(vec![udf()])
             .build()
             .into();
 
-        let wrap = |input: Arc<dyn ExecutionPlan>| -> Arc<dyn ExecutionPlan> {
-            Arc::new(
-                RepartitionExec::try_new(
-                    input,
-                    Partitioning::Hash(
-                        vec![Arc::new(ScalarFunctionExpr::new(
-                            "test_udf",
-                            udf(),
-                            vec![lit(1)],
-                            Arc::new(Field::new("return", DataType::Int32, false)),
-                            Default::default(),
-                        ))],
-                        1,
-                    ),
-                )
-                .unwrap(),
-            )
-        };
+        register_parquet_tables(&ctx).await?;
 
-        let node = wrap(wrap(Arc::new(EmptyExec::new(Arc::new(Schema::empty())))));
-
-        let physical_distributed =
-            DistributedPhysicalOptimizerRule.optimize(node, ctx.copied_config().options())?;
-
+        let df = ctx
+            .sql(r#"SELECT test_udf("RainToday"), count(*) FROM weather GROUP BY test_udf("RainToday") ORDER BY count(*)"#)
+            .await?;
+        let physical_distributed = df.create_physical_plan().await?;
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_distributed_str,
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
-        │ [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+        │ ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(*)@1 as count(*)]
+        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
-          │ RepartitionExec: partitioning=Hash([test_udf(1)], 2), input_partitions=1
-          │   EmptyExec
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          │ SortExec: expr=[count(*)@1 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(Int64(1))@1 as count(*), count(Int64(1))@1 as count(Int64(1))]
+          │     AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
+            │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 6), input_partitions=1
+            │   AggregateExec: mode=Partial, gby=[test_udf(RainToday@0) as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
+            │     PartitionIsolatorExec: tasks=3 partitions=3
+            │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
         ",
         );
 
@@ -82,8 +65,12 @@ mod tests {
         )?;
 
         assert_snapshot!(batches, @r"
-        ++
-        ++
+        +-----------------------------+----------+
+        | test_udf(weather.RainToday) | count(*) |
+        +-----------------------------+----------+
+        | Yes                         | 66       |
+        | No                          | 300      |
+        +-----------------------------+----------+
         ");
         Ok(())
     }

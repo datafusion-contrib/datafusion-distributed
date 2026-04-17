@@ -49,7 +49,7 @@ impl WorkerResolver for LocalhostWorkerResolver {
 }
 ```
 
-Register both the `WorkerResolver` implementation and the `DistributedPhysicalOptimizerRule` in DataFusion's
+Register the `WorkerResolver` implementation and the distributed planner in DataFusion's
 `SessionStateBuilder` to enable distributed query planning:
 
 ```rs
@@ -59,7 +59,7 @@ let localhost_worker_resolver = LocalhostWorkerResolver {
 
 let state = SessionStateBuilder::new()
     .with_distributed_worker_resolver(localhost_worker_resolver)
-    .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    .with_distributed_planner()
     .build();
 
 let ctx = SessionContext::from(state);
