@@ -70,6 +70,14 @@ impl ExecutionPlan for MetricsWrapperExec {
 
     // metrics returns the wrapped metrics.
     fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone())
+        match self.inner.metrics() {
+            None => Some(self.metrics.clone()),
+            Some(mut all_metrics) => {
+                for wrapped in self.metrics.iter() {
+                    all_metrics.push(Arc::clone(wrapped));
+                }
+                Some(all_metrics)
+            }
+        }
     }
 }
