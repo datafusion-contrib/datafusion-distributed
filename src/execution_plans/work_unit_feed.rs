@@ -476,6 +476,10 @@ impl ExecutionPlan for WorkUnitFeedExec {
         self.input.execute(partition, context)
     }
 
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true]
+    }
+
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
         vec![false]
     }
