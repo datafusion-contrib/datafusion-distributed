@@ -15,6 +15,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -62,6 +63,7 @@ impl RowGeneratorExec {
 pub struct RowGeneratorFeedProvider {
     per_partition_work_units: Vec<Vec<RowGeneratorWorkUnit>>,
     task_count: usize,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl RowGeneratorFeedProvider {
@@ -78,6 +80,7 @@ impl RowGeneratorFeedProvider {
                 })
                 .collect(),
             task_count,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 }
@@ -114,11 +117,20 @@ impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
         partition: usize,
         _ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<Box<dyn WorkUnit>>>> {
+        let work_units_sent: Count =
+            MetricBuilder::new(&self.metrics).counter("work_units_sent", partition);
         let messages = self.per_partition_work_units[partition]
             .clone()
             .into_iter()
-            .map(|msg| Ok(Box::new(msg) as Box<dyn WorkUnit>));
+            .map(move |msg| {
+                work_units_sent.add(1);
+                Ok(Box::new(msg) as Box<dyn WorkUnit>)
+            });
         Ok(futures::stream::iter(messages).boxed())
+    }
+
+    fn metrics(&self) -> ExecutionPlanMetricsSet {
+        self.metrics.clone()
     }
 }
 
