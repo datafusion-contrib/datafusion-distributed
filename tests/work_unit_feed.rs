@@ -27,8 +27,8 @@ mod tests {
         assert_snapshot!(plan + &results,
             @r"
         SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
-          SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-            WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=1, rows_per_partition=[[1, 1], [2]]
+          WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=1, rows_per_partition=[[1, 1], [2]]
+            SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
               RowGeneratorExec
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -60,8 +60,8 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1, 1], [2], [1], [2, 1]]
+          │ WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1, 1], [2], [1], [2, 1]]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
@@ -100,8 +100,8 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[3], [], [], [1]]
+          │ WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[3], [], [], [1]]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
@@ -135,8 +135,8 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] t2:[p4..p5] 
-          │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=3, rows_per_partition=[[2], [1], [3], [1], [2], [1]]
+          │ WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=3, rows_per_partition=[[2], [1], [3], [1], [2], [1]]
+          │   SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
@@ -180,11 +180,11 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11] 
           │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [3], [1]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [3], [1]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [2], [1], [1]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [2], [1], [1]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
           └──────────────────────────────────────────────────
         +-------+------+-----------+--------+
@@ -341,14 +341,14 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] t2:[p4..p5] 
           │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [3]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [3]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [1]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [1]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
           └──────────────────────────────────────────────────
         +-----+------+-----------+--------+
@@ -389,8 +389,8 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11] 
           │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+          │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+          │     SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │       RowGeneratorExec
           │   ProjectionExec: expr=[static as tag, 0 as task, 0 as partition, x as letter]
           │     PlaceholderRowExec
