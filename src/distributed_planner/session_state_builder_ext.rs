@@ -1,5 +1,8 @@
 use crate::DistributedExec;
 use crate::distributed_planner::distribute_plan::distribute_plan;
+use crate::distributed_planner::plan_annotator::{
+    DefaultNetworkBoundaryAnnotator, NetworkBoundaryAnnotator,
+};
 use async_trait::async_trait;
 use datafusion::common::Result;
 use datafusion::execution::context::QueryPlanner;
@@ -19,17 +22,42 @@ pub trait SessionStateBuilderExt {
     /// with [SessionStateBuilderExt::with_distributed_planner] strictly *before* calling
     /// [SessionStateBuilder::with_query_planner].
     fn with_distributed_planner(self) -> Self;
+
+    /// Injects a [QueryPlanner] implementation that attempts to distribute the plan after the
+    /// normal planning passes are performed, relying on the user-provided [PhysicalOptimizerRule]
+    /// to inject the network boundary annotations in custom places.
+    ///
+    /// It will wrap the existing query planner if one, so while setting up DataFusion's
+    /// [SessionStateBuilder], it's important to inject the custom user query planner implementation
+    /// with [SessionStateBuilderExt::with_distributed_planner] strictly *before* calling
+    /// [SessionStateBuilder::with_query_planner].
+    fn with_distributed_custom_annotator_planner(
+        self,
+        annotator: Arc<dyn NetworkBoundaryAnnotator + Send + Sync>,
+    ) -> Self;
 }
 
 impl SessionStateBuilderExt for SessionStateBuilder {
     fn with_distributed_planner(mut self) -> Self {
         let prev = std::mem::take(self.query_planner());
-        self.with_query_planner(Arc::new(DistributedQueryPlanner { prev }))
+        self.with_query_planner(Arc::new(DistributedQueryPlanner {
+            prev,
+            annotator: Arc::new(DefaultNetworkBoundaryAnnotator),
+        }))
+    }
+
+    fn with_distributed_custom_annotator_planner(
+        mut self,
+        annotator: Arc<dyn NetworkBoundaryAnnotator + Send + Sync>,
+    ) -> Self {
+        let prev = std::mem::take(self.query_planner());
+        self.with_query_planner(Arc::new(DistributedQueryPlanner { prev, annotator }))
     }
 }
 #[derive(Debug)]
 struct DistributedQueryPlanner {
     prev: Option<Arc<dyn QueryPlanner + Send + Sync>>,
+    annotator: Arc<dyn NetworkBoundaryAnnotator + Send + Sync>,
 }
 
 #[async_trait]
@@ -52,7 +80,8 @@ impl QueryPlanner for DistributedQueryPlanner {
                     .await?
             }
         };
-        match distribute_plan(Arc::clone(&s_plan), session_state.config_options()).await? {
+        let cfg = session_state.config_options();
+        match distribute_plan(Arc::clone(&s_plan), &self.annotator, cfg).await? {
             Some(d_plan) => Ok(Arc::new(DistributedExec::new(d_plan))),
             None => Ok(s_plan),
         }

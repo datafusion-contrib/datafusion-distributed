@@ -1,79 +1,126 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
+use crate::common::require_one_child;
+use crate::distributed_planner::plan_annotator::NetworkBoundaryKind::{
+    Broadcast, Coalesce, Shuffle,
+};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{
     BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator, WorkUnitFeedExec,
 };
-use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
+use async_trait::async_trait;
+use datafusion::common::{DataFusionError, Result, not_impl_err, plan_datafusion_err, plan_err};
 use datafusion::config::ConfigOptions;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::UnionExec;
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-/// Annotation attached to a single [ExecutionPlan] that determines the kind of network boundary
-/// needed just below itself.
-pub(super) enum PlanOrNetworkBoundary {
-    Plan(Arc<dyn ExecutionPlan>),
+#[async_trait]
+pub trait NetworkBoundaryAnnotator: Debug {
+    async fn annotate_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>>;
+}
+
+#[async_trait]
+impl NetworkBoundaryAnnotator for Arc<dyn PhysicalOptimizerRule + Send + Sync> {
+    async fn annotate_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.as_ref().optimize(plan, cfg)
+    }
+}
+
+/// [ExecutionPlan] implementation that acts as a simple marker for the distributed planner
+/// to know when a `NetworkBoundary` implementation should be injected.
+///
+/// This structure is part of the public API, and it's what allows users to decide
+/// where should the network boundaries be placed, and what task count should be used for the
+/// stage below.
+///
+/// Note that there are restrictions around where can the [NetworkBoundaryAnnotation]s be placed,
+/// for example:
+/// - A [NetworkBoundaryKind::Broadcast] needs to be placed right above a `BroadcastExec` node.
+/// - A [NetworkBoundaryKind::Shuffle] needs to be placed right about a `RepartitionExec` node.
+///
+/// Failure to do so will result in planning errors.
+#[derive(Debug)]
+pub struct NetworkBoundaryAnnotation {
+    /// The kind of network boundary that should be injected.
+    pub kind: NetworkBoundaryKind,
+    /// The task count for the input stage of this network boundary.
+    ///
+    /// Note that the task count for this network boundary is decided by the other network boundary
+    /// immediately above, and not this one.
+    pub input_task_count: usize,
+    /// The input [ExecutionPlan] that will run remotely on the stage below.
+    pub input: Arc<dyn ExecutionPlan>,
+}
+
+/// The type of network boundary that should be injected:
+/// - [NetworkBoundaryKind::Shuffle] -> `NetworkShuffleExec`
+/// - [NetworkBoundaryKind::Coalesce] -> `NetworkCoalesceExec`
+/// - [NetworkBoundaryKind::Broadcast] -> `NetworkBroadcastExec`
+#[derive(Debug, Clone)]
+pub enum NetworkBoundaryKind {
     Shuffle,
     Coalesce,
     Broadcast,
 }
 
-impl Debug for PlanOrNetworkBoundary {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Plan(plan) => write!(f, "{}", plan.name()),
-            Self::Shuffle => write!(f, "[NetworkBoundary] Shuffle"),
-            Self::Coalesce => write!(f, "[NetworkBoundary] Coalesce"),
-            Self::Broadcast => write!(f, "[NetworkBoundary] Broadcast"),
-        }
+impl DisplayAs for NetworkBoundaryAnnotation {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "NetworkBoundaryPlaceholder: kind={:?}, input_tasks={}",
+            self.kind, self.input_task_count
+        )
     }
 }
 
-impl PlanOrNetworkBoundary {
-    fn is_network_boundary(&self) -> bool {
-        matches!(self, Self::Shuffle | Self::Coalesce | Self::Broadcast)
+impl ExecutionPlan for NetworkBoundaryAnnotation {
+    fn name(&self) -> &str {
+        "NetworkBoundaryPlaceholder"
     }
-}
 
-/// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
-/// it should run on, and whether it needs a network boundary below or not.
-pub(super) struct AnnotatedPlan {
-    /// The annotated [ExecutionPlan].
-    pub(super) plan_or_nb: PlanOrNetworkBoundary,
-    /// The annotated children of this [ExecutionPlan]. This will always hold the same nodes as
-    /// `self.plan.children()` but annotated.
-    pub(super) children: Vec<AnnotatedPlan>,
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    // annotation fields
-    /// How many distributed tasks this plan should run on.
-    pub(super) task_count: TaskCountAnnotation,
-}
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
 
-impl Debug for AnnotatedPlan {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fn fmt_dbg(f: &mut Formatter<'_>, plan: &AnnotatedPlan, depth: usize) -> std::fmt::Result {
-            write!(
-                f,
-                "{}{:?}: task_count={:?}",
-                " ".repeat(depth * 2),
-                plan.plan_or_nb,
-                plan.task_count
-            )?;
-            writeln!(f)?;
-            for child in plan.children.iter() {
-                fmt_dbg(f, child, depth + 1)?;
-            }
-            Ok(())
-        }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
 
-        fmt_dbg(f, self, 0)
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(Self {
+            kind: self.kind.clone(),
+            input_task_count: self.input_task_count,
+            input: require_one_child(children)?,
+        }))
+    }
+
+    fn execute(&self, _: usize, _: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        not_impl_err!("NetworkBoundaryPlaceholder does not support execution.")
     }
 }
 
@@ -158,19 +205,103 @@ impl Debug for AnnotatedPlan {
 /// │      DataSource      │ network_boundary: None
 /// └──────────────────────┘                                                                                                                                                                                        └──────────────────────┘
 /// ```
-///
-/// ```
-pub(super) async fn annotate_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> Result<AnnotatedPlan, DataFusionError> {
-    let ctx = AnnotationContext {
-        parent: None,
-        work_unit_feed_above: false,
-    };
-    _annotate_plan(plan, cfg, ctx).await
+#[derive(Debug)]
+pub(crate) struct DefaultNetworkBoundaryAnnotator;
+
+#[async_trait]
+impl NetworkBoundaryAnnotator for DefaultNetworkBoundaryAnnotator {
+    async fn annotate_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        cfg: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        fn inject_network_boundary_placeholders(
+            mut annotation: AnnotatedPlan,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            match annotation.plan_or_nb {
+                PlanOrNetworkBoundary::Plan(plan) => {
+                    let mut children = Vec::with_capacity(annotation.children.len());
+                    for child in annotation.children {
+                        children.push(inject_network_boundary_placeholders(child)?);
+                    }
+                    plan.with_new_children(children)
+                }
+                PlanOrNetworkBoundary::NetworkBoundary(kind) => {
+                    let Some(child) = annotation.children.pop() else {
+                        return plan_err!("Expected NetworkBoundary annotation to have one child");
+                    };
+                    Ok(Arc::new(NetworkBoundaryAnnotation {
+                        kind,
+                        input_task_count: child.task_count.as_usize(),
+                        input: inject_network_boundary_placeholders(child)?,
+                    }))
+                }
+            }
+        }
+
+        let annotated = annotate_plan(Arc::clone(&plan), cfg, AnnotationContext::default()).await?;
+        inject_network_boundary_placeholders(annotated)
+    }
 }
 
+/// Annotation attached to a single [ExecutionPlan] that determines the kind of network boundary
+/// needed just below itself.
+enum PlanOrNetworkBoundary {
+    Plan(Arc<dyn ExecutionPlan>),
+    NetworkBoundary(NetworkBoundaryKind),
+}
+
+impl Debug for PlanOrNetworkBoundary {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plan(plan) => write!(f, "{}", plan.name()),
+            Self::NetworkBoundary(kind) => write!(f, "[NetworkBoundary] {kind:?}"),
+        }
+    }
+}
+
+impl PlanOrNetworkBoundary {
+    fn is_network_boundary(&self) -> bool {
+        matches!(self, Self::NetworkBoundary(_))
+    }
+}
+
+/// Wraps an [ExecutionPlan] and annotates it with information about how many distributed tasks
+/// it should run on, and whether it needs a network boundary below or not.
+struct AnnotatedPlan {
+    /// The annotated [ExecutionPlan].
+    plan_or_nb: PlanOrNetworkBoundary,
+    /// The annotated children of this [ExecutionPlan]. This will always hold the same nodes as
+    /// `self.plan.children()` but annotated.
+    children: Vec<AnnotatedPlan>,
+
+    // annotation fields
+    /// How many distributed tasks this plan should run on.
+    task_count: TaskCountAnnotation,
+}
+
+impl Debug for AnnotatedPlan {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        fn fmt_dbg(f: &mut Formatter<'_>, plan: &AnnotatedPlan, depth: usize) -> std::fmt::Result {
+            write!(
+                f,
+                "{}{:?}: task_count={:?}",
+                " ".repeat(depth * 2),
+                plan.plan_or_nb,
+                plan.task_count
+            )?;
+            writeln!(f)?;
+            for child in plan.children.iter() {
+                fmt_dbg(f, child, depth + 1)?;
+            }
+            Ok(())
+        }
+
+        fmt_dbg(f, self, 0)
+    }
+}
+
+#[derive(Default)]
 struct AnnotationContext<'a> {
     parent: Option<&'a Arc<dyn ExecutionPlan>>,
     work_unit_feed_above: bool,
@@ -186,7 +317,7 @@ impl<'a> AnnotationContext<'a> {
     }
 }
 
-async fn _annotate_plan(
+async fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
     ctx: AnnotationContext<'_>,
@@ -203,7 +334,7 @@ async fn _annotate_plan(
     let mut futures = Vec::with_capacity(children.len());
     for child in children {
         let child = Arc::clone(child);
-        futures.push(Box::pin(_annotate_plan(child, cfg, ctx.with_parent(&plan))));
+        futures.push(Box::pin(annotate_plan(child, cfg, ctx.with_parent(&plan))));
     }
     let annotated_children = futures::future::try_join_all(futures).await?;
 
@@ -250,7 +381,7 @@ async fn _annotate_plan(
         && node.mode == PartitionMode::CollectLeft
         && !broadcast_joins
     {
-        // Only distriubte CollectLeft HashJoins after we broadcast more intelligently or when it
+        // Only distribute CollectLeft HashJoins after we broadcast more intelligently or when it
         // is explicitly enabled.
         task_count = Maximum(1);
     } else {
@@ -281,7 +412,7 @@ async fn _annotate_plan(
     if let Some(r_exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
         if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             annotation = AnnotatedPlan {
-                plan_or_nb: PlanOrNetworkBoundary::Shuffle,
+                plan_or_nb: PlanOrNetworkBoundary::NetworkBoundary(Shuffle),
                 children: vec![annotation],
                 task_count,
             };
@@ -298,13 +429,13 @@ async fn _annotate_plan(
         // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
         if plan.as_any().is::<BroadcastExec>() {
             annotation = AnnotatedPlan {
-                plan_or_nb: PlanOrNetworkBoundary::Broadcast,
+                plan_or_nb: PlanOrNetworkBoundary::NetworkBoundary(Broadcast),
                 children: vec![annotation],
                 task_count,
             };
         } else {
             annotation = AnnotatedPlan {
-                plan_or_nb: PlanOrNetworkBoundary::Coalesce,
+                plan_or_nb: PlanOrNetworkBoundary::NetworkBoundary(Coalesce),
                 children: vec![annotation],
                 task_count,
             };
@@ -324,7 +455,7 @@ async fn _annotate_plan(
             // If it's a normal plan, continue with the propagation.
             PlanOrNetworkBoundary::Plan(plan) => plan,
             // Broadcast is a stage split only propagate a Maximum cap into the build stage.
-            PlanOrNetworkBoundary::Broadcast => {
+            PlanOrNetworkBoundary::NetworkBoundary(Broadcast) => {
                 if let Maximum(max) = task_count {
                     for child in annotation.children.iter_mut() {
                         let child_task_count = child.task_count.clone().limit(*max);
@@ -337,8 +468,8 @@ async fn _annotate_plan(
             //
             // Nothing to propagate here, all the nodes below the network boundary were already
             // assigned a task count, we do not want to overwrite it.
-            PlanOrNetworkBoundary::Shuffle => return Ok(()),
-            PlanOrNetworkBoundary::Coalesce => return Ok(()),
+            PlanOrNetworkBoundary::NetworkBoundary(Shuffle) => return Ok(()),
+            PlanOrNetworkBoundary::NetworkBoundary(Coalesce) => return Ok(()),
         };
 
         if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
@@ -378,7 +509,10 @@ async fn _annotate_plan(
         // If the current plan that needs a NetworkBoundary boundary below is either a
         // CoalescePartitionsExec or a SortPreservingMergeExec, then we are sure that all the stage
         // that they are going to be part of needs to run in exactly one task.
-        if matches!(annotation.plan_or_nb, PlanOrNetworkBoundary::Coalesce) {
+        if matches!(
+            annotation.plan_or_nb,
+            PlanOrNetworkBoundary::NetworkBoundary(Coalesce)
+        ) {
             annotation.task_count = Maximum(1);
             return Ok(annotation);
         }
@@ -1012,7 +1146,7 @@ mod tests {
         plan = insert_broadcast_execs(plan, session_config.options())
             .expect("failed to insert broadcasts");
 
-        let annotated = annotate_plan(plan, session_config.options())
+        let annotated = annotate_plan(plan, session_config.options(), AnnotationContext::default())
             .await
             .expect("failed to annotate plan");
         format!("{annotated:?}")

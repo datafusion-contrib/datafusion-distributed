@@ -148,6 +148,16 @@ impl ChildrenIsolatorUnionExec {
             task_idx_map,
         })
     }
+
+    pub(crate) fn children_task_count(&self) -> Vec<usize> {
+        let mut result = vec![0; self.children.len()];
+        for children_in_task in &self.task_idx_map {
+            for (child_idx, ctx) in children_in_task {
+                result[*child_idx] = ctx.task_count
+            }
+        }
+        result
+    }
 }
 
 impl DisplayAs for ChildrenIsolatorUnionExec {
