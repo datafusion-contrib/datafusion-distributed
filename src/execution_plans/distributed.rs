@@ -253,7 +253,7 @@ struct CoordinatorToWorkerMetrics {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-struct CoordinatorToWorkerTaskBuilder<'a> {
+struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     plan_proto: Vec<u8>,
     query_id: Uuid,
@@ -391,7 +391,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     ///
     /// Once this function is called, all the [WorkUnitFeedExec]s feeds will be consumed.
     fn work_unit_feed_task(
-        &self,
+        &mut self,
         ctx: Arc<TaskContext>,
         task_i: usize,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
@@ -474,11 +474,11 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             &tx,
             &mut futures,
         )?;
-
-        Ok(Box::pin(async move {
+        self.join_set.spawn(async move {
             futures::future::try_join_all(futures).await?;
             Ok(())
-        }))
+        });
+        Ok(())
     }
 }
 
