@@ -59,7 +59,7 @@ message SetPlanRequest {
 message WorkUnit {
   // Identifier of the node to which this work unit feed belongs to.
   bytes id = 1;
-  // The partition index withing the node to which the work unit feed belongs to.
+  // The partition index within the node to which the work unit feed belongs to.
   uint64 partition = 2;
   // Arbitrary user-defined data (e.g., a file address) necessary during execution.
   bytes body = 3;

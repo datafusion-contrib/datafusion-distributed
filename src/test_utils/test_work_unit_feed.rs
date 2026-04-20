@@ -145,7 +145,7 @@ fn row_generator_schema() -> SchemaRef {
 
 /// Table function that creates a `TestWorkUnitFeedExec`.
 ///
-/// Called in SQL as: `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2', '')`
+/// Called in SQL as: `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2')`
 /// where the first argument is a tag string, the second is the task count (integer),
 /// and the remaining arguments are comma-separated row counts for each partition's feed
 /// messages. An empty string means an empty partition (no messages). The number of
@@ -154,6 +154,31 @@ fn row_generator_schema() -> SchemaRef {
 ///
 /// String encoding is used for partitions because DataFusion 52.x has a bug where array
 /// literal arguments are silently dropped by the table-function SQL planner.
+///
+/// # Example
+/// The following table function:
+/// `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2')`
+///
+/// Will produce the following output:
+///
+/// ```text
+/// ┌──────────────────────────────┐┌──────────────────────────────┐
+/// │            Task 1            ││            Task 2            │
+/// │                              ││                              │
+/// │┌─────────────┐┌─────────────┐││┌─────────────┐┌─────────────┐│
+/// ││ Partition 1 ││ Partition 2 ││││ Partition 1 ││ Partition 2 ││
+/// ││┌───────────┐││┌───────────┐││││┌───────────┐││┌───────────┐││
+/// │││RecordBatch││││RecordBatch││││││RecordBatch││││RecordBatch│││
+/// │││  2 rows   ││││  3 rows   ││││││  5 rows   ││││  2 rows   │││
+/// ││└───────────┘││└───────────┘││││└───────────┘││└───────────┘││
+/// ││             ││┌───────────┐││││             ││             ││
+/// ││             │││RecordBatch│││││             ││             ││
+/// ││             │││   1 row   │││││             ││             ││
+/// ││             ││└───────────┘││││             ││             ││
+/// │└─────────────┘└─────────────┘││└─────────────┘└─────────────┘│
+/// └──────────────────────────────┘└──────────────────────────────┘
+/// ```
+///
 #[derive(Debug)]
 pub struct TestWorkUnitFeedFunction;
 
