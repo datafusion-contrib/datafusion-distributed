@@ -259,6 +259,8 @@ mod tests {
     async fn join_of_two_feeds() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
+            SET datafusion.optimizer.hash_join_single_partition_threshold = 0;
+            SET datafusion.optimizer.hash_join_single_partition_threshold_rows = 0;
             SELECT a.task as a_task, a.letter as a_letter, b.task as b_task, b.letter as b_letter
             FROM test_work_unit('orders', 2, '2', '1', '1', '2') a
             INNER JOIN test_work_unit('customers', 2, '1', '1', '2', '1') b
@@ -275,20 +277,20 @@ mod tests {
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
-          │ SortExec: expr=[a_task@0 ASC NULLS LAST, a_letter@1 ASC NULLS LAST, b_task@2 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[task@0 as a_task, letter@1 as a_letter, task@2 as b_task, letter@3 as b_letter]
+          │ SortExec: expr=[a_task@0 ASC NULLS LAST, b_letter@3 ASC NULLS LAST, b_task@2 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[task@2 as a_task, letter@3 as a_letter, task@0 as b_task, letter@1 as b_letter]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(letter@1, letter@1)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
-            │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+            │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [1], [2], [1]]
             │     RowGeneratorExec
             └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
-            │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [1], [2], [1]]
+            │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[2], [1], [1], [2]]
             │     RowGeneratorExec
             └──────────────────────────────────────────────────
         +--------+----------+--------+----------+
@@ -468,6 +470,8 @@ mod tests {
     async fn join_feed_with_aggregated_feed() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
+            SET datafusion.optimizer.hash_join_single_partition_threshold = 0;
+            SET datafusion.optimizer.hash_join_single_partition_threshold_rows = 0;
             SELECT a.tag as a_tag, a.letter, b.cnt
             FROM test_work_unit('detail', 2, '2', '1', '1', '2') a
             INNER JOIN (
@@ -519,13 +523,87 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn broadcast_join_over_feeds() -> Result<(), Box<dyn std::error::Error>> {
+        let (plan, results) = run_query(
+            r#"
+            SET distributed.broadcast_joins=true;
+            SELECT
+                a.tag as a_tag, a.task as a_task, a.partition as a_partition, a.letter,
+                b.tag as b_tag, b.task as b_task, b.partition as b_partition
+            FROM test_work_unit('probe', 2, '3', '1', '2', '1') a
+            INNER JOIN test_work_unit('build', 2, '1', '2', '1', '3') b
+            ON a.letter = b.letter
+            ORDER BY a_task, a_partition, a.letter, b_task, b_partition
+        "#,
+        )
+        .await?;
+
+        assert_snapshot!(plan + &results, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ SortPreservingMergeExec: [a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST]
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p2..p3] 
+          │ SortExec: expr=[a_task@1 ASC NULLS LAST, a_partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST, b_task@5 ASC NULLS LAST, b_partition@6 ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[tag@0 as a_tag, task@1 as a_task, partition@2 as a_partition, letter@3 as letter, tag@4 as b_tag, task@5 as b_task, partition@6 as b_partition]
+          │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@3, letter@3)], projection=[tag@0, task@1, partition@2, letter@3, tag@4, task@5, partition@6]
+          │       CoalescePartitionsExec
+          │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=2
+          │       WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[1], [2], [1], [3]]
+          │         RowGeneratorExec
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] 
+            │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
+            │   WorkUnitFeedExec: RowGeneratorFeedProvider: tasks=2, rows_per_partition=[[3], [1], [2], [1]]
+            │     RowGeneratorExec
+            └──────────────────────────────────────────────────
+        +-------+--------+-------------+--------+-------+--------+-------------+
+        | a_tag | a_task | a_partition | letter | b_tag | b_task | b_partition |
+        +-------+--------+-------------+--------+-------+--------+-------------+
+        | probe | 0      | 0           | a      | build | 0      | 0           |
+        | probe | 0      | 0           | a      | build | 0      | 1           |
+        | probe | 0      | 0           | a      | build | 1      | 0           |
+        | probe | 0      | 0           | a      | build | 1      | 1           |
+        | probe | 0      | 0           | b      | build | 0      | 1           |
+        | probe | 0      | 0           | b      | build | 1      | 1           |
+        | probe | 0      | 0           | c      | build | 1      | 1           |
+        | probe | 0      | 1           | a      | build | 0      | 0           |
+        | probe | 0      | 1           | a      | build | 0      | 1           |
+        | probe | 0      | 1           | a      | build | 1      | 0           |
+        | probe | 0      | 1           | a      | build | 1      | 1           |
+        | probe | 1      | 0           | a      | build | 0      | 0           |
+        | probe | 1      | 0           | a      | build | 0      | 1           |
+        | probe | 1      | 0           | a      | build | 1      | 0           |
+        | probe | 1      | 0           | a      | build | 1      | 1           |
+        | probe | 1      | 0           | b      | build | 0      | 1           |
+        | probe | 1      | 0           | b      | build | 1      | 1           |
+        | probe | 1      | 1           | a      | build | 0      | 0           |
+        | probe | 1      | 1           | a      | build | 0      | 1           |
+        | probe | 1      | 1           | a      | build | 1      | 0           |
+        | probe | 1      | 1           | a      | build | 1      | 1           |
+        +-------+--------+-------------+--------+-------+--------+-------------+
+        ");
+        Ok(())
+    }
+
     async fn run_query(sql: &str) -> Result<(String, String), DataFusionError> {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
         ctx.set_distributed_task_estimator(TestWorkUnitFeedTaskEstimator);
         ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
 
-        let df = ctx.sql(sql).await?;
+        let mut df_opt = None;
+        for sql in sql.split(";") {
+            if sql.trim().is_empty() {
+                continue;
+            }
+            let df = ctx.sql(sql).await?;
+            df_opt = Some(df);
+        }
+        let Some(df) = df_opt else {
+            return Err(DataFusionError::Plan("Empty 'sql' parameter".to_string()));
+        };
         let plan = df.create_physical_plan().await?;
         let plan_display = display_plan_ascii(plan.as_ref(), false);
 

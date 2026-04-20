@@ -7,8 +7,9 @@ use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{Session, TableFunctionImpl};
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::{Result, ScalarValue, exec_err, internal_err, plan_err};
+use datafusion::common::{Result, ScalarValue, Statistics, exec_err, internal_err, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -38,10 +39,17 @@ pub struct RowGeneratorExec {
     properties: Arc<PlanProperties>,
     tag: String,
     projection: Option<Vec<usize>>,
+    /// Total number of rows this exec will produce across all partitions.
+    total_rows: usize,
 }
 
 impl RowGeneratorExec {
-    pub fn new(tag: String, partitions: usize, projection: Option<Vec<usize>>) -> Self {
+    pub fn new(
+        tag: String,
+        partitions: usize,
+        projection: Option<Vec<usize>>,
+        total_rows: usize,
+    ) -> Self {
         let schema = match &projection {
             Some(indices) => Arc::new(row_generator_schema().project(indices).unwrap()),
             None => row_generator_schema(),
@@ -55,6 +63,7 @@ impl RowGeneratorExec {
             )),
             tag,
             projection,
+            total_rows,
         }
     }
 }
@@ -261,10 +270,16 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let total_rows: usize = self
+            .row_counts
+            .iter()
+            .flat_map(|msgs| msgs.iter().copied())
+            .sum();
         let node = Arc::new(RowGeneratorExec::new(
             self.tag.clone(),
             self.row_counts.len(),
             projection.cloned(),
+            total_rows,
         ));
         Ok(Arc::new(WorkUnitFeedExec::new(
             node,
@@ -312,6 +327,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
                     exec.tag.clone(),
                     partitions_per_task,
                     exec.projection.clone(),
+                    exec.total_rows,
                 ))));
             };
             Ok(Transformed::no(plan))
@@ -395,6 +411,20 @@ impl ExecutionPlan for RowGeneratorExec {
             stream,
         )))
     }
+
+    /// Compute statistics from the exact total row count known at planning time. This lets
+    /// DataFusion's planner decide whether to use `CollectLeft` vs `Partitioned` mode for
+    /// hash joins based on the real data size — small inputs (below DataFusion's threshold)
+    /// become `CollectLeft` and can be broadcast.
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
+        // Rough byte estimate: assume ~32 bytes per row (tag + task + partition + letter).
+        let total_byte_size = self.total_rows.saturating_mul(32);
+        Ok(Statistics {
+            num_rows: Precision::Exact(self.total_rows),
+            total_byte_size: Precision::Exact(total_byte_size),
+            column_statistics: Statistics::unknown_column(&self.schema()),
+        })
+    }
 }
 
 const ABC: [&str; 27] = [
@@ -410,6 +440,8 @@ struct RowGeneratorExecProto {
     projection: Vec<u64>,
     #[prost(string, tag = "3")]
     tag: String,
+    #[prost(uint64, tag = "4")]
+    total_rows: u64,
 }
 
 #[derive(Debug)]
@@ -440,6 +472,7 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
             proto.tag,
             proto.partitions as usize,
             projection,
+            proto.total_rows as usize,
         )))
     }
 
@@ -456,6 +489,7 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
                 .map(|p| p.iter().map(|&i| i as u64).collect())
                 .unwrap_or_default(),
             tag: exec.tag.clone(),
+            total_rows: exec.total_rows as u64,
         };
 
         proto
