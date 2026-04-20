@@ -24,10 +24,10 @@ You'll see these concepts mentioned extensively across the documentation and the
 
 Some other more tangible concepts are the structs and traits exposed publicly, the most important are:
 
-## [DistributedPhysicalOptimizerRule](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/distributed_physical_optimizer_rule.rs)
+## [SessionStateBuilderExt](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/session_state_builder_ext.rs)
 
-A physical optimizer rule that transforms single-node DataFusion query plans into distributed query plans. It reads
-a fully formed physical plan and injects the appropriate nodes to execute the query in a distributed fashion.
+An extension trait for `SessionStateBuilder` that provides `with_distributed_planner()`. This registers a custom
+query planner that transforms single-node DataFusion query plans into distributed query plans after physical planning.
 
 It builds the distributed plan from bottom to top, injecting network boundaries at appropriate locations based on
 the nodes present in the original plan.

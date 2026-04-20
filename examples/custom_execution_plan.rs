@@ -39,7 +39,7 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedPhysicalOptimizerRule, DistributedTaskContext, PlannedLeafNode,
+    DistributedExt, DistributedTaskContext, PlannedLeafNode, SessionStateBuilderExt,
     TaskEstimation, TaskEstimator, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -390,7 +390,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_config(config)
         .with_distributed_worker_resolver(worker_resolver)
         .with_distributed_channel_resolver(channel_resolver)
-        .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+        .with_distributed_planner()
         .with_distributed_user_codec(NumbersExecCodec)
         .with_distributed_task_estimator(NumbersTaskEstimator)
         .build();

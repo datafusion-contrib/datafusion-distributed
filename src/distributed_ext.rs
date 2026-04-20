@@ -197,7 +197,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, SessionStateBuilderExt, WorkerQueryContext};
     ///
     /// struct CustomWorkerResolver;
     ///
@@ -211,9 +211,7 @@ pub trait DistributedExt: Sized {
     /// // This tweaks the SessionState so that it can plan for distributed queries and execute them.
     /// let state = SessionStateBuilder::new()
     ///     .with_distributed_worker_resolver(CustomWorkerResolver)
-    ///     // the DistributedPhysicalOptimizerRule also needs to be passed so that query plans
-    ///     // get distributed.
-    ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    ///     .with_distributed_planner()
     ///     .build();
     /// ```
     fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
@@ -241,7 +239,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedPhysicalOptimizerRule, WorkerQueryContext, WorkerServiceClient};
+    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, SessionStateBuilderExt, WorkerQueryContext, WorkerServiceClient};
     ///
     /// struct CustomChannelResolver;
     ///
@@ -256,9 +254,7 @@ pub trait DistributedExt: Sized {
     /// // This tweaks the SessionState so that it can plan for distributed queries and execute them.
     /// let state = SessionStateBuilder::new()
     ///     .with_distributed_channel_resolver(CustomChannelResolver)
-    ///     // the DistributedPhysicalOptimizerRule also needs to be passed so that query plans
-    ///     // get distributed.
-    ///     .with_physical_optimizer_rule(Arc::new(DistributedPhysicalOptimizerRule))
+    ///     .with_distributed_planner()
     ///     .build();
     ///
     /// // This function can be provided to a Worker so that, upon receiving a distributed

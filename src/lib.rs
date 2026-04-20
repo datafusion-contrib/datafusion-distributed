@@ -20,8 +20,8 @@ pub mod test_utils;
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, DistributedPhysicalOptimizerRule, NetworkBoundary, NetworkBoundaryExt,
-    PlannedLeafNode, TaskCountAnnotation, TaskEstimation, TaskEstimator,
+    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, PlannedLeafNode,
+    SessionStateBuilderExt, TaskCountAnnotation, TaskEstimation, TaskEstimator,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
@@ -57,4 +57,7 @@ pub use observability::{
 };
 
 #[cfg(any(feature = "integration", test))]
-pub use execution_plans::benchmarks::ShuffleBench;
+pub use execution_plans::benchmarks::{
+    LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode, ShuffleBench,
+    ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
+};

@@ -1,5 +1,6 @@
 use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
+use crate::common::serialize_uuid;
 use crate::distributed_ext::DistributedExt;
 use crate::execution_plans::DistributedExec;
 use crate::stage::Stage;
@@ -62,7 +63,7 @@ pub fn get_stages_and_task_keys(
         // Add each task.
         for j in 0..stage.tasks.len() {
             task_keys.insert(TaskKey {
-                query_id: stage.query_id.as_bytes().to_vec(),
+                query_id: serialize_uuid(&stage.query_id),
                 stage_id: stage.num as u64,
                 task_number: j as u64,
             });
