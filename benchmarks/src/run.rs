@@ -33,7 +33,6 @@ use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, t
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 use tokio::net::TcpListener;

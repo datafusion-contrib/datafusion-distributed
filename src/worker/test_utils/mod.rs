@@ -1,1 +1,1 @@
-pub(crate) mod memory_worker;
+pub(crate) mod worker_handles;
