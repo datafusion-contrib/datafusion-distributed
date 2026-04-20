@@ -1,4 +1,4 @@
-use crate::common::require_one_child;
+use crate::common::{require_one_child, serialize_uuid};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::networking::get_distributed_worker_resolver;
@@ -139,7 +139,7 @@ impl DistributedExec {
                         plan_proto: bytes.clone(),
                         task_count: stage.tasks.len() as _,
                         task_key: Some(TaskKey {
-                            query_id: stage.query_id.as_bytes().to_vec(),
+                            query_id: serialize_uuid(&stage.query_id),
                             stage_id: stage.num as _,
                             task_number: i as _,
                         }),
