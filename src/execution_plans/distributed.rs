@@ -27,7 +27,6 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
-use futures::future::BoxFuture;
 use http::Extensions;
 use prost::Message;
 use rand::Rng;
@@ -116,8 +115,8 @@ impl DistributedExec {
 
             let stage = plan.input_stage();
 
-            let send_task_builder =
-                CoordinatorToWorkerTaskBuilder::new(stage, metrics.clone(), &codec)?;
+            let mut spawner =
+                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
 
             // Right now, we assign random workers to tasks. This might change in the future.
             let start_idx = rand::rng().random_range(0..urls.len());
@@ -128,10 +127,9 @@ impl DistributedExec {
                 tasks.push(ExecutionTask {
                     url: Some(url.clone()),
                 });
-                let send_plan_task = send_task_builder.send_plan_task(Arc::clone(ctx), i, url)?;
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
-                join_set.spawn(send_plan_task);
+                spawner.send_plan_task(Arc::clone(ctx), i, url)?;
             }
 
             Ok(Transformed::yes(plan.with_input_stage(Stage {
@@ -246,21 +244,23 @@ struct CoordinatorToWorkerMetrics {
 ///
 /// This struct is responsible for building tasks that communicate a serialized plan to multiple
 /// workers for further execution.
-struct CoordinatorToWorkerTaskBuilder {
+struct CoordinatorToWorkerTaskSpawner<'a> {
     plan_proto: Vec<u8>,
     query_id: Uuid,
     stage_id: usize,
     task_count: usize,
-    metrics: CoordinatorToWorkerMetrics,
+    metrics: &'a CoordinatorToWorkerMetrics,
+    join_set: &'a mut JoinSet<Result<()>>,
 }
 
-impl CoordinatorToWorkerTaskBuilder {
-    /// Builds a new [CoordinatorToWorkerTaskBuilder] based on the [Stage] that needs to be
+impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
+    /// Builds a new [CoordinatorToWorkerTaskSpawner] based on the [Stage] that needs to be
     /// fanned out to multiple workers.
     fn new(
-        stage: &Stage,
-        metrics: CoordinatorToWorkerMetrics,
-        codec: &dyn PhysicalExtensionCodec,
+        stage: &'a Stage,
+        metrics: &'a CoordinatorToWorkerMetrics,
+        codec: &'a dyn PhysicalExtensionCodec,
+        join_set: &'a mut JoinSet<Result<()>>,
     ) -> Result<Self> {
         let Some(plan) = &stage.plan else {
             return internal_err!("Plan is not set for stage {}", stage.num);
@@ -275,17 +275,13 @@ impl CoordinatorToWorkerTaskBuilder {
             stage_id: stage.num,
             task_count: stage.tasks.len(),
             metrics,
+            join_set,
         })
     }
 
     /// Instantiates and returns the task sends a serialized plan to specific worker. The returned
     /// task is just a future that does nothing unless polled.
-    fn send_plan_task(
-        &self,
-        ctx: Arc<TaskContext>,
-        task_i: usize,
-        url: Url,
-    ) -> Result<BoxFuture<'static, Result<()>>> {
+    fn send_plan_task(&mut self, ctx: Arc<TaskContext>, task_i: usize, url: Url) -> Result<()> {
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
 
         let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
@@ -311,7 +307,7 @@ impl CoordinatorToWorkerTaskBuilder {
         );
 
         let metrics = self.metrics.clone();
-        let send_plan_task = async move {
+        self.join_set.spawn(async move {
             let start = Instant::now();
             let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
             client.coordinator_channel(request).await.map_err(|e| {
@@ -322,9 +318,8 @@ impl CoordinatorToWorkerTaskBuilder {
             metrics.plan_send_latency.record(&start);
             metrics.plan_bytes_sent.add(plan_size);
             Ok::<_, DataFusionError>(())
-        };
-
-        Ok(Box::pin(send_plan_task))
+        });
+        Ok(())
     }
 }
 
