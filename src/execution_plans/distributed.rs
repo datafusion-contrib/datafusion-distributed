@@ -2,6 +2,7 @@ use crate::common::{require_one_child, serialize_uuid};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
+use crate::execution_plans::work_unit_feed::work_unit_feed_boxed;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
@@ -437,7 +438,11 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 // By calling `.take()` the respective partition feed is consumed, and further
                 // consumptions are allowed. Calling `.take()` on the same partition feed again
                 // will fail.
-                let mut work_unit_feed = wuf.provider.feed(feed_idx, Arc::clone(t_ctx))?;
+                let task_ctx =
+                    wuf.get_or_init_task_ctx_with_feeds(dt_ctx.task_count * partitions, t_ctx)?;
+                let Some(mut work_unit_feed) = work_unit_feed_boxed(feed_idx, &task_ctx) else {
+                    return exec_err!("WorkUnit feed not found for feed index {feed_idx}");
+                };
                 let tx = tx.clone();
                 let id = wuf.id;
                 out.push(Box::pin(async move {

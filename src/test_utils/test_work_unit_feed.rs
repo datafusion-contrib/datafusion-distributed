@@ -16,7 +16,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -121,21 +121,29 @@ impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
         write!(f, "]")
     }
 
-    fn feed(
+    fn feeds(
         &self,
-        partition: usize,
+        feed_count: usize,
         _ctx: Arc<TaskContext>,
-    ) -> Result<BoxStream<'static, Result<Box<dyn WorkUnit>>>> {
-        let work_units_sent: Count =
-            MetricBuilder::new(&self.metrics).counter("work_units_sent", partition);
-        let messages = self.per_partition_work_units[partition]
-            .clone()
-            .into_iter()
-            .map(move |msg| {
+    ) -> Result<Vec<BoxStream<'static, Result<Box<dyn WorkUnit>>>>> {
+        let work_units_sent = MetricBuilder::new(&self.metrics).global_counter("work_units_sent");
+        if feed_count != self.per_partition_work_units.len() {
+            return exec_err!(
+                "Something went wrong, requested {feed_count} feeds, but only have {}",
+                self.per_partition_work_units.len()
+            );
+        }
+
+        let mut results = vec![];
+        for work_units in &self.per_partition_work_units {
+            let work_units_sent = work_units_sent.clone();
+            let messages = work_units.clone().into_iter().map(move |msg| {
                 work_units_sent.add(1);
                 Ok(Box::new(msg) as Box<dyn WorkUnit>)
             });
-        Ok(futures::stream::iter(messages).boxed())
+            results.push(futures::stream::iter(messages).boxed())
+        }
+        Ok(results)
     }
 
     fn metrics(&self) -> ExecutionPlanMetricsSet {
@@ -372,7 +380,8 @@ impl ExecutionPlan for RowGeneratorExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let Some(work_unit_feed) = work_unit_feed::<RowGeneratorWorkUnit>(&context) else {
+        let Some(work_unit_feed) = work_unit_feed::<RowGeneratorWorkUnit>(partition, &context)
+        else {
             return exec_err!("Missing TestWorkUnit work unit feed");
         };
 

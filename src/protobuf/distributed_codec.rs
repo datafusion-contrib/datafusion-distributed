@@ -228,6 +228,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     id,
                     input: require_one_child(inputs)?,
                     provider: Arc::new(RemoteWorkUnitFeedProvider { id }),
+                    task_ctx: Default::default(),
                 }))
             }
         }

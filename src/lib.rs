@@ -25,7 +25,8 @@ pub use distributed_planner::{
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec, WorkUnit, WorkUnitFeedExec, WorkUnitFeedProvider, work_unit_feed,
+    PartitionIsolatorExec, WorkUnit, WorkUnitFeed, WorkUnitFeedExec, WorkUnitFeedProvider,
+    work_unit_feed,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,

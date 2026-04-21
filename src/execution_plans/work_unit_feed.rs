@@ -1,6 +1,7 @@
 use crate::common::{require_one_child, task_ctx_with_extension};
 use datafusion::common::{Result, Statistics, exec_err};
 use datafusion::config::ConfigOptions;
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricsSet};
@@ -10,7 +11,8 @@ use datafusion::physical_plan::filter_pushdown::{
 };
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SortOrderPushdownResult,
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    SortOrderPushdownResult,
 };
 use datafusion_proto::protobuf::proto_error;
 use futures::StreamExt;
@@ -20,7 +22,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
@@ -69,10 +71,12 @@ impl<T: Message + 'static> WorkUnit for T {
     }
 }
 
+pub type WorkUnitFeed = BoxStream<'static, Result<Box<dyn WorkUnit>>>;
 pub(crate) type WorkUnitTx = UnboundedSender<Result<Box<dyn WorkUnit>>>;
 pub(crate) type WorkUnitRx = UnboundedReceiver<Result<Box<dyn WorkUnit>>>;
-pub(crate) type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
+pub(crate) type RemoteWorkUnitFeedRxs = HashMap<Uuid, Mutex<Vec<WorkUnitRx>>>;
 pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
+type WorkUnitFeedsCtx = Vec<Mutex<Option<WorkUnitFeed>>>;
 
 /// This struct is used by [RemoteWorkUnitFeedProvider] for consuming remote feeds that
 /// come over the wire from the coordinating stage.
@@ -91,11 +95,14 @@ impl RemoteWorkUnitFeedRegistry {
     /// Creates all the receivers and senders for a specific [WorkUnit] Feed id. One feed per
     /// partition is created.
     pub(crate) fn add(&mut self, id: Uuid, partitions: usize) {
+        let mut rxs = Vec::with_capacity(partitions);
         for partition in 0..partitions {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            self.receivers.insert((id, partition), Mutex::new(Some(rx)));
+            rxs.push(rx);
             self.senders.insert((id, partition), tx);
         }
+
+        self.receivers.insert(id, Mutex::new(rxs));
     }
 }
 
@@ -165,18 +172,10 @@ impl RemoteWorkUnitFeedRegistry {
 /// top of the node in which [work_unit_feed] is called. The elements in the stream are expected
 /// to be user-defined pieces of data necessary for executing a specific [ExecutionPlan].
 pub fn work_unit_feed<T: Any + Message + Default + 'static>(
+    partition: usize,
     ctx: &TaskContext,
 ) -> Option<BoxStream<'static, Result<T>>> {
-    let work_unit_feed = ctx
-        .session_config()
-        .get_extension::<Mutex<BoxStream<Result<Box<dyn WorkUnit>>>>>()?;
-
-    let work_unit_feed = std::mem::replace(
-        &mut *work_unit_feed.lock().unwrap(),
-        futures::stream::empty().boxed(),
-    );
-
-    let work_unit_feed = work_unit_feed.map(|work_unit| {
+    let work_unit_feed = work_unit_feed_boxed(partition, ctx)?.map(|work_unit| {
         let any_work_unit = work_unit?.into_any();
         if any_work_unit.is::<T>() {
             let work_unit = any_work_unit.downcast::<T>().expect("cannot downcast to T");
@@ -194,6 +193,15 @@ pub fn work_unit_feed<T: Any + Message + Default + 'static>(
         }
     });
     Some(work_unit_feed.boxed())
+}
+
+pub(crate) fn work_unit_feed_boxed(
+    partition: usize,
+    ctx: &TaskContext,
+) -> Option<BoxStream<'static, Result<Box<dyn WorkUnit>>>> {
+    let work_unit_feeds = ctx.session_config().get_extension::<WorkUnitFeedsCtx>()?;
+    let work_unit_feed = work_unit_feeds.get(partition)?;
+    std::mem::take(&mut *work_unit_feed.lock().unwrap())
 }
 
 /// Extension point for the [WorkUnitFeedExec] node that allows user to define their own
@@ -301,15 +309,27 @@ pub trait WorkUnitFeedProvider: Send + Sync + Debug {
     ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
     /// ```
     ///
-    fn feed(
-        &self,
-        partition: usize,
-        ctx: Arc<TaskContext>,
-    ) -> Result<BoxStream<'static, Result<Box<dyn WorkUnit>>>>;
+    fn feeds(&self, feed_count: usize, ctx: Arc<TaskContext>) -> Result<Vec<WorkUnitFeed>>;
 
     /// Runtime metrics gathered from the process of streaming [WorkUnit]s.
     fn metrics(&self) -> ExecutionPlanMetricsSet {
         ExecutionPlanMetricsSet::new()
+    }
+
+    /// Injects arbitrary run-time state into this DataSource, returning a new instance
+    /// that incorporates that state *if* it is relevant to the concrete DataSource implementation.
+    ///
+    /// This is a generic entry point: the `state` can be any type wrapped in
+    /// `Arc<dyn Any + Send + Sync>`.  A work unit exec that cares about the state should
+    /// down-cast it to the concrete type it expects and, if successful, return a
+    /// modified copy of itself that captures the provided value.  If the state is
+    /// not applicable, the default behaviour is to return `None` so that parent
+    /// nodes can continue propagating the attempt further down the plan tree.
+    fn with_new_state(
+        &self,
+        _state: Arc<dyn Any + Send + Sync>,
+    ) -> Option<Arc<dyn WorkUnitFeedProvider>> {
+        None
     }
 }
 
@@ -327,11 +347,11 @@ impl WorkUnitFeedProvider for RemoteWorkUnitFeedProvider {
         write!(f, "RemoteWorkUnitFeedProvider")
     }
 
-    fn feed(
+    fn feeds(
         &self,
-        partition: usize,
+        feed_count: usize,
         ctx: Arc<TaskContext>,
-    ) -> Result<BoxStream<'static, Result<Box<dyn WorkUnit>>>> {
+    ) -> Result<Vec<BoxStream<'static, Result<Box<dyn WorkUnit>>>>> {
         let Some(rxs) = ctx
             .session_config()
             .get_extension::<RemoteWorkUnitFeedRxs>()
@@ -340,17 +360,26 @@ impl WorkUnitFeedProvider for RemoteWorkUnitFeedProvider {
         };
 
         let id = self.id;
-        let Some(remote_feed) = rxs.get(&(id, partition)) else {
-            return exec_err!("Missing WorkUnit feed for id {id} and partition {partition}");
+        let Some(remote_feeds) = rxs.get(&id) else {
+            return exec_err!("Missing WorkUnit feeds for id {id}");
         };
 
-        let Some(receiver) = std::mem::take(&mut *remote_feed.lock().unwrap()) else {
+        let receivers = std::mem::take(&mut *remote_feeds.lock().unwrap());
+        if receivers.is_empty() {
+            return exec_err!("WorkUnit feeds for id {id} where already consumed");
+        };
+
+        if receivers.len() != feed_count {
             return exec_err!(
-                "WorkUnit feed for id {id} and partition {partition} was already consumed"
+                "Expected {feed_count} for RemoteWorkUnitFeedProvider, but the current context contains {} remote feeds",
+                receivers.len()
             );
-        };
+        }
 
-        Ok(UnboundedReceiverStream::new(receiver).boxed())
+        Ok(receivers
+            .into_iter()
+            .map(|x| UnboundedReceiverStream::new(x).boxed())
+            .collect())
     }
 }
 
@@ -395,6 +424,7 @@ pub struct WorkUnitFeedExec {
     pub(crate) id: Uuid,
     pub(crate) input: Arc<dyn ExecutionPlan>,
     pub(crate) provider: Arc<dyn WorkUnitFeedProvider>,
+    pub(crate) task_ctx: Arc<OnceLock<Result<Arc<TaskContext>, Arc<DataFusionError>>>>,
 }
 
 impl DisplayAs for WorkUnitFeedExec {
@@ -412,6 +442,7 @@ impl WorkUnitFeedExec {
             id: Uuid::new_v4(),
             input,
             provider,
+            task_ctx: Default::default(),
         }
     }
 
@@ -434,7 +465,35 @@ impl WorkUnitFeedExec {
             id: self.id,
             input: Arc::clone(&self.input),
             provider,
+            task_ctx: Default::default(),
         }
+    }
+
+    /// Lazily inits a new [TaskContext] based on the provided one with a [WorkUnitFeedsCtx]
+    /// embedded as an extension:
+    /// - The first calls to this function starts the [WorkUnit] feeds, places them into a clone
+    ///   of the provided [TaskContext], which then gets stored in a [OnceLock].
+    /// - Subsequent calls just return the previous already instantiated [TaskContext]s with all
+    ///   the [WorkUnit] feeds added.
+    pub(crate) fn get_or_init_task_ctx_with_feeds(
+        &self,
+        feed_count: usize,
+        context: &Arc<TaskContext>,
+    ) -> Result<Arc<TaskContext>> {
+        let context = self.task_ctx.get_or_init(|| {
+            let feeds = self.provider.feeds(feed_count, context.clone())?;
+            if feeds.len() != feed_count {
+                exec_err!("Expected {feed_count} feeds, but got {}", feeds.len())?;
+            }
+            let feeds: WorkUnitFeedsCtx = feeds.into_iter().map(Some).map(Mutex::new).collect();
+            let task_ctx = task_ctx_with_extension(context, feeds);
+            Ok(Arc::new(task_ctx))
+        });
+        let context = match context {
+            Ok(context) => Arc::clone(context),
+            Err(err) => return Err(DataFusionError::Shared(Arc::clone(err))),
+        };
+        Ok(context)
     }
 }
 
@@ -463,6 +522,7 @@ impl ExecutionPlan for WorkUnitFeedExec {
             id: self.id,
             input: require_one_child(children)?,
             provider: Arc::clone(&self.provider),
+            task_ctx: Default::default(),
         }))
     }
 
@@ -471,8 +531,8 @@ impl ExecutionPlan for WorkUnitFeedExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let feed = self.provider.feed(partition, Arc::clone(&context))?;
-        let context = Arc::new(task_ctx_with_extension(&context, Mutex::new(feed)));
+        let partition_count = self.input.output_partitioning().partition_count();
+        let context = self.get_or_init_task_ctx_with_feeds(partition_count, &context)?;
         self.input.execute(partition, context)
     }
 
@@ -547,5 +607,11 @@ impl ExecutionPlan for WorkUnitFeedExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.provider.metrics().clone_inner())
+    }
+
+    fn with_new_state(&self, state: Arc<dyn Any + Send + Sync>) -> Option<Arc<dyn ExecutionPlan>> {
+        self.provider.with_new_state(state).map(|new_data_source| {
+            Arc::new(self.with_new_provider(new_data_source)) as Arc<dyn ExecutionPlan>
+        })
     }
 }

@@ -23,4 +23,6 @@ pub use partition_isolator::PartitionIsolatorExec;
 pub(crate) use work_unit_feed::{
     RemoteWorkUnitFeedProvider, RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs,
 };
-pub use work_unit_feed::{WorkUnit, WorkUnitFeedExec, WorkUnitFeedProvider, work_unit_feed};
+pub use work_unit_feed::{
+    WorkUnit, WorkUnitFeed, WorkUnitFeedExec, WorkUnitFeedProvider, work_unit_feed,
+};
