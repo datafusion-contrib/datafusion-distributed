@@ -16,6 +16,7 @@ mod protobuf;
 pub use protobuf::DistributedCodec;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
+mod work_unit_feed;
 
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
@@ -25,8 +26,7 @@ pub use distributed_planner::{
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec, WorkUnit, WorkUnitFeed, WorkUnitFeedExec, WorkUnitFeedProvider,
-    work_unit_feed,
+    PartitionIsolatorExec,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
@@ -41,6 +41,9 @@ pub use networking::{
 pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
     explain_analyze,
+};
+pub use work_unit_feed::{
+    DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
 };
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
 pub use worker::generated::worker::worker_service_server::WorkerServiceServer;

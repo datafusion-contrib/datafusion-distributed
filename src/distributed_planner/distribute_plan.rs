@@ -6,7 +6,7 @@ use crate::distributed_planner::plan_annotator::{
 };
 use crate::{
     DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimator, WorkUnitFeedExec,
+    NetworkShuffleExec, TaskEstimator,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::TreeNode;
@@ -96,11 +96,9 @@ fn _distribute_plan(
         .map(|child| _distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
     match annotated_plan.plan_or_nb {
-        // This is either a leaf node, or a WorkUnitFeedExec node that feeds work units to a leaf
-        // node, so it needs to be scaled up in order to account for it running in multiple tasks.
-        PlanOrNetworkBoundary::Plan(plan)
-            if plan.children().is_empty() || plan.as_any().is::<WorkUnitFeedExec>() =>
-        {
+        // This is a leaf node. It needs to be scaled up in order to account for it running in
+        // multiple tasks.
+        PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
             let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
                 &plan,
                 annotated_plan.task_count.as_usize(),

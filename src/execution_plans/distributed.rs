@@ -1,8 +1,7 @@
-use crate::common::{require_one_child, serialize_uuid};
+use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
-use crate::execution_plans::work_unit_feed::work_unit_feed_boxed;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
@@ -12,8 +11,8 @@ use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, coordinator_to_worker_msg::Inner,
 };
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext, WorkUnitFeedExec, WorkerResolver,
-    get_distributed_channel_resolver,
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
+    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
 };
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
@@ -299,37 +298,43 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         task_i: usize,
         url: Url,
     ) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
-        /// Searches recursively for [WorkUnitFeedExec] nodes, keeping into account that some of
-        /// them might be executed within a [ChildrenIsolatorUnionExec] context. This means that
-        /// some of them are irrelevant for the current [task_i], and we don't want to account for
-        /// them here.
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+        /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
+        /// feeds, keeping into account that some of them might be executed within a
+        /// [ChildrenIsolatorUnionExec] context. This means that some of them are irrelevant for
+        /// the current [task_i], and we don't want to account for them here.
         ///
         /// It places in the `out` argument all the collected [WorkUnitFeedDeclaration]s necessary
         /// for sending the plan.
         fn gather_work_unit_feed_declarations(
             plan: &Arc<dyn ExecutionPlan>,
             ctx: DistributedTaskContext,
+            d_cfg: &DistributedConfig,
             out: &mut Vec<WorkUnitFeedDeclaration>,
         ) {
-            let wuf = if let Some(wuf) = plan.as_any().downcast_ref::<WorkUnitFeedExec>() {
+            let wuf = if let Some(wuf) = d_cfg
+                .__private_work_unit_feed_registry
+                .get_work_unit_feed(plan)
+            {
                 wuf
             } else if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
                 for (child_i, ctx) in &ciu.task_idx_map[ctx.task_index] {
+                    let child = &ciu.children[*child_i];
                     // Just recurse to children that will actually get executed by this
                     // ChildrenIsolatorUnionExec.
-                    gather_work_unit_feed_declarations(&ciu.children[*child_i], ctx.clone(), out)
+                    gather_work_unit_feed_declarations(child, ctx.clone(), d_cfg, out)
                 }
                 return;
             } else {
                 for child in plan.children() {
-                    gather_work_unit_feed_declarations(child, ctx.clone(), out)
+                    gather_work_unit_feed_declarations(child, ctx.clone(), d_cfg, out)
                 }
                 return;
             };
 
             out.push(WorkUnitFeedDeclaration {
-                id: serialize_uuid(&wuf.id),
-                partitions: wuf.properties().partitioning.partition_count() as u64,
+                id: serialize_uuid(&wuf.id()),
+                partitions: plan.properties().partitioning.partition_count() as u64,
             })
         }
 
@@ -340,6 +345,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_index: task_i,
                 task_count: self.task_count,
             },
+            d_cfg,
             &mut work_unit_feed_declarations,
         );
 
@@ -397,6 +403,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         task_i: usize,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
     ) -> Result<()> {
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Recurses into the plan looking for [WorkUnitFeedExec] nodes that should be handled by
         /// the provided [task_i]. Because of [ChildrenIsolatorUnionExec]s being present in the
         /// plan, there might be some present [WorkUnitFeedExec] that will not necessarily get
@@ -408,29 +415,38 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             plan: &Arc<dyn ExecutionPlan>,
             dt_ctx: DistributedTaskContext,
             t_ctx: &Arc<TaskContext>,
+            d_cfg: &DistributedConfig,
             tx: &UnboundedSender<CoordinatorToWorkerMsg>,
             out: &mut Vec<BoxFuture<'static, Result<()>>>,
         ) -> Result<()> {
-            let wuf = if let Some(wuf) = plan.as_any().downcast_ref::<WorkUnitFeedExec>() {
+            let wuf = if let Some(wuf) = d_cfg
+                .__private_work_unit_feed_registry
+                .get_work_unit_feed(plan)
+            {
                 wuf
             } else if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
                 for (child_i, dt_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
                     // Just recurse to children that will actually get executed by this
                     // ChildrenIsolatorUnionExec.
                     let child = &ciu.children[*child_i];
-                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, tx, out)?;
+                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, d_cfg, tx, out)?;
                 }
                 return Ok(());
             } else {
                 for child in plan.children() {
-                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, tx, out)?
+                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, d_cfg, tx, out)?
                 }
                 return Ok(());
             };
 
-            let partitions = wuf.properties().partitioning.partition_count();
+            let partitions = plan.properties().partitioning.partition_count();
             let start_partition = partitions * dt_ctx.task_index;
             let end_partition = start_partition + partitions;
+
+            let dist_feed_ctx = DistributedWorkUnitFeedContext {
+                fan_out_tasks: dt_ctx.task_count,
+            };
+            let t_ctx = Arc::new(task_ctx_with_extension(t_ctx, dist_feed_ctx));
 
             // There should be as many partition feeds as [num partitions] * [num tasks], so that
             // each task index handles a non-overlapping set of partition feeds.
@@ -438,13 +454,9 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 // By calling `.take()` the respective partition feed is consumed, and further
                 // consumptions are allowed. Calling `.take()` on the same partition feed again
                 // will fail.
-                let task_ctx =
-                    wuf.get_or_init_task_ctx_with_feeds(dt_ctx.task_count * partitions, t_ctx)?;
-                let Some(mut work_unit_feed) = work_unit_feed_boxed(feed_idx, &task_ctx) else {
-                    return exec_err!("WorkUnit feed not found for feed index {feed_idx}");
-                };
+                let mut work_unit_feed = wuf.feed(feed_idx, Arc::clone(&t_ctx))?;
                 let tx = tx.clone();
-                let id = wuf.id;
+                let id = wuf.id();
                 out.push(Box::pin(async move {
                     // At this point, the partition feed contains a stream of decoded messages,
                     // so they must be encoded in order to send them over the wire.
@@ -476,6 +488,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count,
             },
             &ctx,
+            d_cfg,
             &tx,
             &mut futures,
         )?;

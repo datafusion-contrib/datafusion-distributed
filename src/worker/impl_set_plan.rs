@@ -1,7 +1,7 @@
 use crate::common::deserialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
-use crate::execution_plans::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::protobuf::DistributedCodec;
+use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::worker::generated::worker::SetPlanRequest;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};

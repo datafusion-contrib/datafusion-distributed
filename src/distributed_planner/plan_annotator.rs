@@ -1,8 +1,6 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
-use crate::{
-    BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator, WorkUnitFeedExec,
-};
+use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
 use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
@@ -164,32 +162,14 @@ pub(super) async fn annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<AnnotatedPlan, DataFusionError> {
-    let ctx = AnnotationContext {
-        parent: None,
-        work_unit_feed_above: false,
-    };
-    _annotate_plan(plan, cfg, ctx).await
-}
-
-struct AnnotationContext<'a> {
-    parent: Option<&'a Arc<dyn ExecutionPlan>>,
-    work_unit_feed_above: bool,
-}
-
-impl<'a> AnnotationContext<'a> {
-    fn with_parent(&self, parent: &'a Arc<dyn ExecutionPlan>) -> Self {
-        Self {
-            parent: Some(parent),
-            work_unit_feed_above: self.work_unit_feed_above
-                || parent.as_any().is::<WorkUnitFeedExec>(),
-        }
-    }
+    _annotate_plan(plan, None, cfg, true).await
 }
 
 async fn _annotate_plan(
     plan: Arc<dyn ExecutionPlan>,
+    parent: Option<&Arc<dyn ExecutionPlan>>,
     cfg: &ConfigOptions,
-    ctx: AnnotationContext<'_>,
+    root: bool,
 ) -> Result<AnnotatedPlan> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
     let broadcast_joins = d_cfg.broadcast_joins;
@@ -203,7 +183,7 @@ async fn _annotate_plan(
     let mut futures = Vec::with_capacity(children.len());
     for child in children {
         let child = Arc::clone(child);
-        futures.push(Box::pin(_annotate_plan(child, cfg, ctx.with_parent(&plan))));
+        futures.push(Box::pin(_annotate_plan(child, Some(&plan), cfg, false)));
     }
     let annotated_children = futures::future::try_join_all(futures).await?;
 
@@ -218,18 +198,12 @@ async fn _annotate_plan(
                 task_count: estimate.task_count.limit(max_tasks),
             })
         } else {
+            // We could not determine how many tasks this leaf node should run on, so
+            // assume it cannot be distributed and use just 1 task.
             Ok(AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
-                task_count: match ctx.work_unit_feed_above {
-                    // We could not determine how many tasks this leaf node should run on, so
-                    // assume it cannot be distributed and use just 1 task.
-                    false => Maximum(1),
-                    // There is a WorkUnitFeedExec above, and that node is distributable out of the
-                    // box, so we choose a Desired(1) in order to let further nodes decide the final
-                    // task count, without limiting the task count for the whole stage to 1.
-                    true => Desired(1),
-                },
+                task_count: Maximum(1),
             })
         };
     }
@@ -286,7 +260,7 @@ async fn _annotate_plan(
                 task_count,
             };
         }
-    } else if let Some(parent) = ctx.parent
+    } else if let Some(parent) = parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
         // we don't want to do it.
         && !plan.children().is_empty()
@@ -415,7 +389,7 @@ async fn _annotate_plan(
         let prev_task_count = annotation.task_count.as_usize() as f64;
         annotation.task_count = Desired((prev_task_count * sf).ceil() as usize);
         Ok(annotation)
-    } else if ctx.parent.is_none() {
+    } else if root {
         // If this is the root node, it means that we have just finished annotating nodes for the
         // subplan belonging to the head stage, so propagate the task count to all children.
         let task_count = annotation.task_count.clone();

@@ -5,11 +5,16 @@ use crate::distributed_planner::set_distributed_task_estimator;
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
-use crate::{ChannelResolver, DistributedConfig, TaskEstimator, WorkerResolver};
+use crate::work_unit_feed::set_distributed_work_unit_feed;
+use crate::{
+    ChannelResolver, DistributedConfig, TaskEstimator, WorkUnitFeed, WorkUnitFeedProvider,
+    WorkerResolver,
+};
 use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use delegate::delegate;
@@ -535,6 +540,32 @@ pub trait DistributedExt: Sized {
 
     /// Same as [DistributedExt::with_distributed_partial_reduce] but with an in-place mutation.
     fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+
+    /// Registers a [WorkUnitFeed] so that Distributed DataFusion can discover it while traversing
+    /// plans. For more info, refer to [WorkUnitFeed] docs.
+    ///
+    /// This method uses some type system trickery so that users can provide a callback like this:
+    ///
+    /// ```ignore
+    /// # use datafusion::execution::SessionStateBuilder;
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_work_unit_feed(|p: &MyCustomPlan| &p.my_work_unit_feed);
+    /// ```
+    fn with_distributed_work_unit_feed<T, P, F>(self, getter: F) -> Self
+    where
+        T: ExecutionPlan + 'static,
+        P: WorkUnitFeedProvider + 'static,
+        P::WorkUnit: 'static,
+        F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+    /// Same as [DistributedExt::with_distributed_work_unit_feed] but with an in-place mutation.
+    fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
+    where
+        T: ExecutionPlan + 'static,
+        P: WorkUnitFeedProvider + 'static,
+        P::WorkUnit: 'static,
+        F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
 }
 
 impl DistributedExt for SessionConfig {
@@ -662,6 +693,18 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
+    where
+        T: ExecutionPlan + 'static,
+        P: WorkUnitFeedProvider + 'static,
+        P::WorkUnit: 'static,
+        F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static,
+    {
+        set_distributed_work_unit_feed(self, move |plan: &Arc<dyn ExecutionPlan>| {
+            plan.as_any().downcast_ref::<T>().and_then(&getter)
+        })
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -731,6 +774,15 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_work_unit_feed)]
+            #[expr($;self)]
+            fn with_distributed_work_unit_feed<T, P, F>(mut self, getter: F) -> Self
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
         }
     }
 }
@@ -822,6 +874,21 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+            #[call(set_distributed_work_unit_feed)]
+            #[expr($;self)]
+            fn with_distributed_work_unit_feed<T, P, F>(mut self, getter: F) -> Self
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
         }
     }
 }
@@ -913,6 +980,21 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+            #[call(set_distributed_work_unit_feed)]
+            #[expr($;self)]
+            fn with_distributed_work_unit_feed<T, P, F>(mut self, getter: F) -> Self
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
         }
     }
 }
@@ -1004,6 +1086,21 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+            #[call(set_distributed_work_unit_feed)]
+            #[expr($;self)]
+            fn with_distributed_work_unit_feed<T, P, F>(self, getter: F) -> Self
+            where
+                T: ExecutionPlan + 'static,
+                P: WorkUnitFeedProvider + 'static,
+                P::WorkUnit: 'static,
+                F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
         }
     }
 }

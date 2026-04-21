@@ -11,11 +11,12 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
-        TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction, TestWorkUnitFeedTaskEstimator,
+        RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
+        TestWorkUnitFeedTaskEstimator,
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
-        NetworkShuffleExec, WorkUnitFeedExec, WorkerQueryContext, display_plan_ascii,
+        NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
         rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
@@ -231,6 +232,7 @@ mod tests {
         }
 
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
         ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
         ctx.set_distributed_task_estimator(TestWorkUnitFeedTaskEstimator);
         ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
@@ -247,7 +249,7 @@ mod tests {
 
         let plan = rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask)?;
 
-        let work_units_sent = node_metrics::<WorkUnitFeedExec>(&plan, "work_units_sent", 0);
+        let work_units_sent = node_metrics::<RowGeneratorExec>(&plan, "work_units_sent", 0);
         assert_eq!(work_units_sent, 6);
 
         Ok(())

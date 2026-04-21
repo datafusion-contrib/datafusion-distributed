@@ -1,6 +1,6 @@
-use crate::execution_plans::{WorkUnit, WorkUnitFeedProvider};
 use crate::{
-    DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeedExec, work_unit_feed,
+    DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeed, WorkUnitFeedProto,
+    WorkUnitFeedProvider,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::{Int64Array, StringArray};
@@ -9,14 +9,15 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{Session, TableFunctionImpl};
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::{Result, ScalarValue, Statistics, exec_err, internal_err, plan_err};
+use datafusion::common::{Result, ScalarValue, Statistics, internal_err, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
+use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -32,40 +33,6 @@ use std::sync::Arc;
 pub struct RowGeneratorWorkUnit {
     #[prost(uint64, tag = "1")]
     n_rows: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct RowGeneratorExec {
-    properties: Arc<PlanProperties>,
-    tag: String,
-    projection: Option<Vec<usize>>,
-    /// Total number of rows this exec will produce across all partitions.
-    total_rows: usize,
-}
-
-impl RowGeneratorExec {
-    pub fn new(
-        tag: String,
-        partitions: usize,
-        projection: Option<Vec<usize>>,
-        total_rows: usize,
-    ) -> Self {
-        let schema = match &projection {
-            Some(indices) => Arc::new(row_generator_schema().project(indices).unwrap()),
-            None => row_generator_schema(),
-        };
-        Self {
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
-                Partitioning::UnknownPartitioning(partitions),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-            tag,
-            projection,
-            total_rows,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,59 +62,65 @@ impl RowGeneratorFeedProvider {
 }
 
 impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    type WorkUnit = RowGeneratorWorkUnit;
 
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "RowGeneratorFeedProvider: tasks={}, rows_per_partition=[",
-            self.task_count
-        )?;
-        for (i, msgs) in self.per_partition_work_units.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "[")?;
-            for (j, msg) in msgs.iter().enumerate() {
-                if j > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", msg.n_rows)?;
-            }
-            write!(f, "]")?;
-        }
-        write!(f, "]")
-    }
-
-    fn feeds(
+    fn feed(
         &self,
-        feed_count: usize,
+        partition: usize,
         _ctx: Arc<TaskContext>,
-    ) -> Result<Vec<BoxStream<'static, Result<Box<dyn WorkUnit>>>>> {
-        let work_units_sent = MetricBuilder::new(&self.metrics).global_counter("work_units_sent");
-        if feed_count != self.per_partition_work_units.len() {
-            return exec_err!(
-                "Something went wrong, requested {feed_count} feeds, but only have {}",
-                self.per_partition_work_units.len()
-            );
-        }
-
-        let mut results = vec![];
-        for work_units in &self.per_partition_work_units {
-            let work_units_sent = work_units_sent.clone();
-            let messages = work_units.clone().into_iter().map(move |msg| {
-                work_units_sent.add(1);
-                Ok(Box::new(msg) as Box<dyn WorkUnit>)
-            });
-            results.push(futures::stream::iter(messages).boxed())
-        }
-        Ok(results)
+    ) -> Result<BoxStream<'static, Result<Self::WorkUnit>>> {
+        let work_units_sent: Count =
+            MetricBuilder::new(&self.metrics).counter("work_units_sent", partition);
+        let units = self
+            .per_partition_work_units
+            .get(partition)
+            .cloned()
+            .unwrap_or_default();
+        Ok(futures::stream::iter(units.into_iter().map(move |unit| {
+            work_units_sent.add(1);
+            Ok(unit)
+        }))
+        .boxed())
     }
+}
 
-    fn metrics(&self) -> ExecutionPlanMetricsSet {
-        self.metrics.clone()
+/// Leaf execution plan that holds a [`WorkUnitFeed`] directly. During execution, it pulls
+/// its per-partition stream from the feed and turns each [`RowGeneratorWorkUnit`] into a
+/// [`RecordBatch`] of `n_rows` rows.
+#[derive(Debug, Clone)]
+pub struct RowGeneratorExec {
+    pub feed: WorkUnitFeed<RowGeneratorFeedProvider>,
+    properties: Arc<PlanProperties>,
+    tag: String,
+    projection: Option<Vec<usize>>,
+    /// Total number of rows this exec will produce across all partitions.
+    total_rows: usize,
+}
+
+impl RowGeneratorExec {
+    pub fn new(
+        feed: WorkUnitFeed<RowGeneratorFeedProvider>,
+        tag: String,
+        partitions: usize,
+        projection: Option<Vec<usize>>,
+        total_rows: usize,
+    ) -> Self {
+        let schema = match &projection {
+            Some(indices) => Arc::new(row_generator_schema().project(indices).unwrap()),
+            None => row_generator_schema(),
+        };
+        Self {
+            feed,
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+            tag,
+            projection,
+            total_rows,
+        }
     }
 }
 
@@ -160,7 +133,7 @@ fn row_generator_schema() -> SchemaRef {
     ]))
 }
 
-/// Table function that creates a `TestWorkUnitFeedExec`.
+/// Table function that creates a [`RowGeneratorExec`].
 ///
 /// Called in SQL as: `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2')`
 /// where the first argument is a tag string, the second is the task count (integer),
@@ -171,31 +144,6 @@ fn row_generator_schema() -> SchemaRef {
 ///
 /// String encoding is used for partitions because DataFusion 52.x has a bug where array
 /// literal arguments are silently dropped by the table-function SQL planner.
-///
-/// # Example
-/// The following table function:
-/// `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2')`
-///
-/// Will produce the following output:
-///
-/// ```text
-/// ┌──────────────────────────────┐┌──────────────────────────────┐
-/// │            Task 1            ││            Task 2            │
-/// │                              ││                              │
-/// │┌─────────────┐┌─────────────┐││┌─────────────┐┌─────────────┐│
-/// ││ Partition 1 ││ Partition 2 ││││ Partition 1 ││ Partition 2 ││
-/// ││┌───────────┐││┌───────────┐││││┌───────────┐││┌───────────┐││
-/// │││RecordBatch││││RecordBatch││││││RecordBatch││││RecordBatch│││
-/// │││  2 rows   ││││  3 rows   ││││││  5 rows   ││││  2 rows   │││
-/// ││└───────────┘││└───────────┘││││└───────────┘││└───────────┘││
-/// ││             ││┌───────────┐││││             ││             ││
-/// ││             │││RecordBatch│││││             ││             ││
-/// ││             │││   1 row   │││││             ││             ││
-/// ││             ││└───────────┘││││             ││             ││
-/// │└─────────────┘└─────────────┘││└─────────────┘└─────────────┘│
-/// └──────────────────────────────┘└──────────────────────────────┘
-/// ```
-///
 #[derive(Debug)]
 pub struct TestWorkUnitFeedFunction;
 
@@ -249,7 +197,7 @@ impl TableFunctionImpl for TestWorkUnitFeedFunction {
     }
 }
 
-/// TableProvider that creates a `TestWorkUnitFeedExec` in `scan()`.
+/// TableProvider that creates a [`RowGeneratorExec`] in `scan()`.
 #[derive(Debug)]
 struct TestWorkUnitFeedTableProvider {
     tag: String,
@@ -283,18 +231,15 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
             .iter()
             .flat_map(|msgs| msgs.iter().copied())
             .sum();
-        let node = Arc::new(RowGeneratorExec::new(
+        Ok(Arc::new(RowGeneratorExec::new(
+            WorkUnitFeed::new(RowGeneratorFeedProvider::new(
+                self.task_count,
+                self.row_counts.clone(),
+            )),
             self.tag.clone(),
             self.row_counts.len(),
             projection.cloned(),
             total_rows,
-        ));
-        Ok(Arc::new(WorkUnitFeedExec::new(
-            node,
-            Arc::new(RowGeneratorFeedProvider::new(
-                self.task_count,
-                self.row_counts.clone(),
-            )),
         )))
     }
 }
@@ -307,12 +252,9 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         _cfg: &ConfigOptions,
     ) -> Option<TaskEstimation> {
-        let work_unit_feed_exec = plan.as_any().downcast_ref::<WorkUnitFeedExec>()?;
-        let feed_provider = work_unit_feed_exec
-            .provider()
-            .as_any()
-            .downcast_ref::<RowGeneratorFeedProvider>()?;
-        Some(TaskEstimation::desired(feed_provider.task_count))
+        let exec = plan.as_any().downcast_ref::<RowGeneratorExec>()?;
+        let provider = exec.feed.clone().try_into_inner().ok()?;
+        Some(TaskEstimation::desired(provider.task_count))
     }
 
     fn scale_up_leaf_node(
@@ -321,17 +263,15 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         task_count: usize,
         _cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
-        let work_unit_feed_exec = plan.as_any().downcast_ref::<WorkUnitFeedExec>()?;
-        let feed_provider = work_unit_feed_exec
-            .provider()
-            .as_any()
-            .downcast_ref::<RowGeneratorFeedProvider>()?;
-        let partitions_per_task = feed_provider.per_partition_work_units.len() / task_count;
+        let exec = plan.as_any().downcast_ref::<RowGeneratorExec>()?;
+        let provider = exec.feed.clone().try_into_inner().ok()?;
+        let partitions_per_task = provider.per_partition_work_units.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
         let transformed = Arc::clone(plan).transform_down(|plan| {
             if let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() {
                 return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
+                    exec.feed.clone(),
                     exec.tag.clone(),
                     partitions_per_task,
                     exec.projection.clone(),
@@ -347,7 +287,25 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
 
 impl DisplayAs for RowGeneratorExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "RowGeneratorExec")
+        write!(f, "RowGeneratorExec: tag={}", self.tag)?;
+        let Some(provider) = self.feed.inner() else {
+            return Ok(());
+        };
+        write!(f, ", tasks={}, rows_per_partition=[", provider.task_count)?;
+        for (i, msgs) in provider.per_partition_work_units.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "[")?;
+            for (j, msg) in msgs.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", msg.n_rows)?;
+            }
+            write!(f, "]")?;
+        }
+        write!(f, "]")
     }
 }
 
@@ -380,10 +338,7 @@ impl ExecutionPlan for RowGeneratorExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let Some(work_unit_feed) = work_unit_feed::<RowGeneratorWorkUnit>(partition, &context)
-        else {
-            return exec_err!("Missing TestWorkUnit work unit feed");
-        };
+        let work_unit_feed = self.feed.feed(partition, Arc::clone(&context))?;
 
         let distributed_ctx = DistributedTaskContext::from_ctx(&context);
         let task_index = distributed_ctx.task_index as i64;
@@ -434,6 +389,14 @@ impl ExecutionPlan for RowGeneratorExec {
             column_statistics: Statistics::unknown_column(&self.schema()),
         })
     }
+
+    /// Exposes the metrics recorded by the local [`RowGeneratorFeedProvider`] (e.g. the
+    /// `work_units_sent` counter incremented as work units are streamed out on the
+    /// coordinator side). For remote feeds there are no local metrics to report.
+    fn metrics(&self) -> Option<MetricsSet> {
+        let provider = self.feed.inner()?;
+        Some(provider.metrics.clone_inner())
+    }
 }
 
 const ABC: [&str; 27] = [
@@ -451,6 +414,8 @@ struct RowGeneratorExecProto {
     tag: String,
     #[prost(uint64, tag = "4")]
     total_rows: u64,
+    #[prost(message, optional, tag = "5")]
+    feed: Option<WorkUnitFeedProto>,
 }
 
 #[derive(Debug)]
@@ -465,7 +430,7 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!(
-                "TestWorkUnitFeedExec should have no children, got {}",
+                "RowGeneratorExec should have no children, got {}",
                 inputs.len()
             );
         }
@@ -477,7 +442,12 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
         } else {
             Some(proto.projection.iter().map(|&i| i as usize).collect())
         };
+        let feed_proto = proto
+            .feed
+            .ok_or_else(|| proto_error("RowGeneratorExecProto missing feed"))?;
+        let feed = WorkUnitFeed::<RowGeneratorFeedProvider>::from_proto(feed_proto)?;
         Ok(Arc::new(RowGeneratorExec::new(
+            feed,
             proto.tag,
             proto.partitions as usize,
             projection,
@@ -487,7 +457,7 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
         let Some(exec) = node.as_any().downcast_ref::<RowGeneratorExec>() else {
-            return internal_err!("Expected TestWorkUnitFeedExec, but was {}", node.name());
+            return internal_err!("Expected RowGeneratorExec, but was {}", node.name());
         };
 
         let proto = RowGeneratorExecProto {
@@ -499,10 +469,11 @@ impl PhysicalExtensionCodec for TestWorkUnitFeedExecCodec {
                 .unwrap_or_default(),
             tag: exec.tag.clone(),
             total_rows: exec.total_rows as u64,
+            feed: Some(exec.feed.to_proto()),
         };
 
         proto
             .encode(buf)
-            .map_err(|e| proto_error(format!("Failed to encode TestWorkUnitFeedExec: {e}")))
+            .map_err(|e| proto_error(format!("Failed to encode RowGeneratorExec: {e}")))
     }
 }

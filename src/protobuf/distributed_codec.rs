@@ -1,12 +1,11 @@
 use super::get_distributed_user_codecs;
-use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
+use crate::common::{deserialize_uuid, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
-    RemoteWorkUnitFeedProvider,
 };
 use crate::stage::{ExecutionTask, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary, WorkUnitFeedExec};
+use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -69,7 +68,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             Ok(Stage {
-                query_id: deserialize_uuid(&proto.query_id)?,
+                query_id: deserialize_uuid(proto.query_id.as_ref())?,
                 num: proto.num as usize,
                 plan: inputs.first().cloned(),
                 tasks: decode_tasks(proto.tasks)?,
@@ -222,15 +221,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         .collect(),
                 }))
             }
-            DistributedExecNode::WorkUnitFeed(WorkUnitFeedExecProto { id }) => {
-                let id = deserialize_uuid(&id)?;
-                Ok(Arc::new(WorkUnitFeedExec {
-                    id,
-                    input: require_one_child(inputs)?,
-                    provider: Arc::new(RemoteWorkUnitFeedProvider { id }),
-                    task_ctx: Default::default(),
-                }))
-            }
         }
     }
 
@@ -339,16 +329,6 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
-        } else if let Some(node) = node.as_any().downcast_ref::<WorkUnitFeedExec>() {
-            let inner = WorkUnitFeedExecProto {
-                id: serialize_uuid(&node.id),
-            };
-
-            let wrapper = DistributedExecProto {
-                node: Some(DistributedExecNode::WorkUnitFeed(inner)),
-            };
-
-            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
@@ -379,7 +359,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -397,8 +377,6 @@ pub enum DistributedExecNode {
     NetworkBroadcast(NetworkBroadcastExecProto),
     #[prost(message, tag = "6")]
     Broadcast(BroadcastExecProto),
-    #[prost(message, tag = "7")]
-    WorkUnitFeed(WorkUnitFeedExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -507,12 +485,6 @@ pub struct NetworkBroadcastExecProto {
 pub struct BroadcastExecProto {
     #[prost(uint64, tag = "1")]
     pub consumer_task_count: u64,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct WorkUnitFeedExecProto {
-    #[prost(bytes, tag = "1")]
-    pub id: Vec<u8>,
 }
 
 fn new_network_broadcast_exec(
