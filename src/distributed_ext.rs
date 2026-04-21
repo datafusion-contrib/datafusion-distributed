@@ -465,13 +465,11 @@ pub trait DistributedExt: Sized {
         compression: Option<CompressionType>,
     ) -> Result<(), DataFusionError>;
 
-    /// How many rows to collect in each record batch before sending it over the wire in a
-    /// shuffle operation. This value defaults to the same as `datafusion.execution.batch_size`.
+    /// Overrides `datafusion.execution.batch_size` for worker-executed stages, letting users
+    /// tune shuffle batch sizes (specifically `RepartitionExec`'s output batching via its
+    /// internal `LimitedBatchCoalescer`) independently of the global batch size.
     ///
-    /// Setting it to something smaller than `datafusion.execution.batch_size` has no effect.
-    ///
-    /// It's preferable to set `datafusion.execution.batch_size` directly instead of this
-    /// parameter if the specific use case allows it.
+    /// Set to 0 (the default) to apply no override.
     fn with_distributed_shuffle_batch_size(
         self,
         batch_size: usize,

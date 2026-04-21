@@ -15,7 +15,7 @@ async function main() {
         .option('--files-per-task <number>', 'Files per task', '8')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
-        .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
+        .option('--shuffle-batch-size <number>', 'Override RepartitionExec batch size on worker stages (0 = no override)', '0')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
         .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'true')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')

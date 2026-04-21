@@ -1,5 +1,4 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::batch_coalescing_below_network_boundaries::batch_coalescing_below_network_boundaries;
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
@@ -36,9 +35,6 @@ use uuid::Uuid;
 ///    assignation that the annotations required. After this, the plan is already a distributed
 ///    executable plan.
 ///
-/// 4. Place the [CoalesceBatchesExec] in the appropriate places (just below network boundaries),
-///    so that we send fewer and bigger record batches over the wire instead of a lot of small ones.
-///
 /// This function returns None if the plan was left undistributed.
 pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
@@ -70,11 +66,6 @@ pub(super) async fn distribute_plan(
     if stage_id == 1 {
         return Ok(None);
     }
-
-    // Place some batch coalescing nodes before network boundaries in order to send big batches
-    // over the wire.
-    // TODO: This should be removed after DataFusion 53 upgrade, as CoalesceBatchesExec is deprecated.
-    let plan = batch_coalescing_below_network_boundaries(plan, cfg)?;
 
     Ok(Some(plan))
 }
