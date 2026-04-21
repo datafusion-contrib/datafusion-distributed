@@ -1,5 +1,6 @@
 use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
+use crate::execution_plans::per_task_plan_transformer::PerTaskPlanTransformerExtension;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
@@ -61,6 +62,9 @@ extensions_options! {
         /// [WorkerResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_worker_resolver: WorkerResolverExtension, default = WorkerResolverExtension::not_implemented()
+        /// Optional [PerTaskPlanTransformer] that the coordinator calls before serializing each
+        /// task's plan, allowing per-task plan specialization (e.g., emptying non-owned file groups).
+        pub(crate) __private_per_task_plan_transformer: PerTaskPlanTransformerExtension, default = PerTaskPlanTransformerExtension::default()
     }
 }
 

@@ -2,6 +2,10 @@ use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::distributed_planner::set_distributed_task_estimator;
+use crate::execution_plans::per_task_plan_transformer::{
+    PerTaskPlanTransformer, set_distributed_per_task_plan_transformer,
+    set_distributed_per_task_plan_transformer_arc,
+};
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
@@ -526,6 +530,40 @@ pub trait DistributedExt: Sized {
         &mut self,
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
+
+    /// Registers a [PerTaskPlanTransformer] that the coordinator will call before serializing the
+    /// plan for each task.
+    ///
+    /// When set, the coordinator produces distinct plan bytes per task by calling
+    /// `transform_for_task(plan, task_index, task_count)` instead of sharing a single serialized
+    /// plan across all workers. This enables per-task plan specialization — for example, emptying
+    /// file groups that a given task will not access, which avoids unnecessary disk-cache
+    /// population on workers.
+    fn with_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(
+        self,
+        transformer: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_per_task_plan_transformer] but with an
+    /// in-place mutation.
+    fn set_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(
+        &mut self,
+        transformer: T,
+    );
+
+    /// Same as [DistributedExt::with_distributed_per_task_plan_transformer] but with a dynamic
+    /// argument.
+    fn with_distributed_per_task_plan_transformer_arc(
+        self,
+        transformer: Arc<dyn PerTaskPlanTransformer>,
+    ) -> Self;
+
+    /// Same as [DistributedExt::set_distributed_per_task_plan_transformer] but with a dynamic
+    /// argument.
+    fn set_distributed_per_task_plan_transformer_arc(
+        &mut self,
+        transformer: Arc<dyn PerTaskPlanTransformer>,
+    );
 }
 
 impl DistributedExt for SessionConfig {
@@ -647,6 +685,20 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(
+        &mut self,
+        transformer: T,
+    ) {
+        set_distributed_per_task_plan_transformer(self, transformer)
+    }
+
+    fn set_distributed_per_task_plan_transformer_arc(
+        &mut self,
+        transformer: Arc<dyn PerTaskPlanTransformer>,
+    ) {
+        set_distributed_per_task_plan_transformer_arc(self, transformer)
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -712,6 +764,14 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_per_task_plan_transformer)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(mut self, transformer: T) -> Self;
+
+            #[call(set_distributed_per_task_plan_transformer_arc)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer_arc(mut self, transformer: Arc<dyn PerTaskPlanTransformer>) -> Self;
         }
     }
 }
@@ -798,6 +858,16 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(&mut self, transformer: T);
+            #[call(set_distributed_per_task_plan_transformer)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(mut self, transformer: T) -> Self;
+
+            fn set_distributed_per_task_plan_transformer_arc(&mut self, transformer: Arc<dyn PerTaskPlanTransformer>);
+            #[call(set_distributed_per_task_plan_transformer_arc)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer_arc(mut self, transformer: Arc<dyn PerTaskPlanTransformer>) -> Self;
         }
     }
 }
@@ -884,6 +954,16 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(&mut self, transformer: T);
+            #[call(set_distributed_per_task_plan_transformer)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(mut self, transformer: T) -> Self;
+
+            fn set_distributed_per_task_plan_transformer_arc(&mut self, transformer: Arc<dyn PerTaskPlanTransformer>);
+            #[call(set_distributed_per_task_plan_transformer_arc)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer_arc(mut self, transformer: Arc<dyn PerTaskPlanTransformer>) -> Self;
         }
     }
 }
@@ -970,6 +1050,16 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(&mut self, transformer: T);
+            #[call(set_distributed_per_task_plan_transformer)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer<T: PerTaskPlanTransformer + 'static>(self, transformer: T) -> Self;
+
+            fn set_distributed_per_task_plan_transformer_arc(&mut self, transformer: Arc<dyn PerTaskPlanTransformer>);
+            #[call(set_distributed_per_task_plan_transformer_arc)]
+            #[expr($;self)]
+            fn with_distributed_per_task_plan_transformer_arc(self, transformer: Arc<dyn PerTaskPlanTransformer>) -> Self;
         }
     }
 }

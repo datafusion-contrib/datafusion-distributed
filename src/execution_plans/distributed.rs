@@ -1,6 +1,9 @@
 use crate::common::{require_one_child, serialize_uuid};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
+use crate::execution_plans::per_task_plan_transformer::{
+    PerTaskPlanTransformer, get_per_task_plan_transformer,
+};
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
@@ -106,6 +109,8 @@ impl DistributedExec {
             )),
         };
 
+        let transformer = get_per_task_plan_transformer(ctx.session_config().options());
+
         let mut join_set = JoinSet::new();
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
             // The following logic is just applied on network boundaries.
@@ -115,8 +120,13 @@ impl DistributedExec {
 
             let stage = plan.input_stage();
 
-            let mut spawner =
-                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
+            let mut spawner = CoordinatorToWorkerTaskSpawner::new(
+                stage,
+                &metrics,
+                &codec,
+                transformer.as_deref(),
+                &mut join_set,
+            )?;
 
             // Right now, we assign random workers to tasks. This might change in the future.
             let start_idx = rand::rng().random_range(0..urls.len());
@@ -244,8 +254,18 @@ struct CoordinatorToWorkerMetrics {
 ///
 /// This struct is responsible for building tasks that communicate a serialized plan to multiple
 /// workers for further execution.
+///
+/// When a [`PerTaskPlanTransformer`] is registered, each task receives a distinct serialized
+/// plan produced by calling `transform_for_task(plan, task_i, task_count)`. Otherwise all tasks
+/// share the same pre-serialized bytes as before.
 struct CoordinatorToWorkerTaskSpawner<'a> {
-    plan_proto: Vec<u8>,
+    /// The stage plan, kept for per-task transformation when a transformer is registered.
+    /// When no transformer is present, `shared_plan_proto` holds the pre-serialized bytes.
+    plan: Arc<dyn ExecutionPlan>,
+    /// Pre-serialized plan bytes shared across all tasks (used when no transformer is set).
+    shared_plan_proto: Option<Vec<u8>>,
+    codec: &'a dyn PhysicalExtensionCodec,
+    transformer: Option<&'a dyn PerTaskPlanTransformer>,
     query_id: Uuid,
     stage_id: usize,
     task_count: usize,
@@ -260,17 +280,29 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         stage: &'a Stage,
         metrics: &'a CoordinatorToWorkerMetrics,
         codec: &'a dyn PhysicalExtensionCodec,
+        transformer: Option<&'a dyn PerTaskPlanTransformer>,
         join_set: &'a mut JoinSet<Result<()>>,
     ) -> Result<Self> {
         let Some(plan) = &stage.plan else {
             return internal_err!("Plan is not set for stage {}", stage.num);
         };
+        let plan = Arc::clone(plan);
 
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
+        // Pre-serialize once when no transformer is registered, to avoid redundant encoding.
+        let shared_plan_proto = if transformer.is_none() {
+            Some(
+                PhysicalPlanNode::try_from_physical_plan(Arc::clone(&plan), codec)?
+                    .encode_to_vec(),
+            )
+        } else {
+            None
+        };
 
         Ok(Self {
-            plan_proto,
+            plan,
+            shared_plan_proto,
+            codec,
+            transformer,
             query_id: stage.query_id,
             stage_id: stage.num,
             task_count: stage.tasks.len(),
@@ -287,9 +319,21 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
         headers.extend(get_passthrough_headers(ctx.session_config()));
 
+        let plan_proto = match self.transformer {
+            Some(transformer) => {
+                let task_plan =
+                    transformer.transform_for_task(Arc::clone(&self.plan), task_i, self.task_count)?;
+                PhysicalPlanNode::try_from_physical_plan(task_plan, self.codec)?.encode_to_vec()
+            }
+            None => self
+                .shared_plan_proto
+                .clone()
+                .expect("shared_plan_proto is set when no transformer is registered"),
+        };
+
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
-                plan_proto: self.plan_proto.clone(),
+                plan_proto: plan_proto.clone(),
                 task_count: self.task_count as u64,
                 task_key: Some(TaskKey {
                     query_id: serialize_uuid(&self.query_id),
@@ -298,7 +342,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 }),
             })),
         };
-        let plan_size = self.plan_proto.len();
+        let plan_size = plan_proto.len();
 
         let request = Request::from_parts(
             MetadataMap::from_headers(headers),
