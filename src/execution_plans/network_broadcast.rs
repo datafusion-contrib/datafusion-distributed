@@ -1,13 +1,13 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
-use crate::distributed_planner::NetworkBoundary;
+use crate::distributed_planner::{ExchangeLayout, NetworkBoundary, SlotReadPlan};
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use dashmap::DashMap;
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::{exec_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -125,6 +125,7 @@ pub struct NetworkBroadcastExec {
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
     pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    pub(crate) layout: Arc<ExchangeLayout>,
 }
 
 impl NetworkBroadcastExec {
@@ -147,12 +148,18 @@ impl NetworkBroadcastExec {
         };
 
         let child = require_one_child(broadcast.children())?;
-        let input_partition_count = child.properties().partitioning.partition_count();
         let broadcast_exec: Arc<dyn ExecutionPlan> =
             Arc::new(super::BroadcastExec::new(child, consumer_task_count));
+        let layout = ExchangeLayout::try_broadcast(
+            input_task_count,
+            consumer_task_count,
+            broadcast_exec.properties().partitioning.partition_count(),
+        )?;
 
         let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
-            .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
+            .with_partitioning(Partitioning::UnknownPartitioning(
+                layout.max_partition_count_per_consumer().max(1),
+            ));
 
         let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
 
@@ -161,7 +168,13 @@ impl NetworkBroadcastExec {
             input_stage,
             worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),
+            layout,
         })
+    }
+
+    /// The planner-facing layout for this exchange.
+    pub fn layout(&self) -> &Arc<ExchangeLayout> {
+        &self.layout
     }
 }
 
@@ -222,9 +235,14 @@ impl ExecutionPlan for NetworkBroadcastExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
-        Ok(Arc::new(self_clone))
+        let child = require_one_child(children)?;
+        Ok(Arc::new(Self::try_new(
+            child,
+            self.input_stage.query_id,
+            self.input_stage.num,
+            self.layout.consumer_task_count(),
+            self.layout.producer_task_count(),
+        )?))
     }
 
     fn execute(
@@ -233,19 +251,44 @@ impl ExecutionPlan for NetworkBroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
-        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
+        let resolver = self.layout.resolver();
+        if task_context.task_count != resolver.consumer_task_count() {
+            return exec_err!(
+                "NetworkBroadcastExec expected task_count={} from layout resolver, got {}",
+                resolver.consumer_task_count(),
+                task_context.task_count
+            );
+        }
+        if task_context.task_index >= resolver.consumer_task_count() {
+            return exec_err!(
+                "NetworkBroadcastExec invalid task context: task_index={} >= consumer_tasks={}",
+                task_context.task_index,
+                resolver.consumer_task_count()
+            );
+        }
+        let Some(SlotReadPlan::Fanout {
+            producer_tasks,
+            producer_partition: target_partition,
+        }) = resolver.resolve_slot(task_context.task_index, partition)
+        else {
+            return exec_err!(
+                "NetworkBroadcastExec invalid partition={} for owned range {:?}",
+                partition,
+                resolver.consumer_partition_range(task_context.task_index).clone()
+            );
+        };
+        let mut streams = Vec::with_capacity(producer_tasks.len());
 
-        for input_task_index in 0..self.input_stage.tasks.len() {
+        for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 &self.input_stage,
-                off..(off + self.properties.partitioning.partition_count()),
+                resolver.consumer_partition_range(task_context.task_index).clone(),
                 input_task_index,
                 &context,
             )?;
 
             let metrics_collection = Arc::clone(&self.metrics_collection);
-            let stream = worker_connection.stream_partition(off + partition, move |meta| {
+            let stream = worker_connection.stream_partition(target_partition, move |meta| {
                 if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
                     for task_metrics in m.tasks {
                         if let Some(task_key) = task_metrics.task_key {

@@ -1,5 +1,5 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::NetworkBoundary;
+use crate::distributed_planner::{ExchangeLayout, NetworkBoundary, SlotReadPlan};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
@@ -90,6 +90,7 @@ pub struct NetworkCoalesceExec {
     /// a task to the last NetworkCoalesceExec to read from it, which may or may not be this
     /// instance.
     pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    pub(crate) layout: Arc<ExchangeLayout>,
 }
 
 impl NetworkCoalesceExec {
@@ -110,10 +111,14 @@ impl NetworkCoalesceExec {
             return plan_err!("NetworkCoalesceExec cannot be executed with task_count=0");
         }
 
-        // Each output task coalesces a group of input tasks. We size the output partition count
-        // per output task based on the maximum group size, returning empty streams for tasks with
-        // smaller groups.
-        let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
+        let input_partition_count = input.properties().partitioning.partition_count();
+        let layout =
+            ExchangeLayout::try_coalesce(input_task_count, task_count, input_partition_count)?;
+        let max_input_task_count = layout
+            .max_partition_count_per_consumer()
+            .checked_div(input_partition_count)
+            .unwrap_or(0)
+            .max(1);
         Ok(Self {
             properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
             input_stage: Stage {
@@ -124,7 +129,13 @@ impl NetworkCoalesceExec {
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),
+            layout,
         })
+    }
+
+    /// The planner-facing layout for this exchange.
+    pub fn layout(&self) -> &Arc<ExchangeLayout> {
+        &self.layout
     }
 }
 
@@ -176,9 +187,14 @@ impl ExecutionPlan for NetworkCoalesceExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
-        Ok(Arc::new(self_clone))
+        let child = require_one_child(children)?;
+        Ok(Arc::new(Self::try_new(
+            child,
+            self.input_stage.query_id,
+            self.input_stage.num,
+            self.layout.consumer_task_count(),
+            self.layout.producer_task_count(),
+        )?))
     }
 
     fn execute(
@@ -187,63 +203,42 @@ impl ExecutionPlan for NetworkCoalesceExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        if task_context.task_index >= task_context.task_count {
+        let resolver = self.layout.resolver();
+        if task_context.task_count != resolver.consumer_task_count() {
             return exec_err!(
-                "NetworkCoalesceExec invalid task context: task_index={} >= task_count={}",
-                task_context.task_index,
+                "NetworkCoalesceExec expected task_count={} from layout resolver, got {}",
+                resolver.consumer_task_count(),
                 task_context.task_count
             );
         }
-
-        let partitions_per_task = self
-            .properties()
-            .partitioning
-            .partition_count()
-            .checked_div(
-                self.input_stage
-                    .tasks
-                    .len()
-                    .div_ceil(task_context.task_count)
-                    .max(1),
-            )
-            .unwrap_or(0);
-        if partitions_per_task == 0 {
-            return exec_err!("NetworkCoalesceExec has 0 partitions per input task");
-        }
-
-        let input_task_count = self.input_stage.tasks.len();
-        let group = task_group(
-            input_task_count,
-            task_context.task_index,
-            task_context.task_count,
-        );
-
-        let input_task_offset = partition / partitions_per_task;
-        let target_partition = partition % partitions_per_task;
-
-        // Some consumer tasks are assigned fewer upstream tasks when
-        // `input_task_count % task_count != 0` (uneven grouping).
-        // We still size partitions based on the maximum group size, so partitions that
-        // would map to a missing upstream task slot are treated as padding and return
-        // an empty stream (no network call).
-        if input_task_offset >= group.len {
-            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
-        }
-
-        // This should never happen.
-        if input_task_offset >= group.max_len {
-            return internal_err!(
-                "NetworkCoalesceExec input_task_offset={} >= group.max_len={}",
-                input_task_offset,
-                group.max_len
+        if task_context.task_index >= resolver.consumer_task_count() {
+            return exec_err!(
+                "NetworkCoalesceExec invalid task context: task_index={} >= consumer_tasks={}",
+                task_context.task_index,
+                resolver.consumer_task_count()
             );
         }
 
-        let target_task = group.start_task + input_task_offset;
+        let Some(SlotReadPlan::Single {
+            producer_task: target_task,
+            producer_partition: target_partition,
+        }) = resolver.resolve_slot(task_context.task_index, partition)
+        else {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        };
+
+        let producer_tasks = resolver.producer_task_range(task_context.task_index);
+        if !producer_tasks.contains(&target_task) {
+            return internal_err!(
+                "NetworkCoalesceExec derived target_task={} outside resolver range {:?}",
+                target_task,
+                producer_tasks
+            );
+        }
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
             &self.input_stage,
-            0..partitions_per_task,
+            0..resolver.partitions_per_producer_task(),
             target_task,
             &context,
         )?;
@@ -268,47 +263,6 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TaskGroup {
-    /// The first input task index in this group.
-    start_task: usize,
-    /// The number of input tasks in this group.
-    len: usize,
-    /// The maximum possible group size across all groups.
-    ///
-    /// When groups are uneven (input_tasks % task_count != 0), some groups are shorter. We still
-    /// size the output partitioning based on this max and return empty streams for the extra
-    /// partitions in smaller groups.
-    max_len: usize,
-}
-
-/// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
-fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
-    if task_count == 0 {
-        return TaskGroup {
-            start_task: 0,
-            len: 0,
-            max_len: 0,
-        };
-    }
-
-    // Split `input_task_count` into `task_count` contiguous groups.
-    // - base_tasks_per_group: floor(input_task_count / task_count)
-    // - groups_with_extra_task: first N groups that get one extra task (remainder)
-    let base_tasks_per_group = input_task_count / task_count;
-    let groups_with_extra_task = input_task_count % task_count;
-
-    let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
-    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
-    let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
-
-    TaskGroup {
-        start_task,
-        len,
-        max_len,
     }
 }
 
@@ -356,6 +310,9 @@ mod tests {
             case.consumer_tasks,
             case.input_tasks,
         )?;
+        let layout = exec.layout();
+        let resolver = layout.resolver();
+        let partitions_per_task = resolver.partitions_per_producer_task();
 
         // Output partitions are sized by the maximum group size.
         let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);
@@ -372,6 +329,20 @@ mod tests {
         let mut padding_slots = 0;
 
         for (index, (start, len)) in groups.into_iter().enumerate() {
+            assert_eq!(
+                resolver.producer_task_range(index),
+                start..start + len,
+                "case {} producer-task ownership mismatch for consumer {}",
+                case.name,
+                index
+            );
+            assert_eq!(
+                layout.consumer_partition_range(index),
+                &(start * partitions_per_task..(start + len) * partitions_per_task),
+                "case {} logical-slot ownership mismatch for consumer {}",
+                case.name,
+                index
+            );
             assert_eq!(
                 start, expected_start,
                 "case {} group {} should be contiguous",

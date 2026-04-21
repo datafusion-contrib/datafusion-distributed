@@ -1,5 +1,6 @@
 use crate::common::require_one_child;
-use crate::execution_plans::common::scale_partitioning;
+use crate::distributed_planner::{ExchangeLayout, SlotReadPlan};
+use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
@@ -7,16 +8,15 @@ use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
 use dashmap::DashMap;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr_common::metrics::MetricsSet;
-use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties,
 };
 use std::any::Any;
 use std::fmt::Formatter;
@@ -118,13 +118,16 @@ pub struct NetworkShuffleExec {
     /// a task to the last NetworkCoalesceExec to read from it, which may or may not be this
     /// instance.
     pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    pub(crate) layout: Arc<ExchangeLayout>,
 }
 
 impl NetworkShuffleExec {
     /// Builds a new [NetworkShuffleExec] in "Pending" state.
     ///
-    /// Typically, the `input` to this
-    /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
+    /// The `input` must be hash-partitioned (typically a [RepartitionExec] with
+    /// [Partitioning::Hash]). The producer-side hash partition count is preserved as the logical
+    /// downstream partition space, and consumer tasks each own a contiguous subset of those
+    /// logical partitions.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         query_id: Uuid,
@@ -132,42 +135,38 @@ impl NetworkShuffleExec {
         task_count: usize,
         input_task_count: usize,
     ) -> Result<Self, DataFusionError> {
-        if !matches!(input.output_partitioning(), Partitioning::Hash(_, _)) {
+        let producer_partitioning = input.output_partitioning().clone();
+        let Partitioning::Hash(_, _) = producer_partitioning else {
             return plan_err!("NetworkShuffleExec input must be hash partitioned");
-        }
+        };
 
-        let transformed = Arc::clone(&input).transform_down(|plan| {
-            if let Some(r_exe) = plan.as_any().downcast_ref::<RepartitionExec>() {
-                // Scale the input RepartitionExec to account for all the tasks to which it will
-                // need to fan data out.
-                let scaled = Arc::new(RepartitionExec::try_new(
-                    require_one_child(r_exe.children())?,
-                    scale_partitioning(r_exe.partitioning(), |p| p * task_count),
-                )?);
-                Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
-            } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
-                // This might be a passthrough node from the input plan.
-                // This is fine, we can let the node be here.
-                Ok(Transformed::no(plan))
-            } else {
-                plan_err!(
-                    "NetworkShuffleExec input must be hash partitioned, but {} is not",
-                    plan.name()
-                )
-            }
-        })?;
+        let consumer_tasks = task_count;
+        let producer_tasks = input_task_count;
+        let layout = ExchangeLayout::try_shuffle(
+            producer_partitioning,
+            producer_tasks,
+            consumer_tasks,
+        )?;
+        let properties =
+            scale_partitioning_props(input.properties(), |_| layout.max_partition_count_per_consumer());
 
         Ok(Self {
             input_stage: Stage {
                 query_id,
                 num,
-                plan: Some(transformed.data),
+                plan: Some(input),
                 tasks: vec![ExecutionTask { url: None }; input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
-            properties: input.properties().clone(),
+            properties,
             metrics_collection: Default::default(),
+            layout,
         })
+    }
+
+    /// The planner-facing layout for this exchange.
+    pub fn layout(&self) -> &Arc<ExchangeLayout> {
+        &self.layout
     }
 }
 
@@ -219,9 +218,14 @@ impl ExecutionPlan for NetworkShuffleExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
-        Ok(Arc::new(self_clone))
+        let child = require_one_child(children)?;
+        Ok(Arc::new(Self::try_new(
+            child,
+            self.input_stage.query_id,
+            self.input_stage.num,
+            self.layout.consumer_task_count(),
+            self.layout.producer_task_count(),
+        )?))
     }
 
     fn execute(
@@ -230,19 +234,41 @@ impl ExecutionPlan for NetworkShuffleExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let resolver = self.layout.resolver();
+        if task_context.task_count != resolver.consumer_task_count() {
+            return exec_err!(
+                "NetworkShuffleExec expected task_count={} from layout resolver, got {}",
+                resolver.consumer_task_count(),
+                task_context.task_count
+            );
+        }
+        if task_context.task_index >= resolver.consumer_task_count() {
+            return exec_err!(
+                "NetworkShuffleExec task_index={} is out of range for resolver with {} consumer tasks",
+                task_context.task_index,
+                resolver.consumer_task_count()
+            );
+        }
+        let Some(SlotReadPlan::Fanout {
+            producer_tasks,
+            producer_partition: target_partition,
+        }) = resolver.resolve_slot(task_context.task_index, partition)
+        else {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        };
 
-        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
-        for input_task_index in 0..self.input_stage.tasks.len() {
+        let target_partition_range = resolver.consumer_partition_range(task_context.task_index).clone();
+        let mut streams = Vec::with_capacity(producer_tasks.len());
+        for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 &self.input_stage,
-                off..(off + self.properties.partitioning.partition_count()),
+                target_partition_range.clone(),
                 input_task_index,
                 &context,
             )?;
 
             let metrics_collection = Arc::clone(&self.metrics_collection);
-            let stream = worker_connection.stream_partition(off + partition, move |meta| {
+            let stream = worker_connection.stream_partition(target_partition, move |meta| {
                 if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
                     for task_metrics in m.tasks {
                         if let Some(task_key) = task_metrics.task_key {
