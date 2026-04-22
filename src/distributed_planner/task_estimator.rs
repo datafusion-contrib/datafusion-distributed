@@ -91,9 +91,8 @@ impl TaskEstimation {
 
 pub struct PlannedLeafNode {
     pub plan: Arc<dyn ExecutionPlan>,
-    // Optionally used for routing tasks to URLs. If this field is Some,
-    // we should assert urls.len() == task_count.
-    pub urls: Option<Vec<Url>>,
+    // Optional field used for routing tasks to URLs.
+    urls: Option<Vec<Url>>,
 }
 
 impl PlannedLeafNode {
@@ -114,6 +113,10 @@ impl PlannedLeafNode {
         }
         self.urls = urls;
         Ok(())
+    }
+
+    pub fn urls(&self) -> Option<Vec<Url>> {
+        self.urls.clone()
     }
 }
 
