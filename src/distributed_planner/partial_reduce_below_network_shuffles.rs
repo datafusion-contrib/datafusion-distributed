@@ -1,6 +1,6 @@
-use crate::distributed_planner::distributed_config::DistributedConfig;
 use crate::NetworkBoundaryExt;
 use crate::common::require_one_child;
+use crate::distributed_planner::distributed_config::DistributedConfig;
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
@@ -18,13 +18,11 @@ pub(crate) fn partial_reduce_below_network_shuffles(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let partial_reduce_enabled = DistributedConfig::from_config_options(cfg)?.partial_reduce;
+    if !DistributedConfig::from_config_options(cfg)?.partial_reduce {
+        return Ok(plan);
+    }
 
     let transformed = plan.transform_up(|plan| {
-        if !partial_reduce_enabled {
-            return Ok(Transformed::no(plan));
-        }
-
         if !plan.is_network_boundary() {
             return Ok(Transformed::no(plan));
         }
@@ -151,9 +149,10 @@ mod tests {
 
     #[tokio::test]
     async fn partial_reduce_disabled_by_default() {
-        let explain =
-            sql_to_explain_default(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
-                .await;
+        let explain = sql_to_explain_default(
+            r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#,
+        )
+        .await;
         assert_not_contains!(explain, "PartialReduce");
     }
 

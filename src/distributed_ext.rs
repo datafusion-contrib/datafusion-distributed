@@ -529,6 +529,8 @@ pub trait DistributedExt: Sized {
 
     /// Enables or disables the PartialReduce optimization, which inserts an extra aggregation
     /// pass above hash RepartitionExec before network shuffles to reduce shuffle data size.
+    /// Disabled by default because its effectiveness is workload-dependent: it helps when
+    /// aggregation significantly reduces cardinality, but adds overhead when it does not.
     fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
 
     /// Same as [DistributedExt::with_distributed_partial_reduce] but with an in-place mutation.

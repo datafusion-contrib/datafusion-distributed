@@ -54,6 +54,8 @@ extensions_options! {
         pub max_tasks_per_stage: usize, default = 0
         /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
         /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
+        /// Disabled by default because its effectiveness is workload-dependent: it helps when
+        /// aggregation significantly reduces cardinality, but adds overhead when it does not.
         pub partial_reduce: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
