@@ -655,18 +655,8 @@ impl DistributedExt for SessionConfig {
     }
 
     fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError> {
-        let opts = self.options_mut();
-        if let Some(d_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
-            d_cfg.partial_reduce = enabled;
-        } else {
-            set_distributed_option_extension(
-                self,
-                DistributedConfig {
-                    partial_reduce: enabled,
-                    ..Default::default()
-                },
-            );
-        }
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.partial_reduce = enabled;
         Ok(())
     }
 

@@ -108,36 +108,9 @@ mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
+    use datafusion::common::assert_not_contains;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
-
-    async fn sql_to_explain(query: &str) -> String {
-        sql_to_explain_impl(query, true).await
-    }
-
-    async fn sql_to_explain_default(query: &str) -> String {
-        sql_to_explain_impl(query, false).await
-    }
-
-    async fn sql_to_explain_impl(query: &str, partial_reduce: bool) -> String {
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(
-                SessionConfig::new()
-                    .with_target_partitions(4)
-                    .with_distributed_partial_reduce(partial_reduce)
-                    .unwrap(),
-            )
-            .with_distributed_planner()
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-        let df = ctx.sql(query).await.unwrap();
-        let physical_plan = df.create_physical_plan().await.unwrap();
-        display_plan_ascii(physical_plan.as_ref(), false)
-    }
 
     #[tokio::test]
     async fn grouped_aggregation() {
@@ -167,19 +140,13 @@ mod tests {
     #[tokio::test]
     async fn non_aggregation() {
         let explain = sql_to_explain(r#"SELECT * FROM weather LIMIT 10"#).await;
-        assert!(
-            !explain.contains("PartialReduce"),
-            "PartialReduce should not be present in:\n{explain}"
-        );
+        assert_not_contains!(explain, "PartialReduce");
     }
 
     #[tokio::test]
     async fn global_aggregation() {
         let explain = sql_to_explain(r#"SELECT COUNT(*) FROM weather"#).await;
-        assert!(
-            !explain.contains("PartialReduce"),
-            "PartialReduce should not be present in:\n{explain}"
-        );
+        assert_not_contains!(explain, "PartialReduce");
     }
 
     #[tokio::test]
@@ -187,9 +154,31 @@ mod tests {
         let explain =
             sql_to_explain_default(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
                 .await;
-        assert!(
-            !explain.contains("PartialReduce"),
-            "PartialReduce should not be present when flag is off:\n{explain}"
-        );
+        assert_not_contains!(explain, "PartialReduce");
+    }
+
+    async fn sql_to_explain(query: &str) -> String {
+        sql_to_explain_impl(query, true).await
+    }
+
+    async fn sql_to_explain_default(query: &str) -> String {
+        sql_to_explain_impl(query, false).await
+    }
+
+    async fn sql_to_explain_impl(query: &str, partial_reduce: bool) -> String {
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(SessionConfig::new().with_target_partitions(4))
+            .with_distributed_planner()
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+            .with_distributed_partial_reduce(partial_reduce)
+            .unwrap()
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+        let df = ctx.sql(query).await.unwrap();
+        let physical_plan = df.create_physical_plan().await.unwrap();
+        display_plan_ascii(physical_plan.as_ref(), false)
     }
 }
