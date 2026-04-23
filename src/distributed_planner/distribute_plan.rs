@@ -133,12 +133,17 @@ fn _distribute_plan(
             }
             let child = require_one_child(
                 new_children
-                    .into_iter()
-                    .map(|child| child.plan)
+                    .iter()
+                    .map(|child| child.plan.clone())
                     .collect::<Vec<_>>(),
             )?;
+            let input_urls = new_children
+                .into_iter()
+                .next()
+                .and_then(|child| child.urls());
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkShuffleExec::try_new(
                 child,
+                input_urls,
                 query_id,
                 *stage_id,
                 task_count,
@@ -163,12 +168,17 @@ fn _distribute_plan(
             }
             let child = require_one_child(
                 new_children
-                    .into_iter()
-                    .map(|child| child.plan)
+                    .iter()
+                    .map(|child| child.plan.clone())
                     .collect::<Vec<_>>(),
             )?;
+            let input_urls = new_children
+                .into_iter()
+                .next()
+                .and_then(|child| child.urls());
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkCoalesceExec::try_new(
                 child,
+                input_urls,
                 query_id,
                 *stage_id,
                 task_count,
@@ -193,12 +203,17 @@ fn _distribute_plan(
             }
             let child = require_one_child(
                 new_children
-                    .into_iter()
-                    .map(|child| child.plan)
+                    .iter()
+                    .map(|child| child.plan.clone())
                     .collect::<Vec<_>>(),
             )?;
+            let input_urls = new_children
+                .into_iter()
+                .next()
+                .and_then(|child| child.urls());
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkBroadcastExec::try_new(
                 child,
+                input_urls,
                 query_id,
                 *stage_id,
                 task_count,

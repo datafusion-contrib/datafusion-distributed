@@ -122,8 +122,11 @@ impl DistributedExec {
             let start_idx = rand::rng().random_range(0..urls.len());
 
             let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for i in 0..stage.tasks.len() {
-                let url = urls[(start_idx + i) % urls.len()].clone();
+            for (i, task) in stage.tasks.iter().enumerate() {
+                let url = task
+                    .url
+                    .clone()
+                    .unwrap_or_else(|| urls[(start_idx + i) % urls.len()].clone());
                 tasks.push(ExecutionTask {
                     url: Some(url.clone()),
                 });

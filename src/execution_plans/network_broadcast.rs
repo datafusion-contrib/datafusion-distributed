@@ -18,6 +18,7 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use url::Url;
 use uuid::Uuid;
 
 /// Network boundary for broadcasting data to all consumer tasks.
@@ -134,6 +135,7 @@ impl NetworkBroadcastExec {
     /// the correct consumer_task_count.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
+        _input_urls: Option<Vec<Url>>,
         query_id: Uuid,
         stage_num: usize,
         consumer_task_count: usize,
