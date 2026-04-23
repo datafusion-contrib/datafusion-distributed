@@ -31,6 +31,7 @@ use http::Extensions;
 use prost::Message;
 use rand::Rng;
 use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -118,15 +119,32 @@ impl DistributedExec {
             let mut spawner =
                 CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
 
-            // Right now, we assign random workers to tasks. This might change in the future.
+            // Default routing assigns tasks to URLs round-robin from a random starting point.
             let start_idx = rand::rng().random_range(0..urls.len());
 
             let mut tasks = Vec::with_capacity(stage.tasks.len());
+            let mut assigned_urls = HashSet::new();
             for (i, task) in stage.tasks.iter().enumerate() {
-                let url = task
-                    .url
-                    .clone()
-                    .unwrap_or_else(|| urls[(start_idx + i) % urls.len()].clone());
+                // If the user has not defined custom routing through the plan_leaf_node API, we
+                // default to round-robin task assignation with a randomized starting point.
+                //
+                // If the user has defined custom routing through the plan_leaf_node interface,
+                // we attempt to route the task to the specified URL.
+                //
+                // Notably, it is possible that a task is assigned to a machine that goes offline
+                // in between the moment that the task URL is assigned and the moment the task is
+                // routed. In that case, we route the task to another URL that has not yet been
+                // claimed. If all of the URLs are claimed, we begin assigning round-robin.
+                let url = match task.url.clone() {
+                    Some(url) if urls.contains(&url) => url,
+                    Some(_) => urls
+                        .iter()
+                        .find(|url| !assigned_urls.contains(*url))
+                        .cloned()
+                        .unwrap_or_else(|| urls[(start_idx + i) % urls.len()].clone()),
+                    None => urls[(start_idx + i) % urls.len()].clone(),
+                };
+                assigned_urls.insert(url.clone());
                 tasks.push(ExecutionTask {
                     url: Some(url.clone()),
                 });
