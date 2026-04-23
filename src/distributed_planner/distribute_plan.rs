@@ -66,7 +66,7 @@ pub(super) async fn distribute_plan(
 
     // Based on the annotations, place the actual network boundaries with the appropriate dimensions.
     let mut stage_id = 1;
-    let plan = _distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
+    let plan = _distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?.plan;
     if stage_id == 1 {
         return Ok(None);
     }
@@ -113,18 +113,32 @@ fn _distribute_plan(
             Ok(planned_leaf_node.unwrap_or(PlannedLeafNode::from_plan(&plan)))
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
-        PlanOrNetworkBoundary::Plan(plan) => Ok(PlannedLeafNode::from_plan(
-            plan.with_new_children(new_children)?,
-        )),
+        PlanOrNetworkBoundary::Plan(plan) => {
+            let new_child_plans = new_children.into_iter().map(|child| child.plan).collect();
+            let plan = plan.with_new_children(new_child_plans)?;
+            Ok(PlannedLeafNode::from_plan(&plan))
+        }
         // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
         PlanOrNetworkBoundary::Shuffle => {
             // It would need a network boundary, but on both sides of the boundary there is just 1 task,
             // so we are fine with not introducing any network boundary.
             if task_count == 1 && max_child_task_count == Some(1) {
-                return PlannedLeafNode::from_plan(require_one_child(new_children));
+                let child = require_one_child(
+                    new_children
+                        .into_iter()
+                        .map(|child| child.plan)
+                        .collect::<Vec<_>>(),
+                )?;
+                return Ok(PlannedLeafNode::from_plan(&child));
             }
+            let child = require_one_child(
+                new_children
+                    .into_iter()
+                    .map(|child| child.plan)
+                    .collect::<Vec<_>>(),
+            )?;
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkShuffleExec::try_new(
-                require_one_child(new_children)?,
+                child,
                 query_id,
                 *stage_id,
                 task_count,
@@ -139,17 +153,29 @@ fn _distribute_plan(
             // It would need a network boundary, but on both sides of the boundary there is just 1 task,
             // so we are fine with not introducing any network boundary.
             if task_count == 1 && max_child_task_count == Some(1) {
-                return PlannedLeafNode::from_plan(require_one_child(new_children));
+                let child = require_one_child(
+                    new_children
+                        .into_iter()
+                        .map(|child| child.plan)
+                        .collect::<Vec<_>>(),
+                )?;
+                return Ok(PlannedLeafNode::from_plan(&child));
             }
+            let child = require_one_child(
+                new_children
+                    .into_iter()
+                    .map(|child| child.plan)
+                    .collect::<Vec<_>>(),
+            )?;
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkCoalesceExec::try_new(
-                require_one_child(new_children)?,
+                child,
                 query_id,
                 *stage_id,
                 task_count,
                 max_child_task_count.unwrap_or(1),
             )?);
             stage_id.add_assign(1);
-            Ok(PlannedLeafNode::from_plan(node))
+            Ok(PlannedLeafNode::from_plan(&node))
         }
         // This is a CollectLeft HashJoinExec with the build side marked as being broadcast. we
         // need to insert a NetworkBroadcastExec and scale up the BroadcastExec consumer_tasks.
@@ -157,17 +183,29 @@ fn _distribute_plan(
             // It would need a network boundary, but on both sides of the boundary there is just 1 task,
             // so we are fine with not introducing any network boundary.
             if task_count == 1 && max_child_task_count == Some(1) {
-                return PlannedLeafNode::from_plan(require_one_child(new_children));
+                let child = require_one_child(
+                    new_children
+                        .into_iter()
+                        .map(|child| child.plan)
+                        .collect::<Vec<_>>(),
+                )?;
+                return Ok(PlannedLeafNode::from_plan(&child));
             }
+            let child = require_one_child(
+                new_children
+                    .into_iter()
+                    .map(|child| child.plan)
+                    .collect::<Vec<_>>(),
+            )?;
             let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkBroadcastExec::try_new(
-                require_one_child(new_children)?,
+                child,
                 query_id,
                 *stage_id,
                 task_count,
                 max_child_task_count.unwrap_or(1),
             )?);
             stage_id.add_assign(1);
-            Ok(PlannedLeafNode::from_plan(node))
+            Ok(PlannedLeafNode::from_plan(&node))
         }
     }
 }

@@ -104,12 +104,12 @@ impl PlannedLeafNode {
     }
 
     pub fn with_urls(&mut self, urls: Option<Vec<Url>>, task_count: usize) -> Result<()> {
-        if let Some(urls_ref) = &urls {
-            if urls_ref.len() != task_count {
-                return Err(internal_datafusion_err!(
-                    "number of urls not equal to number of tasks"
-                ));
-            }
+        if let Some(urls_ref) = &urls
+            && urls_ref.len() != task_count
+        {
+            return Err(internal_datafusion_err!(
+                "number of urls not equal to number of tasks"
+            ));
         }
         self.urls = urls;
         Ok(())
