@@ -107,8 +107,9 @@ impl PlannedLeafNode {
         if let Some(urls_ref) = &urls
             && urls_ref.len() != task_count
         {
+            // Routing tasks to URLs means that the number of tasks and URLs must be the same.
             return Err(internal_datafusion_err!(
-                "number of urls not equal to number of tasks"
+                "number of urls must be equal to number of tasks"
             ));
         }
         self.urls = urls;

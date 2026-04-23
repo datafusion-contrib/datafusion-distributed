@@ -4,6 +4,7 @@ use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
+use url::Url;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -92,6 +93,10 @@ impl DistributedConfig {
             .user_provided
             .push(Arc::new(task_estimator));
         self
+    }
+
+    pub fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.__private_worker_resolver.0.get_urls()
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
