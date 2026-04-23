@@ -7,6 +7,10 @@ use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
+pub const LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG: &str = "final_agg";
+pub const LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN: &str = "final_agg_and_join";
+pub const LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES: &str = "all_narrow_shuffles";
+
 extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
@@ -52,6 +56,15 @@ extensions_options! {
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Controls which consumer operators are allowed to trigger a local exchange split.
+        pub local_exchange_split_mode: String, default = local_exchange_split_mode_default()
+        /// Only insert a local exchange split when a consumer task owns at most this many
+        /// logical partitions from the upstream shuffle.
+        pub local_exchange_split_max_owned_partitions: usize, default = 2
+        /// Target number of local post-shuffle partitions to expose per consumer task.
+        pub local_exchange_split_target_partitions_per_task: usize, default = 8
+        /// Maximum split factor derived from the local target width.
+        pub local_exchange_split_max_factor: usize, default = 8
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
@@ -80,6 +93,10 @@ fn cardinality_task_count_factor_default() -> f64 {
     }
 }
 
+fn local_exchange_split_mode_default() -> String {
+    LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN.to_string()
+}
+
 impl DistributedConfig {
     /// Appends a [TaskEstimator] to the list. [TaskEstimator] will be executed sequentially in
     /// order on leaf nodes, and the first one to provide a value is the one that gets to decide
@@ -92,6 +109,49 @@ impl DistributedConfig {
             .user_provided
             .push(Arc::new(task_estimator));
         self
+    }
+
+    pub fn local_exchange_split_mode_is_final_agg(&self) -> bool {
+        self.local_exchange_split_mode
+            .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
+    }
+
+    pub fn local_exchange_split_mode_is_final_agg_and_join(&self) -> bool {
+        self.local_exchange_split_mode
+            .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
+    }
+
+    pub fn local_exchange_split_mode_is_all_narrow_shuffles(&self) -> bool {
+        self.local_exchange_split_mode
+            .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES)
+    }
+
+    pub fn local_exchange_split_mode_allows_final_agg(&self) -> bool {
+        self.local_exchange_split_mode_is_final_agg()
+            || self.local_exchange_split_mode_is_final_agg_and_join()
+            || self.local_exchange_split_mode_is_all_narrow_shuffles()
+    }
+
+    pub fn local_exchange_split_mode_allows_partitioned_join(&self) -> bool {
+        self.local_exchange_split_mode_is_final_agg_and_join()
+            || self.local_exchange_split_mode_is_all_narrow_shuffles()
+    }
+
+    pub fn validate_local_exchange_split_mode(mode: &str) -> Result<(), DataFusionError> {
+        if mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
+            || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
+            || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES)
+        {
+            return Ok(());
+        }
+
+        plan_err!(
+            "invalid distributed.local_exchange_split_mode '{}'; expected one of: {}, {}, {}",
+            mode,
+            LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG,
+            LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN,
+            LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES
+        )
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.

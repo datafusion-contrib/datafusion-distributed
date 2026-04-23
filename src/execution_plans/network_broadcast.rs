@@ -274,7 +274,9 @@ impl ExecutionPlan for NetworkBroadcastExec {
             return exec_err!(
                 "NetworkBroadcastExec invalid partition={} for owned range {:?}",
                 partition,
-                resolver.consumer_partition_range(task_context.task_index).clone()
+                resolver
+                    .consumer_partition_range(task_context.task_index)
+                    .clone()
             );
         };
         let mut streams = Vec::with_capacity(producer_tasks.len());
@@ -282,7 +284,9 @@ impl ExecutionPlan for NetworkBroadcastExec {
         for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 &self.input_stage,
-                resolver.consumer_partition_range(task_context.task_index).clone(),
+                resolver
+                    .consumer_partition_range(task_context.task_index)
+                    .clone(),
                 input_task_index,
                 &context,
             )?;

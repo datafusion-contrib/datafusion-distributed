@@ -526,6 +526,54 @@ pub trait DistributedExt: Sized {
         &mut self,
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
+
+    /// Sets the operator scope for post-shuffle local exchange splitting.
+    fn with_distributed_local_exchange_split_mode(
+        self,
+        mode: impl Into<String>,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_local_exchange_split_mode] but with an in-place mutation.
+    fn set_distributed_local_exchange_split_mode(
+        &mut self,
+        mode: impl Into<String>,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets the maximum owned shuffle partitions per consumer task that still qualifies as narrow.
+    fn with_distributed_local_exchange_split_max_owned_partitions(
+        self,
+        max_owned_partitions: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_local_exchange_split_max_owned_partitions] but with an in-place mutation.
+    fn set_distributed_local_exchange_split_max_owned_partitions(
+        &mut self,
+        max_owned_partitions: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets the target number of local post-shuffle partitions to expose per consumer task.
+    fn with_distributed_local_exchange_split_target_partitions_per_task(
+        self,
+        target_partitions_per_task: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_local_exchange_split_target_partitions_per_task] but with an in-place mutation.
+    fn set_distributed_local_exchange_split_target_partitions_per_task(
+        &mut self,
+        target_partitions_per_task: usize,
+    ) -> Result<(), DataFusionError>;
+
+    /// Sets a safety cap for the derived local split factor.
+    fn with_distributed_local_exchange_split_max_factor(
+        self,
+        max_factor: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_local_exchange_split_max_factor] but with an in-place mutation.
+    fn set_distributed_local_exchange_split_max_factor(
+        &mut self,
+        max_factor: usize,
+    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -647,6 +695,44 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_local_exchange_split_mode(
+        &mut self,
+        mode: impl Into<String>,
+    ) -> Result<(), DataFusionError> {
+        let mode = mode.into();
+        DistributedConfig::validate_local_exchange_split_mode(&mode)?;
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.local_exchange_split_mode = mode;
+        Ok(())
+    }
+
+    fn set_distributed_local_exchange_split_max_owned_partitions(
+        &mut self,
+        max_owned_partitions: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.local_exchange_split_max_owned_partitions = max_owned_partitions;
+        Ok(())
+    }
+
+    fn set_distributed_local_exchange_split_target_partitions_per_task(
+        &mut self,
+        target_partitions_per_task: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.local_exchange_split_target_partitions_per_task = target_partitions_per_task;
+        Ok(())
+    }
+
+    fn set_distributed_local_exchange_split_max_factor(
+        &mut self,
+        max_factor: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.local_exchange_split_max_factor = max_factor;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -712,6 +798,22 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_local_exchange_split_mode)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_mode(mut self, mode: impl Into<String>) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_local_exchange_split_max_owned_partitions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_owned_partitions(mut self, max_owned_partitions: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_local_exchange_split_target_partitions_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_local_exchange_split_max_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -798,6 +900,26 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_mode(&mut self, mode: impl Into<String>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_mode)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_mode(mut self, mode: impl Into<String>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_owned_partitions(&mut self, max_owned_partitions: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_owned_partitions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_owned_partitions(mut self, max_owned_partitions: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_target_partitions_per_task(&mut self, target_partitions_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_target_partitions_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -884,6 +1006,26 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_mode(&mut self, mode: impl Into<String>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_mode)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_mode(mut self, mode: impl Into<String>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_owned_partitions(&mut self, max_owned_partitions: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_owned_partitions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_owned_partitions(mut self, max_owned_partitions: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_target_partitions_per_task(&mut self, target_partitions_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_target_partitions_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -970,6 +1112,26 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_mode(&mut self, mode: impl Into<String>) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_mode)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_mode(self, mode: impl Into<String>) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_owned_partitions(&mut self, max_owned_partitions: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_owned_partitions)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_owned_partitions(self, max_owned_partitions: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_target_partitions_per_task(&mut self, target_partitions_per_task: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_target_partitions_per_task)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_target_partitions_per_task(self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_local_exchange_split_max_factor)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_local_exchange_split_max_factor(self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }

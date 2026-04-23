@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{ExchangeLayout, SlotReadPlan};
-use crate::execution_plans::common::scale_partitioning_props;
+use crate::execution_plans::common::with_partition_count_props;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
@@ -142,13 +142,12 @@ impl NetworkShuffleExec {
 
         let consumer_tasks = task_count;
         let producer_tasks = input_task_count;
-        let layout = ExchangeLayout::try_shuffle(
-            producer_partitioning,
-            producer_tasks,
-            consumer_tasks,
-        )?;
-        let properties =
-            scale_partitioning_props(input.properties(), |_| layout.max_partition_count_per_consumer());
+        let layout =
+            ExchangeLayout::try_shuffle(producer_partitioning, producer_tasks, consumer_tasks)?;
+        let properties = with_partition_count_props(
+            input.properties(),
+            layout.max_partition_count_per_consumer(),
+        );
 
         Ok(Self {
             input_stage: Stage {
@@ -257,7 +256,9 @@ impl ExecutionPlan for NetworkShuffleExec {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         };
 
-        let target_partition_range = resolver.consumer_partition_range(task_context.task_index).clone();
+        let target_partition_range = resolver
+            .consumer_partition_range(task_context.task_index)
+            .clone();
         let mut streams = Vec::with_capacity(producer_tasks.len());
         for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
