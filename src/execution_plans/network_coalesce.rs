@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{ExchangeLayout, NetworkBoundary, SlotReadPlan};
-use crate::execution_plans::common::scale_partitioning_props;
+use crate::execution_plans::common::map_partitioning_props;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, ExecutionTask};
@@ -101,13 +101,9 @@ impl NetworkCoalesceExec {
         let input_partition_count = input.properties().partitioning.partition_count();
         let layout =
             ExchangeLayout::try_coalesce(input_task_count, task_count, input_partition_count)?;
-        let max_input_task_count = layout
-            .max_partition_count_per_consumer()
-            .checked_div(input_partition_count)
-            .unwrap_or(0)
-            .max(1);
+        let max_input_task_count = layout.max_input_task_count_per_consumer().unwrap_or(1);
         Ok(Self {
-            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
+            properties: map_partitioning_props(input.properties(), |p| p * max_input_task_count),
             input_stage: Stage {
                 query_id,
                 num,

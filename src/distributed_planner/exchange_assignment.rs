@@ -140,6 +140,14 @@ impl CoalesceExchangeLayout {
             .unwrap_or(0)
     }
 
+    fn max_input_task_count_per_consumer(&self) -> usize {
+        self.producer_task_ranges
+            .iter()
+            .map(|range| range.len())
+            .max()
+            .unwrap_or(0)
+    }
+
     fn logical_slot_count(&self) -> usize {
         self.consumer_slot_ranges
             .last()
@@ -289,6 +297,8 @@ impl ExchangeLayout {
         )?)))
     }
 
+    // Topology
+
     pub fn producer_task_count(&self) -> usize {
         match self {
             Self::Shuffle(layout) => layout.producer_task_count,
@@ -305,6 +315,13 @@ impl ExchangeLayout {
         }
     }
 
+    // Planner-visible shape
+
+    /// Returns the producer-side partitioning only for shuffle exchanges.
+    ///
+    /// Shuffle preserves the producer's logical partition space. Coalesce and broadcast derive
+    /// their output shape from task grouping instead, so there is no producer partitioning to
+    /// carry through directly.
     pub fn producer_partitioning(&self) -> Option<&Partitioning> {
         match self {
             Self::Shuffle(layout) => Some(&layout.producer_partitioning),
@@ -320,6 +337,11 @@ impl ExchangeLayout {
         }
     }
 
+    /// Returns the range of consumer-local slots owned by a given consumer task.
+    ///
+    /// For shuffle and broadcast, these are contiguous ranges within a shared logical partition
+    /// space. For coalesce, these are flattened slots spanning the producer-task group assigned to
+    /// the consumer.
     pub fn consumer_partition_range(&self, consumer_task_idx: usize) -> &Range<usize> {
         match self {
             Self::Shuffle(layout) => &layout.consumer_partition_ranges[consumer_task_idx],
@@ -336,6 +358,21 @@ impl ExchangeLayout {
         }
     }
 
+    /// Returns the maximum number of producer tasks read by any one coalesce consumer.
+    ///
+    /// This is only meaningful for coalesce exchanges, where one consumer may merge several
+    /// upstream tasks without repartitioning their per-task partition space.
+    pub fn max_input_task_count_per_consumer(&self) -> Option<usize> {
+        match self {
+            Self::Coalesce(layout) => Some(layout.max_input_task_count_per_consumer()),
+            Self::Shuffle(_) | Self::Broadcast(_) => None,
+        }
+    }
+
+    /// Returns the total logical slot space represented by this exchange layout.
+    ///
+    /// For shuffle and broadcast, this is the shared logical partition space. For coalesce, it is
+    /// the flattened producer-task-group slot space across all consumers.
     pub fn logical_slot_count(&self) -> usize {
         match self {
             Self::Shuffle(layout) => layout.logical_slot_count(),
@@ -429,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_layout_splits_hash_partition_space() {
+    fn test_shuffle_layout_splits_hash_partition_space() {
         let layout =
             ExchangeLayout::try_shuffle(Partitioning::Hash(vec![col("a", 0)], 17), 4, 8).unwrap();
         let resolver = layout.resolver();
@@ -466,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_layout_rejects_more_consumers_than_hash_partitions() {
+    fn test_shuffle_layout_rejects_more_consumers_than_hash_partitions() {
         let err = ExchangeLayout::try_shuffle(Partitioning::Hash(vec![col("a", 0)], 2), 2, 5)
             .unwrap_err();
         assert!(
@@ -476,13 +513,14 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_layout_tracks_task_groups_and_flattened_slots() {
+    fn test_coalesce_layout_tracks_task_groups_and_flattened_slots() {
         let layout = ExchangeLayout::try_coalesce(3, 2, 4).unwrap();
         let resolver = layout.resolver();
         assert_eq!(layout.producer_task_count(), 3);
         assert_eq!(layout.consumer_task_count(), 2);
         assert_eq!(layout.partitions_per_producer_task(), 4);
         assert_eq!(layout.logical_slot_count(), 12);
+        assert_eq!(layout.max_input_task_count_per_consumer(), Some(2));
         assert_eq!(resolver.producer_task_range(0), 0..2);
         assert_eq!(resolver.producer_task_range(1), 2..3);
         assert_eq!(layout.consumer_partition_range(0), &(0..8));
@@ -520,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_layout_splits_shared_partition_space_across_consumers() {
+    fn test_broadcast_layout_splits_shared_partition_space_across_consumers() {
         let layout = ExchangeLayout::try_broadcast(2, 3, 6).unwrap();
         let resolver = layout.resolver();
         assert_eq!(layout.producer_task_count(), 2);

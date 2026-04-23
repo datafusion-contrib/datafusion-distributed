@@ -2,19 +2,26 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::PlanProperties;
 use std::sync::Arc;
 
-pub(super) fn scale_partitioning_props(
+pub(super) fn map_partitioning_props(
     props: &Arc<PlanProperties>,
     f: impl FnOnce(usize) -> usize,
 ) -> Arc<PlanProperties> {
     Arc::new(PlanProperties::new(
         props.eq_properties.clone(),
-        scale_partitioning(&props.partitioning, f),
+        map_partitioning(&props.partitioning, f),
         props.emission_type,
         props.boundedness,
     ))
 }
 
-pub(super) fn scale_partitioning(
+pub(super) fn with_partition_count_props(
+    props: &Arc<PlanProperties>,
+    partition_count: usize,
+) -> Arc<PlanProperties> {
+    map_partitioning_props(props, |_| partition_count)
+}
+
+pub(super) fn map_partitioning(
     partitioning: &Partitioning,
     f: impl FnOnce(usize) -> usize,
 ) -> Partitioning {

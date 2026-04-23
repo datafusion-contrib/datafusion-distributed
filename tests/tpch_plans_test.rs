@@ -46,14 +46,16 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST]
-        │   [Stage 11] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
+        │   [Stage 11] => NetworkCoalesceExec: output_partitions=32, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 11 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] t3:[p0..p1] 
+          ┌───── Stage 11 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] t3:[p0..p7] 
           │ SortExec: expr=[s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[s_acctbal@5 as s_acctbal, s_name@2 as s_name, n_name@7 as n_name, p_partkey@0 as p_partkey, p_mfgr@1 as p_mfgr, s_address@3 as s_address, s_phone@4 as s_phone, s_comment@6 as s_comment]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@1), (ps_supplycost@7, min(partsupp.ps_supplycost)@0)], projection=[p_partkey@0, p_mfgr@1, s_name@2, s_address@3, s_phone@4, s_acctbal@5, s_comment@6, n_name@8]
-          │       [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
-          │       [Stage 10] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[p_partkey@0, ps_supplycost@7]
+          │         [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[ps_partkey@1, min(partsupp.ps_supplycost)@0]
+          │         [Stage 10] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([p_partkey@0, ps_supplycost@7], 6), input_partitions=4
@@ -97,10 +99,11 @@ mod tests {
               │       DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/part/1.parquet], [/testdata/tpch/plan_sf0.02/part/10.parquet], [/testdata/tpch/plan_sf0.02/part/11.parquet], [/testdata/tpch/plan_sf0.02/part/12.parquet], [/testdata/tpch/plan_sf0.02/part/13.parquet], ...]}, projection=[p_partkey, p_mfgr, p_type, p_size], file_type=parquet, predicate=p_size@5 = 15 AND p_type@4 LIKE %BRASS, pruning_predicate=p_size_null_count@2 != row_count@3 AND p_size_min@0 <= 15 AND 15 <= p_size_max@1, required_guarantees=[p_size in (15)]
               └──────────────────────────────────────────────────
             ┌───── Stage 10 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 6), input_partitions=2
+            │ RepartitionExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 6), input_partitions=8
             │   ProjectionExec: expr=[min(partsupp.ps_supplycost)@1 as min(partsupp.ps_supplycost), ps_partkey@0 as ps_partkey]
             │     AggregateExec: mode=FinalPartitioned, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
-            │       [Stage 9] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+            │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[ps_partkey@0]
+            │         [Stage 9] => NetworkShuffleExec: output_partitions=2, input_tasks=4
             └──────────────────────────────────────────────────
               ┌───── Stage 9 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
               │ RepartitionExec: partitioning=Hash([ps_partkey@0], 6), input_partitions=4
@@ -145,13 +148,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@1 DESC, o_orderdate@2 ASC NULLS LAST]
-        │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 4] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 4 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[revenue@1 DESC, o_orderdate@2 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[l_orderkey@0 as l_orderkey, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@3 as revenue, o_orderdate@1 as o_orderdate, o_shippriority@2 as o_shippriority]
           │     AggregateExec: mode=FinalPartitioned, gby=[l_orderkey@0 as l_orderkey, o_orderdate@1 as o_orderdate, o_shippriority@2 as o_shippriority], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-          │       [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[l_orderkey@0, o_orderdate@1, o_shippriority@2]
+          │         [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([l_orderkey@0, o_orderdate@1, o_shippriority@2], 6), input_partitions=4
@@ -214,13 +218,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@1 DESC]
-        │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 7] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 7 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[revenue@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[n_name@0 as n_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as revenue]
           │     AggregateExec: mode=FinalPartitioned, gby=[n_name@0 as n_name], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-          │       [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[n_name@0]
+          │         [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([n_name@0], 6), input_partitions=4
@@ -302,13 +307,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST]
-        │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 7] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 7 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year, sum(shipping.volume)@3 as revenue]
           │     AggregateExec: mode=FinalPartitioned, gby=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year], aggr=[sum(shipping.volume)]
-          │       [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[supp_nation@0, cust_nation@1, l_year@2]
+          │         [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([supp_nation@0, cust_nation@1, l_year@2], 6), input_partitions=4
@@ -373,13 +379,14 @@ mod tests {
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [o_year@0 ASC NULLS LAST]
-        │   [Stage 9] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 9] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 9 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 9 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[o_year@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[o_year@0 as o_year, sum(CASE WHEN all_nations.nation = Utf8("BRAZIL") THEN all_nations.volume ELSE Int64(0) END)@1 / sum(all_nations.volume)@2 as mkt_share]
           │     AggregateExec: mode=FinalPartitioned, gby=[o_year@0 as o_year], aggr=[sum(CASE WHEN all_nations.nation = Utf8("BRAZIL") THEN all_nations.volume ELSE Int64(0) END), sum(all_nations.volume)]
-          │       [Stage 8] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[o_year@0]
+          │         [Stage 8] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 8 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([o_year@0], 6), input_partitions=4
@@ -462,13 +469,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [nation@0 ASC NULLS LAST, o_year@1 DESC]
-        │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 7] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 7 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 7 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[nation@0 ASC NULLS LAST, o_year@1 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[nation@0 as nation, o_year@1 as o_year, sum(profit.amount)@2 as sum_profit]
           │     AggregateExec: mode=FinalPartitioned, gby=[nation@0 as nation, o_year@1 as o_year], aggr=[sum(profit.amount)]
-          │       [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[nation@0, o_year@1]
+          │         [Stage 6] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 6 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([nation@0, o_year@1], 6), input_partitions=4
@@ -531,13 +539,14 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [revenue@2 DESC]
-        │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 5] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 5 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 5 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[revenue@2 DESC], preserve_partitioning=[true]
           │   ProjectionExec: expr=[c_custkey@0 as c_custkey, c_name@1 as c_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@7 as revenue, c_acctbal@2 as c_acctbal, n_name@4 as n_name, c_address@5 as c_address, c_phone@3 as c_phone, c_comment@6 as c_comment]
           │     AggregateExec: mode=FinalPartitioned, gby=[c_custkey@0 as c_custkey, c_name@1 as c_name, c_acctbal@2 as c_acctbal, c_phone@3 as c_phone, n_name@4 as n_name, c_address@5 as c_address, c_comment@6 as c_comment], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-          │       [Stage 4] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[c_custkey@0, c_name@1, c_acctbal@2, c_phone@3, n_name@4, c_address@5, c_comment@6]
+          │         [Stage 4] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 4 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([c_custkey@0, c_name@1, c_acctbal@2, c_phone@3, n_name@4, c_address@5, c_comment@6], 6), input_partitions=4
@@ -650,13 +659,14 @@ mod tests {
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 3 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
           │     AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-          │       [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[l_shipmode@0]
+          │         [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([l_shipmode@0], 6), input_partitions=4
@@ -692,11 +702,12 @@ mod tests {
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([c_count@0], 6), input_partitions=2
+            │ RepartitionExec: partitioning=Hash([c_count@0], 6), input_partitions=8
             │   AggregateExec: mode=Partial, gby=[c_count@0 as c_count], aggr=[count(Int64(1))]
             │     ProjectionExec: expr=[count(orders.o_orderkey)@1 as c_count]
             │       AggregateExec: mode=FinalPartitioned, gby=[c_custkey@0 as c_custkey], aggr=[count(orders.o_orderkey)]
-            │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+            │         LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[c_custkey@0]
+            │           [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=4
             └──────────────────────────────────────────────────
               ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
               │ RepartitionExec: partitioning=Hash([c_custkey@0], 6), input_partitions=4
@@ -748,9 +759,9 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [s_suppkey@0 ASC NULLS LAST]
-        │   [Stage 6] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
+        │   [Stage 6] => NetworkCoalesceExec: output_partitions=32, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 6 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] t3:[p0..p1] 
+          ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] t3:[p0..p7] 
           │ SortExec: expr=[s_suppkey@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(max(revenue0.total_revenue)@0, total_revenue@4)], projection=[s_suppkey@1, s_name@2, s_address@3, s_phone@4, total_revenue@5]
           │     CoalescePartitionsExec
@@ -760,7 +771,8 @@ mod tests {
           │         [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
           │       ProjectionExec: expr=[l_suppkey@0 as supplier_no, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as total_revenue]
           │         AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-          │           [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │           LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[l_suppkey@0]
+          │             [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 3 ── Tasks: t0:[p0..p3]
             │ BroadcastExec: input_partitions=1, consumer_tasks=4, output_partitions=4
@@ -812,10 +824,11 @@ mod tests {
           │       [Stage 4] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 4 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
-            │ RepartitionExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2], 6), input_partitions=2
+            │ RepartitionExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2], 6), input_partitions=8
             │   AggregateExec: mode=Partial, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[count(alias1)]
             │     AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, alias1@3 as alias1], aggr=[]
-            │       [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+            │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[p_brand@0, p_type@1, p_size@2, alias1@3]
+            │         [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
             └──────────────────────────────────────────────────
               ┌───── Stage 3 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
               │ RepartitionExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2, alias1@3], 6), input_partitions=4
@@ -854,16 +867,17 @@ mod tests {
         │ ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
         │     CoalescePartitionsExec
-        │       [Stage 4] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
+        │       [Stage 4] => NetworkCoalesceExec: output_partitions=32, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 4 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] t3:[p0..p1] 
+          ┌───── Stage 4 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] t3:[p0..p7] 
           │ AggregateExec: mode=Partial, gby=[], aggr=[sum(lineitem.l_extendedprice)]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p_partkey@2, l_partkey@1)], filter=CAST(l_quantity@0 AS Decimal128(30, 15)) < Float64(0.2) * avg(lineitem.l_quantity)@1, projection=[l_extendedprice@1]
           │     CoalescePartitionsExec
           │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
           │     ProjectionExec: expr=[CAST(0.2 * CAST(avg(lineitem.l_quantity)@1 AS Float64) AS Decimal128(30, 15)) as Float64(0.2) * avg(lineitem.l_quantity), l_partkey@0 as l_partkey]
           │       AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
-          │         [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │         LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[l_partkey@0]
+          │           [Stage 3] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p16..p31] t2:[p32..p47] t3:[p48..p63]
             │ BroadcastExec: input_partitions=4, consumer_tasks=4, output_partitions=16
@@ -896,30 +910,32 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ SortPreservingMergeExec: [o_totalprice@4 DESC, o_orderdate@3 ASC NULLS LAST]
-        │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 6] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 6 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 6 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7] 
           │ SortExec: expr=[o_totalprice@4 DESC, o_orderdate@3 ASC NULLS LAST], preserve_partitioning=[true]
           │   AggregateExec: mode=FinalPartitioned, gby=[c_name@0 as c_name, c_custkey@1 as c_custkey, o_orderkey@2 as o_orderkey, o_orderdate@3 as o_orderdate, o_totalprice@4 as o_totalprice], aggr=[sum(lineitem.l_quantity)]
-          │     [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+          │     LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[c_name@0, c_custkey@1, o_orderkey@2, o_orderdate@3, o_totalprice@4]
+          │       [Stage 5] => NetworkShuffleExec: output_partitions=2, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 5 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
             │ RepartitionExec: partitioning=Hash([c_name@0, c_custkey@1, o_orderkey@2, o_orderdate@3, o_totalprice@4], 6), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[c_name@1 as c_name, c_custkey@0 as c_custkey, o_orderkey@2 as o_orderkey, o_orderdate@4 as o_orderdate, o_totalprice@3 as o_totalprice], aggr=[sum(lineitem.l_quantity)]
             │     HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(l_orderkey@0, o_orderkey@2)]
             │       CoalescePartitionsExec
-            │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=8, input_tasks=3
+            │         [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=8, stage_partitions=32, input_tasks=3
             │       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(o_orderkey@2, l_orderkey@0)], projection=[c_custkey@0, c_name@1, o_orderkey@2, o_totalprice@3, o_orderdate@4, l_quantity@6]
             │         CoalescePartitionsExec
             │           [Stage 4] => NetworkBroadcastExec: partitions_per_consumer=4, stage_partitions=16, input_tasks=4
             │         PartitionIsolatorExec: tasks=4 partitions=16
             │           DataSourceExec: file_groups={16 groups: [[/testdata/tpch/plan_sf0.02/lineitem/1.parquet], [/testdata/tpch/plan_sf0.02/lineitem/10.parquet], [/testdata/tpch/plan_sf0.02/lineitem/11.parquet], [/testdata/tpch/plan_sf0.02/lineitem/12.parquet], [/testdata/tpch/plan_sf0.02/lineitem/13.parquet], ...]}, projection=[l_orderkey, l_quantity], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
-              ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23] 
-              │ BroadcastExec: input_partitions=2, consumer_tasks=4, output_partitions=8
+              ┌───── Stage 2 ── Tasks: t0:[p0..p31] t1:[p32..p63] t2:[p64..p95] 
+              │ BroadcastExec: input_partitions=8, consumer_tasks=4, output_partitions=32
               │   FilterExec: sum(lineitem.l_quantity)@1 > Some(30000),25,2, projection=[l_orderkey@0]
               │     AggregateExec: mode=FinalPartitioned, gby=[l_orderkey@0 as l_orderkey], aggr=[sum(lineitem.l_quantity)]
-              │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=4
+              │       LocalExchangeSplitExec: input_partitions=2, base_partitions=6, local_partitions=4, exprs=[l_orderkey@0]
+              │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=4
               └──────────────────────────────────────────────────
                 ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] t3:[p0..p5] 
                 │ RepartitionExec: partitioning=Hash([l_orderkey@0], 6), input_partitions=4

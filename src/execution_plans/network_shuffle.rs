@@ -1,6 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::{ExchangeLayout, SlotReadPlan};
-use crate::execution_plans::common::scale_partitioning_props;
+use crate::execution_plans::common::with_partition_count_props;
 use crate::stage::Stage;
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
@@ -131,9 +131,10 @@ impl NetworkShuffleExec {
         let producer_tasks = input_task_count;
         let layout =
             ExchangeLayout::try_shuffle(producer_partitioning, producer_tasks, consumer_tasks)?;
-        let properties = scale_partitioning_props(input.properties(), |_| {
-            layout.max_partition_count_per_consumer()
-        });
+        let properties = with_partition_count_props(
+            input.properties(),
+            layout.max_partition_count_per_consumer(),
+        );
 
         Ok(Self {
             input_stage: Stage {

@@ -1,5 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
+use crate::distributed_planner::insert_local_exchange_split::insert_local_exchange_split_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
@@ -43,6 +44,22 @@ pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+    let Some(plan) =
+        distribute_plan_without_local_exchange_split(Arc::clone(&original), cfg).await?
+    else {
+        return Ok(None);
+    };
+
+    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    Ok(Some(insert_local_exchange_split_execs(plan, d_cfg)?))
+}
+
+pub(super) async fn distribute_plan_without_local_exchange_split(
+    original: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
+    let _ = DistributedConfig::from_config_options(cfg)?;
+
     // Keep this function idempotent.
     if original.exists(|plan| Ok(plan.is_network_boundary()))? {
         return Ok(None);
@@ -133,7 +150,6 @@ fn _distribute_plan(
                     repartition.partitioning()
                 ));
             };
-
             let node = Arc::new(NetworkShuffleExec::try_new(
                 child,
                 query_id,
@@ -244,13 +260,14 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[RainToday@0]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
             │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
@@ -274,13 +291,14 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[RainToday@0]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
             │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=2
@@ -377,13 +395,14 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[RainToday@0]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
             │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
@@ -445,15 +464,16 @@ mod tests {
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
         │     CoalescePartitionsExec
-        │       [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │       [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         │     ProjectionExec: expr=[avg(weather.MaxTemp)@1 as MaxTemp, RainTomorrow@0 as RainTomorrow]
         │       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
         │         [Stage 3] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │     LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[RainTomorrow@0]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
             │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 4), input_partitions=4
@@ -508,11 +528,12 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
-          │   [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │   LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[RainToday@0, WindGustDir@1]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
             │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 4), input_partitions=1
