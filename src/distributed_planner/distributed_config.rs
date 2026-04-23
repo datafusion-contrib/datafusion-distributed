@@ -60,7 +60,7 @@ extensions_options! {
         pub local_exchange_split_mode: String, default = local_exchange_split_mode_default()
         /// Only insert a local exchange split when a consumer task owns at most this many
         /// logical partitions from the upstream shuffle.
-        pub local_exchange_split_max_owned_partitions: usize, default = 2
+        pub local_exchange_split_max_owned_partitions: usize, default = 3
         /// Target number of local post-shuffle partitions to expose per consumer task.
         pub local_exchange_split_target_partitions_per_task: usize, default = 8
         /// Maximum split factor derived from the local target width.

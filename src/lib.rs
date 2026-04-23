@@ -60,6 +60,8 @@ pub use observability::{
 
 #[cfg(any(feature = "integration", test))]
 pub use execution_plans::benchmarks::{
-    LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode, ShuffleBench,
-    ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
+    LocalExchangeIdMode, LocalExchangeQueryBench, LocalExchangeQueryFixture,
+    LocalExchangeSplitBench, LocalExchangeSplitFixture, LocalFanoutStrategy, LocalRepartitionBench,
+    LocalRepartitionFixture, LocalRepartitionMode, QueryBenchProfile, QueryBenchShape,
+    ShuffleBench, ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
 };

@@ -1,8 +1,8 @@
 use crate::common::require_one_child;
-use datafusion::arrow::array::{ArrayRef, UInt32Array};
-use datafusion::arrow::compute::take;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::array::PrimitiveArray;
+use datafusion::arrow::compute::take_arrays;
+use datafusion::arrow::datatypes::{SchemaRef, UInt32Type};
+use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
@@ -280,7 +280,7 @@ impl Splitter {
             *output = None;
         }
 
-        for (partition, rows) in self.indices.iter().enumerate() {
+        for (partition, rows) in self.indices.iter_mut().enumerate() {
             if rows.is_empty() {
                 continue;
             }
@@ -290,13 +290,25 @@ impl Splitter {
             let output = if rows.len() == batch.num_rows() {
                 batch.clone()
             } else {
-                let rows = UInt32Array::from(rows.clone());
-                let columns = batch
-                    .columns()
-                    .iter()
-                    .map(|column| take(column.as_ref(), &rows, None))
-                    .collect::<datafusion::arrow::error::Result<Vec<ArrayRef>>>()?;
-                RecordBatch::try_new(Arc::clone(&self.schema), columns)?
+                let taken_rows = std::mem::take(rows);
+                let rows_array: PrimitiveArray<UInt32Type> = taken_rows.into();
+                let columns = take_arrays(batch.columns(), &rows_array, None)?;
+                let output = RecordBatch::try_new_with_options(
+                    Arc::clone(&self.schema),
+                    columns,
+                    &RecordBatchOptions::new().with_row_count(Some(rows_array.len())),
+                )?;
+
+                let (_, buffer, _) = rows_array.into_parts();
+                let mut reusable_rows = buffer.into_inner().into_vec::<u32>().map_err(|err| {
+                    datafusion::common::internal_datafusion_err!(
+                        "could not recover LocalExchangeSplitExec row indices: {err:?}"
+                    )
+                })?;
+                reusable_rows.clear();
+                *rows = reusable_rows;
+
+                output
             };
             self.output_batches[partition] = Some(output);
         }
@@ -343,6 +355,11 @@ impl ExecutionPlan for LocalExchangeSplitExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        // Each output partition is a stable subsequence of exactly one input partition.
+        vec![true]
     }
 
     fn with_new_children(
@@ -430,6 +447,7 @@ mod tests {
     use datafusion::execution::context::SessionContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common::collect;
+    use datafusion::physical_plan::test::TestMemoryExec;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn col(name: &str, idx: usize) -> Arc<dyn PhysicalExpr> {
@@ -605,6 +623,57 @@ mod tests {
             err.to_string()
                 .contains("LocalExchangeSplitExec partition 0 already consumed")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_exchange_split_preserves_per_output_ordering() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let input_batches = vec![
+            int32_batch(Arc::clone(&schema), &[0, 1, 2, 3])?,
+            int32_batch(Arc::clone(&schema), &[4, 5, 6, 7])?,
+        ];
+        let input =
+            TestMemoryExec::try_new_exec(&[input_batches.clone()], Arc::clone(&schema), None)?;
+        let input = Arc::unwrap_or_clone(input).try_with_sort_information(vec![
+            [datafusion::physical_expr::PhysicalSortExpr::new_default(
+                Arc::new(Column::new("k", 0)),
+            )]
+            .into(),
+        ])?;
+        let input = Arc::new(TestMemoryExec::update_cache(&Arc::new(input)));
+        let hash_exprs = vec![col("k", 0)];
+        let split = Arc::new(LocalExchangeSplitExec::try_new(
+            input,
+            hash_exprs.clone(),
+            2,
+            2,
+        )?);
+
+        assert_eq!(split.maintains_input_order(), vec![true]);
+        assert_eq!(
+            split
+                .properties()
+                .output_ordering()
+                .map(|ordering| ordering.to_string()),
+            Some("k@0 ASC".to_string())
+        );
+
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let batches0 = collect(split.execute(0, task_ctx.clone())?).await?;
+        let batches1 = collect(split.execute(1, task_ctx)?).await?;
+
+        let actual0 = batches0.iter().flat_map(batch_values).collect::<Vec<_>>();
+        let actual1 = batches1.iter().flat_map(batch_values).collect::<Vec<_>>();
+        let expected0 = expected_local_values(&input_batches, &hash_exprs, 2, 2, 0)?;
+        let expected1 = expected_local_values(&input_batches, &hash_exprs, 2, 2, 1)?;
+
+        assert_eq!(actual0, expected0);
+        assert_eq!(actual1, expected1);
+        assert!(actual0.windows(2).all(|window| window[0] <= window[1]));
+        assert!(actual1.windows(2).all(|window| window[0] <= window[1]));
 
         Ok(())
     }
