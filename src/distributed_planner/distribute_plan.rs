@@ -114,9 +114,17 @@ fn _distribute_plan(
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
         PlanOrNetworkBoundary::Plan(plan) => {
+            let input_urls = if new_children.len() == 1 {
+                new_children.first().and_then(|child| child.urls())
+            } else {
+                None
+            };
             let new_child_plans = new_children.into_iter().map(|child| child.plan).collect();
             let plan = plan.with_new_children(new_child_plans)?;
-            Ok(PlannedLeafNode::from_plan(&plan))
+
+            let mut planned_leaf_node = PlannedLeafNode::from_plan(&plan);
+            planned_leaf_node.with_urls(input_urls, task_count)?;
+            Ok(planned_leaf_node)
         }
         // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
         PlanOrNetworkBoundary::Shuffle => {

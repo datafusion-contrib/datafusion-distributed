@@ -4,9 +4,9 @@ use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
-use url::Url;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use url::Url;
 
 extensions_options! {
     /// Configuration for the distributed planner.
