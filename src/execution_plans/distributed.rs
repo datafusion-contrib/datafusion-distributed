@@ -6,14 +6,17 @@ use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
+use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, coordinator_to_worker_msg::Inner,
+    worker_to_coordinator_msg,
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
     DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
 };
+use dashmap::DashMap;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -58,6 +61,7 @@ pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
+    pub task_metrics: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
 }
 
 struct PreparedPlan {
@@ -71,6 +75,7 @@ impl DistributedExec {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
+            task_metrics: Arc::new(DashMap::new()),
         }
     }
 
@@ -93,6 +98,8 @@ impl DistributedExec {
     ///    network call feeding the subplan is necessary.
     /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
     ///    become nodes without children and traversing them will not go further down in.
+    /// 4. Spawn a background task per worker that waits for the worker to finish and collects
+    ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
@@ -135,7 +142,7 @@ impl DistributedExec {
                 });
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
-                let tx = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                let tx = spawner.send_plan_task(Arc::clone(ctx), i, url, Arc::clone(&self.task_metrics))?;
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
@@ -184,6 +191,7 @@ impl ExecutionPlan for DistributedExec {
             plan: require_one_child(&children)?,
             prepared_plan: self.prepared_plan.clone(),
             metrics: self.metrics.clone(),
+            task_metrics: Arc::clone(&self.task_metrics),
         }))
     }
 
@@ -297,6 +305,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
+        task_metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
     ) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
@@ -349,15 +358,16 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             &mut work_unit_feed_declarations,
         );
 
+        let task_key = TaskKey {
+            query_id: serialize_uuid(&self.query_id),
+            stage_id: self.stage_id as u64,
+            task_number: task_i as u64,
+        };
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
                 plan_proto: self.plan_proto.clone(),
                 task_count: self.task_count as u64,
-                task_key: Some(TaskKey {
-                    query_id: serialize_uuid(&self.query_id),
-                    stage_id: self.stage_id as u64,
-                    task_number: task_i as u64,
-                }),
+                task_key: Some(task_key),
                 work_unit_feed_declarations,
             })),
         };
@@ -377,18 +387,58 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         );
 
         let metrics = self.metrics.clone();
-        self.join_set.spawn(async move {
+
+        // Sending the plan and waiting for metrics both run in a detached tokio::spawn so they
+        // are not cancelled when the output stream is dropped early.
+        let (plan_sent_tx, plan_sent_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+
+        tokio::spawn(async move {
             let start = Instant::now();
-            let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
-            client.coordinator_channel(request).await.map_err(|e| {
-                tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
-                    exec_datafusion_err!("Error sending plan to worker {url}: {e}")
-                })
-            })?;
-            metrics.plan_send_latency.record(&start);
-            metrics.plan_bytes_sent.add(plan_size);
-            Ok::<_, DataFusionError>(())
+            let result = async {
+                let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
+                let response_stream = client
+                    .coordinator_channel(request)
+                    .await
+                    .map_err(|e| {
+                        tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
+                            exec_datafusion_err!("Error sending plan to worker {url}: {e}")
+                        })
+                    })?
+                    .into_inner();
+                metrics.plan_send_latency.record(&start);
+                metrics.plan_bytes_sent.add(plan_size);
+                Ok::<_, DataFusionError>(response_stream)
+            }
+            .await;
+
+            let mut response_stream = match result {
+                Err(e) => {
+                    let _ = plan_sent_tx.send(Err(e));
+                    return;
+                }
+                Ok(s) => s,
+            };
+            let _ = plan_sent_tx.send(Ok(()));
+
+            // The worker sends exactly one WorkerToCoordinatorMsg after all partitions
+            // of the task have finished (or been dropped early), containing collected metrics.
+            while let Some(Ok(msg)) = response_stream.next().await {
+                let Some(worker_to_coordinator_msg::Inner::MetricsCollection(collection)) =
+                    msg.inner
+                else {
+                    continue;
+                };
+                for task_metrics in collection.tasks {
+                    if let Some(task_key) = task_metrics.task_key {
+                        task_metrics_collection.insert(task_key, task_metrics.metrics);
+                    }
+                }
+            }
         });
+
+        self.join_set
+            .spawn(async move { plan_sent_rx.await.unwrap_or_else(|_| Ok(())) });
+
         Ok(tx)
     }
 

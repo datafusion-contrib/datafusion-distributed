@@ -231,7 +231,6 @@ impl ShuffleFixture {
                 )),
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
-                metrics_collection: Arc::new(Default::default()),
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,

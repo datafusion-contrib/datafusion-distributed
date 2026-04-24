@@ -25,7 +25,12 @@ message CoordinatorToWorkerMsg {
 }
 
 message WorkerToCoordinatorMsg {
-  // For now, there are no messages that can flow back from worker to coordinator.
+  oneof inner {
+    // Sends the metrics collected during task execution back to the coordinator.
+    // This is sent after all partitions of a task have finished (or been dropped),
+    // ensuring metrics are never lost due to early stream termination.
+    MetricsCollection metrics_collection = 1;
+  }
 }
 
 message GetWorkerInfoRequest {}
