@@ -142,7 +142,12 @@ impl DistributedExec {
                 });
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
-                let tx = spawner.send_plan_task(Arc::clone(ctx), i, url, Arc::clone(&self.task_metrics))?;
+                let tx = spawner.send_plan_task(
+                    Arc::clone(ctx),
+                    i,
+                    url,
+                    Arc::clone(&self.task_metrics),
+                )?;
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
