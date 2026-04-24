@@ -171,9 +171,9 @@ impl ExecutionPlan for PartitionIsolatorExec {
             task_context.task_count,
         );
 
-        // if our partition group is [7,8,9] and we are asked for parittion 1,
-        // then look up that index in our group and execute that partition, in this
-        // example partition 8
+        // partition here indexes into the current task's partition group. For example,
+        // if the current task's partition group is [7,8,9] and here we get partition = 1,
+        // then this means we should execute partition 8.
 
         match partition_group.get(partition) {
             Some(actual_partition_number) => {

@@ -71,6 +71,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 query_id: deserialize_uuid(proto.query_id.as_ref())?,
                 num: proto.num as usize,
                 plan: inputs.first().cloned(),
+                task_plans: None,
                 tasks: decode_tasks(proto.tasks)?,
             })
         }
@@ -552,6 +553,7 @@ mod tests {
             query_id: Default::default(),
             num: 0,
             plan: None,
+            task_plans: None,
             tasks: vec![],
         }
     }
@@ -561,6 +563,7 @@ mod tests {
             query_id: Default::default(),
             num: 0,
             plan: Some(empty_exec()),
+            task_plans: None,
             tasks: vec![],
         }
     }

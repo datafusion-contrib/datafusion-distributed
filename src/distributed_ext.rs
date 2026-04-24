@@ -465,11 +465,13 @@ pub trait DistributedExt: Sized {
         compression: Option<CompressionType>,
     ) -> Result<(), DataFusionError>;
 
-    /// Overrides `datafusion.execution.batch_size` for worker-executed stages, letting users
-    /// tune shuffle batch sizes (specifically `RepartitionExec`'s output batching via its
-    /// internal `LimitedBatchCoalescer`) independently of the global batch size.
+    /// How many rows to collect in each record batch before sending it over the wire in a
+    /// shuffle operation. This value defaults to the same as `datafusion.execution.batch_size`.
     ///
-    /// Set to 0 (the default) to apply no override.
+    /// Setting it to something smaller than `datafusion.execution.batch_size` has no effect.
+    ///
+    /// It's preferable to set `datafusion.execution.batch_size` directly instead of this
+    /// parameter if the specific use case allows it.
     fn with_distributed_shuffle_batch_size(
         self,
         batch_size: usize,
@@ -526,15 +528,6 @@ pub trait DistributedExt: Sized {
         &mut self,
         max_tasks_per_stage: usize,
     ) -> Result<(), DataFusionError>;
-
-    /// Enables or disables the PartialReduce optimization, which inserts an extra aggregation
-    /// pass above hash RepartitionExec before network shuffles to reduce shuffle data size.
-    /// Disabled by default because its effectiveness is workload-dependent: it helps when
-    /// aggregation significantly reduces cardinality, but adds overhead when it does not.
-    fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
-
-    /// Same as [DistributedExt::with_distributed_partial_reduce] but with an in-place mutation.
-    fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -656,12 +649,6 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError> {
-        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.partial_reduce = enabled;
-        Ok(())
-    }
-
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -727,10 +714,6 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
-
-            #[call(set_distributed_partial_reduce)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -817,11 +800,6 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_partial_reduce)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -908,11 +886,6 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(mut self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_partial_reduce)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -999,11 +972,6 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_max_tasks_per_stage)]
             #[expr($?;Ok(self))]
             fn with_distributed_max_tasks_per_stage(self, max_tasks_per_stage: usize) -> Result<Self, DataFusionError>;
-
-            fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
-            #[call(set_distributed_partial_reduce)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }

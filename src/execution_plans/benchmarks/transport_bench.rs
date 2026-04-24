@@ -273,6 +273,7 @@ impl TransportFixture {
             query_id,
             num: 0,
             plan: None,
+            task_plans: None,
             tasks: self.input_stage_tasks.clone(),
         };
 

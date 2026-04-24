@@ -64,13 +64,6 @@ impl Worker {
                     task_count: request.task_count as usize,
                 }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
-
-            let shuffle_batch_size =
-                DistributedConfig::from_config_options(cfg.options())?.shuffle_batch_size;
-            if shuffle_batch_size != 0 {
-                cfg = cfg.with_batch_size(shuffle_batch_size);
-            }
-
             let session_state = self
                 .session_builder
                 .build_session_state(WorkerQueryContext {

@@ -76,6 +76,10 @@ pub struct Stage {
     /// The physical execution plan that this stage will execute. It will only be present if
     /// accessing to it through the coordinating stage.
     pub(crate) plan: Option<Arc<dyn ExecutionPlan>>,
+    /// Optional per-task specialized plans. When set, task `i` is serialized from
+    /// `task_plans[i]` rather than from `plan`. Used by the coordinator to send distinct
+    /// plan bytes per worker (e.g. with non-owned file groups already emptied).
+    pub(crate) task_plans: Option<Vec<Arc<dyn ExecutionPlan>>>,
     /// Our tasks which tell us how finely grained to execute the partitions in
     /// the plan
     pub tasks: Vec<ExecutionTask>,
@@ -85,7 +89,7 @@ pub struct Stage {
 pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
-    pub(crate) url: Option<Url>,
+    pub url: Option<Url>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +122,7 @@ impl Stage {
             query_id,
             num,
             plan: Some(plan),
+            task_plans: None,
             tasks: vec![ExecutionTask { url: None }; n_tasks],
         }
     }
@@ -439,6 +444,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             query_id: Default::default(),
             num: max_num + 1,
             plan: Some(plan.clone()),
+            task_plans: None,
             tasks: vec![ExecutionTask { url: None }],
         };
         all_stages.insert(0, &head_stage);

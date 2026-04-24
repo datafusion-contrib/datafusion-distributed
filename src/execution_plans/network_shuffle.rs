@@ -21,6 +21,7 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use url::Url;
 use uuid::Uuid;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
@@ -127,6 +128,8 @@ impl NetworkShuffleExec {
     /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
+        input_urls: Option<Vec<Url>>,
+        input_plans: Option<Vec<Arc<dyn ExecutionPlan>>>,
         query_id: Uuid,
         num: usize,
         task_count: usize,
@@ -146,7 +149,7 @@ impl NetworkShuffleExec {
                 )?);
                 Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
             } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
-                // This might be a passthrough node from the input plan.
+                // This might be a passthrough node, like a CoalesceBatchesExec or something like that.
                 // This is fine, we can let the node be here.
                 Ok(Transformed::no(plan))
             } else {
@@ -162,7 +165,14 @@ impl NetworkShuffleExec {
                 query_id,
                 num,
                 plan: Some(transformed.data),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
+                task_plans: input_plans,
+                tasks: input_urls
+                    .map(|urls| {
+                        urls.into_iter()
+                            .map(|url| ExecutionTask { url: Some(url) })
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![ExecutionTask { url: None }; input_task_count]),
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
             properties: input.properties().clone(),

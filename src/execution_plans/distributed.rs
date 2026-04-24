@@ -31,6 +31,7 @@ use http::Extensions;
 use prost::Message;
 use rand::Rng;
 use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -118,12 +119,32 @@ impl DistributedExec {
             let mut spawner =
                 CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
 
-            // Right now, we assign random workers to tasks. This might change in the future.
+            // Default routing assigns tasks to URLs round-robin from a random starting point.
             let start_idx = rand::rng().random_range(0..urls.len());
 
             let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for i in 0..stage.tasks.len() {
-                let url = urls[(start_idx + i) % urls.len()].clone();
+            let mut assigned_urls = HashSet::new();
+            for (i, task) in stage.tasks.iter().enumerate() {
+                // If the user has not defined custom routing through the plan_leaf_node API, we
+                // default to round-robin task assignation with a randomized starting point.
+                //
+                // If the user has defined custom routing through the plan_leaf_node interface,
+                // we attempt to route the task to the specified URL.
+                //
+                // Notably, it is possible that a task is assigned to a machine that goes offline
+                // in between the moment that the task URL is assigned and the moment the task is
+                // routed. In that case, we route the task to another URL that has not yet been
+                // claimed. If all of the URLs are claimed, we begin assigning round-robin.
+                let url = match task.url.clone() {
+                    Some(url) if urls.contains(&url) => url,
+                    Some(_) => urls
+                        .iter()
+                        .find(|url| !assigned_urls.contains(*url))
+                        .cloned()
+                        .unwrap_or_else(|| urls[(start_idx + i) % urls.len()].clone()),
+                    None => urls[(start_idx + i) % urls.len()].clone(),
+                };
+                assigned_urls.insert(url.clone());
                 tasks.push(ExecutionTask {
                     url: Some(url.clone()),
                 });
@@ -136,6 +157,7 @@ impl DistributedExec {
                 query_id: stage.query_id,
                 num: stage.num,
                 plan: None,
+                task_plans: None,
                 tasks,
             })?))
         })?;
@@ -245,7 +267,11 @@ struct CoordinatorToWorkerMetrics {
 /// This struct is responsible for building tasks that communicate a serialized plan to multiple
 /// workers for further execution.
 struct CoordinatorToWorkerTaskSpawner<'a> {
+    /// Shared plan proto, pre-serialized once. Used when `task_plan_protos` is `None`.
     plan_proto: Vec<u8>,
+    /// Per-task plan protos. When `Some`, task `i` uses `task_plan_protos[i]` instead of
+    /// `plan_proto`, enabling coordinator-side plan specialization before sending.
+    task_plan_protos: Option<Vec<Vec<u8>>>,
     query_id: Uuid,
     stage_id: usize,
     task_count: usize,
@@ -269,8 +295,25 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let plan_proto =
             PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
 
+        // If the stage carries per-task specialized plans, serialize each one now so that each
+        // worker receives only the partitions it owns (e.g. with non-owned file groups emptied).
+        let task_plan_protos = stage
+            .task_plans
+            .as_ref()
+            .map(|plans| {
+                plans
+                    .iter()
+                    .map(|p| {
+                        PhysicalPlanNode::try_from_physical_plan(Arc::clone(p), codec)
+                            .map(|n| n.encode_to_vec())
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+
         Ok(Self {
             plan_proto,
+            task_plan_protos,
             query_id: stage.query_id,
             stage_id: stage.num,
             task_count: stage.tasks.len(),
@@ -287,9 +330,17 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
         headers.extend(get_passthrough_headers(ctx.session_config()));
 
+        // Use the per-task specialized proto if available, otherwise fall back to the shared one.
+        let proto = self
+            .task_plan_protos
+            .as_ref()
+            .and_then(|protos| protos.get(task_i))
+            .cloned()
+            .unwrap_or_else(|| self.plan_proto.clone());
+
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
-                plan_proto: self.plan_proto.clone(),
+                plan_proto: proto.clone(),
                 task_count: self.task_count as u64,
                 task_key: Some(TaskKey {
                     query_id: serialize_uuid(&self.query_id),
@@ -298,7 +349,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 }),
             })),
         };
-        let plan_size = self.plan_proto.len();
+        let plan_size = proto.len();
 
         let request = Request::from_parts(
             MetadataMap::from_headers(headers),

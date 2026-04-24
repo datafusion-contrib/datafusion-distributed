@@ -6,6 +6,7 @@ use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use url::Url;
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -21,6 +22,13 @@ extensions_options! {
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
         pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
+        /// Upon shuffling over the network, data streams need to be disassembled in a lot of output
+        /// partitions, which means the resulting streams might contain a lot of tiny record batches
+        /// to be sent over the wire. This parameter controls the batch size in number of rows for
+        /// the CoalesceBatchExec operator that is placed at the top of the stage for sending bigger
+        /// batches over the wire.
+        /// If set to 0, batch coalescing is disabled on network shuffle operations.
+        pub shuffle_batch_size: usize, default = 8192
         /// When encountering a UNION operation, isolate its children depending on the task context.
         /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
         /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
@@ -41,22 +49,10 @@ extensions_options! {
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
-        /// Overrides `datafusion.execution.batch_size` for worker-executed stages. Because
-        /// `RepartitionExec` reads `session_config().batch_size()` at execute time to size its
-        /// output batches (via its internal `LimitedBatchCoalescer`), this knob lets users tune
-        /// shuffle batch sizes independently of the global `datafusion.execution.batch_size`.
-        ///
-        /// Set to 0 (the default) to apply no override and inherit `datafusion.execution.batch_size`.
-        pub shuffle_batch_size: usize, default = 0
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
-        /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
-        /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
-        /// Disabled by default because its effectiveness is workload-dependent: it helps when
-        /// aggregation significantly reduces cardinality, but adds overhead when it does not.
-        pub partial_reduce: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
@@ -97,6 +93,10 @@ impl DistributedConfig {
             .user_provided
             .push(Arc::new(task_estimator));
         self
+    }
+
+    pub fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.__private_worker_resolver.0.get_urls()
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.
