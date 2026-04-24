@@ -43,6 +43,14 @@ impl RemoteWorkUnitFeedRegistry {
     }
 }
 
+/// Remove implementation of a [WorkUnitFeedProvider] that pulls [crate::WorkUnit]s coming over
+/// the wire from a [RemoteWorkUnitFeedRegistry].
+///
+/// Deserializing a [crate::WorkUnitFeed] with [crate::WorkUnitFeed::from_proto] always returns a
+/// [crate::WorkUnitFeed<RemoteFeedProvider>] that will receive messages over the network, rather
+/// than executing the original [WorkUnitFeedProvider] locally.
+///
+/// There's a diagram about how this works in [crate::WorkUnitFeed].
 #[derive(Debug, Clone)]
 pub(crate) struct RemoteFeedProvider {
     pub(crate) id: Uuid,
