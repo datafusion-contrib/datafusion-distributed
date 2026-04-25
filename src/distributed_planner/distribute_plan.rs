@@ -98,9 +98,7 @@ fn _distribute_plan(
         let PlanOrNetworkBoundary::Plan(plan) = annotated_plan.plan_or_nb else {
             return plan_err!("A leaf node can never be a network boundary");
         };
-        let Some(task_count) = annotated_plan.task_count.to_static() else {
-            return plan_err!("Leaf stages cannot have a dynamic task count");
-        };
+        let task_count = annotated_plan.task_count.as_usize();
         let scaled_up = d_cfg
             .__private_task_estimator
             .scale_up_leaf_node(&plan, task_count, cfg);
@@ -125,17 +123,20 @@ fn _distribute_plan(
 
     // It would need a network boundary, but on both sides of the boundary there is just 1 task,
     // so we are fine with not introducing any network boundary.
-    if annotated_plan.task_count.to_static() == Some(1) && input_task_count.to_static() == Some(1) {
+    if !d_cfg.dynamic_task_count
+        && annotated_plan.task_count.as_usize() == 1
+        && input_task_count.as_usize() == 1
+    {
         return require_one_child(new_children);
     }
     let stage = LocalStage {
         query_id,
         num: *stage_id,
         plan: require_one_child(new_children)?,
-        tasks: input_task_count,
+        tasks: input_task_count.as_usize(),
     };
     stage_id.add_assign(1);
-    let task_count = annotated_plan.task_count;
+    let task_count = annotated_plan.task_count.as_usize();
 
     match annotated_plan.plan_or_nb {
         // This is a normal intermediate plan, just pass it through with the mapped children.

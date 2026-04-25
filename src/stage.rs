@@ -1,10 +1,10 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::{NetworkShuffleExec, PartitionIsolatorExec, TaskCountAnnotation};
-use datafusion::common::plan_err;
+use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{HashMap, config_err};
+use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
-use datafusion::execution::TaskContext;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
@@ -83,7 +83,20 @@ pub struct LocalStage {
     /// accessing to it through the coordinating stage.
     pub plan: Arc<dyn ExecutionPlan>,
     /// The number of tasks the stage has.
-    pub tasks: TaskCountAnnotation,
+    pub tasks: usize,
+}
+
+impl LocalStage {
+    pub fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        if self.tasks > 1 {
+            return exec_err!("Cannot execute a local stage with more than 1 task");
+        }
+        self.plan.execute(partition, context)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -111,9 +124,9 @@ impl Stage {
         }
     }
 
-    pub fn static_task_count_or_1(&self) -> usize {
+    pub fn task_count(&self) -> usize {
         match &self {
-            Self::Local(v) => v.tasks.to_static().unwrap_or(1),
+            Self::Local(v) => v.tasks,
             Self::Remote(v) => v.workers.len(),
         }
     }
@@ -124,13 +137,6 @@ impl Stage {
             Self::Remote(_) => None,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ExecutionTask {
-    /// The url of the worker that will execute this task.  A None value is interpreted as
-    /// unassigned.
-    pub(crate) url: Option<Url>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,9 +249,9 @@ fn display_ascii(
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
-                stage.query_id(),
+                stage.num(),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.static_task_count_or_1(), plan)
+                format_tasks_for_stage(stage.task_count(), plan)
             )?;
         }
     }
@@ -466,13 +472,13 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             query_id: Default::default(),
             num: max_num + 1,
             plan: plan.clone(),
-            tasks: TaskCountAnnotation::Maximum(1),
+            tasks: 1,
         });
         all_stages.insert(0, &head_stage);
 
         // draw all tasks first
         for stage in &all_stages {
-            for i in 0..stage.static_task_count_or_1() {
+            for i in 0..stage.task_count() {
                 let p = display_single_task(stage, i)?;
                 writeln!(f, "{p}")?;
             }
@@ -483,8 +489,8 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
                 continue;
             };
             for input_stage in find_input_stages(plan.as_ref()) {
-                for task_i in 0..stage.static_task_count_or_1() {
-                    for input_task_i in 0..input_stage.static_task_count_or_1() {
+                for task_i in 0..stage.task_count() {
+                    for input_task_i in 0..input_stage.task_count() {
                         let edges =
                             display_inter_task_edges(stage, task_i, input_stage, input_task_i)?;
                         writeln!(
@@ -548,7 +554,7 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
     writeln!(
         f,
         "{}",
-        display_plan(plan, task_i, stage.static_task_count_or_1(), stage.num())?
+        display_plan(plan, task_i, stage.task_count(), stage.num())?
     )?;
     writeln!(f, "  }}")?;
     writeln!(f, "  }}")?;
@@ -811,8 +817,7 @@ fn display_inter_task_edges(
             }
             // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            let input_partitions_per_task =
-                output_partitions / input_stage.static_task_count_or_1();
+            let input_partitions_per_task = output_partitions / input_stage.task_count();
             for p in 0..input_partitions_per_task {
                 writeln!(
                     f,

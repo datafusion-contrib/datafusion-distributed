@@ -1,7 +1,7 @@
-use crate::TaskCountAnnotation::{Desired, Dynamic, Maximum};
+use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::{BroadcastExec, DistributedConfig, TaskCountAnnotation, TaskEstimator};
-use datafusion::common::{DataFusionError, Result, plan_datafusion_err, plan_err};
+use datafusion::common::{DataFusionError, Result, plan_datafusion_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
@@ -208,44 +208,34 @@ async fn _annotate_plan(
         };
     }
 
-    let mut task_count_opt = estimator
+    let mut task_count = estimator
         .task_estimation(&plan, cfg)
-        .map_or(None, |v| Some(v.task_count));
+        .map_or(Desired(1), |v| v.task_count);
     if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
         // with a bunch of children, the user might want to increase parallelism and increase the
         // task count for the stage running that.
-        let mut annotated_children_iter = annotated_children.iter();
-        let Some(mut n_task_count) = annotated_children_iter.next().map(|v| v.task_count) else {
-            return plan_err!("UnionExec must have at least one child");
-        };
-        for annotated_child in annotated_children_iter {
-            n_task_count = n_task_count.sum(annotated_child.task_count)?
+        let mut count = 0;
+        for annotated_child in annotated_children.iter() {
+            count += annotated_child.task_count.as_usize();
         }
-        task_count_opt = Some(n_task_count);
+        task_count = Desired(count);
     } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
         && !broadcast_joins
     {
-        // Only distribute CollectLeft HashJoins after we broadcast more intelligently or when it
+        // Only distriubte CollectLeft HashJoins after we broadcast more intelligently or when it
         // is explicitly enabled.
-        task_count_opt = Some(Maximum(1));
+        task_count = Maximum(1);
     } else {
         // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
         // nodes can only run in one task. If there is a subplan with a single node declaring that
         // it can only run in one task, all the rest of the nodes in the stage need to respect it.
         for annotated_child in annotated_children.iter() {
-            let Some(task_count) = task_count_opt else {
-                task_count_opt = Some(annotated_child.task_count);
-                continue;
-            };
-            task_count_opt = Some(task_count.merge(annotated_child.task_count))
+            task_count = task_count.merge(annotated_child.task_count)
         }
     }
-    let Some(mut task_count) = task_count_opt else {
-        return plan_err!("task_count not available after evaluating all children");
-    };
 
     task_count = task_count.limit(max_tasks);
 
@@ -253,7 +243,7 @@ async fn _annotate_plan(
     let mut annotation = AnnotatedPlan {
         plan_or_nb: PlanOrNetworkBoundary::Plan(Arc::clone(&plan)),
         children: annotated_children,
-        task_count: task_count.clone(),
+        task_count,
     };
 
     // Upon reaching a hash repartition, we need to introduce a shuffle right above it.
@@ -298,7 +288,7 @@ async fn _annotate_plan(
         task_count: &TaskCountAnnotation,
         d_cfg: &DistributedConfig,
     ) -> Result<(), DataFusionError> {
-        annotation.task_count = task_count.clone();
+        annotation.task_count = *task_count;
         let plan = match &annotation.plan_or_nb {
             // If it's a normal plan, continue with the propagation.
             PlanOrNetworkBoundary::Plan(plan) => plan,
@@ -306,7 +296,7 @@ async fn _annotate_plan(
             PlanOrNetworkBoundary::Broadcast => {
                 if let Maximum(max) = task_count {
                     for child in annotation.children.iter_mut() {
-                        let child_task_count = child.task_count.clone().limit(*max);
+                        let child_task_count = child.task_count.limit(*max);
                         propagate_task_count(child, &child_task_count, d_cfg)?;
                     }
                 }
@@ -328,12 +318,8 @@ async fn _annotate_plan(
             // which it's running.
             let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
                 plan.children().into_iter().cloned(),
-                // TODO: Don't now what to do with this yet...
-                annotation
-                    .children
-                    .iter()
-                    .map(|v| v.task_count.to_static().unwrap_or(1)),
-                task_count.to_static().unwrap_or(1),
+                annotation.children.iter().map(|v| v.task_count.as_usize()),
+                task_count.as_usize(),
             )?;
             for children_and_tasks in c_i_union.task_idx_map.iter() {
                 for (child_i, task_ctx) in children_and_tasks {
@@ -395,26 +381,13 @@ async fn _annotate_plan(
             })?,
             d_cfg.cardinality_task_count_factor,
         );
-        if d_cfg.dynamic_task_count {
-            annotation.task_count = Dynamic;
-            Ok(annotation)
-        } else {
-            let prev_task_count = match annotation.task_count {
-                Desired(v) => v,
-                Maximum(v) => v,
-                Dynamic => {
-                    return plan_err!(
-                        "A plan was annotated with a dynamic task count, but dynamic_task_count is disabled"
-                    );
-                }
-            };
-            annotation.task_count = Desired((prev_task_count as f64 * sf).ceil() as usize);
-            Ok(annotation)
-        }
+        let prev_task_count = annotation.task_count.as_usize() as f64;
+        annotation.task_count = Desired((prev_task_count * sf).ceil() as usize);
+        Ok(annotation)
     } else if root {
         // If this is the root node, it means that we have just finished annotating nodes for the
         // subplan belonging to the head stage, so propagate the task count to all children.
-        let task_count = annotation.task_count.clone();
+        let task_count = annotation.task_count;
         propagate_task_count(&mut annotation, &task_count, d_cfg)?;
         Ok(annotation)
     } else {

@@ -5,7 +5,7 @@ use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
-use crate::stage::{ExecutionTask, Stage};
+use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, coordinator_to_worker_msg::Inner,
@@ -17,7 +17,7 @@ use crate::{
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::{Result, exec_err, internal_err};
+use datafusion::common::{Result, exec_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -119,7 +119,9 @@ impl DistributedExec {
                 return Ok(Transformed::no(plan));
             };
 
-            let stage = plan.input_stage();
+            let Stage::Local(stage) = plan.input_stage() else {
+                return exec_err!("Input stage from network boundary was not in Local state");
+            };
 
             let mut spawner =
                 CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
@@ -127,24 +129,23 @@ impl DistributedExec {
             // Right now, we assign random workers to tasks. This might change in the future.
             let start_idx = rand::rng().random_range(0..urls.len());
 
-            let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for i in 0..stage.tasks.len() {
+            let mut workers = Vec::with_capacity(stage.tasks);
+            for i in 0..stage.tasks {
                 let url = urls[(start_idx + i) % urls.len()].clone();
-                tasks.push(ExecutionTask {
-                    url: Some(url.clone()),
-                });
+                workers.push(url.clone());
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
                 let tx = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
-            Ok(Transformed::yes(plan.with_input_stage(Stage {
-                query_id: stage.query_id,
-                num: stage.num,
-                plan: None,
-                tasks,
-            })?))
+            Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
+                RemoteStage {
+                    query_id: stage.query_id,
+                    num: stage.num,
+                    workers,
+                },
+            ))?))
         })?;
         Ok(PreparedPlan {
             plan: prepared.data,
@@ -267,24 +268,20 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     /// Builds a new [CoordinatorToWorkerTaskSpawner] based on the [Stage] that needs to be
     /// fanned out to multiple workers.
     fn new(
-        stage: &'a Stage,
+        stage: &'a LocalStage,
         metrics: &'a CoordinatorToWorkerMetrics,
         codec: &'a dyn PhysicalExtensionCodec,
         join_set: &'a mut JoinSet<Result<()>>,
     ) -> Result<Self> {
-        let Some(plan) = &stage.plan else {
-            return internal_err!("Plan is not set for stage {}", stage.num);
-        };
-
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
+        let plan_proto = PhysicalPlanNode::try_from_physical_plan(Arc::clone(&stage.plan), codec)?
+            .encode_to_vec();
 
         Ok(Self {
-            plan,
+            plan: &stage.plan,
             plan_proto,
             query_id: stage.query_id,
             stage_id: stage.num,
-            task_count: stage.tasks.len(),
+            task_count: stage.tasks,
             metrics,
             join_set,
         })

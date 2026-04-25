@@ -206,10 +206,10 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
             );
         }
         Ok(Arc::new(Self {
-            properties: Arc::clone(UnionExec::try_new(children.clone())?.properties()),
-            metrics: Default::default(),
+            properties: Arc::clone(&self.properties),
+            metrics: self.metrics.clone(),
             children,
-            task_idx_map: vec![],
+            task_idx_map: self.task_idx_map.clone(),
         }))
     }
 

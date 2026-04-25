@@ -5,7 +5,7 @@ use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
-use crate::{BroadcastExec, DistributedTaskContext, TaskCountAnnotation};
+use crate::{BroadcastExec, DistributedTaskContext};
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, not_impl_err, plan_err};
@@ -161,20 +161,17 @@ impl NetworkBroadcastExec {
     ///
     /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
     /// the correct consumer_task_count.
-    pub fn try_new(mut stage: LocalStage, task_count: TaskCountAnnotation) -> Result<Self> {
-        if !matches!(stage.plan.output_partitioning(), Partitioning::Hash(_, _)) {
-            return plan_err!("NetworkBroadcastExec input must be hash partitioned");
-        }
-        stage.plan = if let Some(task_count) = task_count.to_static() {
-            Self::prepare_input_for_consumer_tasks(Arc::clone(&stage.plan), task_count)?
-        } else {
-            Arc::clone(&stage.plan)
-        };
-        let properties = stage.plan.properties().clone();
+    pub fn try_new(mut stage: LocalStage, task_count: usize) -> Result<Self> {
+        let input_partition_count = stage.plan.properties().partitioning.partition_count();
+        let properties = Arc::new(
+            PlanProperties::clone(stage.plan.properties())
+                .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
+        );
+        stage.plan = Self::prepare_input_for_consumer_tasks(Arc::clone(&stage.plan), task_count)?;
 
         Ok(Self {
             properties,
-            worker_connections: WorkerConnectionPool::new(stage.tasks.to_static().unwrap_or(0)),
+            worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(stage),
             metrics_collection: Default::default(),
         })
@@ -184,8 +181,7 @@ impl NetworkBroadcastExec {
 impl NetworkBoundary for NetworkBroadcastExec {
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.clone();
-        self_clone.worker_connections =
-            WorkerConnectionPool::new(input_stage.static_task_count_or_1());
+        self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
@@ -197,7 +193,7 @@ impl NetworkBoundary for NetworkBroadcastExec {
 
 impl DisplayAs for NetworkBroadcastExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.static_task_count_or_1();
+        let input_tasks = self.input_stage.task_count();
         let stage = self.input_stage.num();
         let consumer_partitions = self.properties.partitioning.partition_count();
         let stage_partitions = self
@@ -253,15 +249,15 @@ impl ExecutionPlan for NetworkBroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let remote_stage = match &self.input_stage {
-            Stage::Local(local) => return local.plan.execute(partition, context),
+            Stage::Local(local) => return local.execute(partition, context),
             Stage::Remote(remote_stage) => remote_stage,
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self.properties.partitioning.partition_count() * task_context.task_index;
-        let mut streams = Vec::with_capacity(self.input_stage.static_task_count_or_1());
+        let mut streams = Vec::with_capacity(self.input_stage.task_count());
 
-        for input_task_index in 0..self.input_stage.static_task_count_or_1() {
+        for input_task_index in 0..self.input_stage.task_count() {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),

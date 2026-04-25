@@ -5,7 +5,7 @@ use crate::execution_plans::{
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary, TaskCountAnnotation};
+use crate::{DistributedTaskContext, NetworkBoundary};
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -36,7 +36,7 @@ use url::Url;
 pub struct DistributedCodec;
 
 impl DistributedCodec {
-    pub fn new_combined_with_user(cfg: &SessionConfig) -> impl PhysicalExtensionCodec + use<> {
+    pub fn new_combined_with_user(cfg: &SessionConfig) -> ComposedPhysicalExtensionCodec {
         let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec {})];
         codecs.extend(get_distributed_user_codecs(cfg));
         ComposedPhysicalExtensionCodec::new(codecs)
@@ -71,7 +71,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
                     num: proto.num as usize,
                     plan: input,
-                    tasks: TaskCountAnnotation::Desired(1),
+                    tasks: 1,
                 }))
             } else {
                 let mut worker_urls = Vec::with_capacity(proto.tasks.len());
@@ -462,7 +462,7 @@ fn new_network_hash_shuffle_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         )),
-        worker_connections: WorkerConnectionPool::new(input_stage.static_task_count_or_1()),
+        worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
         metrics_collection: Default::default(),
     }
@@ -493,7 +493,7 @@ fn new_network_coalesce_tasks_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         )),
-        worker_connections: WorkerConnectionPool::new(input_stage.static_task_count_or_1()),
+        worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
         metrics_collection: Default::default(),
     }
@@ -527,7 +527,7 @@ fn new_network_broadcast_exec(
             EmissionType::Incremental,
             Boundedness::Bounded,
         )),
-        worker_connections: WorkerConnectionPool::new(input_stage.static_task_count_or_1()),
+        worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
         metrics_collection: Default::default(),
     }
@@ -551,21 +551,20 @@ mod tests {
     }
 
     fn dummy_stage() -> Stage {
-        Stage {
+        Stage::Remote(RemoteStage {
             query_id: Default::default(),
             num: 0,
-            plan: None,
-            tasks: vec![],
-        }
+            workers: vec![],
+        })
     }
 
     fn dummy_stage_with_plan() -> Stage {
-        Stage {
+        Stage::Local(LocalStage {
             query_id: Default::default(),
             num: 0,
-            plan: Some(empty_exec()),
-            tasks: vec![],
-        }
+            plan: empty_exec(),
+            tasks: 1,
+        })
     }
 
     fn schema_i32(name: &str) -> Arc<Schema> {
