@@ -4,12 +4,13 @@ use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_r
 use crate::distributed_planner::plan_annotator::{
     AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
 };
+use crate::stage::LocalStage;
 use crate::{
     DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec, TaskEstimator,
 };
-use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::TreeNode;
+use datafusion::common::{DataFusionError, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -89,77 +90,69 @@ fn _distribute_plan(
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let d_cfg = DistributedConfig::from_config_options(cfg)?;
     let children = annotated_plan.children;
-    let task_count = annotated_plan.task_count.as_usize();
-    let max_child_task_count = children.iter().map(|v| v.task_count.as_usize()).max();
+    let mut children_iter = children.iter();
+
+    // This is either a leaf node, so it needs to be scaled up in order to account for it running
+    // in multiple tasks.
+    let Some(first_child) = children_iter.next() else {
+        let PlanOrNetworkBoundary::Plan(plan) = annotated_plan.plan_or_nb else {
+            return plan_err!("A leaf node can never be a network boundary");
+        };
+        let Some(task_count) = annotated_plan.task_count.to_static() else {
+            return plan_err!("Leaf stages cannot have a dynamic task count");
+        };
+        let scaled_up = d_cfg
+            .__private_task_estimator
+            .scale_up_leaf_node(&plan, task_count, cfg);
+        return Ok(scaled_up.unwrap_or(plan));
+    };
+
+    let mut input_task_count = first_child.task_count;
+    for subsequent_child in children_iter {
+        input_task_count = input_task_count.merge(subsequent_child.task_count)
+    }
+
     let new_children = children
         .into_iter()
         .map(|child| _distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
+
+    if let PlanOrNetworkBoundary::Plan(plan) = annotated_plan.plan_or_nb {
+        return plan.with_new_children(new_children);
+    }
+
+    // At this point, the annotation is a network boundary for sure.
+
+    // It would need a network boundary, but on both sides of the boundary there is just 1 task,
+    // so we are fine with not introducing any network boundary.
+    if annotated_plan.task_count.to_static() == Some(1) && input_task_count.to_static() == Some(1) {
+        return require_one_child(new_children);
+    }
+    let stage = LocalStage {
+        query_id,
+        num: *stage_id,
+        plan: require_one_child(new_children)?,
+        tasks: input_task_count,
+    };
+    stage_id.add_assign(1);
+    let task_count = annotated_plan.task_count;
+
     match annotated_plan.plan_or_nb {
-        // This is a leaf node. It needs to be scaled up in order to account for it running in
-        // multiple tasks.
-        PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let scaled_up = d_cfg.__private_task_estimator.scale_up_leaf_node(
-                &plan,
-                annotated_plan.task_count.as_usize(),
-                cfg,
-            );
-            Ok(scaled_up.unwrap_or(plan))
-        }
         // This is a normal intermediate plan, just pass it through with the mapped children.
-        PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),
+        PlanOrNetworkBoundary::Plan(_) => unreachable!(),
         // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
         PlanOrNetworkBoundary::Shuffle => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkShuffleExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
+            Ok(Arc::new(NetworkShuffleExec::try_new(stage, task_count)?))
         }
         // DataFusion is trying to coalesce multiple partitions into one, so we should do the
         // same with tasks.
         PlanOrNetworkBoundary::Coalesce => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkCoalesceExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
+            Ok(Arc::new(NetworkCoalesceExec::try_new(stage, task_count)?))
         }
         // This is a CollectLeft HashJoinExec with the build side marked as being broadcast. we
         // need to insert a NetworkBroadcastExec and scale up the BroadcastExec consumer_tasks.
         PlanOrNetworkBoundary::Broadcast => {
-            // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-            // so we are fine with not introducing any network boundary.
-            if task_count == 1 && max_child_task_count == Some(1) {
-                return require_one_child(new_children);
-            }
-            let node = Arc::new(NetworkBroadcastExec::try_new(
-                require_one_child(new_children)?,
-                query_id,
-                *stage_id,
-                task_count,
-                max_child_task_count.unwrap_or(1),
-            )?);
-            stage_id.add_assign(1);
-            Ok(node)
+            Ok(Arc::new(NetworkBroadcastExec::try_new(stage, task_count)?))
         }
     }
 }

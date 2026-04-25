@@ -1,14 +1,14 @@
 use crate::common::require_one_child;
 use crate::execution_plans::common::scale_partitioning;
-use crate::stage::Stage;
+use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
-use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
+use crate::{DistributedTaskContext, NetworkBoundary, TaskCountAnnotation};
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
@@ -21,7 +21,6 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -121,28 +120,17 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
-    /// Builds a new [NetworkShuffleExec] in "Pending" state.
-    ///
-    /// Typically, the `input` to this
-    /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
-    pub fn try_new(
-        input: Arc<dyn ExecutionPlan>,
-        query_id: Uuid,
-        num: usize,
-        task_count: usize,
-        input_task_count: usize,
-    ) -> Result<Self, DataFusionError> {
-        if !matches!(input.output_partitioning(), Partitioning::Hash(_, _)) {
-            return plan_err!("NetworkShuffleExec input must be hash partitioned");
-        }
-
-        let transformed = Arc::clone(&input).transform_down(|plan| {
+    pub fn prepare_input_for_consumer_tasks(
+        plan: Arc<dyn ExecutionPlan>,
+        consumer_task_count: usize,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let transformed = plan.transform_down(|plan| {
             if let Some(r_exe) = plan.as_any().downcast_ref::<RepartitionExec>() {
                 // Scale the input RepartitionExec to account for all the tasks to which it will
                 // need to fan data out.
                 let scaled = Arc::new(RepartitionExec::try_new(
                     require_one_child(r_exe.children())?,
-                    scale_partitioning(r_exe.partitioning(), |p| p * task_count),
+                    scale_partitioning(r_exe.partitioning(), |p| p * consumer_task_count),
                 )?);
                 Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
             } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
@@ -157,15 +145,30 @@ impl NetworkShuffleExec {
             }
         })?;
 
+        Ok(transformed.data)
+    }
+
+    /// Builds a new [NetworkShuffleExec] in "Pending" state.
+    ///
+    /// Typically, the `input` to this
+    /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
+    pub fn try_new(
+        mut input: LocalStage,
+        task_count: TaskCountAnnotation,
+    ) -> Result<Self, DataFusionError> {
+        if !matches!(input.plan.output_partitioning(), Partitioning::Hash(_, _)) {
+            return plan_err!("NetworkShuffleExec input must be hash partitioned");
+        }
+        input.plan = if let Some(task_count) = task_count.to_static() {
+            Self::prepare_input_for_consumer_tasks(input.plan, task_count)?
+        } else {
+            input.plan
+        };
+
         Ok(Self {
-            input_stage: Stage {
-                query_id,
-                num,
-                plan: Some(transformed.data),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
-            },
-            worker_connections: WorkerConnectionPool::new(input_task_count),
-            properties: input.properties().clone(),
+            properties: input.plan.properties().clone(),
+            worker_connections: WorkerConnectionPool::new(input.tasks.to_static().unwrap_or(0)),
+            input_stage: Stage::Local(input),
             metrics_collection: Default::default(),
         })
     }
@@ -178,6 +181,8 @@ impl NetworkBoundary for NetworkShuffleExec {
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.clone();
+        self_clone.worker_connections =
+            WorkerConnectionPool::new(input_stage.static_task_count_or_1());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
@@ -185,9 +190,9 @@ impl NetworkBoundary for NetworkShuffleExec {
 
 impl DisplayAs for NetworkShuffleExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.tasks.len();
+        let input_tasks = self.input_stage.static_task_count_or_1();
         let partitions = self.properties.partitioning.partition_count();
-        let stage = self.input_stage.num;
+        let stage = self.input_stage.num();
         write!(
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
@@ -209,7 +214,7 @@ impl ExecutionPlan for NetworkShuffleExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.plan {
+        match &self.input_stage.local_plan() {
             Some(v) => vec![v],
             None => vec![],
         }
@@ -220,7 +225,12 @@ impl ExecutionPlan for NetworkShuffleExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+        }
         Ok(Arc::new(self_clone))
     }
 
@@ -229,13 +239,18 @@ impl ExecutionPlan for NetworkShuffleExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.plan.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self.properties.partitioning.partition_count() * task_context.task_index;
 
-        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
-        for input_task_index in 0..self.input_stage.tasks.len() {
+        let mut streams = Vec::with_capacity(remote_stage.workers.len());
+        for input_task_index in 0..remote_stage.workers.len() {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
-                &self.input_stage,
+                &remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 &context,

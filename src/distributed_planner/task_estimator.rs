@@ -1,6 +1,9 @@
+use crate::TaskCountAnnotation::Dynamic;
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{DistributedConfig, PartitionIsolatorExec};
+use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::{Result, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
@@ -11,7 +14,7 @@ use std::sync::Arc;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TaskCountAnnotation {
     /// The desired number of distributed tasks for this node. The final task count for the
     /// annotated node might not be exactly this number, it is more like a hint, so depending
@@ -20,26 +23,55 @@ pub enum TaskCountAnnotation {
     /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
     /// value of 1, stating that this node cannot be executed in a distributed fashion.
     Maximum(usize),
-}
-
-impl From<TaskCountAnnotation> for usize {
-    fn from(annotation: TaskCountAnnotation) -> Self {
-        annotation.as_usize()
-    }
+    /// The amount of tasks is established at execution time, lazily as part of the query makes
+    /// progress.
+    Dynamic,
 }
 
 impl TaskCountAnnotation {
-    pub fn as_usize(&self) -> usize {
+    pub fn to_static(&self) -> Option<usize> {
         match self {
-            Self::Desired(desired) => *desired,
-            Self::Maximum(maximum) => *maximum,
+            Desired(desired) => Some(*desired),
+            Maximum(maximum) => Some(*maximum),
+            Dynamic => None,
         }
     }
 
     pub(crate) fn limit(self, limit: usize) -> Self {
         match self {
-            Self::Desired(desired) => Self::Desired(desired.min(limit)),
-            Self::Maximum(maximum) => Self::Maximum(maximum.min(limit)),
+            Desired(desired) => Desired(desired.min(limit)),
+            Maximum(maximum) => Maximum(maximum.min(limit)),
+            Dynamic => Dynamic,
+        }
+    }
+
+    pub(crate) fn sum(self, other: TaskCountAnnotation) -> Result<TaskCountAnnotation> {
+        match (self, other) {
+            (Dynamic, Dynamic) => Ok(Dynamic),
+            (Dynamic, _) => {
+                plan_err!("Cannot sum two task annotation if one is dynamic but the other isn't")
+            }
+            (_, Dynamic) => {
+                plan_err!("Cannot sum two task annotation if one is dynamic but the other isn't")
+            }
+            (Desired(a), Desired(b)) => Ok(Desired(a + b)),
+            (Desired(a), Maximum(b)) => Ok(Desired(a + b)),
+            (Maximum(a), Desired(b)) => Ok(Desired(a + b)),
+            (Maximum(a), Maximum(b)) => Ok(Desired(a + b)),
+        }
+    }
+
+    pub(crate) fn merge(self, other: TaskCountAnnotation) -> Self {
+        match (self, other) {
+            (Dynamic, Dynamic) => Dynamic,
+            (Dynamic, Desired(b)) => Desired(b),
+            (Dynamic, Maximum(b)) => Maximum(b),
+            (Desired(b), Dynamic) => Desired(b),
+            (Desired(a), Desired(b)) => Desired(std::cmp::max(a, b)),
+            (Desired(_), Maximum(b)) => Maximum(b),
+            (Maximum(a), Dynamic) => Maximum(a),
+            (Maximum(a), Desired(_)) => Maximum(a),
+            (Maximum(a), Maximum(_)) => Maximum(a),
         }
     }
 }
@@ -318,7 +350,7 @@ mod tests {
         combined.push(20);
 
         let node = make_data_source_exec().await?;
-        assert_eq!(combined.task_count(node, |cfg| cfg), 10);
+        assert_eq!(combined.task_count(node, |cfg| cfg), Some(10));
         Ok(())
     }
 
@@ -329,7 +361,7 @@ mod tests {
         combined.push(30);
 
         let node = make_data_source_exec().await?;
-        assert_eq!(combined.task_count(node, |cfg| cfg), 30);
+        assert_eq!(combined.task_count(node, |cfg| cfg), Some(30));
         Ok(())
     }
 
@@ -339,7 +371,7 @@ mod tests {
         combined.push(|_: &Arc<dyn ExecutionPlan>, _: &ConfigOptions| None);
 
         let node = make_data_source_exec().await?;
-        assert_eq!(combined.task_count(node, |cfg| cfg), 3);
+        assert_eq!(combined.task_count(node, |cfg| cfg), Some(3));
         Ok(())
     }
 
@@ -352,7 +384,7 @@ mod tests {
             &self,
             node: Arc<dyn ExecutionPlan>,
             f: impl FnOnce(DistributedConfig) -> DistributedConfig,
-        ) -> usize {
+        ) -> Option<usize> {
             let mut cfg = ConfigOptions::default();
             let d_cfg = DistributedConfig {
                 files_per_task: 1,
@@ -365,7 +397,7 @@ mod tests {
             self.task_estimation(&node, &cfg)
                 .unwrap()
                 .task_count
-                .as_usize()
+                .to_static()
         }
     }
 

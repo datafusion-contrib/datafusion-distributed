@@ -1,6 +1,6 @@
 use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
+use crate::{NetworkShuffleExec, PartitionIsolatorExec, TaskCountAnnotation};
 use datafusion::common::plan_err;
 use datafusion::common::{HashMap, config_err};
 use datafusion::error::Result;
@@ -68,17 +68,62 @@ use uuid::Uuid;
 /// Stage can complete on its own; it's likely holding a leaf node in the overall physical plan and
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
-pub struct Stage {
+pub enum Stage {
+    Local(LocalStage),
+    Remote(RemoteStage),
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalStage {
     /// Our query_id
-    pub(crate) query_id: Uuid,
+    pub query_id: Uuid,
     /// Our stage number
-    pub(crate) num: usize,
+    pub num: usize,
     /// The physical execution plan that this stage will execute. It will only be present if
     /// accessing to it through the coordinating stage.
-    pub(crate) plan: Option<Arc<dyn ExecutionPlan>>,
-    /// Our tasks which tell us how finely grained to execute the partitions in
-    /// the plan
-    pub tasks: Vec<ExecutionTask>,
+    pub plan: Arc<dyn ExecutionPlan>,
+    /// The number of tasks the stage has.
+    pub tasks: TaskCountAnnotation,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteStage {
+    /// Our query_id
+    pub query_id: Uuid,
+    /// Our stage number
+    pub num: usize,
+    /// The worker URLs to which queries should be issued.
+    pub workers: Vec<Url>,
+}
+
+impl Stage {
+    pub fn query_id(&self) -> Uuid {
+        match &self {
+            Self::Local(v) => v.query_id,
+            Self::Remote(v) => v.query_id,
+        }
+    }
+
+    pub fn num(&self) -> usize {
+        match &self {
+            Self::Local(v) => v.num,
+            Self::Remote(v) => v.num,
+        }
+    }
+
+    pub fn static_task_count_or_1(&self) -> usize {
+        match &self {
+            Self::Local(v) => v.tasks.to_static().unwrap_or(1),
+            Self::Remote(v) => v.workers.len(),
+        }
+    }
+
+    pub fn local_plan(&self) -> Option<&Arc<dyn ExecutionPlan>> {
+        match &self {
+            Self::Local(v) => Some(&v.plan),
+            Self::Remote(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,24 +147,6 @@ impl DistributedTaskContext {
                 task_index: 0,
                 task_count: 1,
             }))
-    }
-}
-
-impl Stage {
-    /// Creates a new `Stage` with the given plan and inputs. `ExecutionTasks` will be created for
-    /// each of the `n_tasks` specified tasks.
-    pub(crate) fn new(
-        query_id: Uuid,
-        num: usize,
-        plan: Arc<dyn ExecutionPlan>,
-        n_tasks: usize,
-    ) -> Self {
-        Self {
-            query_id,
-            num,
-            plan: Some(plan),
-            tasks: vec![ExecutionTask { url: None }; n_tasks],
-        }
     }
 }
 
@@ -186,7 +213,7 @@ fn display_ascii(
     let plan = match stage {
         Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
         Either::Right(stage) => {
-            let Some(plan) = &stage.plan else {
+            let Some(plan) = stage.local_plan() else {
                 return write!(f, "StageExec: encoded input plan");
             };
             plan
@@ -216,9 +243,9 @@ fn display_ascii(
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
-                stage.num,
+                stage.query_id(),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.tasks.len(), plan)
+                format_tasks_for_stage(stage.static_task_count_or_1(), plan)
             )?;
         }
     }
@@ -433,35 +460,41 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         let mut max_num = 0;
         let mut all_stages = find_all_stages(&plan)
             .into_iter()
-            .inspect(|v| max_num = max_num.max(v.num))
+            .inspect(|v| max_num = max_num.max(v.num()))
             .collect::<Vec<_>>();
-        let head_stage = Stage {
+        let head_stage = Stage::Local(LocalStage {
             query_id: Default::default(),
             num: max_num + 1,
-            plan: Some(plan.clone()),
-            tasks: vec![ExecutionTask { url: None }],
-        };
+            plan: plan.clone(),
+            tasks: TaskCountAnnotation::Maximum(1),
+        });
         all_stages.insert(0, &head_stage);
 
         // draw all tasks first
         for stage in &all_stages {
-            for i in 0..stage.tasks.iter().len() {
+            for i in 0..stage.static_task_count_or_1() {
                 let p = display_single_task(stage, i)?;
                 writeln!(f, "{p}")?;
             }
         }
         // now draw edges between the tasks
         for stage in &all_stages {
-            let Some(plan) = &stage.plan else { continue };
+            let Some(plan) = stage.local_plan() else {
+                continue;
+            };
             for input_stage in find_input_stages(plan.as_ref()) {
-                for task_i in 0..stage.tasks.len() {
-                    for input_task_i in 0..input_stage.tasks.len() {
+                for task_i in 0..stage.static_task_count_or_1() {
+                    for input_task_i in 0..input_stage.static_task_count_or_1() {
                         let edges =
                             display_inter_task_edges(stage, task_i, input_stage, input_task_i)?;
                         writeln!(
                             f,
                             "// edges from child stage {} task {} to stage {} task {}\n {}",
-                            input_stage.num, input_task_i, stage.num, task_i, edges
+                            input_stage.num(),
+                            input_task_i,
+                            stage.num(),
+                            task_i,
+                            edges
                         )?;
                     }
                 }
@@ -480,7 +513,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
 }
 
 fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
-    let Some(plan) = &stage.plan else {
+    let Some(plan) = stage.local_plan() else {
         return config_err!("plan not present");
     };
     let partition_group =
@@ -503,11 +536,11 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
     node[shape=none]
 
 ",
-        stage.num,
+        stage.num(),
         task_i,
-        stage.num,
+        stage.num(),
         task_i,
-        stage.num,
+        stage.num(),
         task_i,
         format_pg(&partition_group)
     )?;
@@ -515,7 +548,7 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
     writeln!(
         f,
         "{}",
-        display_plan(plan, task_i, stage.tasks.len(), stage.num)?
+        display_plan(plan, task_i, stage.static_task_count_or_1(), stage.num())?
     )?;
     writeln!(f, "  }}")?;
     writeln!(f, "  }}")?;
@@ -736,10 +769,10 @@ fn display_inter_task_edges(
     input_stage: &Stage,
     input_task_i: usize,
 ) -> Result<String> {
-    let Some(plan) = &stage.plan else {
+    let Some(plan) = stage.local_plan() else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
-    let Some(input_plan) = &input_stage.plan else {
+    let Some(input_plan) = input_stage.local_plan() else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
     let mut f = String::new();
@@ -749,7 +782,7 @@ fn display_inter_task_edges(
     while let Some(plan) = queue.pop_front() {
         index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-            if node.input_stage().num != input_stage.num {
+            if node.input_stage().num() != input_stage.num() {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -759,12 +792,12 @@ fn display_inter_task_edges(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
                     input_plan.name(),
-                    input_stage.num,
+                    input_stage.num(),
                     input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p + (task_i * output_partitions),
                     plan.name(),
-                    stage.num,
+                    stage.num(),
                     task_i,
                     index,
                     p,
@@ -773,23 +806,24 @@ fn display_inter_task_edges(
             }
             continue;
         } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            if node.input_stage().num != input_stage.num {
+            if node.input_stage().num() != input_stage.num() {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            let input_partitions_per_task = output_partitions / input_stage.tasks.len();
+            let input_partitions_per_task =
+                output_partitions / input_stage.static_task_count_or_1();
             for p in 0..input_partitions_per_task {
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
                     input_plan.name(),
-                    input_stage.num,
+                    input_stage.num(),
                     input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p,
                     plan.name(),
-                    stage.num,
+                    stage.num(),
                     task_i,
                     index,
                     p + (input_task_i * input_partitions_per_task),

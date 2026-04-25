@@ -58,6 +58,9 @@ extensions_options! {
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
         /// aggregation significantly reduces cardinality, but adds overhead when it does not.
         pub partial_reduce: bool, default = false
+        /// Decides the task count of upcoming stages at execution time, looking at the data flowing
+        /// through the system and deciding based on that.
+        pub dynamic_task_count: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
