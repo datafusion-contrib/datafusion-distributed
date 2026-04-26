@@ -7,17 +7,14 @@ use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use crate::{DistributedTaskContext, NetworkBoundary};
 use dashmap::DashMap;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
+use datafusion::common::{Result, not_impl_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -120,51 +117,37 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
-    pub fn prepare_input_for_consumer_tasks(
+    pub(crate) fn scale_input(
         plan: Arc<dyn ExecutionPlan>,
+        consumer_partitions: usize,
         consumer_task_count: usize,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let transformed = plan.transform_down(|plan| {
-            if let Some(r_exe) = plan.as_any().downcast_ref::<RepartitionExec>() {
-                // Scale the input RepartitionExec to account for all the tasks to which it will
-                // need to fan data out.
-                let scaled = Arc::new(RepartitionExec::try_new(
-                    require_one_child(r_exe.children())?,
-                    scale_partitioning(r_exe.partitioning(), |p| p * consumer_task_count),
-                )?);
-                Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
-            } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
-                // This might be a passthrough node from the input plan.
-                // This is fine, we can let the node be here.
-                Ok(Transformed::no(plan))
-            } else {
-                plan_err!(
-                    "NetworkShuffleExec input must be hash partitioned, but {} is not",
-                    plan.name()
-                )
-            }
-        })?;
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(repartition_exec) = plan.as_any().downcast_ref::<RepartitionExec>() else {
+            return Ok(Transformed::no(plan));
+        };
 
-        Ok(transformed.data)
+        let child = require_one_child(repartition_exec.children())?;
+        let partitioning = scale_partitioning(repartition_exec.partitioning(), |_| {
+            consumer_partitions * consumer_task_count
+        });
+
+        // Scale the input RepartitionExec to account for all the tasks to which it will
+        // need to fan data out.
+        let scaled = Arc::new(RepartitionExec::try_new(child, partitioning)?);
+        Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
     }
 
     /// Builds a new [NetworkShuffleExec] in "Pending" state.
     ///
     /// Typically, the `input` to this
     /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
-    pub fn try_new(mut input: LocalStage, task_count: usize) -> Result<Self, DataFusionError> {
-        if !matches!(input.plan.output_partitioning(), Partitioning::Hash(_, _)) {
-            return plan_err!("NetworkShuffleExec input must be hash partitioned");
-        }
-        let properties = input.plan.properties().clone();
-        input.plan = Self::prepare_input_for_consumer_tasks(input.plan, task_count)?;
-
-        Ok(Self {
-            properties,
+    pub fn new(input: LocalStage) -> Self {
+        Self {
+            properties: input.plan.properties().clone(),
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input),
             metrics_collection: Default::default(),
-        })
+        }
     }
 }
 

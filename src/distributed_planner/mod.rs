@@ -1,10 +1,11 @@
 mod distribute_plan;
 mod distributed_config;
+mod inject_network_boundaries;
 mod insert_broadcast;
 mod network_boundary;
 mod partial_reduce_below_network_shuffles;
-mod plan_annotator;
 mod session_state_builder_ext;
+mod simplify_network_boundaries;
 mod task_estimator;
 
 pub use distributed_config::DistributedConfig;

@@ -148,6 +148,21 @@ impl ChildrenIsolatorUnionExec {
             task_idx_map,
         })
     }
+
+    pub(crate) fn children_and_task_count(&self) -> Vec<(&Arc<dyn ExecutionPlan>, usize)> {
+        let children = self.children();
+        let mut task_counts = vec![0; children.len()];
+        for children_and_tasks in self.task_idx_map.iter() {
+            for (child_i, task_ctx) in children_and_tasks {
+                task_counts[*child_i] = task_ctx.task_count;
+            }
+        }
+        children
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| (c, task_counts[i]))
+            .collect()
+    }
 }
 
 impl DisplayAs for ChildrenIsolatorUnionExec {

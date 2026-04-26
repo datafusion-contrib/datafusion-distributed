@@ -7,15 +7,14 @@ use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use crate::{BroadcastExec, DistributedTaskContext};
 use dashmap::DashMap;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::tree_node::Transformed;
+use datafusion::common::{Result, not_impl_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
-    PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use std::any::Any;
 use std::fmt::Formatter;
@@ -129,52 +128,38 @@ pub struct NetworkBroadcastExec {
 }
 
 impl NetworkBroadcastExec {
-    pub fn prepare_input_for_consumer_tasks(
+    pub(crate) fn scale_input(
         plan: Arc<dyn ExecutionPlan>,
+        _consumer_partitions: usize,
         consumer_task_count: usize,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let transformed = plan.transform_down(|plan| {
-            if let Some(r_exe) = plan.as_any().downcast_ref::<BroadcastExec>() {
-                // Scale the input BroadcastExec to account for all the tasks to which it will
-                // need to fan data out.
-                let scaled = Arc::new(BroadcastExec::new(
-                    require_one_child(r_exe.children())?,
-                    consumer_task_count,
-                ));
-                Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
-            } else if matches!(plan.output_partitioning(), Partitioning::Hash(_, _)) {
-                // This might be a passthrough node from the input plan.
-                // This is fine, we can let the node be here.
-                Ok(Transformed::no(plan))
-            } else {
-                plan_err!(
-                    "NetworkBroadcastExec input must be hash partitioned, but {} is not",
-                    plan.name()
-                )
-            }
-        })?;
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(broadcast) = plan.as_any().downcast_ref::<BroadcastExec>() else {
+            return Ok(Transformed::no(plan));
+        };
 
-        Ok(transformed.data)
+        Ok(Transformed::yes(Arc::new(BroadcastExec::new(
+            require_one_child(broadcast.children())?,
+            consumer_task_count,
+        ))))
     }
 
     /// Creates a [NetworkBroadcastExec].
     ///
     /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
     /// the correct consumer_task_count.
-    pub fn try_new(mut stage: LocalStage, task_count: usize) -> Result<Self> {
+    pub fn new(stage: LocalStage) -> Self {
         let input_partition_count = stage.plan.properties().partitioning.partition_count();
         let properties = Arc::new(
             PlanProperties::clone(stage.plan.properties())
                 .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
         );
-        stage.plan = Self::prepare_input_for_consumer_tasks(Arc::clone(&stage.plan), task_count)?;
 
-        Ok(Self {
+        Self {
             properties,
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(stage),
             metrics_collection: Default::default(),
-        })
+        }
     }
 }
 

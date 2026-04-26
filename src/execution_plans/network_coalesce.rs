@@ -8,6 +8,7 @@ use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
 use dashmap::DashMap;
+use datafusion::common::tree_node::Transformed;
 use datafusion::common::{exec_err, not_impl_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -92,25 +93,35 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
+    /// Does nothing, but it's here for explicitly stating that this network boundary does not
+    /// need mutate the input plan in other to account for more consumer tasks.
+    pub(crate) fn scale_input(
+        plan: Arc<dyn ExecutionPlan>,
+        _consumer_partitions: usize,
+        _consumer_task_count: usize,
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        Ok(Transformed::no(plan))
+    }
+
     /// Builds a new [NetworkCoalesceExec] in "Pending" state.
     ///
     /// Typically, this node should be placed right after nodes that coalesce all the input
     /// partitions into one, for example:
     /// - [CoalescePartitionsExec]
     /// - [SortPreservingMergeExec]
-    pub fn try_new(input: LocalStage, task_count: usize) -> Result<Self> {
+    pub fn new(input: LocalStage, task_count: usize) -> Self {
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
         let max_input_task_count = input.tasks.div_ceil(task_count).max(1);
         let props = scale_partitioning_props(input.plan.properties(), |p| p * max_input_task_count);
 
-        Ok(Self {
+        Self {
             properties: props,
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input),
             metrics_collection: Default::default(),
-        })
+        }
     }
 }
 
@@ -349,7 +360,7 @@ mod tests {
         let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let child_partitions = child.properties().partitioning.partition_count();
 
-        let exec = NetworkCoalesceExec::try_new(
+        let exec = NetworkCoalesceExec::new(
             LocalStage {
                 query_id: Uuid::nil(),
                 num: STAGE_NUM,
@@ -357,7 +368,7 @@ mod tests {
                 tasks: case.input_tasks,
             },
             case.consumer_tasks,
-        )?;
+        );
 
         // Output partitions are sized by the maximum group size.
         let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);

@@ -2,7 +2,6 @@ use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::Result;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
@@ -42,15 +41,6 @@ impl TaskCountAnnotation {
         match self {
             Desired(desired) => Desired(desired.min(limit)),
             Maximum(maximum) => Maximum(maximum.min(limit)),
-        }
-    }
-
-    pub(crate) fn sum(self, other: TaskCountAnnotation) -> Result<TaskCountAnnotation> {
-        match (self, other) {
-            (Desired(a), Desired(b)) => Ok(Desired(a + b)),
-            (Desired(a), Maximum(b)) => Ok(Desired(a + b)),
-            (Maximum(a), Desired(b)) => Ok(Desired(a + b)),
-            (Maximum(a), Maximum(b)) => Ok(Desired(a + b)),
         }
     }
 

@@ -1,161 +1,78 @@
-use crate::common::require_one_child;
+use crate::NetworkBoundaryExt;
+use crate::distributed_planner::inject_network_boundaries::inject_network_boundaries;
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
-use crate::distributed_planner::plan_annotator::{
-    AnnotatedPlan, PlanOrNetworkBoundary, annotate_plan,
-};
-use crate::stage::LocalStage;
-use crate::{
-    DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, TaskEstimator,
-};
+use crate::distributed_planner::simplify_network_boundaries::simplify_network_boundaries;
 use datafusion::common::tree_node::TreeNode;
-use datafusion::common::{DataFusionError, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use std::ops::AddAssign;
 use std::sync::Arc;
-use uuid::Uuid;
 
-/// Inspects the plan, places the appropriate network boundaries, and breaks it down into stages
-/// that can be executed in a distributed manner.
+/// Transforms a single-node physical plan into a distributed plan by injecting network
+/// boundaries between stages.
 ///
-/// It performs the following operations:
+/// The pipeline runs four passes in order:
 ///
-/// 1. It prepares the plan for distribution, adding some extra single-node nodes like
-///    [BroadcastExec] or [CoalescePartitionsExec] that will signal the following steps to
-///    introduce network boundaries in the appropriate places.
+/// 1. **Pre-distribution shaping.** A `CoalescePartitionsExec` is wrapped on top of the plan
+///    when it has more than one output partition (so [inject_network_boundaries] later sees a
+///    partition-collecting parent and injects a `NetworkCoalesceExec` above its child). Then
+///    [insert_broadcast_execs] adds `BroadcastExec` nodes on the build side of `CollectLeft`
+///    hash joins so those build sides can later be wrapped in `NetworkBroadcastExec`.
 ///
-/// 2. Annotate the plan with [annotate_plan]: adds some annotations to each node about how
-///    many distributed tasks should be used in the stage containing them, and whether they
-///    need a network boundary below or not.
-///    For more information about this step, read [annotate_plan] docs.
+/// 2. **Boundary injection.** [inject_network_boundaries] walks the plan, computes a task count
+///    for each node, and inserts `NetworkShuffleExec` / `NetworkBroadcastExec` /
+///    `NetworkCoalesceExec` above the nodes that delimit a stage (hash `RepartitionExec`s,
+///    build-side `BroadcastExec`s, and any node sitting under a `CoalescePartitionsExec` /
+///    `SortPreservingMergeExec`).
 ///
-/// 3. Based on the [AnnotatedPlan] returned by [annotate_plan], place all the appropriate
-///    network boundaries ([NetworkShuffleExec] and [NetworkCoalesceExec]) with the task count
-///    assignation that the annotations required. After this, the plan is already a distributed
-///    executable plan.
+/// 3. **Boundary simplification.** [simplify_network_boundaries] elides any boundary whose
+///    producer and consumer sides both run on a single task — those would add a network hop
+///    without actually partitioning data across tasks. If no boundary survives, the plan didn't
+///    need to be distributed at all and this function returns `None`.
 ///
-/// This function returns None if the plan was left undistributed.
+/// 4. **Shuffle-volume optimisation.** [partial_reduce_below_network_shuffles] inserts partial
+///    aggregation nodes underneath hash shuffles where it can, so less data crosses the network.
+///
+/// Returns `None` when no distribution is necessary (either the input already contains network
+/// boundaries — making the call idempotent — or every injected boundary was simplified away).
 pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
-    // Keep this function idempotent.
+    // Idempotency: if the plan already contains network boundaries, we've nothing to do.
     if original.exists(|plan| Ok(plan.is_network_boundary()))? {
         return Ok(None);
     }
 
     let mut plan = Arc::clone(&original);
 
-    // Add a CoalescePartitionsExec on top of the plan if necessary. The plan annotator will see
-    // this and will place a NetworkCoalesceExec below it.
+    // If the plan has multiple output partitions, wrap it in a `CoalescePartitionsExec` so
+    // `inject_network_boundaries` will recognise the partition-collecting parent and inject a
+    // `NetworkCoalesceExec` above the original root.
     if plan.output_partitioning().partition_count() > 1 {
         plan = Arc::new(CoalescePartitionsExec::new(plan));
     }
 
-    // Insert BroadcastExec nodes in collect left joins so that the plan annotator can inject
-    // broadcast network boundaries above.
+    // Insert `BroadcastExec` on the build side of CollectLeft hash joins so that
+    // `inject_network_boundaries` can wrap them in `NetworkBroadcastExec` afterwards.
     plan = insert_broadcast_execs(plan, cfg)?;
 
-    // Annotate the plan with network boundary and task count information.
-    let annotated = annotate_plan(plan, cfg).await?;
+    // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
+    plan = inject_network_boundaries(plan, cfg).await?;
 
-    // Based on the annotations, place the actual network boundaries with the appropriate dimensions.
-    let mut stage_id = 1;
-    let plan = _distribute_plan(annotated, cfg, Uuid::new_v4(), &mut stage_id)?;
-    if stage_id == 1 {
+    // Drop boundaries that connect a single producer task to a single consumer task — they're
+    // just unnecessary network hops.
+    plan = simplify_network_boundaries(plan)?;
+    if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
         return Ok(None);
     }
 
-    // Insert PartialReduce aggregation nodes above hash repartitions to reduce shuffle data volume.
+    // Push partial aggregation below hash shuffles to shrink the volume of data sent over
+    // the network.
     let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
 
     Ok(Some(plan))
-}
-
-/// Takes an [AnnotatedPlan] and returns a modified [ExecutionPlan] with all the network boundaries
-/// appropriately placed. This step performs the following modifications to the original
-/// [ExecutionPlan]:
-/// - The leaf nodes are scaled up in parallelism based on the number of distributed tasks in
-///   which they are going to run. This is configurable by the user via the [TaskEstimator] trait.
-/// - The appropriate network boundaries are placed in the plan depending on how it was annotated,
-///   so new nodes like [NetworkBroadcastExec], [NetworkCoalesceExec] and [NetworkShuffleExec] will be present.
-fn _distribute_plan(
-    annotated_plan: AnnotatedPlan,
-    cfg: &ConfigOptions,
-    query_id: Uuid,
-    stage_id: &mut usize,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
-    let children = annotated_plan.children;
-    let mut children_iter = children.iter();
-
-    // This is either a leaf node, so it needs to be scaled up in order to account for it running
-    // in multiple tasks.
-    let Some(first_child) = children_iter.next() else {
-        let PlanOrNetworkBoundary::Plan(plan) = annotated_plan.plan_or_nb else {
-            return plan_err!("A leaf node can never be a network boundary");
-        };
-        let task_count = annotated_plan.task_count.as_usize();
-        let scaled_up = d_cfg
-            .__private_task_estimator
-            .scale_up_leaf_node(&plan, task_count, cfg);
-        return Ok(scaled_up.unwrap_or(plan));
-    };
-
-    let mut input_task_count = first_child.task_count;
-    for subsequent_child in children_iter {
-        input_task_count = input_task_count.merge(subsequent_child.task_count)
-    }
-
-    let new_children = children
-        .into_iter()
-        .map(|child| _distribute_plan(child, cfg, query_id, stage_id))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if let PlanOrNetworkBoundary::Plan(plan) = annotated_plan.plan_or_nb {
-        return plan.with_new_children(new_children);
-    }
-
-    // At this point, the annotation is a network boundary for sure.
-
-    // It would need a network boundary, but on both sides of the boundary there is just 1 task,
-    // so we are fine with not introducing any network boundary.
-    if !d_cfg.dynamic_task_count
-        && annotated_plan.task_count.as_usize() == 1
-        && input_task_count.as_usize() == 1
-    {
-        return require_one_child(new_children);
-    }
-    let stage = LocalStage {
-        query_id,
-        num: *stage_id,
-        plan: require_one_child(new_children)?,
-        tasks: input_task_count.as_usize(),
-    };
-    stage_id.add_assign(1);
-    let task_count = annotated_plan.task_count.as_usize();
-
-    match annotated_plan.plan_or_nb {
-        // This is a normal intermediate plan, just pass it through with the mapped children.
-        PlanOrNetworkBoundary::Plan(_) => unreachable!(),
-        // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
-        PlanOrNetworkBoundary::Shuffle => {
-            Ok(Arc::new(NetworkShuffleExec::try_new(stage, task_count)?))
-        }
-        // DataFusion is trying to coalesce multiple partitions into one, so we should do the
-        // same with tasks.
-        PlanOrNetworkBoundary::Coalesce => {
-            Ok(Arc::new(NetworkCoalesceExec::try_new(stage, task_count)?))
-        }
-        // This is a CollectLeft HashJoinExec with the build side marked as being broadcast. we
-        // need to insert a NetworkBroadcastExec and scale up the BroadcastExec consumer_tasks.
-        PlanOrNetworkBoundary::Broadcast => {
-            Ok(Arc::new(NetworkBroadcastExec::try_new(stage, task_count)?))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -834,26 +751,38 @@ mod tests {
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        │   [Stage 4] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
+          ┌───── Stage 4 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8] 
           │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           │     CoalescePartitionsExec
-          │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=1, input_tasks=3
           │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           │     CoalescePartitionsExec
-          │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          │       [Stage 2] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=1, input_tasks=3
           │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
           │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           │     CoalescePartitionsExec
-          │       BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          │       [Stage 3] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=1, input_tasks=3
           │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
           └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+            │ BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            │   PartitionIsolatorExec: tasks=3 partitions=3
+            │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
+            ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+            │ BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            │   PartitionIsolatorExec: tasks=3 partitions=3
+            │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
+            ┌───── Stage 3 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+            │ BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+            │   PartitionIsolatorExec: tasks=3 partitions=3
+            │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
         ");
     }
 
