@@ -41,6 +41,9 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
     }
 }
 
+/// Scales up the head node of the input stage of a network boundary. Different network boundaries
+/// have different needs for scaling up their input, like for example, scaling up a RepartitionExec
+/// during shuffles.
 pub(crate) fn network_boundary_scale_input(
     input: Arc<dyn ExecutionPlan>,
     consumer_partitions: usize,

@@ -18,6 +18,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
 ///
@@ -137,17 +138,26 @@ impl NetworkShuffleExec {
         Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
     }
 
+    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
+        Self {
+            properties: input_stage.plan.properties().clone(),
+            worker_connections: WorkerConnectionPool::new(0),
+            input_stage: Stage::Local(input_stage),
+            metrics_collection: Default::default(),
+        }
+    }
+
     /// Builds a new [NetworkShuffleExec] in "Pending" state.
     ///
     /// Typically, the `input` to this
     /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
-    pub fn new(input: LocalStage) -> Self {
-        Self {
-            properties: input.plan.properties().clone(),
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input),
-            metrics_collection: Default::default(),
-        }
+    pub fn new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Self {
+        Self::from_stage(LocalStage {
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+        })
     }
 }
 

@@ -21,6 +21,7 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
 /// performing any repartition, and maintaining the same partitioning scheme.
@@ -103,25 +104,42 @@ impl NetworkCoalesceExec {
         Ok(Transformed::no(plan))
     }
 
+    pub(crate) fn from_stage(input_stage: LocalStage, consumer_tasks: usize) -> Self {
+        // Each output task coalesces a group of input tasks. We size the output partition count
+        // per output task based on the maximum group size, returning empty streams for tasks with
+        // smaller groups.
+        let max_input_task_count = input_stage.tasks.div_ceil(consumer_tasks).max(1);
+        let props =
+            scale_partitioning_props(input_stage.plan.properties(), |p| p * max_input_task_count);
+
+        Self {
+            properties: props,
+            worker_connections: WorkerConnectionPool::new(0),
+            input_stage: Stage::Local(input_stage),
+            metrics_collection: Default::default(),
+        }
+    }
+
     /// Builds a new [NetworkCoalesceExec] in "Pending" state.
     ///
     /// Typically, this node should be placed right after nodes that coalesce all the input
     /// partitions into one, for example:
     /// - [CoalescePartitionsExec]
     /// - [SortPreservingMergeExec]
-    pub fn new(input: LocalStage, task_count: usize) -> Self {
-        // Each output task coalesces a group of input tasks. We size the output partition count
-        // per output task based on the maximum group size, returning empty streams for tasks with
-        // smaller groups.
-        let max_input_task_count = input.tasks.div_ceil(task_count).max(1);
-        let props = scale_partitioning_props(input.plan.properties(), |p| p * max_input_task_count);
-
-        Self {
-            properties: props,
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input),
-            metrics_collection: Default::default(),
-        }
+    pub fn new(
+        input: Arc<dyn ExecutionPlan>,
+        producer_tasks: usize,
+        consumer_tasks: usize,
+    ) -> Self {
+        Self::from_stage(
+            LocalStage {
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
+            },
+            consumer_tasks,
+        )
     }
 }
 
@@ -327,7 +345,6 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
-    use uuid::Uuid;
 
     #[derive(Clone, Copy)]
     struct Case {
@@ -354,21 +371,12 @@ mod tests {
     }
 
     fn assert_case(case: Case) -> Result<()> {
-        const STAGE_NUM: usize = 1;
-
         // Child plan used only for properties/schema (we won't reach network codepaths).
         let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let child_partitions = child.properties().partitioning.partition_count();
 
-        let exec = NetworkCoalesceExec::new(
-            LocalStage {
-                query_id: Uuid::nil(),
-                num: STAGE_NUM,
-                plan: Arc::clone(&child),
-                tasks: case.input_tasks,
-            },
-            case.consumer_tasks,
-        );
+        let exec =
+            NetworkCoalesceExec::new(Arc::clone(&child), case.input_tasks, case.consumer_tasks);
 
         // Output partitions are sized by the maximum group size.
         let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);

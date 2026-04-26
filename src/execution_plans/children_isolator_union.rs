@@ -81,7 +81,7 @@ use std::vec;
 /// │└───────┘                    ││└───────┘                    ││                             ││                             │
 /// └─────────────────────────────┘└─────────────────────────────┘└─────────────────────────────┘└─────────────────────────────┘
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChildrenIsolatorUnionExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
@@ -220,12 +220,9 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
-        Ok(Arc::new(Self {
-            properties: Arc::clone(&self.properties),
-            metrics: self.metrics.clone(),
-            children,
-            task_idx_map: self.task_idx_map.clone(),
-        }))
+        let mut clone = self.as_ref().clone();
+        clone.children = children;
+        Ok(Arc::new(clone))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

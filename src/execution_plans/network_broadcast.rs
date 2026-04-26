@@ -19,6 +19,7 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Network boundary for broadcasting data to all consumer tasks.
 ///
@@ -143,23 +144,32 @@ impl NetworkBroadcastExec {
         ))))
     }
 
-    /// Creates a [NetworkBroadcastExec].
-    ///
-    /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
-    /// the correct consumer_task_count.
-    pub fn new(stage: LocalStage) -> Self {
-        let input_partition_count = stage.plan.properties().partitioning.partition_count();
+    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
+        let input_partition_count = input_stage.plan.properties().partitioning.partition_count();
         let properties = Arc::new(
-            PlanProperties::clone(stage.plan.properties())
+            PlanProperties::clone(input_stage.plan.properties())
                 .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
         );
 
         Self {
             properties,
             worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(stage),
+            input_stage: Stage::Local(input_stage),
             metrics_collection: Default::default(),
         }
+    }
+
+    /// Creates a [NetworkBroadcastExec].
+    ///
+    /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
+    /// the correct consumer_task_count.
+    pub fn new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Self {
+        Self::from_stage(LocalStage {
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+        })
     }
 }
 

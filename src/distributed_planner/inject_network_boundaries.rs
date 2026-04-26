@@ -1,10 +1,9 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
-use crate::distributed_planner::network_boundary::network_boundary_scale_input;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::stage::LocalStage;
 use crate::{
     BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
-    NetworkCoalesceExec, NetworkShuffleExec, Stage, TaskCountAnnotation, TaskEstimator,
+    NetworkCoalesceExec, NetworkShuffleExec, TaskCountAnnotation, TaskEstimator,
 };
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, plan_err};
@@ -219,7 +218,7 @@ impl<'a> Context<'a> {
     }
 
     fn fetch_add_stage_id(&self) -> usize {
-        self.stage_id.fetch_add(1, Ordering::Relaxed)
+        self.stage_id.fetch_add(1, Ordering::Acquire)
     }
 }
 
@@ -301,15 +300,15 @@ async fn _inject_network_boundaries(
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count(&plan, task_count, &ctx)?;
+
+            let f = calculate_scale_factor(&plan, &ctx);
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
                 plan,
                 tasks: task_count.as_usize(),
             };
-
-            let f = calculate_scale_factor(&input_stage.plan, &ctx);
-            let plan = Arc::new(NetworkShuffleExec::new(input_stage)) as Arc<dyn ExecutionPlan>;
+            let plan = Arc::new(NetworkShuffleExec::from_stage(input_stage));
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
             return Ok(ctx.with_task_count(plan, task_count));
         }
@@ -327,15 +326,15 @@ async fn _inject_network_boundaries(
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count(&plan, task_count, &ctx)?;
+
+            let f = calculate_scale_factor(&plan, &ctx);
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
                 plan,
                 tasks: task_count.as_usize(),
             };
-
-            let f = calculate_scale_factor(&input_stage.plan, &ctx);
-            let plan = Arc::new(NetworkBroadcastExec::new(input_stage)) as Arc<dyn ExecutionPlan>;
+            let plan = Arc::new(NetworkBroadcastExec::from_stage(input_stage));
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
             Ok(ctx.with_task_count(plan, task_count))
         } else {
@@ -348,7 +347,7 @@ async fn _inject_network_boundaries(
                 plan,
                 tasks: task_count.as_usize(),
             };
-            let plan = Arc::new(NetworkCoalesceExec::new(input_stage, 1)) as Arc<dyn ExecutionPlan>;
+            let plan = Arc::new(NetworkCoalesceExec::from_stage(input_stage, 1));
             // The parent that triggered this branch is a `CoalescePartitionsExec` or
             // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
             // stage above this boundary must run in exactly one task.
@@ -429,28 +428,9 @@ fn propagate_task_count(
         }
 
     // Handle network boundaries.
-    } else if let Some(nb) = plan.as_network_boundary() {
-        let input_stage = match nb.input_stage() {
-            Stage::Local(local) => local,
-            Stage::Remote(_) => return Ok(ctx.with_task_count(Arc::clone(plan), task_count)),
-        };
-
-        let consumer_partitions = nb.properties().partitioning.partition_count();
-        let consumer_task_count = task_count.as_usize();
-        let input_stage = Stage::Local(LocalStage {
-            query_id: input_stage.query_id,
-            num: input_stage.num,
-            plan: ctx.with_task_count(
-                network_boundary_scale_input(
-                    Arc::clone(&input_stage.plan),
-                    consumer_partitions,
-                    consumer_task_count,
-                )?,
-                ctx.task_count(&input_stage.plan)?,
-            ),
-            tasks: input_stage.tasks,
-        });
-        Ok(ctx.with_task_count(nb.with_input_stage(input_stage)?, task_count))
+    } else if plan.is_network_boundary() {
+        // Just annotate the network boundary and stop recursion here.
+        Ok(ctx.with_task_count(Arc::clone(plan), task_count))
 
     // Handle ChildrenIsolatorUnionExec.
     } else if ctx.d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
