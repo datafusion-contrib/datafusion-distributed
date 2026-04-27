@@ -71,7 +71,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     query_id: deserialize_uuid(proto.query_id.as_ref())?,
                     num: proto.num as usize,
                     plan: input,
-                    tasks: 1,
+                    tasks: proto.tasks.len(),
                 }))
             } else {
                 let mut worker_urls = Vec::with_capacity(proto.tasks.len());
@@ -247,7 +247,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 Stage::Local(local) => StageProto {
                     query_id: serialize_uuid(&local.query_id).into(),
                     num: local.num as u64,
-                    tasks: vec![],
+                    tasks: vec![ExecutionTaskProto::default(); local.tasks],
                 },
                 Stage::Remote(remote) => {
                     let mut tasks = Vec::with_capacity(remote.workers.len());
