@@ -1,9 +1,10 @@
 mod distribute_plan;
 mod distributed_config;
+mod inject_network_boundaries;
 mod insert_broadcast;
 mod network_boundary;
 mod partial_reduce_below_network_shuffles;
-mod plan_annotator;
+mod prepare_network_boundaries;
 mod session_state_builder_ext;
 mod task_estimator;
 

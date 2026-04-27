@@ -1,5 +1,6 @@
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{DistributedConfig, PartitionIsolatorExec};
+use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TaskCountAnnotation {
     /// The desired number of distributed tasks for this node. The final task count for the
     /// annotated node might not be exactly this number, it is more like a hint, so depending
@@ -31,15 +32,24 @@ impl From<TaskCountAnnotation> for usize {
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
         match self {
-            Self::Desired(desired) => *desired,
-            Self::Maximum(maximum) => *maximum,
+            Desired(desired) => *desired,
+            Maximum(maximum) => *maximum,
         }
     }
 
     pub(crate) fn limit(self, limit: usize) -> Self {
         match self {
-            Self::Desired(desired) => Self::Desired(desired.min(limit)),
-            Self::Maximum(maximum) => Self::Maximum(maximum.min(limit)),
+            Desired(desired) => Desired(desired.min(limit)),
+            Maximum(maximum) => Maximum(maximum.min(limit)),
+        }
+    }
+
+    pub(crate) fn merge(self, other: TaskCountAnnotation) -> Self {
+        match (self, other) {
+            (Desired(a), Desired(b)) => Desired(std::cmp::max(a, b)),
+            (Desired(_), Maximum(b)) => Maximum(b),
+            (Maximum(a), Desired(_)) => Maximum(a),
+            (Maximum(a), Maximum(b)) => Maximum(std::cmp::max(a, b)),
         }
     }
 }

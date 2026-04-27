@@ -1,14 +1,15 @@
+use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::execution_plans::common::scale_partitioning_props;
-use crate::stage::Stage;
+use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
 use crate::worker::generated::worker::flight_app_metadata;
-use crate::{DistributedTaskContext, ExecutionTask};
 use dashmap::DashMap;
-use datafusion::common::{exec_err, plan_err};
+use datafusion::common::tree_node::Transformed;
+use datafusion::common::{exec_err, not_impl_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -93,38 +94,63 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
-    /// Builds a new [NetworkCoalesceExec] in "Pending" state.
+    /// Does nothing, but it's here for explicitly stating that this network boundary does not
+    /// need mutate the input plan in other to account for more consumer tasks.
+    pub(crate) fn scale_input(
+        plan: Arc<dyn ExecutionPlan>,
+        _consumer_partitions: usize,
+        _consumer_task_count: usize,
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        Ok(Transformed::no(plan))
+    }
+
+    pub(crate) fn from_stage(input_stage: LocalStage, consumer_tasks: usize) -> Self {
+        // Each output task coalesces a group of input tasks. We size the output partition count
+        // per output task based on the maximum group size, returning empty streams for tasks with
+        // smaller groups.
+        let max_input_task_count = input_stage.tasks.div_ceil(consumer_tasks).max(1);
+        let props =
+            scale_partitioning_props(input_stage.plan.properties(), |p| p * max_input_task_count);
+
+        Self {
+            properties: props,
+            worker_connections: WorkerConnectionPool::new(0),
+            input_stage: Stage::Local(input_stage),
+            metrics_collection: Default::default(),
+        }
+    }
+
+    /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
+    ///
+    /// The `input` plan will be remotely executed in `producer_tasks` tasks, while the
+    /// [NetworkCoalesceExec] will be executed in `consumer_tasks` tasks in the stage above.
     ///
     /// Typically, this node should be placed right after nodes that coalesce all the input
     /// partitions into one, for example:
     /// - [CoalescePartitionsExec]
     /// - [SortPreservingMergeExec]
-    pub fn try_new(
+    ///
+    /// ## Warning
+    ///
+    /// The caller must ensure that the provided `consumer_tasks` count matches the `producer_tasks`
+    /// of the network boundary immediately above.
+    pub fn new(
         input: Arc<dyn ExecutionPlan>,
-        query_id: Uuid,
-        num: usize,
-        task_count: usize,
-        input_task_count: usize,
-    ) -> Result<Self> {
-        if task_count == 0 {
-            return plan_err!("NetworkCoalesceExec cannot be executed with task_count=0");
-        }
-
-        // Each output task coalesces a group of input tasks. We size the output partition count
-        // per output task based on the maximum group size, returning empty streams for tasks with
-        // smaller groups.
-        let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
-        Ok(Self {
-            properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
-            input_stage: Stage {
-                query_id,
-                num,
-                plan: Some(input),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
+        producer_tasks: usize,
+        consumer_tasks: usize,
+    ) -> Self {
+        Self::from_stage(
+            LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
             },
-            worker_connections: WorkerConnectionPool::new(input_task_count),
-            metrics_collection: Default::default(),
-        })
+            consumer_tasks,
+        )
     }
 }
 
@@ -135,6 +161,10 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
     fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.clone();
+        self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
+            p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
+        });
+        self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
@@ -142,9 +172,9 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
 impl DisplayAs for NetworkCoalesceExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.tasks.len();
+        let input_tasks = self.input_stage.task_count();
         let partitions = self.properties.partitioning.partition_count();
-        let stage = self.input_stage.num;
+        let stage = self.input_stage.num();
         write!(
             f,
             "[Stage {stage}] => NetworkCoalesceExec: output_partitions={partitions}, input_tasks={input_tasks}",
@@ -166,7 +196,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.plan {
+        match &self.input_stage.local_plan() {
             Some(v) => vec![v],
             None => vec![],
         }
@@ -177,7 +207,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+        }
         Ok(Arc::new(self_clone))
     }
 
@@ -186,6 +221,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         if task_context.task_index >= task_context.task_count {
             return exec_err!(
@@ -201,8 +241,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             .partition_count()
             .checked_div(
                 self.input_stage
-                    .tasks
-                    .len()
+                    .task_count()
                     .div_ceil(task_context.task_count)
                     .max(1),
             )
@@ -211,7 +250,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return exec_err!("NetworkCoalesceExec has 0 partitions per input task");
         }
 
-        let input_task_count = self.input_stage.tasks.len();
+        let input_task_count = self.input_stage.task_count();
         let group = task_group(
             input_task_count,
             task_context.task_index,
@@ -242,7 +281,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let target_task = group.start_task + input_task_offset;
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
-            &self.input_stage,
+            remote_stage,
             0..partitions_per_task,
             target_task,
             &context,
@@ -343,19 +382,12 @@ mod tests {
     }
 
     fn assert_case(case: Case) -> Result<()> {
-        const STAGE_NUM: usize = 1;
-
         // Child plan used only for properties/schema (we won't reach network codepaths).
         let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let child_partitions = child.properties().partitioning.partition_count();
 
-        let exec = NetworkCoalesceExec::try_new(
-            Arc::clone(&child),
-            Uuid::nil(),
-            STAGE_NUM,
-            case.consumer_tasks,
-            case.input_tasks,
-        )?;
+        let exec =
+            NetworkCoalesceExec::new(Arc::clone(&child), case.input_tasks, case.consumer_tasks);
 
         // Output partitions are sized by the maximum group size.
         let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);
