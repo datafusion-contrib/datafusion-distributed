@@ -11,4 +11,4 @@ pub use distributed_config::DistributedConfig;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub use session_state_builder_ext::SessionStateBuilderExt;
 pub(crate) use task_estimator::set_distributed_task_estimator;
-pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator};
+pub use task_estimator::{PlannedLeafNode, TaskCountAnnotation, TaskEstimation, TaskEstimator};

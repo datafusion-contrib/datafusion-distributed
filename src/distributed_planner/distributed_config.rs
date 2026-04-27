@@ -7,6 +7,7 @@ use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use url::Url;
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -101,6 +102,10 @@ impl DistributedConfig {
             .user_provided
             .push(Arc::new(task_estimator));
         self
+    }
+
+    pub fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        self.__private_worker_resolver.0.get_urls()
     }
 
     /// Gets the [DistributedConfig] from the [ConfigOptions]'s extensions.

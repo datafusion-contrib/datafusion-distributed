@@ -85,7 +85,7 @@ pub struct Stage {
 pub struct ExecutionTask {
     /// The url of the worker that will execute this task.  A None value is interpreted as
     /// unassigned.
-    pub(crate) url: Option<Url>,
+    pub url: Option<Url>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
