@@ -19,7 +19,7 @@ use crate::{
 use dashmap::DashMap;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
@@ -44,11 +44,38 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
 use uuid::Uuid;
+
+/// Stores the metrics collected from all worker tasks, and notifies waiters when new entries arrive.
+#[derive(Debug)]
+pub struct MetricsStore {
+    pub map: DashMap<TaskKey, Vec<pb::MetricsSet>>,
+    count_tx: watch::Sender<usize>,
+}
+
+impl MetricsStore {
+    fn new() -> (Self, watch::Receiver<usize>) {
+        let (count_tx, count_rx) = watch::channel(0);
+        (
+            Self {
+                map: DashMap::new(),
+                count_tx,
+            },
+            count_rx,
+        )
+    }
+
+    pub fn insert(&self, key: TaskKey, metrics: Vec<pb::MetricsSet>) {
+        self.map.insert(key, metrics);
+        // Notify waiters that a new entry was inserted.
+        self.count_tx.send_modify(|n| *n += 1);
+    }
+}
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -61,7 +88,8 @@ pub struct DistributedExec {
     pub plan: Arc<dyn ExecutionPlan>,
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
-    pub task_metrics: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    pub task_metrics: Arc<MetricsStore>,
+    metrics_count_rx: watch::Receiver<usize>,
 }
 
 struct PreparedPlan {
@@ -71,12 +99,36 @@ struct PreparedPlan {
 
 impl DistributedExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        let (store, count_rx) = MetricsStore::new();
         Self {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
-            task_metrics: Arc::new(DashMap::new()),
+            task_metrics: Arc::new(store),
+            metrics_count_rx: count_rx,
         }
+    }
+
+    /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
+    ///
+    /// Metrics are delivered asynchronously after query execution completes, so callers that need
+    /// complete metrics (e.g. for observability or display) should await this before inspecting
+    /// [`Self::task_metrics`] or calling [`rewrite_distributed_plan_with_metrics`].
+    ///
+    /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
+    pub async fn wait_for_metrics(&self) {
+        let Ok(prepared) = self.prepared_plan() else {
+            return;
+        };
+        let mut expected_count = 0usize;
+        let _ = prepared.apply(|plan| {
+            if let Some(boundary) = plan.as_network_boundary() {
+                expected_count += boundary.input_stage().tasks.len();
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        let mut count_rx = self.metrics_count_rx.clone();
+        let _ = count_rx.wait_for(|&n| n >= expected_count).await;
     }
 
     /// Returns the plan which is lazily prepared on execute() and actually gets executed.
@@ -197,6 +249,7 @@ impl ExecutionPlan for DistributedExec {
             prepared_plan: self.prepared_plan.clone(),
             metrics: self.metrics.clone(),
             task_metrics: Arc::clone(&self.task_metrics),
+            metrics_count_rx: self.metrics_count_rx.clone(),
         }))
     }
 
@@ -310,7 +363,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
-        task_metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+        task_metrics_collection: Arc<MetricsStore>,
     ) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their

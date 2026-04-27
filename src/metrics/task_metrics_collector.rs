@@ -244,7 +244,7 @@ mod tests {
         let collector = TaskMetricsCollector::new();
 
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics))
+            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
             .unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
@@ -365,7 +365,7 @@ mod tests {
 
         let collector = TaskMetricsCollector::new();
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics))
+            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
             .unwrap();
 
         for expected_task_key in &expected_task_keys {
@@ -421,7 +421,7 @@ mod tests {
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         let collector = TaskMetricsCollector::new();
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics))
+            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
             .unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection

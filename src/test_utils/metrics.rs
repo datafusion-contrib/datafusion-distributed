@@ -1,33 +1,13 @@
-use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::DistributedExec;
 use crate::worker::generated::worker as pb;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
 pub async fn wait_for_all_metrics(plan: &Arc<dyn ExecutionPlan>) {
-    let Some(dist_exec) = plan.as_any().downcast_ref::<DistributedExec>() else {
-        return;
-    };
-    let Ok(prepared) = dist_exec.prepared_plan() else {
-        return;
-    };
-    let mut expected_count = 0usize;
-    let _ = prepared.apply(|plan| {
-        if let Some(boundary) = plan.as_network_boundary() {
-            expected_count += boundary.input_stage().tasks.len();
-        }
-        Ok(TreeNodeRecursion::Continue)
-    });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while dist_exec.task_metrics.len() < expected_count {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("Timed out waiting for worker metrics to arrive");
+    if let Some(dist_exec) = plan.as_any().downcast_ref::<DistributedExec>() {
+        dist_exec.wait_for_metrics().await;
+    }
 }
 
 /// creates a "distinct" set of metrics from the provided seed
