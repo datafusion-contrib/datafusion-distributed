@@ -8,7 +8,7 @@ use crate::worker::generated::worker::flight_app_metadata;
 use crate::{DistributedTaskContext, NetworkBoundary};
 use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{Result, not_impl_err};
+use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -147,17 +147,22 @@ impl NetworkShuffleExec {
         }
     }
 
-    /// Builds a new [NetworkShuffleExec] in "Pending" state.
-    ///
-    /// Typically, the `input` to this
-    /// node is a [RepartitionExec] with a [Partitioning::Hash] partition scheme.
-    pub fn new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Self {
-        Self::from_stage(LocalStage {
+    /// Creates a new [NetworkShuffleExec] fed by the provided [RepartitionExec]. The input plan
+    /// will be executed in a remote worker in `producer_tasks` number of tasks.
+    pub fn try_new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Result<Self> {
+        if !input.as_any().is::<RepartitionExec>() {
+            return plan_err!("The input of a NetworkShuffleExec can only be a RepartitionExec");
+        }
+
+        Ok(Self::from_stage(LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
             query_id: Uuid::nil(),
             num: 0,
             plan: input,
             tasks: producer_tasks,
-        })
+        }))
     }
 }
 

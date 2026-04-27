@@ -8,7 +8,7 @@ use crate::worker::generated::worker::flight_app_metadata;
 use crate::{BroadcastExec, DistributedTaskContext};
 use dashmap::DashMap;
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{Result, not_impl_err};
+use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -159,17 +159,22 @@ impl NetworkBroadcastExec {
         }
     }
 
-    /// Creates a [NetworkBroadcastExec].
-    ///
-    /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
-    /// the correct consumer_task_count.
-    pub fn new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Self {
-        Self::from_stage(LocalStage {
+    /// Creates a new [NetworkBroadcastExec] fed by the provided [BroadcastExec]. The input plan
+    /// will be executed in a remote worker in `producer_tasks` number of tasks.
+    pub fn try_new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Result<Self> {
+        if !input.as_any().is::<BroadcastExec>() {
+            return plan_err!("The input of a NetworkBroadcastExec can only be a BroadcastExec");
+        }
+
+        Ok(Self::from_stage(LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
             query_id: Uuid::nil(),
             num: 0,
             plan: input,
             tasks: producer_tasks,
-        })
+        }))
     }
 }
 

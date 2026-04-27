@@ -120,12 +120,20 @@ impl NetworkCoalesceExec {
         }
     }
 
-    /// Builds a new [NetworkCoalesceExec] in "Pending" state.
+    /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
+    ///
+    /// The `input` plan will be remotely executed in `producer_tasks` tasks, while the
+    /// [NetworkCoalesceExec] will be executed in `consumer_tasks` tasks in the stage above.
     ///
     /// Typically, this node should be placed right after nodes that coalesce all the input
     /// partitions into one, for example:
     /// - [CoalescePartitionsExec]
     /// - [SortPreservingMergeExec]
+    ///
+    /// ## Warning
+    ///
+    /// The caller must ensure that the provided `consumer_tasks` count matches the `producer_tasks`
+    /// of the network boundary immediately above.
     pub fn new(
         input: Arc<dyn ExecutionPlan>,
         producer_tasks: usize,
@@ -133,6 +141,9 @@ impl NetworkCoalesceExec {
     ) -> Self {
         Self::from_stage(
             LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
                 query_id: Uuid::nil(),
                 num: 0,
                 plan: input,
