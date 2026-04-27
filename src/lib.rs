@@ -16,6 +16,7 @@ mod protobuf;
 pub use protobuf::DistributedCodec;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
+mod work_unit_feed;
 
 pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
@@ -41,6 +42,9 @@ pub use stage::{
     DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
     explain_analyze,
 };
+pub use work_unit_feed::{
+    DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
+};
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
 pub use worker::generated::worker::worker_service_server::WorkerServiceServer;
 pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
@@ -57,4 +61,7 @@ pub use observability::{
 };
 
 #[cfg(any(feature = "integration", test))]
-pub use execution_plans::benchmarks::ShuffleBench;
+pub use execution_plans::benchmarks::{
+    LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode, ShuffleBench,
+    ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
+};

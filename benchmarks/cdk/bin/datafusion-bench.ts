@@ -15,9 +15,10 @@ async function main() {
         .option('--files-per-task <number>', 'Files per task', '8')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
-        .option('--shuffle-batch-size <number>', 'Shuffle batch coalescing size (number of rows)', '32768')
+        .option('--shuffle-batch-size <number>', 'Override RepartitionExec batch size on worker stages (0 = no override)', '0')
         .option('--children-isolator-unions <number>', 'Use children isolator unions', 'true')
         .option('--broadcast-joins <boolean>', 'Use broadcast joins', 'true')
+        .option('--partial-reduce <boolean>', 'Enable PartialReduce optimization (reduces shuffle size for high-cardinality aggregations)', 'false')
         .option('--collect-metrics <boolean>', 'Propagates metric collection', 'true')
         .option('--compression <string>', 'Compression algo to use within workers (lz4, zstd, none)', 'lz4')
         .option('--max-tasks-per-stage <number>', 'Max tasks per stage', '0')
@@ -44,6 +45,7 @@ async function main() {
     const collectMetrics = options.collectMetrics === 'true' || options.collectMetrics === 1
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
+    const partialReduce = options.partialReduce === 'true' || options.partialReduce === 1
     const debug = options.debug === true || options.debug === 'true' || options.debug === 1
     const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
@@ -56,6 +58,7 @@ async function main() {
         childrenIsolatorUnions,
         compression,
         broadcastJoins,
+        partialReduce,
         maxTasksPerStage,
         repartitionFileMinSize,
         targetPartitions
@@ -93,6 +96,7 @@ class DataFusionRunner implements BenchmarkRunner {
         compression: string;
         childrenIsolatorUnions: boolean;
         broadcastJoins: boolean;
+        partialReduce: boolean;
         maxTasksPerStage: number;
         repartitionFileMinSize: number;
         targetPartitions: number;
@@ -171,6 +175,7 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.compression=${this.options.compression};
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
       SET distributed.broadcast_joins=${this.options.broadcastJoins};
+      SET distributed.partial_reduce=${this.options.partialReduce};
       SET distributed.max_tasks_per_stage=${this.options.maxTasksPerStage};
       SET datafusion.optimizer.repartition_file_min_size=${this.options.repartitionFileMinSize};
       SET datafusion.execution.target_partitions=${this.options.targetPartitions};

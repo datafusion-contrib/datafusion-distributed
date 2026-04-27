@@ -1,39 +1,43 @@
-//! Benchmark the `RepartitionExec -> NetworkShuffleExec` shuffle pipeline end to end.
+//! Benchmark isolated `NetworkShuffleExec` exchange transport cost with upstream repartition removed.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use datafusion_distributed::{CompressionType, ShuffleBench};
+use datafusion_distributed::{CompressionType, TransportBench, TransportBenchMode};
 use std::time::{Duration, Instant};
 use tokio::runtime::Builder as RuntimeBuilder;
 
-fn shuffle(c: &mut Criterion) {
+fn transport(c: &mut Criterion) {
     let rt = RuntimeBuilder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
 
-    let mut group = c.benchmark_group("shuffle");
+    let mut group = c.benchmark_group("transport");
     group.sample_size(10);
 
     let benches = vec![
-        ShuffleBench::one_to_one_baseline(),
-        ShuffleBench::one_to_one_baseline().with_compression(Some(CompressionType::LZ4_FRAME)),
-        ShuffleBench::many_to_one_baseline(8),
-        ShuffleBench::one_to_many_baseline(8),
-        ShuffleBench::one_to_many_baseline(16)
+        TransportBench::one_to_one_baseline(TransportBenchMode::InMemory),
+        TransportBench::one_to_one_baseline(TransportBenchMode::Tcp),
+        TransportBench::many_to_one_baseline(TransportBenchMode::InMemory, 8),
+        TransportBench::many_to_one_baseline(TransportBenchMode::Tcp, 8),
+        TransportBench::one_to_many_baseline(TransportBenchMode::InMemory, 16)
             .with_partitions(16)
             .with_total_rows(2_000_000),
-        ShuffleBench::one_to_many_baseline(16)
+        TransportBench::one_to_many_baseline(TransportBenchMode::Tcp, 16)
+            .with_partitions(16)
+            .with_total_rows(2_000_000),
+        TransportBench::many_to_many_baseline(TransportBenchMode::InMemory, 8),
+        TransportBench::many_to_many_baseline(TransportBenchMode::Tcp, 8),
+        TransportBench::one_to_many_baseline(TransportBenchMode::Tcp, 16)
             .with_partitions(16)
             .with_total_rows(2_000_000)
             .with_compression(Some(CompressionType::LZ4_FRAME)),
-        ShuffleBench::many_to_many_baseline(8),
     ];
 
     for bench in benches {
         let name = bench.label();
         let prepared = rt
             .block_on(bench.prepare())
-            .expect("prepare shuffle fixture");
+            .expect("prepare transport fixture");
         group.bench_function(BenchmarkId::new("stream", name), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
@@ -50,5 +54,5 @@ fn shuffle(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, shuffle);
+criterion_group!(benches, transport);
 criterion_main!(benches);

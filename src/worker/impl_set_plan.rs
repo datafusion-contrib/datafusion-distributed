@@ -2,6 +2,7 @@ use crate::common::deserialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::execution_plans::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::protobuf::DistributedCodec;
+use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::worker::generated::worker::SetPlanRequest;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
@@ -75,6 +76,13 @@ impl Worker {
                     task_count: request.task_count as usize,
                 }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
+
+            let shuffle_batch_size =
+                DistributedConfig::from_config_options(cfg.options())?.shuffle_batch_size;
+            if shuffle_batch_size != 0 {
+                cfg = cfg.with_batch_size(shuffle_batch_size);
+            }
+
             let session_state = self
                 .session_builder
                 .build_session_state(WorkerQueryContext {

@@ -8,8 +8,7 @@ use crate::worker::generated::worker::{
 use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::{
-    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkUnit,
-    WorkerResolver,
+    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
@@ -208,12 +207,10 @@ impl WorkerService for Worker {
                 let Ok(id) = deserialize_uuid(&msg.id) else {
                     continue;
                 };
-                let partition = msg.partition as usize;
-                let work_unit = Box::new(msg.body) as Box<dyn WorkUnit>;
-                let Some(tx) = work_unit_senders.get(&(id, partition)) else {
+                let Some(tx) = work_unit_senders.get(&(id, msg.partition as usize)) else {
                     continue;
                 };
-                if tx.send(Ok(work_unit)).is_err() {
+                if tx.send(Ok(msg.body)).is_err() {
                     break; // channel closed
                 }
             }

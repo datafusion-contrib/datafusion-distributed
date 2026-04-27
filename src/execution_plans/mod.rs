@@ -7,7 +7,6 @@ mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
 mod partition_isolator;
-mod work_unit_feed;
 
 #[cfg(any(test, feature = "integration"))]
 pub mod benchmarks;
