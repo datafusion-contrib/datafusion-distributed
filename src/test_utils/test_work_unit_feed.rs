@@ -12,6 +12,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, ScalarValue, Statistics, internal_err, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::{TableProvider, TableType};
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -26,8 +27,9 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use prost::Message;
 use std::any::Any;
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RowGeneratorWorkUnit {
@@ -35,30 +37,89 @@ pub struct RowGeneratorWorkUnit {
     n_rows: u64,
 }
 
+/// A scripted operation that the [`RowGeneratorFeedProvider`] performs on the
+/// coordinator side while producing its per-partition work unit stream.
+///
+/// `WorkUnitOp` is a tiny DSL used by the test harness to drive specific
+/// timing and error scenarios through the feed pipeline. Ops are written as
+/// comma-separated strings in the `test_work_unit` table function:
+///
+/// - `rows(N)` — emit a [`RowGeneratorWorkUnit`] that produces N rows.
+/// - `wait(MS)` — sleep for MS milliseconds before the next op.
+/// - `err(MSG)` — yield a [`DataFusionError::Execution`] with the given
+///   message and terminate the stream.
+#[derive(Debug, Clone)]
+pub enum WorkUnitOp {
+    Rows(u64),
+    Wait(Duration),
+    Err(String),
+}
+
+impl Display for WorkUnitOp {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            WorkUnitOp::Rows(n) => write!(f, "rows({n})"),
+            WorkUnitOp::Wait(d) => write!(f, "wait({})", d.as_millis()),
+            WorkUnitOp::Err(msg) => write!(f, "err({msg})"),
+        }
+    }
+}
+
+fn parse_partition_ops(s: &str) -> Result<Vec<WorkUnitOp>> {
+    if s.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    s.split(',').map(|item| parse_op(item.trim())).collect()
+}
+
+fn parse_op(s: &str) -> Result<WorkUnitOp> {
+    let Some(open) = s.find('(') else {
+        return plan_err!("expected `name(arg)` op, got {s:?}");
+    };
+    if !s.ends_with(')') {
+        return plan_err!("expected closing `)` in op {s:?}");
+    }
+    let name = &s[..open];
+    let arg = &s[open + 1..s.len() - 1];
+    match name {
+        "rows" => {
+            let n: u64 = arg
+                .parse()
+                .map_err(|e| DataFusionError::Plan(format!("invalid rows arg in {s:?}: {e}")))?;
+            Ok(WorkUnitOp::Rows(n))
+        }
+        "wait" => {
+            let n: u64 = arg
+                .parse()
+                .map_err(|e| DataFusionError::Plan(format!("invalid wait arg in {s:?}: {e}")))?;
+            Ok(WorkUnitOp::Wait(Duration::from_millis(n)))
+        }
+        "err" => Ok(WorkUnitOp::Err(arg.to_string())),
+        other => plan_err!("unknown op {other:?} in {s:?}"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RowGeneratorFeedProvider {
-    per_partition_work_units: Vec<Vec<RowGeneratorWorkUnit>>,
+    per_partition_ops: Vec<Vec<WorkUnitOp>>,
     task_count: usize,
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl RowGeneratorFeedProvider {
-    pub fn new(task_count: usize, row_count_per_partition: Vec<Vec<usize>>) -> Self {
+    pub fn new(task_count: usize, per_partition_ops: Vec<Vec<WorkUnitOp>>) -> Self {
         Self {
-            per_partition_work_units: row_count_per_partition
-                .into_iter()
-                .map(|msgs| {
-                    msgs.into_iter()
-                        .map(|n_rows| RowGeneratorWorkUnit {
-                            n_rows: n_rows as u64,
-                        })
-                        .collect()
-                })
-                .collect(),
+            per_partition_ops,
             task_count,
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
+}
+
+struct FeedStreamState {
+    iter: std::vec::IntoIter<WorkUnitOp>,
+    counter: Count,
+    done: bool,
 }
 
 impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
@@ -69,18 +130,41 @@ impl WorkUnitFeedProvider for RowGeneratorFeedProvider {
         partition: usize,
         _ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<Self::WorkUnit>>> {
-        let work_units_sent: Count =
+        let counter: Count =
             MetricBuilder::new(&self.metrics).counter("work_units_sent", partition);
-        let units = self
-            .per_partition_work_units
+        let ops = self
+            .per_partition_ops
             .get(partition)
             .cloned()
             .unwrap_or_default();
-        Ok(futures::stream::iter(units.into_iter().map(move |unit| {
-            work_units_sent.add(1);
-            Ok(unit)
-        }))
-        .boxed())
+        let state = FeedStreamState {
+            iter: ops.into_iter(),
+            counter,
+            done: false,
+        };
+        let stream = futures::stream::unfold(state, |mut state| async move {
+            if state.done {
+                return None;
+            }
+            loop {
+                let op = state.iter.next()?;
+                match op {
+                    WorkUnitOp::Rows(n) => {
+                        state.counter.add(1);
+                        return Some((Ok(RowGeneratorWorkUnit { n_rows: n }), state));
+                    }
+                    WorkUnitOp::Wait(d) => {
+                        tokio::time::sleep(d).await;
+                        continue;
+                    }
+                    WorkUnitOp::Err(msg) => {
+                        state.done = true;
+                        return Some((Err(DataFusionError::Execution(msg)), state));
+                    }
+                }
+            }
+        });
+        Ok(stream.boxed())
     }
 }
 
@@ -135,12 +219,17 @@ fn row_generator_schema() -> SchemaRef {
 
 /// Table function that creates a [`RowGeneratorExec`].
 ///
-/// Called in SQL as: `SELECT * FROM test_work_unit('my_tag', 2, '3,1', '5', '2')`
+/// Called in SQL as:
+/// `SELECT * FROM test_work_unit('my_tag', 2, 'rows(3),rows(1)', 'rows(5)', 'rows(2)')`
 /// where the first argument is a tag string, the second is the task count (integer),
-/// and the remaining arguments are comma-separated row counts for each partition's feed
-/// messages. An empty string means an empty partition (no messages). The number of
-/// partition arguments must be divisible by the task count — they are distributed evenly
-/// across tasks.
+/// and the remaining arguments are comma-separated [`WorkUnitOp`]s describing what
+/// each partition's feed should do at runtime.
+///
+/// Available ops: `rows(N)` emits a work unit that generates N rows, `wait(MS)`
+/// sleeps the producer for MS milliseconds, `err(MSG)` yields an error and ends
+/// the stream. An empty string means an empty partition (no ops). The number of
+/// partition arguments must be divisible by the task count — they are distributed
+/// evenly across tasks.
 ///
 /// String encoding is used for partitions because DataFusion 52.x has a bug where array
 /// literal arguments are silently dropped by the table-function SQL planner.
@@ -163,36 +252,23 @@ impl TableFunctionImpl for TestWorkUnitFeedFunction {
             Expr::Literal(ScalarValue::Int32(Some(v)), _) => *v as usize,
             v => return plan_err!("task_count must be an integer literal, got {v:?}"),
         };
-        let row_counts = exprs[2..]
+        let partition_ops = exprs[2..]
             .iter()
             .map(|expr| match expr {
-                Expr::Literal(ScalarValue::Utf8(Some(s)), _) => {
-                    if s.is_empty() {
-                        return Ok(vec![]);
-                    }
-                    s.split(',')
-                        .map(|v| {
-                            v.trim().parse::<usize>().map_err(|e| {
-                                datafusion::error::DataFusionError::Plan(format!(
-                                    "Invalid integer in test_work_unit_feed(): {e}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()
-                }
+                Expr::Literal(ScalarValue::Utf8(Some(s)), _) => parse_partition_ops(s),
                 v => plan_err!("partition args must be string literals, got {v:?}"),
             })
             .collect::<Result<Vec<_>>>()?;
-        if row_counts.len() % task_count != 0 {
+        if partition_ops.len() % task_count != 0 {
             return plan_err!(
                 "number of partitions ({}) must be divisible by task_count ({task_count})",
-                row_counts.len()
+                partition_ops.len()
             );
         }
         Ok(Arc::new(TestWorkUnitFeedTableProvider {
             tag,
             task_count,
-            row_counts,
+            partition_ops,
         }))
     }
 }
@@ -202,7 +278,7 @@ impl TableFunctionImpl for TestWorkUnitFeedFunction {
 struct TestWorkUnitFeedTableProvider {
     tag: String,
     task_count: usize,
-    row_counts: Vec<Vec<usize>>,
+    partition_ops: Vec<Vec<WorkUnitOp>>,
 }
 
 #[async_trait]
@@ -227,17 +303,21 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let total_rows: usize = self
-            .row_counts
+            .partition_ops
             .iter()
-            .flat_map(|msgs| msgs.iter().copied())
+            .flat_map(|ops| ops.iter())
+            .map(|op| match op {
+                WorkUnitOp::Rows(n) => *n as usize,
+                _ => 0,
+            })
             .sum();
         Ok(Arc::new(RowGeneratorExec::new(
             WorkUnitFeed::new(RowGeneratorFeedProvider::new(
                 self.task_count,
-                self.row_counts.clone(),
+                self.partition_ops.clone(),
             )),
             self.tag.clone(),
-            self.row_counts.len(),
+            self.partition_ops.len(),
             projection.cloned(),
             total_rows,
         )))
@@ -265,7 +345,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
     ) -> Option<Arc<dyn ExecutionPlan>> {
         let exec = plan.as_any().downcast_ref::<RowGeneratorExec>()?;
         let provider = exec.feed.clone().try_into_inner().ok()?;
-        let partitions_per_task = provider.per_partition_work_units.len() / task_count;
+        let partitions_per_task = provider.per_partition_ops.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
         let transformed = Arc::clone(plan).transform_down(|plan| {
@@ -291,17 +371,17 @@ impl DisplayAs for RowGeneratorExec {
         let Some(provider) = self.feed.inner() else {
             return Ok(());
         };
-        write!(f, ", tasks={}, rows_per_partition=[", provider.task_count)?;
-        for (i, msgs) in provider.per_partition_work_units.iter().enumerate() {
+        write!(f, ", tasks={}, partition_ops=[", provider.task_count)?;
+        for (i, ops) in provider.per_partition_ops.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
             write!(f, "[")?;
-            for (j, msg) in msgs.iter().enumerate() {
+            for (j, op) in ops.iter().enumerate() {
                 if j > 0 {
                     write!(f, ", ")?;
                 }
-                write!(f, "{}", msg.n_rows)?;
+                write!(f, "{op}")?;
             }
             write!(f, "]")?;
         }
