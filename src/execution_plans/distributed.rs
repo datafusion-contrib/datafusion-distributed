@@ -31,7 +31,6 @@ use http::Extensions;
 use prost::Message;
 use rand::Rng;
 use std::any::Any;
-use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -81,18 +80,11 @@ impl DistributedExec {
             })
     }
 
-    /// Prepares the distributed plan for execution, which implies:
-    /// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-    ///    URL per task.
-    /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-    ///    network call feeding the subplan is necessary.
-    /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-    ///    become nodes without children and traversing them will not go further down in.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
-        let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-
         let urls = worker_resolver.get_urls()?;
+
+        let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
         let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
@@ -108,63 +100,84 @@ impl DistributedExec {
         };
 
         let mut join_set = JoinSet::new();
+        // Distribute the plan by distributing tasks across workers at each network boundary from
+        // the bottom up.
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
-            // The following logic is just applied on network boundaries.
-            let Some(plan) = plan.as_network_boundary() else {
-                return Ok(Transformed::no(plan));
-            };
-
-            let stage = plan.input_stage();
-
-            let mut spawner =
-                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
-
-            // Default routing assigns tasks to URLs round-robin from a random starting point.
-            let start_idx = rand::rng().random_range(0..urls.len());
-
-            let mut tasks = Vec::with_capacity(stage.tasks.len());
-            let mut assigned_urls = HashSet::new();
-            for (i, task) in stage.tasks.iter().enumerate() {
-                // If the user has not defined custom routing through the plan_leaf_node API, we
-                // default to round-robin task assignation with a randomized starting point.
-                //
-                // If the user has defined custom routing through the plan_leaf_node interface,
-                // we attempt to route the task to the specified URL.
-                //
-                // Notably, it is possible that a task is assigned to a machine that goes offline
-                // in between the moment that the task URL is assigned and the moment the task is
-                // routed. In that case, we route the task to another URL that has not yet been
-                // claimed. If all of the URLs are claimed, we begin assigning round-robin.
-                let url = match task.url.clone() {
-                    Some(url) if urls.contains(&url) => url,
-                    Some(_) => urls
-                        .iter()
-                        .find(|url| !assigned_urls.contains(*url))
-                        .cloned()
-                        .unwrap_or_else(|| urls[(start_idx + i) % urls.len()].clone()),
-                    None => urls[(start_idx + i) % urls.len()].clone(),
-                };
-                assigned_urls.insert(url.clone());
-                tasks.push(ExecutionTask {
-                    url: Some(url.clone()),
-                });
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                spawner.send_plan_task(Arc::clone(ctx), i, url)?;
-            }
-
-            Ok(Transformed::yes(plan.with_input_stage(Stage {
-                query_id: stage.query_id,
-                num: stage.num,
-                plan: None,
-                tasks,
-            })?))
+            distribute_tasks(ctx, plan, &codec, &urls, &metrics, &mut join_set)
         })?;
         Ok(PreparedPlan {
             plan: prepared.data,
             join_set,
         })
     }
+}
+
+/// Distribute tasks across workers.
+/// In particular, this means we must take the following steps at each network boundary node:
+/// 1. Assign tasks to URLs. Follow the user-defined routing defined in the TaskEstimator
+///    implementation, or default to random round-robin assignment.
+/// 2. Send the sliced subplans to the assigned URLs. For each task assigned to a URL, it is here
+///    that we now must actually send that subplan to the URL over the wire.
+/// 3. Set network boundary input plans to `None`. This way, network boundaries become nodes
+///    without children, so we stop further traversal from happening in the future.
+fn distribute_tasks(
+    ctx: &Arc<TaskContext>,
+    plan: Arc<dyn ExecutionPlan>,
+    codec: &impl PhysicalExtensionCodec,
+    urls: &[Url],
+    metrics: &CoordinatorToWorkerMetrics,
+    join_set: &mut JoinSet<Result<(), DataFusionError>>,
+) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+    // The following logic is only relevant to network boundaries.
+    let Some(plan) = plan.as_network_boundary() else {
+        return Ok(Transformed::no(plan));
+    };
+
+    let stage = plan.input_stage();
+
+    let mut spawner = CoordinatorToWorkerTaskSpawner::new(stage, metrics, codec, join_set)?;
+
+    // Default routing assigns tasks to URLs round-robin from a random starting point.
+    let start_idx = rand::rng().random_range(0..urls.len());
+
+    let mut tasks = Vec::with_capacity(stage.tasks.len());
+    for (i, task) in stage.tasks.iter().enumerate() {
+        // If the user has not defined custom routing through the plan_leaf_node API, we
+        // default to round-robin task assignation with a randomized starting point.
+        //
+        // If the user has defined custom routing through the plan_leaf_node interface,
+        // we attempt to route the task to the specified URL.
+        //
+        // Notably, it is possible that a task is assigned to a machine that goes offline
+        // in between the moment that the task URL is assigned and the moment the task is
+        // routed. In that case, we fail the query and surface the error to the user.
+        let url = match task.url.clone() {
+            Some(url) => {
+                if urls.contains(&url) {
+                    Ok(url)
+                } else {
+                    Err(exec_datafusion_err!(
+                        "could not contact remote machine at url: {:?}",
+                        url
+                    ))
+                }
+            }
+            None => Ok(urls[(start_idx + i) % urls.len()].clone()),
+        }?;
+        tasks.push(ExecutionTask {
+            url: Some(url.clone()),
+        });
+        // Spawn a task that sends the subplan to the chosen URL.
+        // There will be as many as spawned tasks as workers.
+        spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+    }
+
+    Ok(Transformed::yes(plan.with_input_stage(Stage {
+        query_id: stage.query_id,
+        num: stage.num,
+        plan: None,
+        tasks,
+    })?))
 }
 
 impl DisplayAs for DistributedExec {
