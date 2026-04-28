@@ -9,8 +9,8 @@ use crate::stage::{ExecutionTask, Stage};
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, coordinator_to_worker_msg::Inner,
-    worker_to_coordinator_msg,
+    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, WorkerToCoordinatorMsg,
+    coordinator_to_worker_msg::Inner, worker_to_coordinator_msg,
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
@@ -212,12 +212,8 @@ impl DistributedExec {
                 });
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
-                let tx = spawner.send_plan_task(
-                    Arc::clone(ctx),
-                    i,
-                    url,
-                    Arc::clone(&self.task_metrics),
-                )?;
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                spawner.metrics_collection_task(worker_rx, Arc::clone(&self.task_metrics));
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
@@ -337,6 +333,9 @@ struct CoordinatorToWorkerMetrics {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
+type WorkerResponseRx =
+    tokio::sync::mpsc::UnboundedReceiver<Result<WorkerToCoordinatorMsg, tonic::Status>>;
+
 struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     plan_proto: Vec<u8>,
@@ -374,15 +373,15 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         })
     }
 
-    /// Instantiates and returns the task sends a serialized plan to specific worker. The returned
-    /// task is just a future that does nothing unless polled.
+    /// Sends a serialized plan to a specific worker and sets up the bidirectional gRPC stream.
+    /// Returns the sender for outbound coordinator-to-worker messages and the receiver for
+    /// inbound worker-to-coordinator messages.
     fn send_plan_task(
         &mut self,
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
-        task_metrics_collection: Arc<MetricsStore>,
-    ) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
+    ) -> Result<(UnboundedSender<CoordinatorToWorkerMsg>, WorkerResponseRx)> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
         /// feeds, keeping into account that some of them might be executed within a
@@ -449,7 +448,10 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         };
         let plan_size = self.plan_proto.len();
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
+            tokio::sync::mpsc::unbounded_channel();
 
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
 
@@ -459,46 +461,43 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let request = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
-            futures::stream::once(async { msg }).chain(UnboundedReceiverStream::new(rx)),
+            futures::stream::once(async { msg })
+                .chain(UnboundedReceiverStream::new(coordinator_to_worker_rx)),
         );
 
         let metrics = self.metrics.clone();
 
-        // Sending the plan and waiting for metrics both run in a detached tokio::spawn so they
-        // are not cancelled when the output stream is dropped early.
-        let (plan_sent_tx, plan_sent_rx) = tokio::sync::oneshot::channel::<Result<()>>();
-
-        tokio::spawn(async move {
+        self.join_set.spawn(async move {
             let start = Instant::now();
-            let result = async {
-                let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
-                let response_stream = client
-                    .coordinator_channel(request)
-                    .await
-                    .map_err(|e| {
-                        tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
-                            exec_datafusion_err!("Error sending plan to worker {url}: {e}")
-                        })
-                    })?
-                    .into_inner();
-                metrics.plan_send_latency.record(&start);
-                metrics.plan_bytes_sent.add(plan_size);
-                Ok::<_, DataFusionError>(response_stream)
-            }
-            .await;
-
-            let mut response_stream = match result {
-                Err(e) => {
-                    let _ = plan_sent_tx.send(Err(e));
-                    return;
+            let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
+            let response = client.coordinator_channel(request).await.map_err(|e| {
+                tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
+                    exec_datafusion_err!("Error sending plan to worker {url}: {e}")
+                })
+            })?;
+            metrics.plan_send_latency.record(&start);
+            metrics.plan_bytes_sent.add(plan_size);
+            let mut stream = response.into_inner();
+            while let Some(msg) = stream.next().await {
+                if worker_to_coordinator_tx.send(msg).is_err() {
+                    break; // receiver dropped
                 }
-                Ok(s) => s,
-            };
-            let _ = plan_sent_tx.send(Ok(()));
+            }
+            Ok::<_, DataFusionError>(())
+        });
 
-            // The worker sends exactly one WorkerToCoordinatorMsg after all partitions
-            // of the task have finished (or been dropped early), containing collected metrics.
-            while let Some(Ok(msg)) = response_stream.next().await {
+        Ok((coordinator_to_worker_tx, worker_to_coordinator_rx))
+    }
+
+    /// Receives worker-to-coordinator messages and inserts any collected metrics into the store.
+    /// Runs in a detached spawn so it is not cancelled when the output stream is dropped early.
+    fn metrics_collection_task(
+        &mut self,
+        mut worker_to_coordinator_rx: WorkerResponseRx,
+        task_metrics_collection: Arc<MetricsStore>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
                 let Some(worker_to_coordinator_msg::Inner::MetricsCollection(collection)) =
                     msg.inner
                 else {
@@ -511,11 +510,6 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 }
             }
         });
-
-        self.join_set
-            .spawn(async move { plan_sent_rx.await.unwrap_or_else(|_| Ok(())) });
-
-        Ok(tx)
     }
 
     /// Instantiates and returns the task that based on the different local [WorkUnitFeedExec]
