@@ -1,15 +1,18 @@
-use crate::common::{require_one_child, serialize_uuid};
+use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::distributed_planner::NetworkBoundaryExt;
+use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
 use crate::stage::{ExecutionTask, Stage};
+use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, coordinator_to_worker_msg::Inner,
+    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, coordinator_to_worker_msg::Inner,
 };
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, WorkerResolver, get_distributed_channel_resolver,
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
+    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
 };
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
@@ -27,6 +30,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Pla
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use http::Extensions;
 use prost::Message;
 use rand::Rng;
@@ -36,6 +40,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
@@ -157,7 +163,7 @@ fn distribute_tasks(
                     Ok(url)
                 } else {
                     Err(exec_datafusion_err!(
-                        "could not contact remote machine at url: {:?}",
+                        "tried to distribute task to machine not found in cluster, url: {:?}",
                         url
                     ))
                 }
@@ -169,7 +175,8 @@ fn distribute_tasks(
         });
         // Spawn a task that sends the subplan to the chosen URL.
         // There will be as many as spawned tasks as workers.
-        spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+        let tx = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+        spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
     }
 
     Ok(Transformed::yes(plan.with_input_stage(Stage {
@@ -276,9 +283,12 @@ struct CoordinatorToWorkerMetrics {
 /// [DistributedExec] node to the workers. This struct is responsible for instantiating the tasks
 /// as boxed futures so that [DistributedExec] can tokio-spawn them at will.
 ///
-/// This struct is responsible for building tasks that communicate a serialized plan to multiple
-/// workers for further execution.
+/// This struct is responsible for:
+/// - Building tasks that communicate a serialized plan to multiple workers for further execution.
+/// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
+///   remote counterparts.
 struct CoordinatorToWorkerTaskSpawner<'a> {
+    plan: &'a Arc<dyn ExecutionPlan>,
     plan_proto: Vec<u8>,
     query_id: Uuid,
     stage_id: usize,
@@ -304,6 +314,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
 
         Ok(Self {
+            plan,
             plan_proto,
             query_id: stage.query_id,
             stage_id: stage.num,
@@ -315,11 +326,62 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
 
     /// Instantiates and returns the task sends a serialized plan to specific worker. The returned
     /// task is just a future that does nothing unless polled.
-    fn send_plan_task(&mut self, ctx: Arc<TaskContext>, task_i: usize, url: Url) -> Result<()> {
-        let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
+    fn send_plan_task(
+        &mut self,
+        ctx: Arc<TaskContext>,
+        task_i: usize,
+        url: Url,
+    ) -> Result<UnboundedSender<CoordinatorToWorkerMsg>> {
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+        /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
+        /// feeds, keeping into account that some of them might be executed within a
+        /// [ChildrenIsolatorUnionExec] context. This means that some of them are irrelevant for
+        /// the current [task_i], and we don't want to account for them here.
+        ///
+        /// It places in the `out` argument all the collected [WorkUnitFeedDeclaration]s necessary
+        /// for sending the plan.
+        fn gather_work_unit_feed_declarations(
+            plan: &Arc<dyn ExecutionPlan>,
+            ctx: DistributedTaskContext,
+            d_cfg: &DistributedConfig,
+            out: &mut Vec<WorkUnitFeedDeclaration>,
+        ) {
+            let wuf = if let Some(wuf) = d_cfg
+                .__private_work_unit_feed_registry
+                .get_work_unit_feed(plan)
+            {
+                wuf
+            } else if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+                for (child_i, ctx) in &ciu.task_idx_map[ctx.task_index] {
+                    let child = &ciu.children[*child_i];
+                    // Just recurse to children that will actually get executed by this
+                    // ChildrenIsolatorUnionExec.
+                    gather_work_unit_feed_declarations(child, ctx.clone(), d_cfg, out)
+                }
+                return;
+            } else {
+                for child in plan.children() {
+                    gather_work_unit_feed_declarations(child, ctx.clone(), d_cfg, out)
+                }
+                return;
+            };
 
-        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
-        headers.extend(get_passthrough_headers(ctx.session_config()));
+            out.push(WorkUnitFeedDeclaration {
+                id: serialize_uuid(&wuf.id()),
+                partitions: plan.properties().partitioning.partition_count() as u64,
+            })
+        }
+
+        let mut work_unit_feed_declarations = vec![];
+        gather_work_unit_feed_declarations(
+            self.plan,
+            DistributedTaskContext {
+                task_index: task_i,
+                task_count: self.task_count,
+            },
+            d_cfg,
+            &mut work_unit_feed_declarations,
+        );
 
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
@@ -330,14 +392,22 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                     stage_id: self.stage_id as u64,
                     task_number: task_i as u64,
                 }),
+                work_unit_feed_declarations,
             })),
         };
         let plan_size = self.plan_proto.len();
 
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
+
+        let mut headers = get_config_extension_propagation_headers(ctx.session_config())?;
+        headers.extend(get_passthrough_headers(ctx.session_config()));
+
         let request = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
-            futures::stream::once(async { msg }),
+            futures::stream::once(async { msg }).chain(UnboundedReceiverStream::new(rx)),
         );
 
         let metrics = self.metrics.clone();
@@ -352,6 +422,113 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             metrics.plan_send_latency.record(&start);
             metrics.plan_bytes_sent.add(plan_size);
             Ok::<_, DataFusionError>(())
+        });
+        Ok(tx)
+    }
+
+    /// Instantiates and returns the task that based on the different local [WorkUnitFeedExec]
+    /// nodes, sends their inner [WorkUnitFeeds] over the network to their remote counterparts.
+    /// The returned task is just a future that does nothing unless polled.
+    ///
+    /// Once this function is called, all the [WorkUnitFeedExec]s feeds will be consumed.
+    fn work_unit_feed_task(
+        &mut self,
+        ctx: Arc<TaskContext>,
+        task_i: usize,
+        tx: UnboundedSender<CoordinatorToWorkerMsg>,
+    ) -> Result<()> {
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+        /// Recurses into the plan looking for [WorkUnitFeedExec] nodes that should be handled by
+        /// the provided [task_i]. Because of [ChildrenIsolatorUnionExec]s being present in the
+        /// plan, there might be some present [WorkUnitFeedExec] that will not necessarily get
+        /// executed, so we don't want to stream any [WorkUnit] to those.
+        ///
+        /// It places in `out` the list of futures that should be polled for driving the [WorkUnit]
+        /// network streams forward.
+        fn gather_work_unit_feed_tasks(
+            plan: &Arc<dyn ExecutionPlan>,
+            dt_ctx: DistributedTaskContext,
+            t_ctx: &Arc<TaskContext>,
+            d_cfg: &DistributedConfig,
+            tx: &UnboundedSender<CoordinatorToWorkerMsg>,
+            out: &mut Vec<BoxFuture<'static, Result<()>>>,
+        ) -> Result<()> {
+            let wuf = if let Some(wuf) = d_cfg
+                .__private_work_unit_feed_registry
+                .get_work_unit_feed(plan)
+            {
+                wuf
+            } else if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+                for (child_i, dt_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
+                    // Just recurse to children that will actually get executed by this
+                    // ChildrenIsolatorUnionExec.
+                    let child = &ciu.children[*child_i];
+                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, d_cfg, tx, out)?;
+                }
+                return Ok(());
+            } else {
+                for child in plan.children() {
+                    gather_work_unit_feed_tasks(child, dt_ctx.clone(), t_ctx, d_cfg, tx, out)?
+                }
+                return Ok(());
+            };
+
+            let partitions = plan.properties().partitioning.partition_count();
+            let start_partition = partitions * dt_ctx.task_index;
+            let end_partition = start_partition + partitions;
+
+            let dist_feed_ctx = DistributedWorkUnitFeedContext {
+                fan_out_tasks: dt_ctx.task_count,
+            };
+            let t_ctx = Arc::new(task_ctx_with_extension(t_ctx, dist_feed_ctx));
+
+            // There should be as many partition feeds as [num partitions] * [num tasks], so that
+            // each task index handles a non-overlapping set of partition feeds.
+            for (partition, feed_idx) in (start_partition..end_partition).enumerate() {
+                // By calling `.take()` the respective partition feed is consumed, and further
+                // consumptions are allowed. Calling `.take()` on the same partition feed again
+                // will fail.
+                let mut work_unit_feed = wuf.feed(feed_idx, Arc::clone(&t_ctx))?;
+                let tx = tx.clone();
+                let id = wuf.id();
+                out.push(Box::pin(async move {
+                    // At this point, the partition feed contains a stream of decoded messages,
+                    // so they must be encoded in order to send them over the wire.
+                    while let Some(data_or_err) = work_unit_feed.next().await {
+                        if tx
+                            .send(CoordinatorToWorkerMsg {
+                                inner: Some(Inner::WorkUnit(WorkUnit {
+                                    id: serialize_uuid(&id),
+                                    partition: partition as u64,
+                                    body: data_or_err?.encode_to_bytes(),
+                                })),
+                            })
+                            .is_err()
+                        {
+                            break; // channel closed.
+                        };
+                    }
+                    Ok::<_, DataFusionError>(())
+                }));
+            }
+            Ok(())
+        }
+
+        let mut futures = vec![];
+        gather_work_unit_feed_tasks(
+            self.plan,
+            DistributedTaskContext {
+                task_index: task_i,
+                task_count: self.task_count,
+            },
+            &ctx,
+            d_cfg,
+            &tx,
+            &mut futures,
+        )?;
+        self.join_set.spawn(async move {
+            futures::future::try_join_all(futures).await?;
+            Ok(())
         });
         Ok(())
     }

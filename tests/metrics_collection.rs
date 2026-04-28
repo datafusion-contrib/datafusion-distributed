@@ -1,16 +1,23 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::Result;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+    use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
+    use datafusion_distributed::test_utils::test_work_unit_feed::{
+        RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
+        TestWorkUnitFeedTaskEstimator,
+    };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedMetricsFormat, NetworkCoalesceExec, NetworkShuffleExec,
-        display_plan_ascii, rewrite_distributed_plan_with_metrics,
+        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
+        NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
+        rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -210,6 +217,40 @@ mod tests {
 
         let display = display_plan_ascii(d_physical.as_ref(), true);
         assert_not_contains!(display, "metrics=[]");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_in_work_unit_feed_exec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState> {
+            Ok(ctx
+                .builder
+                .with_distributed_user_codec(TestWorkUnitFeedExecCodec)
+                .build())
+        }
+
+        let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
+        ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
+        ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
+        ctx.set_distributed_task_estimator(TestWorkUnitFeedTaskEstimator);
+        ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
+
+        // Two tasks × two partitions × comma-separated row counts. Total work units sent:
+        // 2 (t0/p0) + 1 (t0/p1) + 1 (t1/p0) + 2 (t1/p1) = 6.
+        let df = ctx
+            .sql("SELECT * FROM test_work_unit('t', 2, '3,4', '1', '1', '2,5')")
+            .await?;
+        let plan = df.create_physical_plan().await?;
+        execute_stream(plan.clone(), ctx.task_ctx())?
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let plan = rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask)?;
+
+        let work_units_sent = node_metrics::<RowGeneratorExec>(&plan, "work_units_sent", 0);
+        assert_eq!(work_units_sent, 6);
 
         Ok(())
     }

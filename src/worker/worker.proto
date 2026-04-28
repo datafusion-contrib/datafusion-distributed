@@ -17,6 +17,10 @@ message CoordinatorToWorkerMsg {
     // Sends a subplan to a worker so that a future ExecuteTask call can actually execute it.
     // The plan is identified by a TaskKey.
     SetPlanRequest set_plan_request = 1;
+    // A single message from a work unit feed belonging to one partition from one node from the plan set in
+    // set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
+    // be executed within a partition, for example, a stream of file addresses that should be read.
+    WorkUnit work_unit = 2;
   }
 }
 
@@ -37,6 +41,28 @@ message SetPlanRequest {
   uint64 task_count = 2;
   // The serialized subplan the worker is expected to execute on an ExecuteTask gRPC call.
   bytes plan_proto = 3;
+
+  message WorkUnitFeedDeclaration {
+    // Unique identifier of the node to which work unit feeds are expected to be streamed.
+    bytes id = 1;
+    // The amount of partitions expected to be streamed.
+    uint64 partitions = 2;
+  }
+  // Information about all the work unit feeds that will be streamed from coordinator to worker.
+  // This information is needed here because at the moment of setting the plan, all the appropriate
+  // channels for the incoming work unit feeds need to be constructed.
+  //
+  // If no WorkUnitFeedExec nodes are present in the plan, this should be empty.
+  repeated WorkUnitFeedDeclaration work_unit_feed_declarations = 4;
+}
+
+message WorkUnit {
+  // Identifier of the node to which this work unit feed belongs to.
+  bytes id = 1;
+  // The partition index within the node to which the work unit feed belongs to.
+  uint64 partition = 2;
+  // Arbitrary user-defined data (e.g., a file address) necessary during execution.
+  bytes body = 3;
 }
 
 message ExecuteTaskRequest {

@@ -1,6 +1,7 @@
 use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
+use crate::work_unit_feed::WorkUnitFeedRegistry;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
@@ -22,13 +23,6 @@ extensions_options! {
         /// - If a node reduces the cardinality of the data, this factor will decrease.
         /// - In any other situation, this factor is left intact.
         pub cardinality_task_count_factor: f64, default = cardinality_task_count_factor_default()
-        /// Upon shuffling over the network, data streams need to be disassembled in a lot of output
-        /// partitions, which means the resulting streams might contain a lot of tiny record batches
-        /// to be sent over the wire. This parameter controls the batch size in number of rows for
-        /// the CoalesceBatchExec operator that is placed at the top of the stage for sending bigger
-        /// batches over the wire.
-        /// If set to 0, batch coalescing is disabled on network shuffle operations.
-        pub shuffle_batch_size: usize, default = 8192
         /// When encountering a UNION operation, isolate its children depending on the task context.
         /// For example, on a UNION operation with 3 children running in 3 distributed tasks,
         /// instead of executing the 3 children in each 3 tasks with a DistributedTaskContext of
@@ -49,10 +43,22 @@ extensions_options! {
         /// The compression used for sending data over the network between workers.
         /// It can be set to either `zstd`, `lz4` or `none`.
         pub compression: String, default = "lz4".to_string()
+        /// Overrides `datafusion.execution.batch_size` for worker-executed stages. Because
+        /// `RepartitionExec` reads `session_config().batch_size()` at execute time to size its
+        /// output batches (via its internal `LimitedBatchCoalescer`), this knob lets users tune
+        /// shuffle batch sizes independently of the global `datafusion.execution.batch_size`.
+        ///
+        /// Set to 0 (the default) to apply no override and inherit `datafusion.execution.batch_size`.
+        pub shuffle_batch_size: usize, default = 0
         /// Maximum tasks that will be assigned per stage during distributed planning.
         /// If set to 0, this value is the number of workers returned by the provided `WorkerResolver`.
         /// It defaults to 0.
         pub max_tasks_per_stage: usize, default = 0
+        /// Enable the PartialReduce optimization, which inserts an extra aggregation pass
+        /// above hash RepartitionExec before network shuffles to reduce shuffle data size.
+        /// Disabled by default because its effectiveness is workload-dependent: it helps when
+        /// aggregation significantly reduces cardinality, but adds overhead when it does not.
+        pub partial_reduce: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
@@ -62,6 +68,9 @@ extensions_options! {
         /// [WorkerResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_worker_resolver: WorkerResolverExtension, default = WorkerResolverExtension::not_implemented()
+        /// [WorkUnitFeedRegistry] that contains a set of getters that, applied to each node in a
+        /// plan, will return the [crate::WorkUnitFeed]s present in all nodes.
+        pub(crate) __private_work_unit_feed_registry: WorkUnitFeedRegistry, default = WorkUnitFeedRegistry::default()
     }
 }
 
@@ -173,5 +182,21 @@ impl ConfigField for CombinedTaskEstimator {
 impl Debug for CombinedTaskEstimator {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "TaskEstimators")
+    }
+}
+
+impl ConfigField for WorkUnitFeedRegistry {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        //nothing to do.
+    }
+
+    fn set(&mut self, _: &str, _: &str) -> Result<(), DataFusionError> {
+        not_impl_err!("not implemented")
+    }
+}
+
+impl Debug for WorkUnitFeedRegistry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WorkUnitFeedRegistry")
     }
 }

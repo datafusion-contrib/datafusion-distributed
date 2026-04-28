@@ -68,8 +68,17 @@ impl ExecutionPlan for MetricsWrapperExec {
         unimplemented!("MetricsWrapperExec does not implement execute")
     }
 
-    // metrics returns the wrapped metrics.
+    /// returns the wrapped metrics merged with any other present in
+    /// the inner [ExecutionPlan].
     fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone())
+        match self.inner.metrics() {
+            None => Some(self.metrics.clone()),
+            Some(mut all_metrics) => {
+                for wrapped in self.metrics.iter() {
+                    all_metrics.push(Arc::clone(wrapped));
+                }
+                Some(all_metrics)
+            }
+        }
     }
 }

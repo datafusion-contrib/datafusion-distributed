@@ -1,6 +1,9 @@
+use crate::common::deserialize_uuid;
 use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
+use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::worker::generated::worker::SetPlanRequest;
+use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -46,8 +49,8 @@ impl Worker {
     pub(crate) async fn impl_set_plan(
         &self,
         request: SetPlanRequest,
-        metadata: MetadataMap,
-    ) -> Result<(), Status> {
+        grpc_headers: MetadataMap,
+    ) -> Result<RemoteWorkUnitFeedTxs, Status> {
         let key = request.task_key.ok_or_else(missing("task_key"))?;
 
         let entry = self
@@ -55,15 +58,30 @@ impl Worker {
             .get_with(key.clone(), async { Default::default() })
             .await;
 
-        let task_data = || async {
-            let headers = metadata.into_headers();
+        let mut remote_work_unit_feed_registry = RemoteWorkUnitFeedRegistry::default();
+        for WorkUnitFeedDeclaration { id, partitions } in &request.work_unit_feed_declarations {
+            if let Ok(id) = deserialize_uuid(id) {
+                remote_work_unit_feed_registry.add(id, *partitions as usize);
+            }
+        }
 
-            let mut cfg =
-                SessionConfig::default().with_extension(Arc::new(DistributedTaskContext {
+        let task_data = || async {
+            let headers = grpc_headers.into_headers();
+
+            let mut cfg = SessionConfig::default()
+                .with_extension(Arc::new(remote_work_unit_feed_registry.receivers))
+                .with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
                     task_count: request.task_count as usize,
                 }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
+
+            let shuffle_batch_size =
+                DistributedConfig::from_config_options(cfg.options())?.shuffle_batch_size;
+            if shuffle_batch_size != 0 {
+                cfg = cfg.with_batch_size(shuffle_batch_size);
+            }
+
             let session_state = self
                 .session_builder
                 .build_session_state(WorkerQueryContext {
@@ -98,7 +116,7 @@ impl Worker {
                 "Logic error while setting plan for TaskKey {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
             ))
         })?;
-        Ok(())
+        Ok(remote_work_unit_feed_registry.senders)
     }
 }
 

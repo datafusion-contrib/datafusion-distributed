@@ -1,3 +1,4 @@
+use crate::common::deserialize_uuid;
 use crate::worker::WorkerSessionBuilder;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
@@ -184,18 +185,37 @@ impl WorkerService for Worker {
         &self,
         request: Request<Streaming<CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        let (metadata, _ext, mut body) = request.into_parts();
-        if let Some(msg) = body.next().await {
-            let Some(inner) = msg?.inner else {
-                return Err(Status::internal("Empty Coordinator message"));
-            };
+        let (grpc_headers, _ext, mut body) = request.into_parts();
 
-            match inner {
-                Inner::SetPlanRequest(request) => {
-                    self.impl_set_plan(request, metadata).await?;
+        // The first message must be a SetPlanRequest.
+        let Some(msg) = body.next().await else {
+            return Err(Status::internal("Empty Coordinator stream"));
+        };
+        let Some(Inner::SetPlanRequest(request)) = msg?.inner else {
+            return Err(Status::internal(
+                "First Coordinator message must be SetPlanRequest",
+            ));
+        };
+        let work_unit_senders = self.impl_set_plan(request, grpc_headers).await?;
+
+        // Continue reading remaining messages (work unit feed data) in the background.
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = body.next().await {
+                let Some(Inner::WorkUnit(msg)) = msg.inner else {
+                    continue;
+                };
+                let Ok(id) = deserialize_uuid(&msg.id) else {
+                    continue;
+                };
+                let Some(tx) = work_unit_senders.get(&(id, msg.partition as usize)) else {
+                    continue;
+                };
+                if tx.send(Ok(msg.body)).is_err() {
+                    break; // channel closed
                 }
-            };
-        }
+            }
+        });
+
         Ok(Response::new(futures::stream::empty().boxed()))
     }
 
