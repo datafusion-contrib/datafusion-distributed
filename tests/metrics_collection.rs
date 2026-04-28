@@ -17,7 +17,7 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
         NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics, test_utils::metrics::wait_for_all_metrics,
+        rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -247,7 +247,8 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await?;
 
-        let plan = rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask)?;
+        let plan =
+            rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::PerTask).await?;
 
         let work_units_sent = node_metrics::<RowGeneratorExec>(&plan, "work_units_sent", 0);
         assert_eq!(work_units_sent, 6);
@@ -278,8 +279,9 @@ mod tests {
         plan: Arc<dyn ExecutionPlan>,
         format: DistributedMetricsFormat,
     ) -> Arc<dyn ExecutionPlan> {
-        wait_for_all_metrics(&plan).await;
-        rewrite_distributed_plan_with_metrics(plan, format).unwrap()
+        rewrite_distributed_plan_with_metrics(plan, format)
+            .await
+            .unwrap()
     }
 
     async fn execute(

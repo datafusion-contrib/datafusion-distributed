@@ -183,6 +183,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             physical,
                             DistributedMetricsFormat::PerTask,
                         )
+                        .await
                         .map_err(err)?;
                         let plan = display_plan_ascii(physical.as_ref(), true);
                         drop(task);

@@ -38,7 +38,9 @@ impl DistributedMetricsFormat {
 
 /// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
-pub fn rewrite_distributed_plan_with_metrics(
+///
+/// Waits for all worker task metrics to arrive before rewriting, so the result is always complete.
+pub async fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -46,14 +48,18 @@ pub fn rewrite_distributed_plan_with_metrics(
         return Ok(plan);
     };
 
+    // Check that the plan was executed before waiting — if not, prepared_plan() returns an
+    // error immediately rather than waiting forever for metrics that will never arrive.
+    let prepared = distributed_exec.prepared_plan()?;
+
+    distributed_exec.wait_for_metrics().await;
+
     // Collect metrics from the DistributedExec's prepared plan.
     let MetricsCollectorResult {
         task_metrics,       // Metrics for the DistributedExec plan
         input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new().collect(
-        distributed_exec.prepared_plan()?,
-        Some(Arc::clone(&distributed_exec.task_metrics)),
-    )?;
+    } = TaskMetricsCollector::new()
+        .collect(prepared, Some(Arc::clone(&distributed_exec.task_metrics)))?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
@@ -555,6 +561,7 @@ mod tests {
         assert!(plan.as_any().is::<DistributedExec>());
         assert!(
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .await
                 .is_err()
         );
     }
@@ -585,6 +592,7 @@ mod tests {
         assert!(plan.as_any().is::<DistributedExec>());
         let rewritten_plan =
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .await
                 .unwrap();
         assert_metrics_present_in_plan(&rewritten_plan);
     }
