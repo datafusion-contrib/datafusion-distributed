@@ -240,7 +240,7 @@ mod tests {
         // Two tasks × two partitions × comma-separated row counts. Total work units sent:
         // 2 (t0/p0) + 1 (t0/p1) + 1 (t1/p0) + 2 (t1/p1) = 6.
         let df = ctx
-            .sql("SELECT * FROM test_work_unit('t', 2, '3,4', '1', '1', '2,5')")
+            .sql("SELECT * FROM test_work_unit('t', 2, 'rows(3),rows(4)', 'rows(1)', 'rows(1)', 'rows(2),rows(5)')")
             .await?;
         let plan = df.create_physical_plan().await?;
         execute_stream(plan.clone(), ctx.task_ctx())?
