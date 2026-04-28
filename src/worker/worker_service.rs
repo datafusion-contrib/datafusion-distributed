@@ -222,10 +222,8 @@ impl WorkerService for Worker {
         // metrics after all partitions have finished or been dropped.
         let stream = futures::stream::once(async move {
             match metrics_rx.await {
-                Ok(metrics_collection) => Ok(WorkerToCoordinatorMsg {
-                    inner: Some(worker_to_coordinator_msg::Inner::MetricsCollection(
-                        metrics_collection,
-                    )),
+                Ok(task_metrics) => Ok(WorkerToCoordinatorMsg {
+                    inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
                 }),
                 Err(_) => Err(Status::internal(
                     "Metrics channel closed before metrics were sent",

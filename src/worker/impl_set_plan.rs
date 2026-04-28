@@ -3,7 +3,7 @@ use crate::config_extension_ext::set_distributed_option_extension_from_headers;
 use crate::protobuf::DistributedCodec;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
-use crate::worker::generated::worker::{MetricsCollection, SetPlanRequest};
+use crate::worker::generated::worker::{PreOrderTaskMetrics, SetPlanRequest};
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -34,7 +34,7 @@ pub struct TaskData {
     /// Sender half of the metrics channel. `impl_execute_task` takes this (via `Option::take`)
     /// once all partitions have finished or been dropped, sending the collected metrics back to
     /// the coordinator through the `CoordinatorChannel` side channel.
-    pub(super) metrics_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<MetricsCollection>>>>,
+    pub(super) metrics_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<PreOrderTaskMetrics>>>>,
 }
 
 impl TaskData {
@@ -57,7 +57,13 @@ impl Worker {
         &self,
         request: SetPlanRequest,
         grpc_headers: MetadataMap,
-    ) -> Result<(RemoteWorkUnitFeedTxs, oneshot::Receiver<MetricsCollection>), Status> {
+    ) -> Result<
+        (
+            RemoteWorkUnitFeedTxs,
+            oneshot::Receiver<PreOrderTaskMetrics>,
+        ),
+        Status,
+    > {
         let key = request.task_key.ok_or_else(missing("task_key"))?;
 
         let entry = self

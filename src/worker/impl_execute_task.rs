@@ -1,17 +1,17 @@
 use crate::DistributedConfig;
 use crate::common::{map_last_stream, on_drop_stream};
-use crate::metrics::TaskMetricsCollector;
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
-use crate::worker::generated::worker::{FlightAppMetadata, MetricsCollection, TaskMetrics};
+use crate::worker::generated::worker::{FlightAppMetadata, PreOrderTaskMetrics};
 use crate::worker::worker_service::Worker;
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 
+use crate::worker::generated::worker::ExecuteTaskRequest;
 use crate::worker::generated::worker::worker_service_server::WorkerService;
-use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
 use crate::worker::spawn_select_all::spawn_select_all;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
@@ -108,7 +108,6 @@ impl Worker {
                         .duration_since(UNIX_EPOCH)
                         .map(|duration| duration.as_nanos() as u64)
                         .unwrap_or(0),
-                    content: None,
                 };
 
                 if last_msg_in_stream {
@@ -123,9 +122,7 @@ impl Worker {
                         if send_metrics {
                             // Last message of the last partition. This is the moment to send
                             // the metrics back.
-                            let metrics_collection =
-                                collect_metrics_collection(key.clone(), plan.clone());
-                            send_metrics_collection_via_channel(&metrics_tx, metrics_collection);
+                            send_metrics_via_channel(&metrics_tx, &plan);
                         }
                     }
                     fully_finished.store(true, Ordering::SeqCst);
@@ -151,9 +148,7 @@ impl Worker {
                             entries.invalidate(&k).await;
                         });
                         if send_metrics {
-                            let metrics_collection =
-                                collect_metrics_collection(key_for_drop, plan_for_drop);
-                            send_metrics_collection_via_channel(&metrics_tx, metrics_collection);
+                            send_metrics_via_channel(&metrics_tx, &plan_for_drop);
                         }
                     }
                 }
@@ -215,11 +210,22 @@ fn missing(field: &'static str) -> impl FnOnce() -> Status {
     move || Status::invalid_argument(format!("Missing field '{field}'"))
 }
 
-/// Sends a pre-built [MetricsCollection] via the coordinator channel oneshot.
-fn send_metrics_collection_via_channel(
-    metrics_tx: &Arc<Mutex<Option<Sender<MetricsCollection>>>>,
-    metrics_collection: MetricsCollection,
+/// Collects metrics from the plan in pre-order traversal order and sends them via the
+/// coordinator channel oneshot.
+fn send_metrics_via_channel(
+    metrics_tx: &Arc<Mutex<Option<Sender<PreOrderTaskMetrics>>>>,
+    plan: &Arc<dyn ExecutionPlan>,
 ) {
+    let mut metrics = vec![];
+    let _ = plan.apply(|node| {
+        metrics.push(
+            node.metrics()
+                .and_then(|m| df_metrics_set_to_proto(&m).ok())
+                .unwrap_or_default(),
+        );
+        Ok(TreeNodeRecursion::Continue)
+    });
+
     let tx = {
         let mut guard = match metrics_tx.lock() {
             Ok(g) => g,
@@ -229,37 +235,7 @@ fn send_metrics_collection_via_channel(
     };
     let Some(tx) = tx else { return };
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
-    let _ = tx.send(metrics_collection);
-}
-
-/// Collects metrics from the plan into a [MetricsCollection] protobuf message.
-fn collect_metrics_collection(
-    task_key: TaskKey,
-    plan: Arc<dyn ExecutionPlan>,
-) -> MetricsCollection {
-    let result = match TaskMetricsCollector::new().collect(plan, None) {
-        Ok(r) => r,
-        Err(_) => return MetricsCollection { tasks: vec![] },
-    };
-
-    let proto_task_metrics: Vec<_> = result
-        .task_metrics
-        .iter()
-        .filter_map(|m| df_metrics_set_to_proto(m).ok())
-        .collect();
-
-    let mut input_task_metrics = result.input_task_metrics;
-    input_task_metrics.insert(task_key, proto_task_metrics);
-
-    let tasks = input_task_metrics
-        .into_iter()
-        .map(|(k, metrics)| TaskMetrics {
-            task_key: Some(k),
-            metrics,
-        })
-        .collect();
-
-    MetricsCollection { tasks }
+    let _ = tx.send(PreOrderTaskMetrics { metrics });
 }
 
 /// Garbage collects values sub-arrays.

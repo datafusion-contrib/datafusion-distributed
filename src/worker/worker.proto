@@ -29,8 +29,16 @@ message WorkerToCoordinatorMsg {
     // Sends the metrics collected during task execution back to the coordinator.
     // This is sent after all partitions of a task have finished (or been dropped),
     // ensuring metrics are never lost due to early stream termination.
-    MetricsCollection metrics_collection = 1;
+    // metrics[i] is the set of metrics for plan node i in pre-order traversal order.
+    PreOrderTaskMetrics task_metrics = 1;
   }
+}
+
+// Metrics for a single task's plan nodes in pre-order traversal order.
+// The TaskKey is implicit — it is determined by the SetPlanRequest that
+// opened this coordinator channel connection.
+message PreOrderTaskMetrics {
+  repeated MetricsSet metrics = 1;
 }
 
 message GetWorkerInfoRequest {}
@@ -123,26 +131,6 @@ message FlightAppMetadata {
   uint64 partition = 1;
   // Unix timestamp in nanoseconds at which this message was created.
   uint64 created_timestamp_unix_nanos = 2;
-  // content should always be Some, but it is optional due to protobuf rules.
-  oneof content {
-    MetricsCollection metrics_collection = 10;
-  }
-}
-
-// A collection of metrics for a set of tasks in an ExecutionPlan. Each
-// entry should have a distinct TaskKey.
-message MetricsCollection {
-  repeated TaskMetrics tasks = 1;
-}
-
-// TaskMetrics represents the metrics for a single task.
-message TaskMetrics {
-  // task_key uniquely identifies this task.
-  // This field is always present. It's marked optional due to protobuf rules.
-  TaskKey task_key = 1;
-  // metrics[i] is the set of metrics for plan node i where plan nodes are
-  // in pre-order traversal order.
-  repeated MetricsSet metrics = 2;
 }
 
 // --- Metric serialization ---
