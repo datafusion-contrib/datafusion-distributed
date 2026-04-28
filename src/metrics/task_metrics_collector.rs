@@ -1,8 +1,5 @@
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::TaskKey;
-use dashmap::DashMap;
-use datafusion::common::HashMap;
+use crate::execution_plans::MetricsStore;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -26,7 +23,7 @@ pub struct MetricsCollectorResult {
     pub task_metrics: Vec<MetricsSet>,
     /// Metrics collected from all workers across all stages, keyed by [TaskKey].
     /// Sourced directly from [DistributedExec::task_metrics].
-    pub input_task_metrics: HashMap<TaskKey, Vec<pb::MetricsSet>>,
+    pub input_task_metrics: Option<Arc<MetricsStore>>,
 }
 
 impl TreeNodeRewriter for TaskMetricsCollector {
@@ -66,24 +63,14 @@ impl TaskMetricsCollector {
     pub fn collect(
         mut self,
         plan: Arc<dyn ExecutionPlan>,
-        task_metrics_map: Option<&DashMap<TaskKey, Vec<pb::MetricsSet>>>,
+        task_metrics_store: Option<Arc<MetricsStore>>,
     ) -> Result<MetricsCollectorResult, DataFusionError> {
-        let input_task_metrics = task_metrics_map.map(dashmap_to_hashmap).unwrap_or_default();
-
         plan.rewrite(&mut self)?;
         Ok(MetricsCollectorResult {
             task_metrics: self.task_metrics,
-            input_task_metrics,
+            input_task_metrics: task_metrics_store,
         })
     }
-}
-
-fn dashmap_to_hashmap(
-    map: &DashMap<TaskKey, Vec<pb::MetricsSet>>,
-) -> HashMap<TaskKey, Vec<pb::MetricsSet>> {
-    map.iter()
-        .map(|e| (e.key().clone(), e.value().clone()))
-        .collect()
 }
 
 #[cfg(test)]
@@ -244,13 +231,20 @@ mod tests {
         let collector = TaskMetricsCollector::new();
 
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
+            .collect(
+                dist_exec.plan.clone(),
+                Some(Arc::clone(&dist_exec.task_metrics)),
+            )
             .unwrap();
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
             // Get the collected metrics for this task.
-            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
+            let actual_metrics = result
+                .input_task_metrics
+                .as_ref()
+                .and_then(|s| s.map.get(&expected_task_key))
+                .unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
@@ -365,13 +359,17 @@ mod tests {
 
         let collector = TaskMetricsCollector::new();
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
+            .collect(
+                dist_exec.plan.clone(),
+                Some(Arc::clone(&dist_exec.task_metrics)),
+            )
             .unwrap();
 
         for expected_task_key in &expected_task_keys {
             let actual_metrics = result
                 .input_task_metrics
-                .get(expected_task_key)
+                .as_ref()
+                .and_then(|s| s.map.get(expected_task_key))
                 .unwrap_or_else(|| {
                     panic!(
                         "Missing metrics for task key {expected_task_key:?}. \
@@ -421,12 +419,19 @@ mod tests {
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
         let collector = TaskMetricsCollector::new();
         let result = collector
-            .collect(dist_exec.plan.clone(), Some(&dist_exec.task_metrics.map))
+            .collect(
+                dist_exec.plan.clone(),
+                Some(Arc::clone(&dist_exec.task_metrics)),
+            )
             .unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_task_key in expected_task_keys {
-            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
+            let actual_metrics = result
+                .input_task_metrics
+                .as_ref()
+                .and_then(|s| s.map.get(&expected_task_key))
+                .unwrap();
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.as_ref().unwrap();
 

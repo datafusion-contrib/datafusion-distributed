@@ -75,6 +75,17 @@ impl MetricsStore {
         // Notify waiters that a new entry was inserted.
         self.count_tx.send_modify(|n| *n += 1);
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries(
+        entries: impl IntoIterator<Item = (TaskKey, Vec<pb::MetricsSet>)>,
+    ) -> Self {
+        let (store, _) = Self::new();
+        for (key, metrics) in entries {
+            store.map.insert(key, metrics);
+        }
+        store
+    }
 }
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
