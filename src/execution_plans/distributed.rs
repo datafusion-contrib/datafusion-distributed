@@ -117,18 +117,36 @@ impl DistributedExec {
     ///
     /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
     pub async fn wait_for_metrics(&self) {
-        let Ok(prepared) = self.prepared_plan() else {
-            return;
-        };
-        let mut expected_count = 0usize;
-        let _ = prepared.apply(|plan| {
+        let mut expected_keys: Vec<TaskKey> = Vec::new();
+        let _ = self.plan.apply(|plan| {
             if let Some(boundary) = plan.as_network_boundary() {
-                expected_count += boundary.input_stage().tasks.len();
+                let stage = boundary.input_stage();
+                for i in 0..stage.tasks.len() {
+                    expected_keys.push(TaskKey {
+                        query_id: stage.query_id.as_bytes().to_vec(),
+                        stage_id: stage.num as u64,
+                        task_number: i as u64,
+                    });
+                }
             }
             Ok(TreeNodeRecursion::Continue)
         });
+        if expected_keys.is_empty() {
+            return;
+        }
         let mut count_rx = self.metrics_count_rx.clone();
-        let _ = count_rx.wait_for(|&n| n >= expected_count).await;
+        let task_metrics = Arc::clone(&self.task_metrics);
+        // We cannot rely on the count alone because some tasks might fail and not report metrics,
+        // so we need to check the keys explicitly. On the other hand, waiting for keys is not enough
+        // because some tasks might report metrics multiple times in case of retries, so we also need
+        // to wait for the count to be at least the number of expected keys.
+        let _ = count_rx
+            .wait_for(|_| {
+                expected_keys
+                    .iter()
+                    .all(|key| task_metrics.map.contains_key(key))
+            })
+            .await;
     }
 
     /// Returns the plan which is lazily prepared on execute() and actually gets executed.
