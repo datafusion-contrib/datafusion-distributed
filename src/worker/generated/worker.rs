@@ -19,9 +19,22 @@ pub mod coordinator_to_worker_msg {
         WorkUnit(super::WorkUnit),
     }
 }
-/// For now, there are no messages that can flow back from worker to coordinator.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WorkerToCoordinatorMsg {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkerToCoordinatorMsg {
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1")]
+    pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
+}
+/// Nested message and enum types in `WorkerToCoordinatorMsg`.
+pub mod worker_to_coordinator_msg {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Inner {
+        /// Sends the metrics collected during task execution back to the coordinator.
+        /// This is sent after all partitions of a task have finished (or been dropped),
+        /// ensuring metrics are never lost due to early stream termination.
+        #[prost(message, tag = "1")]
+        MetricsCollection(super::MetricsCollection),
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -2,6 +2,7 @@ use crate::common::deserialize_uuid;
 use crate::worker::WorkerSessionBuilder;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
+use crate::worker::generated::worker::worker_to_coordinator_msg;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
 };
@@ -196,7 +197,7 @@ impl WorkerService for Worker {
                 "First Coordinator message must be SetPlanRequest",
             ));
         };
-        let work_unit_senders = self.impl_set_plan(request, grpc_headers).await?;
+        let (work_unit_senders, metrics_rx) = self.impl_set_plan(request, grpc_headers).await?;
 
         // Continue reading remaining messages (work unit feed data) in the background.
         tokio::spawn(async move {
@@ -216,7 +217,22 @@ impl WorkerService for Worker {
             }
         });
 
-        Ok(Response::new(futures::stream::empty().boxed()))
+        // Stream back the metrics once the task finishes executing.
+        // The oneshot receiver resolves when impl_execute_task sends the collected
+        // metrics after all partitions have finished or been dropped.
+        let stream = futures::stream::once(async move {
+            match metrics_rx.await {
+                Ok(metrics_collection) => Ok(WorkerToCoordinatorMsg {
+                    inner: Some(worker_to_coordinator_msg::Inner::MetricsCollection(
+                        metrics_collection,
+                    )),
+                }),
+                Err(_) => Err(Status::internal(
+                    "Metrics channel closed before metrics were sent",
+                )),
+            }
+        });
+        Ok(Response::new(stream.boxed()))
     }
 
     type ExecuteTaskStream = BoxStream<FlightData>;

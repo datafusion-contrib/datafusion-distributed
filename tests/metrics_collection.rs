@@ -17,7 +17,7 @@ mod tests {
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
         NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
-        rewrite_distributed_plan_with_metrics,
+        rewrite_distributed_plan_with_metrics, test_utils::metrics::wait_for_all_metrics,
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
@@ -36,7 +36,7 @@ mod tests {
 
         let s_ctx = SessionContext::default();
         let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
-        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
@@ -84,7 +84,7 @@ mod tests {
 
         let s_ctx = SessionContext::default();
         let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
-        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
@@ -123,7 +123,7 @@ mod tests {
         let s_ctx = SessionContext::default();
         let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
 
-        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
@@ -151,7 +151,7 @@ mod tests {
 
         let s_ctx = SessionContext::default();
         let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
-        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
@@ -207,7 +207,7 @@ mod tests {
 
         let s_ctx = SessionContext::default();
         let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
-        d_physical = rewrite_distributed_plan_with_metrics(d_physical.clone(), format)?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
 
         let display =
             DisplayableExecutionPlan::with_metrics(d_physical.children().swap_remove(0).as_ref())
@@ -271,6 +271,15 @@ mod tests {
             let other_metric = node_metrics::<T>(other, name, index);
             assert_eq!(one_metric, other_metric);
         }
+    }
+
+    /// Waits for all worker metrics to arrive then rewrites the plan with them.
+    async fn rewrite_with_metrics(
+        plan: Arc<dyn ExecutionPlan>,
+        format: DistributedMetricsFormat,
+    ) -> Arc<dyn ExecutionPlan> {
+        wait_for_all_metrics(&plan).await;
+        rewrite_distributed_plan_with_metrics(plan, format).unwrap()
     }
 
     async fn execute(
