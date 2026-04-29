@@ -19,9 +19,31 @@ pub mod coordinator_to_worker_msg {
         WorkUnit(super::WorkUnit),
     }
 }
-/// For now, there are no messages that can flow back from worker to coordinator.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WorkerToCoordinatorMsg {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkerToCoordinatorMsg {
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1")]
+    pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
+}
+/// Nested message and enum types in `WorkerToCoordinatorMsg`.
+pub mod worker_to_coordinator_msg {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Inner {
+        /// Sends the metrics collected during task execution back to the coordinator.
+        /// This is sent after all partitions of a task have finished (or been dropped),
+        /// ensuring metrics are never lost due to early stream termination.
+        /// metrics\[i\] is the set of metrics for plan node i in pre-order traversal order.
+        #[prost(message, tag = "1")]
+        TaskMetrics(super::PreOrderTaskMetrics),
+    }
+}
+/// Metrics for a single task's plan nodes in pre-order traversal order.
+/// The TaskKey is implicit — it is determined by the SetPlanRequest that
+/// opened this coordinator channel connection.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PreOrderTaskMetrics {
+    #[prost(message, repeated, tag = "1")]
+    pub metrics: ::prost::alloc::vec::Vec<MetricsSet>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -66,7 +88,7 @@ pub struct WorkUnit {
     /// Identifier of the node to which this work unit feed belongs to.
     #[prost(bytes = "vec", tag = "1")]
     pub id: ::prost::alloc::vec::Vec<u8>,
-    /// The partition index withing the node to which the work unit feed belongs to.
+    /// The partition index within the node to which the work unit feed belongs to.
     #[prost(uint64, tag = "2")]
     pub partition: u64,
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
@@ -99,44 +121,13 @@ pub struct TaskKey {
     pub task_number: u64,
 }
 /// FlightAppMetadata represents all types of app_metadata which we use in the distributed execution.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FlightAppMetadata {
     #[prost(uint64, tag = "1")]
     pub partition: u64,
     /// Unix timestamp in nanoseconds at which this message was created.
     #[prost(uint64, tag = "2")]
     pub created_timestamp_unix_nanos: u64,
-    /// content should always be Some, but it is optional due to protobuf rules.
-    #[prost(oneof = "flight_app_metadata::Content", tags = "10")]
-    pub content: ::core::option::Option<flight_app_metadata::Content>,
-}
-/// Nested message and enum types in `FlightAppMetadata`.
-pub mod flight_app_metadata {
-    /// content should always be Some, but it is optional due to protobuf rules.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Content {
-        #[prost(message, tag = "10")]
-        MetricsCollection(super::MetricsCollection),
-    }
-}
-/// A collection of metrics for a set of tasks in an ExecutionPlan. Each
-/// entry should have a distinct TaskKey.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MetricsCollection {
-    #[prost(message, repeated, tag = "1")]
-    pub tasks: ::prost::alloc::vec::Vec<TaskMetrics>,
-}
-/// TaskMetrics represents the metrics for a single task.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TaskMetrics {
-    /// task_key uniquely identifies this task.
-    /// This field is always present. It's marked optional due to protobuf rules.
-    #[prost(message, optional, tag = "1")]
-    pub task_key: ::core::option::Option<TaskKey>,
-    /// metrics\[i\] is the set of metrics for plan node i where plan nodes are
-    /// in pre-order traversal order.
-    #[prost(message, repeated, tag = "2")]
-    pub metrics: ::prost::alloc::vec::Vec<MetricsSet>,
 }
 /// A Label mirrors datafusion::physical_plan::metrics::Label.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

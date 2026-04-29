@@ -1,15 +1,11 @@
 use crate::common::serialize_uuid;
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::execution_plans::DistributedExec;
-use crate::execution_plans::MetricsWrapperExec;
+use crate::execution_plans::{DistributedExec, MetricsStore, MetricsWrapperExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::metrics::MetricsCollectorResult;
-use crate::metrics::TaskMetricsCollector;
+use crate::metrics::collect_plan_metrics;
 use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::Stage;
-use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::TaskKey;
-use datafusion::common::HashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -41,7 +37,9 @@ impl DistributedMetricsFormat {
 
 /// Rewrites a distributed plan with metrics. Does nothing if the root node is not a [DistributedExec].
 /// Returns an error if the distributed plan was not executed.
-pub fn rewrite_distributed_plan_with_metrics(
+///
+/// Waits for all worker task metrics to arrive before rewriting, so the result is always complete.
+pub async fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -49,11 +47,15 @@ pub fn rewrite_distributed_plan_with_metrics(
         return Ok(plan);
     };
 
-    // Collect metrics from the DistributedExec's prepared plan.
-    let MetricsCollectorResult {
-        task_metrics,       // Metrics for the DistributedExec plan
-        input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new().collect(distributed_exec.prepared_plan()?)?;
+    // Check that the plan was executed before waiting — if not, prepared_plan() returns an
+    // error immediately rather than waiting forever for metrics that will never arrive.
+    let prepared = distributed_exec.prepared_plan()?;
+
+    distributed_exec.wait_for_metrics().await;
+
+    let metrics_collection = Arc::clone(&distributed_exec.task_metrics);
+
+    let task_metrics = collect_plan_metrics(&prepared)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
@@ -63,8 +65,6 @@ pub fn rewrite_distributed_plan_with_metrics(
     )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
 
-    let metrics_collection = Arc::new(input_task_metrics);
-
     let transformed = plan.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
         if let Some(network_boundary) = plan.as_network_boundary() {
@@ -72,7 +72,7 @@ pub fn rewrite_distributed_plan_with_metrics(
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
             let plan_with_metrics =
-                stage_metrics_rewriter(stage, metrics_collection.clone(), format)?;
+                stage_metrics_rewriter(stage, Arc::clone(&metrics_collection), format)?;
             let network_boundary = network_boundary.with_input_stage(Stage::new(
                 stage.query_id,
                 stage.num,
@@ -204,7 +204,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &Stage,
-    metrics_collection: Arc<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    metrics_collection: Arc<MetricsStore>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
@@ -272,6 +272,7 @@ pub fn stage_metrics_rewriter(
 #[cfg(test)]
 mod tests {
     use crate::Stage;
+    use crate::execution_plans::MetricsStore;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
     use crate::metrics::task_metrics_rewriter::{
@@ -289,7 +290,6 @@ mod tests {
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
-    use datafusion::common::HashMap;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::metrics::{Count, Label, Metric, MetricValue, MetricsSet};
     use test_case::test_case;
@@ -436,24 +436,23 @@ mod tests {
         let num_metrics_per_task_per_node = 4;
 
         // Generate metrics for each task and store them in the map.
-        let mut metrics_collection = HashMap::new();
-        for task_id in 0..stage.tasks.len() {
-            let task_key = TaskKey {
-                query_id: serialize_uuid(&stage.query_id),
-                stage_id: stage.num as u64,
-                task_number: task_id as u64,
-            };
-            let metrics = (0..count_plan_nodes_up_to_network_boundary(&plan))
-                .map(|node_id| {
-                    make_test_metrics_set_proto_from_seed(
-                        (node_id * task_id) as u64,
-                        num_metrics_per_task_per_node,
-                    )
-                })
-                .collect::<Vec<pb::MetricsSet>>();
-
-            metrics_collection.insert(task_key, metrics);
-        }
+        let metrics_collection =
+            MetricsStore::from_entries((0..stage.tasks.len()).map(|task_id| {
+                let task_key = TaskKey {
+                    query_id: serialize_uuid(&stage.query_id),
+                    stage_id: stage.num as u64,
+                    task_number: task_id as u64,
+                };
+                let metrics = (0..count_plan_nodes_up_to_network_boundary(&plan))
+                    .map(|node_id| {
+                        make_test_metrics_set_proto_from_seed(
+                            (node_id * task_id) as u64,
+                            num_metrics_per_task_per_node,
+                        )
+                    })
+                    .collect::<Vec<pb::MetricsSet>>();
+                (task_key, metrics)
+            }));
         let metrics_collection = Arc::new(metrics_collection);
 
         // Rewrite the plan.
@@ -555,6 +554,7 @@ mod tests {
         assert!(plan.as_any().is::<DistributedExec>());
         assert!(
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .await
                 .is_err()
         );
     }
@@ -585,6 +585,7 @@ mod tests {
         assert!(plan.as_any().is::<DistributedExec>());
         let rewritten_plan =
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
+                .await
                 .unwrap();
         assert_metrics_present_in_plan(&rewritten_plan);
     }
