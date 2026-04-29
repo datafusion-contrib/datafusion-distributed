@@ -2,8 +2,7 @@ use crate::common::serialize_uuid;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::{DistributedExec, MetricsStore, MetricsWrapperExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::metrics::MetricsCollectorResult;
-use crate::metrics::TaskMetricsCollector;
+use crate::metrics::collect_plan_metrics;
 use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::Stage;
 use crate::worker::generated::worker::TaskKey;
@@ -54,12 +53,9 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
     distributed_exec.wait_for_metrics().await;
 
-    // Collect metrics from the DistributedExec's prepared plan.
-    let MetricsCollectorResult {
-        task_metrics,       // Metrics for the DistributedExec plan
-        input_task_metrics, // Metrics for all child stages / tasks.
-    } = TaskMetricsCollector::new()
-        .collect(prepared, Some(Arc::clone(&distributed_exec.task_metrics)))?;
+    let metrics_collection = Some(Arc::clone(&distributed_exec.task_metrics));
+
+    let task_metrics = collect_plan_metrics(&prepared)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
@@ -68,8 +64,6 @@ pub async fn rewrite_distributed_plan_with_metrics(
         task_metrics,
     )?;
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
-
-    let metrics_collection = input_task_metrics;
 
     let transformed = plan.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
