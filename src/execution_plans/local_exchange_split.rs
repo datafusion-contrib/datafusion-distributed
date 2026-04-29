@@ -1,5 +1,5 @@
 use crate::common::require_one_child;
-use datafusion::arrow::array::PrimitiveArray;
+use datafusion::arrow::array::{ArrayRef, PrimitiveArray};
 use datafusion::arrow::compute::take_arrays;
 use datafusion::arrow::datatypes::{SchemaRef, UInt32Type};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
@@ -31,6 +31,26 @@ type SplitReceiver = Receiver<Result<RecordBatch, SharedError>>;
 
 const SPLIT_CHANNEL_CAPACITY: usize = 2;
 
+/// Local post-shuffle fanout operator.
+///
+/// [LocalExchangeSplitExec] refines each input partition into `local_partition_count` output
+/// partitions on the same task. It is intended for post-shuffle consumers, such as final
+/// partitioned aggregates and partitioned joins, when a [crate::NetworkShuffleExec] has already
+/// assigned global ownership but the consumer needs more local partitions to use available CPU
+/// parallelism.
+///
+/// This is not a general replacement for DataFusion's
+/// [RepartitionExec](datafusion::physical_plan::repartition::RepartitionExec). It preserves the
+/// upstream task's ownership and only redistributes rows among local output partitions.
+///
+/// ```text
+/// TODO diagram: one owned shuffle partition -> LocalExchangeSplitExec -> several local output
+/// partitions on the same consumer task.
+/// ```
+///
+/// Consumers must eventually execute every output partition for a given input partition. The
+/// splitter task uses bounded per-output channels, so inserting it below a consumer that may leave
+/// sibling output partitions unpolled can block progress for the whole input partition.
 #[derive(Debug)]
 pub struct LocalExchangeSplitExec {
     input: Arc<dyn ExecutionPlan>,
@@ -170,32 +190,31 @@ impl LocalExchangeSplitExec {
             let split_metrics = split_metrics.clone();
 
             async move {
+                let hash_expr_count = hash_exprs.len();
                 let mut splitter = Splitter {
                     hash_exprs,
                     base_partition_count,
                     local_partition_count,
                     schema,
                     metrics: split_metrics,
+                    evaluated: Vec::with_capacity(hash_expr_count),
                     hashes: Vec::new(),
                     indices: (0..local_partition_count).map(|_| Vec::new()).collect(),
-                    output_batches: (0..local_partition_count).map(|_| None).collect(),
+                    output_batches: Vec::with_capacity(local_partition_count),
                 };
                 while let Some(next_batch) = input.next().await {
                     match next_batch {
                         Ok(batch) => match splitter.split_batch(batch) {
-                            Ok(split_batches) => {
-                                for (partition, maybe_batch) in
-                                    split_batches.into_iter().enumerate()
-                                {
-                                    if let Some(batch) = maybe_batch {
-                                        let Some(sender) = &senders[partition] else {
-                                            continue;
-                                        };
-                                        if sender.send(Ok(batch)).await.is_err() {
-                                            senders[partition] = None;
-                                        }
+                            Ok(mut split_batches) => {
+                                for (partition, batch) in split_batches.drain(..) {
+                                    let Some(sender) = &senders[partition] else {
+                                        continue;
+                                    };
+                                    if sender.send(Ok(batch)).await.is_err() {
+                                        senders[partition] = None;
                                     }
                                 }
+                                splitter.reuse_output_buffer(split_batches);
                                 if senders.iter().all(|sender| sender.is_none()) {
                                     return;
                                 }
@@ -236,27 +255,28 @@ struct Splitter {
     local_partition_count: usize,
     schema: SchemaRef,
     metrics: SplitMetrics,
+    evaluated: Vec<ArrayRef>,
     hashes: Vec<u64>,
     indices: Vec<Vec<u32>>,
-    output_batches: Vec<Option<RecordBatch>>,
+    output_batches: Vec<(usize, RecordBatch)>,
 }
 
 impl Splitter {
-    fn split_batch(&mut self, batch: RecordBatch) -> Result<Vec<Option<RecordBatch>>> {
+    fn split_batch(&mut self, batch: RecordBatch) -> Result<Vec<(usize, RecordBatch)>> {
         self.metrics.input_batches.add(1);
         self.metrics.input_rows.add(batch.num_rows());
 
         let hash_start = Instant::now();
-        let evaluated = self
-            .hash_exprs
-            .iter()
-            .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
-            .collect::<Result<Vec<_>>>()?;
+        self.evaluated.clear();
+        for expr in &self.hash_exprs {
+            self.evaluated
+                .push(expr.evaluate(&batch)?.into_array(batch.num_rows())?);
+        }
 
         self.hashes.clear();
         self.hashes.resize(batch.num_rows(), 0);
         create_hashes(
-            &evaluated,
+            &self.evaluated,
             &REPARTITION_RANDOM_STATE.random_state(),
             &mut self.hashes,
         )?;
@@ -266,9 +286,10 @@ impl Splitter {
             rows.clear();
         }
 
+        let base_partition_count = self.base_partition_count as u64;
+        let local_partition_count = self.local_partition_count as u64;
         for (row_idx, hash) in self.hashes.iter().copied().enumerate() {
-            let local_partition = ((hash / self.base_partition_count as u64)
-                % self.local_partition_count as u64) as usize;
+            let local_partition = ((hash / base_partition_count) % local_partition_count) as usize;
             self.indices[local_partition].push(row_idx as u32);
         }
 
@@ -276,9 +297,7 @@ impl Splitter {
         let mut non_empty_partitions = 0usize;
         let mut output_batches = 0usize;
 
-        for output in &mut self.output_batches {
-            *output = None;
-        }
+        self.output_batches.clear();
 
         for (partition, rows) in self.indices.iter_mut().enumerate() {
             if rows.is_empty() {
@@ -310,7 +329,7 @@ impl Splitter {
 
                 output
             };
-            self.output_batches[partition] = Some(output);
+            self.output_batches.push((partition, output));
         }
 
         self.metrics
@@ -319,7 +338,12 @@ impl Splitter {
         self.metrics.output_batches.add(output_batches);
         self.metrics.batch_take_time.add_elapsed(take_start);
 
-        Ok(self.output_batches.clone())
+        Ok(std::mem::take(&mut self.output_batches))
+    }
+
+    fn reuse_output_buffer(&mut self, mut output_batches: Vec<(usize, RecordBatch)>) {
+        output_batches.clear();
+        self.output_batches = output_batches;
     }
 }
 
@@ -505,7 +529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_exchange_split_splits_rows_and_reuses_input_partition() -> Result<()> {
+    async fn splits_rows_once() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
         let input_batch = int32_batch(Arc::clone(&schema), &[0, 1, 2, 3, 4, 5, 6, 7])?;
         let execute_counts = Arc::new(vec![AtomicUsize::new(0)]);
@@ -548,7 +572,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_exchange_split_continues_after_sibling_consumer_drop() -> Result<()> {
+    async fn handles_dropped_sibling() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
         let input_batches = vec![
             int32_batch(Arc::clone(&schema), &[0, 1, 2, 3])?,
@@ -599,7 +623,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_exchange_split_rejects_duplicate_partition_consumption() -> Result<()> {
+    async fn rejects_duplicate_consumer() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
         let input = Arc::new(MockExec::new_partitioned(
             vec![vec![Ok(int32_batch(Arc::clone(&schema), &[1, 2, 3])?)]],
@@ -628,7 +652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_exchange_split_preserves_per_output_ordering() -> Result<()> {
+    async fn preserves_output_ordering() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
         let input_batches = vec![
             int32_batch(Arc::clone(&schema), &[0, 1, 2, 3])?,

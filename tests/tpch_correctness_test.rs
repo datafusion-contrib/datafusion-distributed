@@ -179,8 +179,7 @@ mod tests {
         } else {
             let df = ctx.sql(&sql).await?;
             let plan = df.create_physical_plan().await?;
-            let stream = execute_stream(plan.clone(), ctx.task_ctx())?;
-            stream
+            execute_stream(plan.clone(), ctx.task_ctx())?
         };
 
         let batches = stream.try_collect::<Vec<_>>().await?;
