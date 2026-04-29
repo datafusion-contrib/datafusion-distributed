@@ -53,7 +53,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
     distributed_exec.wait_for_metrics().await;
 
-    let metrics_collection = Some(Arc::clone(&distributed_exec.task_metrics));
+    let metrics_collection = Arc::clone(&distributed_exec.task_metrics);
 
     let task_metrics = collect_plan_metrics(&prepared)?;
 
@@ -72,7 +72,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
             // This transform is a bit inefficient because we traverse the plan nodes twice
             // For now, we are okay with trading off performance for simplicity.
             let plan_with_metrics =
-                stage_metrics_rewriter(stage, metrics_collection.clone(), format)?;
+                stage_metrics_rewriter(stage, Arc::clone(&metrics_collection), format)?;
             let network_boundary = network_boundary.with_input_stage(Stage::new(
                 stage.query_id,
                 stage.num,
@@ -204,7 +204,7 @@ pub fn rewrite_local_plan_with_metrics(
 /// Note: Metrics may be aggregated by name (ex. output_rows) automatically by various datafusion utils.
 pub fn stage_metrics_rewriter(
     stage: &Stage,
-    metrics_collection: Option<Arc<MetricsStore>>,
+    metrics_collection: Arc<MetricsStore>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut node_idx = 0;
@@ -223,7 +223,7 @@ pub fn stage_metrics_rewriter(
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
             };
-            match metrics_collection.as_ref().and_then(|s| s.map.get(&task_key)) {
+            match metrics_collection.map.get(&task_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
                         return internal_err!(
@@ -457,7 +457,7 @@ mod tests {
 
         // Rewrite the plan.
         let rewritten_plan =
-            stage_metrics_rewriter(&stage, Some(metrics_collection.clone()), format).unwrap();
+            stage_metrics_rewriter(&stage, metrics_collection.clone(), format).unwrap();
 
         // Collect metrics from the plan.
         let mut actual_metrics = vec![];
