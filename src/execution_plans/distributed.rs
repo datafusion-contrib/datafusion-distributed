@@ -16,7 +16,7 @@ use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
     DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
 };
-use dashmap::DashMap;
+use datafusion::common::HashMap;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -52,39 +52,35 @@ use url::Url;
 use uuid::Uuid;
 
 /// Stores the metrics collected from all worker tasks, and notifies waiters when new entries arrive.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetricsStore {
-    pub map: DashMap<TaskKey, Vec<pb::MetricsSet>>,
-    count_tx: watch::Sender<usize>,
+    tx: watch::Sender<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
+    rx: watch::Receiver<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
 }
 
 impl MetricsStore {
-    fn new() -> (Self, watch::Receiver<usize>) {
-        let (count_tx, count_rx) = watch::channel(0);
-        (
-            Self {
-                map: DashMap::new(),
-                count_tx,
-            },
-            count_rx,
-        )
+    fn new() -> Self {
+        let (tx, rx) = watch::channel(HashMap::new());
+        Self { tx, rx }
     }
 
     pub fn insert(&self, key: TaskKey, metrics: Vec<pb::MetricsSet>) {
-        self.map.insert(key, metrics);
-        // Notify waiters that a new entry was inserted.
-        self.count_tx.send_modify(|n| *n += 1);
+        self.tx.send_modify(|map| {
+            map.insert(key, metrics);
+        });
+    }
+
+    pub fn get(&self, key: &TaskKey) -> Option<Vec<pb::MetricsSet>> {
+        self.rx.borrow().get(key).cloned()
     }
 
     #[cfg(test)]
     pub(crate) fn from_entries(
         entries: impl IntoIterator<Item = (TaskKey, Vec<pb::MetricsSet>)>,
     ) -> Self {
-        let (store, _) = Self::new();
-        for (key, metrics) in entries {
-            store.map.insert(key, metrics);
-        }
-        store
+        let map: HashMap<_, _> = entries.into_iter().collect();
+        let (tx, rx) = watch::channel(map);
+        Self { tx, rx }
     }
 }
 
@@ -100,7 +96,6 @@ pub struct DistributedExec {
     pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
     pub task_metrics: Arc<MetricsStore>,
-    metrics_count_rx: watch::Receiver<usize>,
 }
 
 struct PreparedPlan {
@@ -110,13 +105,11 @@ struct PreparedPlan {
 
 impl DistributedExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        let (store, count_rx) = MetricsStore::new();
         Self {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
-            task_metrics: Arc::new(store),
-            metrics_count_rx: count_rx,
+            task_metrics: Arc::new(MetricsStore::new()),
         }
     }
 
@@ -145,18 +138,9 @@ impl DistributedExec {
         if expected_keys.is_empty() {
             return;
         }
-        let mut count_rx = self.metrics_count_rx.clone();
-        let task_metrics = Arc::clone(&self.task_metrics);
-        // We cannot rely on the count alone because some tasks might fail and not report metrics,
-        // so we need to check the keys explicitly. On the other hand, waiting for keys is not enough
-        // because some tasks might report metrics multiple times in case of retries, so we also need
-        // to wait for the count to be at least the number of expected keys.
-        let _ = count_rx
-            .wait_for(|_| {
-                expected_keys
-                    .iter()
-                    .all(|key| task_metrics.map.contains_key(key))
-            })
+        let mut rx = self.task_metrics.rx.clone();
+        let _ = rx
+            .wait_for(|map| expected_keys.iter().all(|key| map.contains_key(key)))
             .await;
     }
 
@@ -278,7 +262,6 @@ impl ExecutionPlan for DistributedExec {
             prepared_plan: self.prepared_plan.clone(),
             metrics: self.metrics.clone(),
             task_metrics: Arc::clone(&self.task_metrics),
-            metrics_count_rx: self.metrics_count_rx.clone(),
         }))
     }
 

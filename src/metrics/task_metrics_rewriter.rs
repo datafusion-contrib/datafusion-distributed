@@ -223,7 +223,7 @@ pub fn stage_metrics_rewriter(
                 stage_id: stage.num as u64,
                 task_number: task_id as u64,
             };
-            match metrics_collection.map.get(&task_key) {
+            match metrics_collection.get(&task_key) {
                 Some(task_metrics) => {
                     if node_idx >= task_metrics.len() {
                         return internal_err!(
@@ -478,7 +478,6 @@ mod tests {
                 .enumerate()
             {
                 let expected_task_node_metrics = metrics_collection
-                    .map
                     .get(&TaskKey {
                         query_id: serialize_uuid(&stage.query_id),
                         stage_id: stage.num as u64,

@@ -175,7 +175,7 @@ mod tests {
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
-            let actual_metrics = dist_exec.task_metrics.map.get(&expected_task_key).unwrap();
+            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
@@ -291,7 +291,6 @@ mod tests {
         for expected_task_key in &expected_task_keys {
             let actual_metrics = dist_exec
                 .task_metrics
-                .map
                 .get(expected_task_key)
                 .unwrap_or_else(|| {
                     panic!(
@@ -343,7 +342,7 @@ mod tests {
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_task_key in expected_task_keys {
-            let actual_metrics = dist_exec.task_metrics.map.get(&expected_task_key).unwrap();
+            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.plan.as_ref().unwrap();
 
