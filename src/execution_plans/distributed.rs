@@ -207,12 +207,8 @@ impl DistributedExec {
                 });
                 // Spawns the task that feeds this subplan to this worker. There will be as
                 // many as this spawned tasks as workers.
-                let (tx, worker_rx, task_key) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
-                spawner.metrics_collection_task(
-                    task_key,
-                    worker_rx,
-                    Arc::clone(&self.task_metrics),
-                );
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
@@ -379,11 +375,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
-    ) -> Result<(
-        UnboundedSender<CoordinatorToWorkerMsg>,
-        WorkerResponseRx,
-        TaskKey,
-    )> {
+    ) -> Result<(UnboundedSender<CoordinatorToWorkerMsg>, WorkerResponseRx)> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
         /// feeds, keeping into account that some of them might be executed within a
@@ -488,17 +480,22 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             Ok::<_, DataFusionError>(())
         });
 
-        Ok((coordinator_to_worker_tx, worker_to_coordinator_rx, task_key))
+        Ok((coordinator_to_worker_tx, worker_to_coordinator_rx))
     }
 
     /// Receives worker-to-coordinator messages and inserts any collected metrics into the store.
     /// Runs in a detached spawn so it is not cancelled when the output stream is dropped early.
     fn metrics_collection_task(
         &mut self,
-        task_key: TaskKey,
+        task_i: usize,
         mut worker_to_coordinator_rx: WorkerResponseRx,
         task_metrics_collection: Arc<MetricsStore>,
     ) {
+        let task_key = TaskKey {
+            query_id: serialize_uuid(&self.query_id),
+            stage_id: self.stage_id as u64,
+            task_number: task_i as u64,
+        };
         tokio::spawn(async move {
             while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
                 let Some(worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics)) =
