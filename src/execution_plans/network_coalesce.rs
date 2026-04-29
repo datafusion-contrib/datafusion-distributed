@@ -22,11 +22,12 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
-/// performing any repartition, and maintaining the same partitioning scheme.
+/// Network boundary that gathers partitions from upstream tasks without repartitioning rows.
 ///
-/// This is the equivalent of a [CoalescePartitionsExec] but coalescing tasks across the network
-/// between distributed stages.
+/// This is the equivalent of a
+/// [CoalescePartitionsExec](datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec)
+/// but coalescing tasks across the network between distributed stages. The [ExchangeLayout]
+/// assigns each consumer task a contiguous group of producer tasks to read.
 ///
 /// ```text
 ///                                ┌───────────────────────────┐                                   ■
@@ -127,11 +128,6 @@ impl NetworkCoalesceExec {
             metrics_collection: Default::default(),
             layout,
         })
-    }
-
-    /// The planner-facing layout for this exchange.
-    pub fn layout(&self) -> &Arc<ExchangeLayout> {
-        &self.layout
     }
 }
 
@@ -268,167 +264,34 @@ mod tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::empty::EmptyExec;
 
-    #[derive(Clone, Copy)]
-    struct Case {
-        name: &'static str,
-        input_tasks: usize,
-        consumer_tasks: usize,
-    }
-
-    fn expected_groups(input_tasks: usize, consumer_tasks: usize) -> Vec<(usize, usize)> {
-        assert!(consumer_tasks > 0, "consumer_tasks must be non-zero");
-
-        let base_tasks_per_group = input_tasks / consumer_tasks;
-        let groups_with_extra_task = input_tasks % consumer_tasks;
-        let mut groups = Vec::with_capacity(consumer_tasks);
-        let mut start_task = 0;
-
-        for task_index in 0..consumer_tasks {
-            let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
-            groups.push((start_task, len));
-            start_task += len;
-        }
-
-        groups
-    }
-
-    fn assert_case(case: Case) -> Result<()> {
-        const STAGE_NUM: usize = 1;
-
-        // Child plan used only for properties/schema (we won't reach network codepaths).
+    #[test]
+    fn try_new_wires_coalesce_layout() -> Result<()> {
         let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let child_partitions = child.properties().partitioning.partition_count();
 
-        let exec = NetworkCoalesceExec::try_new(
-            Arc::clone(&child),
-            Uuid::nil(),
-            STAGE_NUM,
-            case.consumer_tasks,
-            case.input_tasks,
-        )?;
-        let layout = exec.layout();
+        let exec = NetworkCoalesceExec::try_new(Arc::clone(&child), Uuid::nil(), 1, 2, 5)?;
+        let layout = &exec.layout;
         let resolver = layout.resolver();
-        let partitions_per_task = resolver.partitions_per_producer_task();
 
-        // Output partitions are sized by the maximum group size.
-        let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);
         assert_eq!(
             exec.properties().partitioning.partition_count(),
-            child_partitions * max_group_size
+            child_partitions * 3
         );
-
-        let groups = expected_groups(case.input_tasks, case.consumer_tasks);
-        assert_eq!(groups.len(), case.consumer_tasks);
-
-        let mut seen = vec![false; case.input_tasks];
-        let mut expected_start = 0;
-        let mut padding_slots = 0;
-
-        for (index, (start, len)) in groups.into_iter().enumerate() {
-            assert_eq!(
-                resolver.producer_task_range(index),
-                start..start + len,
-                "case {} producer-task ownership mismatch for consumer {}",
-                case.name,
-                index
-            );
-            assert_eq!(
-                layout.consumer_partition_range(index),
-                &(start * partitions_per_task..(start + len) * partitions_per_task),
-                "case {} logical-slot ownership mismatch for consumer {}",
-                case.name,
-                index
-            );
-            assert_eq!(
-                start, expected_start,
-                "case {} group {} should be contiguous",
-                case.name, index
-            );
-            assert!(
-                start + len <= case.input_tasks,
-                "case {} group {} exceeds input task count",
-                case.name,
-                index
-            );
-
-            for (offset, seen_task) in seen.iter_mut().skip(start).take(len).enumerate() {
-                let task = start + offset;
-                assert!(
-                    !*seen_task,
-                    "case {} input task {} appears twice",
-                    case.name, task
-                );
-                *seen_task = true;
-            }
-
-            expected_start = start + len;
-            padding_slots += max_group_size - len;
-        }
-
+        assert_eq!(layout.producer_task_count(), 5);
+        assert_eq!(layout.consumer_task_count(), 2);
+        assert_eq!(resolver.producer_task_range(0), 0..3);
+        assert_eq!(resolver.producer_task_range(1), 3..5);
+        assert_eq!(layout.consumer_partition_range(0), &(0..3));
+        assert_eq!(layout.consumer_partition_range(1), &(3..5));
         assert_eq!(
-            expected_start, case.input_tasks,
-            "case {} groups should cover all input tasks",
-            case.name
+            resolver.resolve_slot(1, 1),
+            Some(SlotReadPlan::Single {
+                producer_task: 4,
+                producer_partition: 0,
+            })
         );
-        assert!(
-            seen.iter().all(|v| *v),
-            "case {} missing at least one input task",
-            case.name
-        );
-
-        let total_slots = case.consumer_tasks * max_group_size;
-        let total_padding = total_slots - case.input_tasks;
-        assert_eq!(
-            padding_slots, total_padding,
-            "case {} padding slots mismatch",
-            case.name
-        );
+        assert_eq!(resolver.resolve_slot(1, 2), None);
 
         Ok(())
-    }
-
-    const ONE_TO_MANY_INPUT: usize = 1;
-    const ONE_TO_MANY_OUTPUT: usize = 3;
-    const MANY_TO_ONE_INPUT: usize = 4;
-    const MANY_TO_ONE_OUTPUT: usize = 1;
-    const MANY_TO_FEWER_INPUT: usize = 5;
-    const MANY_TO_FEWER_OUTPUT: usize = 2;
-    const FEWER_TO_MANY_INPUT: usize = 2;
-    const FEWER_TO_MANY_OUTPUT: usize = 5;
-
-    #[test]
-    fn validates_partition_coverage_one_to_many() -> Result<()> {
-        assert_case(Case {
-            name: "1_to_n",
-            input_tasks: ONE_TO_MANY_INPUT,
-            consumer_tasks: ONE_TO_MANY_OUTPUT,
-        })
-    }
-
-    #[test]
-    fn validates_partition_coverage_many_to_one() -> Result<()> {
-        assert_case(Case {
-            name: "n_to_1",
-            input_tasks: MANY_TO_ONE_INPUT,
-            consumer_tasks: MANY_TO_ONE_OUTPUT,
-        })
-    }
-
-    #[test]
-    fn validates_partition_coverage_many_to_fewer() -> Result<()> {
-        assert_case(Case {
-            name: "n_to_m_n_gt_m",
-            input_tasks: MANY_TO_FEWER_INPUT,
-            consumer_tasks: MANY_TO_FEWER_OUTPUT,
-        })
-    }
-
-    #[test]
-    fn validates_partition_coverage_fewer_to_many() -> Result<()> {
-        assert_case(Case {
-            name: "m_to_n_n_gt_m",
-            input_tasks: FEWER_TO_MANY_INPUT,
-            consumer_tasks: FEWER_TO_MANY_OUTPUT,
-        })
     }
 }

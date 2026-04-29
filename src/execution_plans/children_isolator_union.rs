@@ -150,6 +150,8 @@ impl ChildrenIsolatorUnionExec {
     }
 
     fn child_task_counts(&self) -> Vec<usize> {
+        // `task_idx_map` is derived from each child's assigned distributed task count. Preserve
+        // that assignment when replacing children, while recomputing properties from the new plans.
         let mut counts = vec![0; self.children.len()];
         for children_in_task in &self.task_idx_map {
             for (child_idx, child_task_ctx) in children_in_task {
@@ -215,6 +217,7 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
+        // Rebuild so cached partitioning reflects replacement children.
         Ok(Arc::new(Self::from_children_and_task_counts(
             children,
             self.child_task_counts(),
@@ -464,12 +467,8 @@ fn split_children(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LocalExchangeSplitExec;
     use crate::test_utils::mock_exec::MockExec;
-    use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ExecutionPlan;
     use std::sync::Arc;
 
@@ -552,30 +551,16 @@ mod tests {
         }
     }
 
-    fn col(name: &str, idx: usize) -> Arc<dyn PhysicalExpr> {
-        Arc::new(Column::new(name, idx))
-    }
-
-    fn int32_batch(schema: Arc<Schema>, values: &[i32]) -> datafusion::common::Result<RecordBatch> {
-        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values.to_vec()))])
-            .map_err(Into::into)
+    fn mock_partitions(partitions: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let data = (0..partitions).map(|_| vec![]).collect();
+        Arc::new(MockExec::new_partitioned(data, schema))
     }
 
     #[test]
-    fn with_new_children_recomputes_partitioning_after_child_partition_expansion()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-        let child0: Arc<dyn ExecutionPlan> = Arc::new(MockExec::new_partitioned(
-            vec![
-                vec![Ok(int32_batch(Arc::clone(&schema), &[0, 1])?)],
-                vec![Ok(int32_batch(Arc::clone(&schema), &[2, 3])?)],
-            ],
-            Arc::clone(&schema),
-        ));
-        let child1: Arc<dyn ExecutionPlan> = Arc::new(MockExec::new_partitioned(
-            vec![vec![Ok(int32_batch(Arc::clone(&schema), &[10])?)]],
-            Arc::clone(&schema),
-        ));
+    fn with_new_children_updates_partitioning() -> Result<(), Box<dyn std::error::Error>> {
+        let child0 = mock_partitions(2);
+        let child1 = mock_partitions(1);
 
         let union = Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
             vec![Arc::clone(&child0), Arc::clone(&child1)],
@@ -587,21 +572,7 @@ mod tests {
             2
         );
 
-        let expanded_child0: Arc<dyn ExecutionPlan> = Arc::new(LocalExchangeSplitExec::try_new(
-            Arc::clone(&child0),
-            vec![col("k", 0)],
-            2,
-            4,
-        )?);
-        assert_eq!(
-            expanded_child0
-                .properties()
-                .output_partitioning()
-                .partition_count(),
-            8
-        );
-
-        let rebuilt = union.with_new_children(vec![expanded_child0, child1])?;
+        let rebuilt = union.with_new_children(vec![mock_partitions(8), child1])?;
         assert_eq!(
             rebuilt.properties().output_partitioning().partition_count(),
             8

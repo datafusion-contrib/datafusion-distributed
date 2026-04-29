@@ -253,15 +253,11 @@ async fn _annotate_plan(
 
     // Upon reaching a hash repartition, we need to introduce a shuffle right above it.
     if let Some(r_exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
-        if let Partitioning::Hash(_, hash_partition_count) = r_exec.partitioning() {
-            // Keep shuffle consumer width bounded by the logical hash partition count. If a
-            // downstream stage wants more parallelism than the shuffle can provide, we recover it
-            // after the network boundary with LocalExchangeSplitExec rather than inflating the
-            // network exchange itself.
+        if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             annotation = AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Shuffle,
                 children: vec![annotation],
-                task_count: task_count.limit(*hash_partition_count),
+                task_count,
             };
         }
     } else if let Some(parent) = parent
@@ -621,7 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shuffle_boundary_clamps_task_count_to_hash_partition_count() {
+    async fn shuffle_boundary_keeps_stage_task_count() {
         let query = r#"
         SELECT "MinTemp", ROW_NUMBER() OVER (PARTITION BY "RainToday" ORDER BY "MinTemp") as rn
         FROM weather
@@ -633,13 +629,47 @@ mod tests {
         };
         let annotated = annotate_test_plan(query, options, |b| b).await;
         assert_snapshot!(annotated, @r"
-        ProjectionExec: task_count=Desired(2)
-          BoundedWindowAggExec: task_count=Desired(2)
-            SortExec: task_count=Desired(2)
-              [NetworkBoundary] Shuffle: task_count=Desired(2)
-                RepartitionExec: task_count=Desired(2)
-                  DataSourceExec: task_count=Desired(2)
+        ProjectionExec: task_count=Desired(3)
+          BoundedWindowAggExec: task_count=Desired(3)
+            SortExec: task_count=Desired(3)
+              [NetworkBoundary] Shuffle: task_count=Desired(3)
+                RepartitionExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
         ")
+    }
+
+    #[tokio::test]
+    async fn nested_shuffle_uses_stage_task_count() {
+        let query = r#"
+        SELECT weather."RainToday", agg.total
+        FROM weather
+        JOIN (
+            SELECT "RainToday", count(*) AS total
+            FROM weather
+            GROUP BY "RainToday"
+        ) agg
+        ON weather."RainToday" = agg."RainToday"
+        "#;
+        let options = TestPlanOptions {
+            target_partitions: 2,
+            num_workers: 4,
+            broadcast_enabled: true,
+        };
+        let annotated = annotate_test_plan(query, options, |b| b).await;
+
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=Desired(3)
+          CoalescePartitionsExec: task_count=Desired(3)
+            [NetworkBoundary] Broadcast: task_count=Desired(3)
+              BroadcastExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+          ProjectionExec: task_count=Desired(3)
+            AggregateExec: task_count=Desired(3)
+              [NetworkBoundary] Shuffle: task_count=Desired(3)
+                RepartitionExec: task_count=Desired(3)
+                  AggregateExec: task_count=Desired(3)
+                    DataSourceExec: task_count=Desired(3)
+        ");
     }
 
     #[tokio::test]

@@ -1,8 +1,6 @@
 use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, serialize_uuid};
-use crate::distributed_planner::{
-    BroadcastExchangeLayout, CoalesceExchangeLayout, ExchangeLayout, ShuffleExchangeLayout,
-};
+use crate::distributed_planner::ExchangeLayout;
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, LocalExchangeSplitExec, NetworkBroadcastExec,
     NetworkCoalesceExec,
@@ -83,6 +81,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             proto: Option<ExchangeAssignmentProto>,
             ctx: &TaskContext,
             schema: &Schema,
+            expected_producer_task_count: usize,
         ) -> Result<Arc<ExchangeLayout>, DataFusionError> {
             let Some(proto) = proto else {
                 return Err(proto_error("Empty ExchangeAssignmentProto"));
@@ -90,6 +89,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
 
             match proto.assignment {
                 Some(exchange_assignment_proto::Assignment::Shuffle(shuffle)) => {
+                    let producer_task_count = shuffle.producer_task_count as usize;
+                    validate_producer_task_count(
+                        "ShuffleExchangeAssignmentProto",
+                        producer_task_count,
+                        expected_producer_task_count,
+                    )?;
+
                     let producer_partitioning = parse_protobuf_partitioning(
                         shuffle.producer_partitioning.as_ref(),
                         ctx,
@@ -110,14 +116,30 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         ));
                     }
 
-                    Ok(Arc::new(ExchangeLayout::Shuffle(ShuffleExchangeLayout {
-                        producer_task_count: shuffle.producer_task_count as usize,
-                        consumer_task_count,
+                    let layout = ExchangeLayout::try_shuffle(
                         producer_partitioning,
-                        consumer_partition_ranges,
-                    })))
+                        producer_task_count,
+                        consumer_task_count,
+                    )?;
+                    let ExchangeLayout::Shuffle(shuffle_layout) = layout.as_ref() else {
+                        unreachable!("ExchangeLayout::try_shuffle returned a non-shuffle layout")
+                    };
+                    validate_ranges(
+                        "ShuffleExchangeAssignmentProto",
+                        &consumer_partition_ranges,
+                        &shuffle_layout.consumer_partition_ranges,
+                    )?;
+
+                    Ok(layout)
                 }
                 Some(exchange_assignment_proto::Assignment::Coalesce(coalesce)) => {
+                    let producer_task_count = coalesce.producer_task_count as usize;
+                    validate_producer_task_count(
+                        "CoalesceExchangeAssignmentProto",
+                        producer_task_count,
+                        expected_producer_task_count,
+                    )?;
+
                     let producer_task_ranges = decode_ranges(coalesce.producer_task_ranges)?;
                     let consumer_slot_ranges = decode_ranges(coalesce.consumer_slot_ranges)?;
                     if producer_task_ranges.len() != consumer_slot_ranges.len() {
@@ -134,16 +156,35 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         ));
                     }
 
-                    Ok(Arc::new(ExchangeLayout::Coalesce(CoalesceExchangeLayout {
-                        producer_task_count: coalesce.producer_task_count as usize,
+                    let layout = ExchangeLayout::try_coalesce(
+                        producer_task_count,
                         consumer_task_count,
-                        partitions_per_producer_task: coalesce.partitions_per_producer_task
-                            as usize,
-                        producer_task_ranges,
-                        consumer_slot_ranges,
-                    })))
+                        coalesce.partitions_per_producer_task as usize,
+                    )?;
+                    let ExchangeLayout::Coalesce(coalesce_layout) = layout.as_ref() else {
+                        unreachable!("ExchangeLayout::try_coalesce returned a non-coalesce layout")
+                    };
+                    validate_ranges(
+                        "CoalesceExchangeAssignmentProto producer task",
+                        &producer_task_ranges,
+                        &coalesce_layout.producer_task_ranges,
+                    )?;
+                    validate_ranges(
+                        "CoalesceExchangeAssignmentProto consumer slot",
+                        &consumer_slot_ranges,
+                        &coalesce_layout.consumer_slot_ranges,
+                    )?;
+
+                    Ok(layout)
                 }
                 Some(exchange_assignment_proto::Assignment::Broadcast(broadcast)) => {
+                    let producer_task_count = broadcast.producer_task_count as usize;
+                    validate_producer_task_count(
+                        "BroadcastExchangeAssignmentProto",
+                        producer_task_count,
+                        expected_producer_task_count,
+                    )?;
+
                     let consumer_partition_ranges =
                         decode_ranges(broadcast.consumer_partition_ranges)?;
                     let consumer_task_count = consumer_partition_ranges.len();
@@ -153,15 +194,23 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         ));
                     }
 
-                    Ok(Arc::new(ExchangeLayout::Broadcast(
-                        BroadcastExchangeLayout {
-                            producer_task_count: broadcast.producer_task_count as usize,
-                            consumer_task_count,
-                            partitions_per_producer_task: broadcast.partitions_per_producer_task
-                                as usize,
-                            consumer_partition_ranges,
-                        },
-                    )))
+                    let layout = ExchangeLayout::try_broadcast(
+                        producer_task_count,
+                        consumer_task_count,
+                        broadcast.partitions_per_producer_task as usize,
+                    )?;
+                    let ExchangeLayout::Broadcast(broadcast_layout) = layout.as_ref() else {
+                        unreachable!(
+                            "ExchangeLayout::try_broadcast returned a non-broadcast layout"
+                        )
+                    };
+                    validate_ranges(
+                        "BroadcastExchangeAssignmentProto",
+                        &consumer_partition_ranges,
+                        &broadcast_layout.consumer_partition_ranges,
+                    )?;
+
+                    Ok(layout)
                 }
                 None => Err(proto_error("Empty ExchangeAssignmentProto.assignment")),
             }
@@ -188,11 +237,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
-                let layout = parse_exchange_layout_proto(assignment, ctx, &schema)?;
+                let input_stage = parse_stage_proto(input_stage, inputs)?;
+                let layout =
+                    parse_exchange_layout_proto(assignment, ctx, &schema, input_stage.tasks.len())?;
                 Ok(Arc::new(new_network_hash_shuffle_exec(
                     partitioning,
                     Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    input_stage,
                     layout,
                 )?))
             }
@@ -216,11 +267,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
 
-                let layout = parse_exchange_layout_proto(assignment, ctx, &schema)?;
+                let input_stage = parse_stage_proto(input_stage, inputs)?;
+                let layout =
+                    parse_exchange_layout_proto(assignment, ctx, &schema, input_stage.tasks.len())?;
                 Ok(Arc::new(new_network_coalesce_tasks_exec(
                     partitioning,
                     Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    input_stage,
                     layout,
                 )?))
             }
@@ -259,11 +312,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
 
-                let layout = parse_exchange_layout_proto(assignment, ctx, &schema)?;
+                let input_stage = parse_stage_proto(input_stage, inputs)?;
+                let layout =
+                    parse_exchange_layout_proto(assignment, ctx, &schema, input_stage.tasks.len())?;
                 Ok(Arc::new(new_network_broadcast_exec(
                     partitioning,
                     Arc::new(schema),
-                    parse_stage_proto(input_stage, inputs)?,
+                    input_stage,
                     layout,
                 )?))
             }
@@ -384,7 +439,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
-                assignment: Some(encode_exchange_layout_proto(node.layout().as_ref())?),
+                assignment: Some(encode_exchange_layout_proto(node.layout.as_ref())?),
             };
 
             let wrapper = DistributedExecProto {
@@ -401,7 +456,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
-                assignment: Some(encode_exchange_layout_proto(node.layout().as_ref())?),
+                assignment: Some(encode_exchange_layout_proto(node.layout.as_ref())?),
             };
 
             let wrapper = DistributedExecProto {
@@ -428,7 +483,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
-                assignment: Some(encode_exchange_layout_proto(node.layout().as_ref())?),
+                assignment: Some(encode_exchange_layout_proto(node.layout.as_ref())?),
             };
 
             let wrapper = DistributedExecProto {
@@ -676,8 +731,8 @@ fn new_network_hash_shuffle_exec(
     })
 }
 
-/// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
-/// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
+/// Protobuf representation of the [NetworkCoalesceExec] physical node. It serves as
+/// an intermediate format for serializing/deserializing [NetworkCoalesceExec] nodes
 /// to send them over the wire.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NetworkCoalesceExecProto {
@@ -774,6 +829,34 @@ fn decode_ranges(ranges: Vec<PartitionRangeProto>) -> Result<Vec<std::ops::Range
             Ok(start..end)
         })
         .collect()
+}
+
+fn validate_producer_task_count(
+    proto_name: &str,
+    producer_task_count: usize,
+    expected_producer_task_count: usize,
+) -> Result<(), DataFusionError> {
+    if producer_task_count != expected_producer_task_count {
+        return Err(proto_error(format!(
+            "{proto_name} producer_task_count={producer_task_count} does not match input_stage task count={expected_producer_task_count}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_ranges(
+    proto_name: &str,
+    decoded: &[std::ops::Range<usize>],
+    validated: &[std::ops::Range<usize>],
+) -> Result<(), DataFusionError> {
+    if decoded != validated {
+        return Err(proto_error(format!(
+            "{proto_name} ranges {decoded:?} do not match validated ranges {validated:?}"
+        )));
+    }
+
+    Ok(())
 }
 
 fn encode_exchange_layout_proto(
@@ -945,6 +1028,29 @@ mod tests {
         codec.try_encode(plan.clone(), &mut buf)?;
 
         let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        assert_eq!(repr(&plan), repr(&decoded));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_roundtrip_local_exchange_split() -> datafusion::common::Result<()> {
+        let codec = DistributedCodec;
+        let ctx = create_context();
+
+        let schema = schema_i32("a");
+        let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(LocalExchangeSplitExec::try_new(
+            child.clone(),
+            vec![Arc::new(Column::new("a", 0))],
+            2,
+            4,
+        )?);
+
+        let mut buf = Vec::new();
+        codec.try_encode(plan.clone(), &mut buf)?;
+
+        let decoded = codec.try_decode(&buf, &[child], &ctx)?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())

@@ -171,11 +171,6 @@ impl NetworkBroadcastExec {
             layout,
         })
     }
-
-    /// The planner-facing layout for this exchange.
-    pub fn layout(&self) -> &Arc<ExchangeLayout> {
-        &self.layout
-    }
 }
 
 impl NetworkBoundary for NetworkBroadcastExec {

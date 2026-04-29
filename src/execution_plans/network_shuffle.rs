@@ -23,15 +23,16 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
+/// Network boundary that reads hash-partitioned data from an upstream distributed stage.
 ///
-/// The easiest way of thinking about this node is as a plan [RepartitionExec] node that is
-/// capable of fanning out the different produced partitions to different tasks.
-/// This allows redistributing data across different tasks in different stages, so that different
-/// physical machines can make progress on different non-overlapping sets of data.
+/// The planner inserts this node above a hash repartition boundary. The child stage produces a
+/// shared logical hash partition space, and the [ExchangeLayout] assigns contiguous logical
+/// partition ranges to consumer tasks. Local fanout above the network boundary is handled
+/// separately by [crate::LocalExchangeSplitExec].
 ///
-/// This node allows fanning out of data from N tasks to M tasks, with N and M being arbitrary non-zero
-/// positive numbers. Here are some examples of how data can be shuffled in different scenarios:
+/// This node allows fanning out data from N producer tasks to M consumer tasks. Each consumer
+/// output partition reads one logical hash partition from every producer task. Here are some
+/// examples of how data can be shuffled in different scenarios:
 ///
 /// # 1 to many
 ///
@@ -161,11 +162,6 @@ impl NetworkShuffleExec {
             metrics_collection: Default::default(),
             layout,
         })
-    }
-
-    /// The planner-facing layout for this exchange.
-    pub fn layout(&self) -> &Arc<ExchangeLayout> {
-        &self.layout
     }
 }
 

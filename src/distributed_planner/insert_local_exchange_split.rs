@@ -2,12 +2,25 @@ use crate::distributed_planner::DistributedConfig;
 use crate::{LocalExchangeSplitExec, NetworkShuffleExec};
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
 
+/// Inserts [LocalExchangeSplitExec] above narrow post-shuffle consumers.
+///
+/// This pass runs after network exchange insertion, when every [NetworkShuffleExec] already has an
+/// assigned [crate::distributed_planner::ExchangeLayout]. The pass does not change stage
+/// boundaries or global shuffle ownership. It only adds local fanout inside the consumer task when
+/// the next operator would otherwise execute with too few local partitions.
+///
+/// The default policy targets final partitioned aggregates and partitioned hash joins. The
+/// `all_narrow_shuffles` mode applies the same narrow-shuffle rule to any direct shuffle consumer.
+///
+/// ```text
+/// TODO diagram: NetworkShuffleExec output owned by one task -> LocalExchangeSplitExec -> multiple
+/// local partitions consumed by a final aggregate or partitioned join.
+/// ```
 pub(crate) fn insert_local_exchange_split_execs(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
@@ -60,23 +73,6 @@ fn derive_split_factor(
 
     let split_factor = target_partitions_per_task.div_ceil(owned).min(max_factor);
     (split_factor > 1).then_some(split_factor)
-}
-
-fn derive_split_factor_to_match(
-    owned: usize,
-    target_partition_count: usize,
-    max_factor: usize,
-) -> Option<usize> {
-    if owned == 0 || target_partition_count <= owned || max_factor == 0 {
-        return None;
-    }
-
-    if target_partition_count % owned != 0 {
-        return None;
-    }
-
-    let split_factor = target_partition_count / owned;
-    (split_factor > 1 && split_factor <= max_factor).then_some(split_factor)
 }
 
 fn maybe_split_narrow_shuffle_child(
@@ -156,13 +152,6 @@ fn lcm(lhs: usize, rhs: usize) -> usize {
     lhs / gcd(lhs, rhs) * rhs
 }
 
-fn child_hash_partition_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
-    match plan.output_partitioning() {
-        Partitioning::Hash(_, count) => Some(*count),
-        _ => None,
-    }
-}
-
 fn wrap_partitioned_join_children(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
@@ -177,39 +166,22 @@ fn wrap_partitioned_join_children(
     let left_candidate = NarrowShuffleSplitCandidate::try_new(Arc::clone(&left), d_cfg)?;
     let right_candidate = NarrowShuffleSplitCandidate::try_new(Arc::clone(&right), d_cfg)?;
 
-    let (left_factor, right_factor) = match (&left_candidate, &right_candidate) {
-        (Some(left_candidate), Some(right_candidate)) => derive_join_split_factors(
-            left_candidate.owned,
-            right_candidate.owned,
-            d_cfg.local_exchange_split_target_partitions_per_task,
-            d_cfg.local_exchange_split_max_factor,
-        )
-        .map(|(left_factor, right_factor)| (Some(left_factor), Some(right_factor))),
-        (Some(left_candidate), None) => {
-            child_hash_partition_count(&right).and_then(|right_count| {
-                derive_split_factor_to_match(
-                    left_candidate.owned,
-                    right_count,
-                    d_cfg.local_exchange_split_max_factor,
-                )
-                .map(|left_factor| (Some(left_factor), None))
-            })
-        }
-        (None, Some(right_candidate)) => child_hash_partition_count(&left).and_then(|left_count| {
-            derive_split_factor_to_match(
-                right_candidate.owned,
-                left_count,
-                d_cfg.local_exchange_split_max_factor,
-            )
-            .map(|right_factor| (None, Some(right_factor)))
-        }),
-        (None, None) => None,
-    }
-    .unwrap_or((None, None));
+    let (Some(left_candidate), Some(right_candidate)) = (&left_candidate, &right_candidate) else {
+        return Ok(Transformed::no(plan));
+    };
 
-    if left_factor.is_none() && right_factor.is_none() {
+    if left_candidate.base_partition_count != right_candidate.base_partition_count {
         return Ok(Transformed::no(plan));
     }
+
+    let Some((left_factor, right_factor)) = derive_join_split_factors(
+        left_candidate.owned,
+        right_candidate.owned,
+        d_cfg.local_exchange_split_target_partitions_per_task,
+        d_cfg.local_exchange_split_max_factor,
+    ) else {
+        return Ok(Transformed::no(plan));
+    };
 
     let mut new_children = Vec::with_capacity(children.len());
     let mut changed = false;
@@ -217,24 +189,14 @@ fn wrap_partitioned_join_children(
         let child = Arc::clone(child);
         match idx {
             0 => {
-                if let (Some(left_candidate), Some(left_factor)) = (&left_candidate, left_factor) {
-                    let wrapped = left_candidate.wrap(left_factor)?;
-                    changed |= !Arc::ptr_eq(&wrapped, &child);
-                    new_children.push(wrapped);
-                } else {
-                    new_children.push(child);
-                }
+                let wrapped = left_candidate.wrap(left_factor)?;
+                changed |= !Arc::ptr_eq(&wrapped, &child);
+                new_children.push(wrapped);
             }
             1 => {
-                if let (Some(right_candidate), Some(right_factor)) =
-                    (&right_candidate, right_factor)
-                {
-                    let wrapped = right_candidate.wrap(right_factor)?;
-                    changed |= !Arc::ptr_eq(&wrapped, &child);
-                    new_children.push(wrapped);
-                } else {
-                    new_children.push(child);
-                }
+                let wrapped = right_candidate.wrap(right_factor)?;
+                changed |= !Arc::ptr_eq(&wrapped, &child);
+                new_children.push(wrapped);
             }
             _ => new_children.push(child),
         }
@@ -261,7 +223,7 @@ impl NarrowShuffleSplitCandidate {
             return Ok(None);
         };
 
-        let layout = shuffle.layout();
+        let layout = &shuffle.layout;
         let owned = layout.max_partition_count_per_consumer();
         if owned == 0
             || owned > d_cfg.local_exchange_split_max_owned_partitions
@@ -301,22 +263,32 @@ impl NarrowShuffleSplitCandidate {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_join_split_factors, derive_split_factor, derive_split_factor_to_match,
-        insert_local_exchange_split_execs,
+        derive_join_split_factors, derive_split_factor, insert_local_exchange_split_execs,
     };
     use crate::assert_snapshot;
-    use crate::distributed_planner::distribute_plan::distribute_plan_without_local_exchange_split;
+    use crate::distributed_planner::distribute_plan::test_helpers::insert_network_boundaries_for_test;
     use crate::test_utils::plans::{base_session_builder, context_with_query};
     use crate::{
         DistributedConfig, DistributedExec, LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES,
-        LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN, display_plan_ascii,
+        LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN, NetworkShuffleExec, display_plan_ascii,
     };
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::NullEquality;
     use datafusion::common::Result;
     use datafusion::config::ConfigOptions;
     use datafusion::execution::context::SessionContext;
+    use datafusion::logical_expr::JoinType;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::prelude::ParquetReadOptions;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     #[derive(Clone, Copy)]
     struct SplitTestOptions {
@@ -336,7 +308,7 @@ mod tests {
     };
 
     const FINAL_AGG_SKIP_OPTIONS: SplitTestOptions = SplitTestOptions {
-        max_owned_partitions: 1,
+        max_owned_partitions: 0,
         ..FINAL_AGG_SPLIT_OPTIONS
     };
 
@@ -369,7 +341,7 @@ mod tests {
         split_plan_from_ctx(&ctx, query, options).await
     }
 
-    fn apply_split_test_options(cfg: &mut ConfigOptions, options: SplitTestOptions) {
+    fn apply_test_options(cfg: &mut ConfigOptions, options: SplitTestOptions) {
         if options.force_partitioned_join {
             cfg.optimizer.hash_join_single_partition_threshold = 0;
             cfg.optimizer.hash_join_single_partition_threshold_rows = 0;
@@ -390,21 +362,19 @@ mod tests {
         {
             let state_ref = ctx.state_ref();
             let mut state = state_ref.write();
-            apply_split_test_options(state.config_mut().options_mut(), options);
+            apply_test_options(state.config_mut().options_mut(), options);
         }
 
         let df = ctx.sql(query).await.unwrap();
         let (state, logical_plan) = df.into_parts();
         let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
-        let distributed = distribute_plan_without_local_exchange_split(
-            Arc::clone(&physical_plan),
-            state.config_options(),
-        )
-        .await
-        .unwrap()
-        .unwrap_or(physical_plan);
+        let distributed =
+            insert_network_boundaries_for_test(Arc::clone(&physical_plan), state.config_options())
+                .await
+                .unwrap()
+                .unwrap_or(physical_plan);
         let d_cfg = DistributedConfig::from_config_options(state.config_options()).unwrap();
-        let split = insert_local_exchange_split_execs(distributed, d_cfg).unwrap();
+        let split = insert_local_exchange_split_execs(distributed, &d_cfg).unwrap();
         let distributed_exec = DistributedExec::new(split);
         display_plan_ascii(&distributed_exec, false)
     }
@@ -422,38 +392,42 @@ mod tests {
         Ok(())
     }
 
+    fn key_expr() -> Arc<dyn PhysicalExpr> {
+        Arc::new(Column::new("key", 0))
+    }
+
+    fn empty_key_exec() -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
+            "key",
+            DataType::Int32,
+            false,
+        )]))))
+    }
+
     #[test]
-    fn derive_join_split_factors_prefers_requested_target_when_divisible() {
+    fn join_split_factors_use_target_when_divisible() {
         assert_eq!(derive_join_split_factors(1, 2, 8, 8), Some((8, 4)));
     }
 
     #[test]
-    fn derive_join_split_factors_uses_next_common_multiple() {
+    fn join_split_factors_use_common_multiple() {
         assert_eq!(derive_join_split_factors(2, 3, 8, 8), Some((6, 4)));
     }
 
     #[test]
-    fn derive_join_split_factors_respects_max_factor() {
+    fn join_split_factors_respect_max_factor() {
         assert_eq!(derive_join_split_factors(2, 3, 8, 4), None);
     }
 
     #[test]
-    fn derive_split_factor_uses_target_and_cap() {
+    fn split_factor_uses_target_and_cap() {
         assert_eq!(derive_split_factor(2, 8, 8), Some(4));
         assert_eq!(derive_split_factor(2, 8, 2), Some(2));
         assert_eq!(derive_split_factor(8, 8, 8), None);
     }
 
-    #[test]
-    fn derive_split_factor_to_match_respects_divisibility_and_cap() {
-        assert_eq!(derive_split_factor_to_match(2, 8, 8), Some(4));
-        assert_eq!(derive_split_factor_to_match(2, 3, 8), None);
-        assert_eq!(derive_split_factor_to_match(2, 8, 2), None);
-        assert_eq!(derive_split_factor_to_match(2, 2, 8), None);
-    }
-
     #[tokio::test]
-    async fn test_final_agg_inserts_local_exchange_split() {
+    async fn final_agg_inserts_split() {
         let query = r#"
         SELECT count(*), "RainToday"
         FROM weather
@@ -471,11 +445,11 @@ mod tests {
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=2, exprs=[RainToday@0]
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=4, exprs=[RainToday@0]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
             │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
@@ -484,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_final_agg_skips_when_owned_width_exceeds_threshold() {
+    async fn final_agg_respects_owned_partition_cap() {
         let query = r#"
         SELECT count(*), "RainToday"
         FROM weather
@@ -496,16 +470,16 @@ mod tests {
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0] 
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=1
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
             │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
@@ -513,8 +487,60 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn partitioned_join_rejects_one_sided_split() -> Result<()> {
+        let left: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            empty_key_exec(),
+            Partitioning::Hash(vec![key_expr()], 2),
+        )?);
+        let left: Arc<dyn ExecutionPlan> =
+            Arc::new(NetworkShuffleExec::try_new(left, Uuid::new_v4(), 1, 2, 2)?);
+        let right: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            empty_key_exec(),
+            Partitioning::Hash(vec![key_expr()], 8),
+        )?);
+        let join: Arc<dyn ExecutionPlan> = Arc::new(HashJoinExec::try_new(
+            left,
+            right,
+            vec![(key_expr(), key_expr())],
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::Partitioned,
+            NullEquality::NullEqualsNothing,
+            false,
+        )?);
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(join));
+
+        let d_cfg = DistributedConfig {
+            local_exchange_split_mode: LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN.to_string(),
+            local_exchange_split_max_owned_partitions: 2,
+            local_exchange_split_target_partitions_per_task: 8,
+            local_exchange_split_max_factor: 8,
+            ..DistributedConfig::default()
+        };
+        let plan = insert_local_exchange_split_execs(plan, &d_cfg)?;
+        let distributed = DistributedExec::new(plan);
+
+        assert_snapshot!(display_plan_ascii(&distributed, false), @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        │ CoalescePartitionsExec
+        │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(key@0, key@0)]
+        │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+        │     RepartitionExec: partitioning=Hash([key@0], 8), input_partitions=1
+        │       EmptyExec
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
+          │   EmptyExec
+          └──────────────────────────────────────────────────
+        ");
+
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn test_partitioned_join_inserts_coordinated_splits() {
+    async fn partitioned_join_splits_both_sides() {
         let query = r#"
         SELECT d.env, f.timestamp, f.value
         FROM dim d
@@ -529,19 +555,19 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
           │ HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3]
-          │   LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[d_dkey@1]
-          │     [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2
-          │   LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=4, exprs=[f_dkey@2]
-          │     [Stage 2] => NetworkShuffleExec: output_partitions=2, input_tasks=2
+          │   LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[d_dkey@1]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
+          │   LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[f_dkey@2]
+          │     [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([d_dkey@1], 4), input_partitions=2
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            │ RepartitionExec: partitioning=Hash([d_dkey@1], 2), input_partitions=2
             │   FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
             │     PartitionIsolatorExec: tasks=2 partitions=4
             │       DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([f_dkey@2], 4), input_partitions=2
+            ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            │ RepartitionExec: partitioning=Hash([f_dkey@2], 2), input_partitions=2
             │   PartitionIsolatorExec: tasks=2 partitions=4
             │     DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
             └──────────────────────────────────────────────────
@@ -549,7 +575,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_all_narrow_shuffles_mode_splits_window_shuffle() {
+    async fn all_narrow_mode_splits_window() {
         let query = r#"
         SELECT
             "RainToday",
@@ -566,11 +592,11 @@ mod tests {
           │ ProjectionExec: expr=[RainToday@1 as RainToday, row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rn]
           │   BoundedWindowAggExec: wdw=[row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
           │     SortExec: expr=[RainToday@1 ASC NULLS LAST, MinTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │       LocalExchangeSplitExec: input_partitions=2, base_partitions=4, local_partitions=2, exprs=[RainToday@1]
-          │         [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       LocalExchangeSplitExec: input_partitions=1, base_partitions=3, local_partitions=4, exprs=[RainToday@1]
+          │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=1
+            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+            │ RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=1
             │   PartitionIsolatorExec: tasks=3 partitions=3
             │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
             └──────────────────────────────────────────────────
@@ -578,7 +604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_final_agg_and_join_mode_does_not_split_window_shuffle() {
+    async fn default_mode_skips_window() {
         let query = r#"
         SELECT
             "RainToday",
@@ -589,16 +615,16 @@ mod tests {
         assert_snapshot!(plan, @r#"
         ┌───── DistributedExec ── Tasks: t0:[p0] 
         │ CoalescePartitionsExec
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0] t2:[p0] 
           │ ProjectionExec: expr=[RainToday@1 as RainToday, row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rn]
           │   BoundedWindowAggExec: wdw=[row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
           │     SortExec: expr=[RainToday@1 ASC NULLS LAST, MinTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │       [Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=3
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
-            │ RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=1
+            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+            │ RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=1
             │   PartitionIsolatorExec: tasks=3 partitions=3
             │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
             └──────────────────────────────────────────────────
