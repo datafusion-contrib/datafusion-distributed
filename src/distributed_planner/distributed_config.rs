@@ -69,12 +69,23 @@ extensions_options! {
         /// budget will still be admitted (otherwise we would livelock), so the actual peak per
         /// connection is `worker_connection_buffer_budget_bytes + max_message_size`.
         pub worker_connection_buffer_budget_bytes: usize, default = 64 * 1024 * 1024
-        /// Controls which consumer operators are allowed to trigger a local exchange split.
+        /// Controls which consumer operators trigger a [crate::LocalExchangeSplitExec].
+        /// Valid values (case-insensitive):
+        /// - `"off"` — disable the optimization entirely.
+        /// - `"final_agg"` — split only above `FinalPartitioned` aggregates.
+        /// - `"final_agg_and_join"` — split above `FinalPartitioned` aggregates and `Partitioned`
+        ///   hash joins (default).
         pub local_exchange_split_mode: String, default = local_exchange_split_mode_default()
-        /// Only insert a local exchange split when a consumer task owns at most this many
-        /// logical partitions from the upstream shuffle.
+        /// Maximum number of logical shuffle partitions a consumer task may own before the split
+        /// optimization is skipped for that shuffle. Tasks that already own many partitions have
+        /// adequate local parallelism from the shuffle itself; splitting adds hash overhead for
+        /// little benefit. Set to 0 to disable the optimization for all shuffles.
         pub local_exchange_split_max_owned_partitions: usize, default = 3
-        /// Target number of local post-shuffle partitions to expose per consumer task.
+        /// Target number of output partitions to produce per consumer task after splitting. The
+        /// actual count is rounded up to the next multiple of the task's owned partition count so
+        /// that each owned partition contributes an equal number of local sub-partitions. For
+        /// example, with 2 owned partitions and a target of 7, the actual count is 8 (4
+        /// sub-partitions per owned partition).
         pub local_exchange_split_target_partitions_per_task: usize, default = 8
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
@@ -125,7 +136,7 @@ impl DistributedConfig {
         self
     }
 
-    pub fn local_exchange_split_mode_is_final_agg(&self) -> bool {
+    fn local_exchange_split_mode_is_final_agg(&self) -> bool {
         self.local_exchange_split_mode
             .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
     }
@@ -135,7 +146,7 @@ impl DistributedConfig {
             .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_OFF)
     }
 
-    pub fn local_exchange_split_mode_is_final_agg_and_join(&self) -> bool {
+    fn local_exchange_split_mode_is_final_agg_and_join(&self) -> bool {
         self.local_exchange_split_mode
             .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
     }
@@ -149,7 +160,7 @@ impl DistributedConfig {
         self.local_exchange_split_mode_is_final_agg_and_join()
     }
 
-    pub fn validate_local_exchange_split_mode(mode: &str) -> Result<(), DataFusionError> {
+    pub(crate) fn validate_local_exchange_split_mode(mode: &str) -> Result<(), DataFusionError> {
         if mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_OFF)
             || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
             || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
