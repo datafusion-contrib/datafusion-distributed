@@ -8,9 +8,9 @@ use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
+pub const LOCAL_EXCHANGE_SPLIT_MODE_OFF: &str = "off";
 pub const LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG: &str = "final_agg";
 pub const LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN: &str = "final_agg_and_join";
-pub const LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES: &str = "all_narrow_shuffles";
 
 extensions_options! {
     /// Configuration for the distributed planner.
@@ -130,31 +130,29 @@ impl DistributedConfig {
             .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
     }
 
+    pub fn local_exchange_split_mode_is_off(&self) -> bool {
+        self.local_exchange_split_mode
+            .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_OFF)
+    }
+
     pub fn local_exchange_split_mode_is_final_agg_and_join(&self) -> bool {
         self.local_exchange_split_mode
             .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
     }
 
-    pub fn local_exchange_split_mode_is_all_narrow_shuffles(&self) -> bool {
-        self.local_exchange_split_mode
-            .eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES)
-    }
-
     pub fn local_exchange_split_mode_allows_final_agg(&self) -> bool {
         self.local_exchange_split_mode_is_final_agg()
             || self.local_exchange_split_mode_is_final_agg_and_join()
-            || self.local_exchange_split_mode_is_all_narrow_shuffles()
     }
 
     pub fn local_exchange_split_mode_allows_partitioned_join(&self) -> bool {
         self.local_exchange_split_mode_is_final_agg_and_join()
-            || self.local_exchange_split_mode_is_all_narrow_shuffles()
     }
 
     pub fn validate_local_exchange_split_mode(mode: &str) -> Result<(), DataFusionError> {
-        if mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
+        if mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_OFF)
+            || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG)
             || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN)
-            || mode.eq_ignore_ascii_case(LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES)
         {
             return Ok(());
         }
@@ -162,9 +160,9 @@ impl DistributedConfig {
         plan_err!(
             "invalid distributed.local_exchange_split_mode '{}'; expected one of: {}, {}, {}",
             mode,
+            LOCAL_EXCHANGE_SPLIT_MODE_OFF,
             LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG,
-            LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN,
-            LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES
+            LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN
         )
     }
 

@@ -10,8 +10,8 @@ mod session_state_builder_ext;
 mod task_estimator;
 
 pub use distributed_config::{
-    DistributedConfig, LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES,
-    LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG, LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN,
+    DistributedConfig, LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG,
+    LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN, LOCAL_EXCHANGE_SPLIT_MODE_OFF,
 };
 pub(crate) use exchange_assignment::ExchangeLayout;
 pub(crate) use exchange_assignment::SlotReadPlan;

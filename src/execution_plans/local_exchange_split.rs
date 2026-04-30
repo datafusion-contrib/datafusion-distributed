@@ -31,51 +31,49 @@ type SplitReceiver = Receiver<Result<RecordBatch, SharedError>>;
 
 const SPLIT_CHANNEL_CAPACITY: usize = 2;
 
-/// Local post-shuffle fanout operator.
+/// Refines input partitions into more local output partitions.
 ///
-/// [LocalExchangeSplitExec] refines each input partition into `local_partition_count` output
-/// partitions on the same task. It is intended for post-shuffle consumers, such as final
-/// partitioned aggregates and partitioned joins, when a [crate::NetworkShuffleExec] has already
-/// assigned global ownership but the consumer needs more local partitions to use available CPU
-/// parallelism.
+/// [LocalExchangeSplitExec] is a local fanout operator. For each input partition, it evaluates
+/// `hash_exprs`, re-hashes the rows, and emits `local_partition_count` output partitions on the
+/// same task.
 ///
-/// This is not a general replacement for DataFusion's
-/// [RepartitionExec](datafusion::physical_plan::repartition::RepartitionExec). It preserves the
-/// upstream task's ownership and only redistributes rows among local output partitions.
-///
-/// # Fields
-///
-/// - `hash_exprs`: the hash keys used to assign rows to local output partitions. These are the
-///   same expressions the upstream [crate::NetworkShuffleExec] used to assign the input partition
-///   to this task, so global ownership is preserved.
-/// - `base_partition_count`: the number of input partitions this task owns from the upstream
-///   shuffle (typically 1 after the planner sets `RepartitionExec` to `consumer_task_count`).
-/// - `local_partition_count`: the local fanout factor — each input partition is split into this
-///   many output partitions on the same task.
-///
-/// # Diagram
+/// The operator does not change distributed routing. It never sends rows to another task; it only
+/// subdivides partitions that the current task is already reading.
 ///
 /// ```text
-///                           ┌───────────────────────────────────┐                              ■
-///                           │      LocalExchangeSplitExec       │                              │
-///                           │             (task K)              │                          Consumer
-///                           └─┬─┬─┬─┬───────────────────────────┘                              │
-///                             │0││1││2││3│                                                     │
-///                             └─┘└─┘└─┘└─┘                                                     ■
-///                              ▲  ▲  ▲  ▲
-///                              └──┴──┼──┘   re-hash on `hash_exprs`
-///                                    │
-///                                   ┌─┐                                                        ■
-///                                   │p│                                                        │
-///                          ┌────────┴─┴────────┐                                            Inbound
-///                          │ NetworkShuffleExec │   owns 1 logical hash partition `p`           │
-///                          │      (task K)      │                                              │
-///                          └───────────────────┘                                                ■
+/// one input partition on task K
+/// ┌──────────────────────────────┐
+/// │ p0: [r0, r1, r2, r3, r4, r5] │
+/// └──────────────┬───────────────┘
+///                │ hash rows by `hash_exprs`
+///                ▼
+/// ┌──────────────────────────────┐
+/// │    LocalExchangeSplitExec    │
+/// └───┬────────┬────────┬────────┘
+///     ▼        ▼        ▼
+///   p0.0     p0.1     p0.2       local output partitions
+///  [r1,r4]  [r0,r5]  [r2,r3]
 /// ```
 ///
-/// Consumers must eventually execute every output partition for a given input partition. The
-/// splitter task uses bounded per-output channels, so inserting it below a consumer that may leave
-/// sibling output partitions unpolled can block progress for the whole input partition.
+/// Each input partition has one splitter task and one bounded channel per local output partition.
+/// The first requested output partition initializes the splitter. Sibling output partitions then
+/// read from the receivers created by that shared splitter.
+///
+/// ```text
+/// execute(input=0, output=0) ─────┐
+/// execute(input=0, output=1) ──┐  │
+/// execute(input=0, output=2) ─┐│  │
+///                             ▼▼  ▼
+///                      ┌────────────────┐
+/// input partition 0 ──▶│ splitter task  │
+///                      └──┬────┬────┬───┘
+///                         ▼    ▼    ▼
+///                       ch0  ch1  ch2
+/// ```
+///
+/// Downstream operators must eventually poll every output partition for an input partition. If a
+/// sibling output partition is never polled, the splitter can block once that bounded channel is
+/// full.
 #[derive(Debug)]
 pub struct LocalExchangeSplitExec {
     input: Arc<dyn ExecutionPlan>,
