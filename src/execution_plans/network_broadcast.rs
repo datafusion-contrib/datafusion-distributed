@@ -2,11 +2,7 @@ use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::TaskKey;
-use crate::worker::generated::worker::flight_app_metadata;
 use crate::{BroadcastExec, DistributedTaskContext};
-use dashmap::DashMap;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
@@ -125,7 +121,6 @@ pub struct NetworkBroadcastExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
-    pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
 }
 
 impl NetworkBroadcastExec {
@@ -155,7 +150,6 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input_stage),
-            metrics_collection: Default::default(),
         }
     }
 
@@ -265,16 +259,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
                 &context,
             )?;
 
-            let metrics_collection = Arc::clone(&self.metrics_collection);
-            let stream = worker_connection.stream_partition(off + partition, move |meta| {
-                if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
-                    for task_metrics in m.tasks {
-                        if let Some(task_key) = task_metrics.task_key {
-                            metrics_collection.insert(task_key, task_metrics.metrics);
-                        };
-                    }
-                }
-            })?;
+            let stream = worker_connection.stream_partition(off + partition, |_meta| {})?;
             streams.push(stream);
         }
 

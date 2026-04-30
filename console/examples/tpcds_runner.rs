@@ -189,7 +189,8 @@ async fn run_single_query(
     let batches = stream.try_collect::<Vec<_>>().await?;
     if explain_analyze {
         let output =
-            datafusion_distributed::explain_analyze(plan, DistributedMetricsFormat::Aggregated)?;
+            datafusion_distributed::explain_analyze(plan, DistributedMetricsFormat::Aggregated)
+                .await?;
         println!("{output}");
     }
     Ok(batches)

@@ -2,11 +2,7 @@ use crate::common::require_one_child;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::TaskKey;
-use crate::worker::generated::worker::flight_app_metadata;
 use crate::{DistributedTaskContext, NetworkBoundary};
-use dashmap::DashMap;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
@@ -106,15 +102,6 @@ pub struct NetworkShuffleExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
-    /// metrics_collection is used to collect metrics from child tasks. It is initially
-    /// instantiated as an empty [DashMap] (see `try_decode` in `distributed_codec.rs`).
-    /// Metrics are populated here via [NetworkCoalesceExec::execute].
-    ///
-    /// An instance may receive metrics for 0 to N child tasks, where N is the number of tasks in
-    /// the stage it is reading from. This is because, by convention, the Worker sends metrics for
-    /// a task to the last NetworkCoalesceExec to read from it, which may or may not be this
-    /// instance.
-    pub(crate) metrics_collection: Arc<DashMap<TaskKey, Vec<pb::MetricsSet>>>,
 }
 
 impl NetworkShuffleExec {
@@ -143,7 +130,6 @@ impl NetworkShuffleExec {
             properties: input_stage.plan.properties().clone(),
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input_stage),
-            metrics_collection: Default::default(),
         }
     }
 
@@ -247,16 +233,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 &context,
             )?;
 
-            let metrics_collection = Arc::clone(&self.metrics_collection);
-            let stream = worker_connection.stream_partition(off + partition, move |meta| {
-                if let Some(flight_app_metadata::Content::MetricsCollection(m)) = meta.content {
-                    for task_metrics in m.tasks {
-                        if let Some(task_key) = task_metrics.task_key {
-                            metrics_collection.insert(task_key, task_metrics.metrics);
-                        };
-                    }
-                }
-            })?;
+            let stream = worker_connection.stream_partition(off + partition, |_meta| {})?;
             streams.push(stream);
         }
 

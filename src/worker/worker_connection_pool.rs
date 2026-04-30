@@ -140,6 +140,7 @@ impl WorkerConnection {
         let max_mem_used = MetricBuilder::new(metrics).global_gauge("max_mem_used");
         // Track the total encoded size of all recieved messages.
         let bytes_transferred = MetricBuilder::new(metrics).bytes_counter("bytes_transferred");
+        let msg_count = MetricBuilder::new(metrics).global_counter("msg_count");
         // Track end-to-end network latency distribution for all messages.
         let min_latency = MetricBuilder::new(metrics).min_latency("network_latency_min");
         let max_latency = MetricBuilder::new(metrics).max_latency("network_latency_max");
@@ -274,6 +275,7 @@ impl WorkerConnection {
                 let size = msg.encoded_len();
 
                 // Update memory related metrics.
+                msg_count.add(1);
                 bytes_transferred.add_bytes(size);
                 let curr_mem_used = curr_mem_used.fetch_add(size, Ordering::Relaxed);
                 if curr_mem_used > curr_max_mem {

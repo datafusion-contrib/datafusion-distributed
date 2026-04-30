@@ -1,115 +1,22 @@
-use crate::NetworkBroadcastExec;
-use crate::execution_plans::NetworkCoalesceExec;
-use crate::execution_plans::NetworkShuffleExec;
-use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::TaskKey;
-use datafusion::common::HashMap;
-use datafusion::common::tree_node::Transformed;
-use datafusion::common::tree_node::TreeNode;
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::tree_node::TreeNodeRewriter;
-use datafusion::error::DataFusionError;
+use crate::distributed_planner::NetworkBoundaryExt;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::internal_err;
 use datafusion::physical_plan::metrics::MetricsSet;
 use std::sync::Arc;
 
-/// TaskMetricsCollector is used to collect metrics from a task. It implements [TreeNodeRewriter].
-/// Note: TaskMetricsCollector is not a [datafusion::physical_plan::ExecutionPlanVisitor] to keep
-/// parity between [TaskMetricsCollector] and [TaskMetricsRewriter].
-pub struct TaskMetricsCollector {
-    /// metrics contains the metrics for the current task.
-    task_metrics: Vec<MetricsSet>,
-    /// input_task_metrics contains metrics for tasks from child [StageExec]s if they were
-    /// collected.
-    input_task_metrics: HashMap<TaskKey, Vec<pb::MetricsSet>>,
-}
-
-/// MetricsCollectorResult is the result of collecting metrics from a task.
-pub struct MetricsCollectorResult {
-    // metrics is a collection of metrics for a task ordered using a pre-order traversal of the task's plan.
-    pub task_metrics: Vec<MetricsSet>,
-    // input_task_metrics contains metrics for child tasks if they were collected.
-    pub input_task_metrics: HashMap<TaskKey, Vec<pb::MetricsSet>>,
-}
-
-impl TreeNodeRewriter for TaskMetricsCollector {
-    type Node = Arc<dyn ExecutionPlan>;
-
-    fn f_down(&mut self, plan: Self::Node) -> Result<Transformed<Self::Node>> {
-        // For plan nodes in this task, collect metrics.
-        match plan.metrics() {
-            Some(metrics) => self.task_metrics.push(metrics.clone()),
-            None => {
-                // TODO: Consider using a more efficent encoding scheme to avoid empty slots in the vec.
-                self.task_metrics.push(MetricsSet::new())
-            }
+/// Collects per-node metrics from the given plan via pre-order traversal,
+/// stopping at network boundary nodes (which have no subtree on the coordinator side).
+pub fn collect_plan_metrics(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<MetricsSet>> {
+    let mut metrics = Vec::new();
+    plan.apply(|node| {
+        metrics.push(node.metrics().unwrap_or_default());
+        if node.is_network_boundary() {
+            return Ok(TreeNodeRecursion::Jump);
         }
-
-        // If the plan is a network boundary, assume it has collected metrics already
-        // from child tasks.
-        let metrics_collection =
-            if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-                Some(Arc::clone(&node.metrics_collection))
-            } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-                Some(Arc::clone(&node.metrics_collection))
-            } else if let Some(node) = plan.as_any().downcast_ref::<NetworkBroadcastExec>() {
-                Some(Arc::clone(&node.metrics_collection))
-            } else {
-                None
-            };
-
-        if let Some(metrics_collection) = metrics_collection {
-            for mut entry in metrics_collection.iter_mut() {
-                let task_key = entry.key().clone();
-                let task_metrics = std::mem::take(entry.value_mut()); // Avoid copy.
-                match self.input_task_metrics.get(&task_key) {
-                    // There should never be two NetworkShuffleExec with metrics for the same task_key.
-                    // By convention, the NetworkShuffleExec which runs the last partition in a task should be
-                    // sent metrics (the NetworkShuffleExec tracks it for us).
-                    Some(_) => {
-                        return internal_err!(
-                            "duplicate task metrics for key {:?} during metrics collection",
-                            task_key
-                        );
-                    }
-                    None => {
-                        self.input_task_metrics
-                            .insert(task_key.clone(), task_metrics);
-                    }
-                }
-            }
-            // Skip the subtree of the NetworkShuffleExec.
-            return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
-        }
-
-        Ok(Transformed::new(plan, false, TreeNodeRecursion::Continue))
-    }
-}
-
-impl TaskMetricsCollector {
-    pub fn new() -> Self {
-        Self {
-            task_metrics: Vec::new(),
-            input_task_metrics: HashMap::new(),
-        }
-    }
-
-    /// collect metrics from an [ExecutionPlan] (usually a [StageExec].plan) and any child tasks.
-    /// Returns
-    /// - a vec representing the metrics for the current task (ordered using a pre-order traversal)
-    /// - a map representing the metrics for some subset of child tasks collected from NetworkShuffleExec leaves
-    pub fn collect(
-        mut self,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<MetricsCollectorResult, DataFusionError> {
-        plan.rewrite(&mut self)?;
-        Ok(MetricsCollectorResult {
-            task_metrics: self.task_metrics,
-            input_task_metrics: self.input_task_metrics,
-        })
-    }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(metrics)
 }
 
 #[cfg(test)]
@@ -266,15 +173,9 @@ mod tests {
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
 
-        // Collect metrics for all tasks from the root StageExec.
-        let collector = TaskMetricsCollector::new();
-
-        let result = collector.collect(dist_exec.plan.clone()).unwrap();
-
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
-            // Get the collected metrics for this task.
-            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
+            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
@@ -344,21 +245,20 @@ mod tests {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
 
-    /// Tests whether metrics are lost when a LIMIT causes early stream termination.
+    /// Tests whether metrics are preserved when a LIMIT causes early stream termination.
     ///
     /// Issue: https://github.com/datafusion-contrib/datafusion-distributed/issues/187
     ///
-    /// Metrics are piggybacked on the last FlightData message of the last partition stream
-    /// (see `impl_execute_task.rs`). If a LIMIT causes the client-side stream to be dropped before the
-    /// worker finishes, the last message (carrying metrics) is never received.
+    /// Previously, metrics were piggybacked on the last FlightData message of the last partition
+    /// stream. If a LIMIT caused the client-side stream to be dropped before the worker finished,
+    /// the last message (carrying metrics) was never received.
+    ///
+    /// Now metrics are sent via the WorkerToCoordinator side channel, so they are always
+    /// delivered regardless of early stream termination.
     ///
     /// This uses the `flights_1m` dataset (1M rows) so the worker is still producing data
     /// when the LIMIT causes the client to drop the stream.
-    ///
-    /// This test is ignored because it demonstrates a known issue: metrics are lost when the
-    /// client drops the stream early. Un-ignore it to reproduce the issue or to verify a fix.
     #[tokio::test]
-    #[ignore]
     async fn test_metrics_collection_with_limit_causing_early_stream_termination() {
         let ctx = make_test_ctx().await;
         register_parquet_tables(&ctx).await.unwrap();
@@ -384,21 +284,21 @@ mod tests {
 
         execute_plan(plan.clone(), &ctx).await;
 
-        let collector = TaskMetricsCollector::new();
-        let result = collector.collect(dist_exec.plan.clone()).unwrap();
+        // Metrics are delivered via the WorkerToCoordinator side channel in a background task.
+        // Yield briefly to let it complete before asserting.
+        tokio::task::yield_now().await;
 
-        for expected_task_key in expected_task_keys {
-            let actual_metrics = result
-                .input_task_metrics
-                .get(&expected_task_key)
+        for expected_task_key in &expected_task_keys {
+            let actual_metrics = dist_exec
+                .task_metrics
+                .get(expected_task_key)
                 .unwrap_or_else(|| {
                     panic!(
                         "Missing metrics for task key {expected_task_key:?}. \
                          The LIMIT caused the stream to be dropped before the worker \
-                         sent the last FlightData message with metrics."
+                         sent metrics via the coordinator channel."
                     )
                 });
-
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
@@ -439,12 +339,10 @@ mod tests {
             .expect("expected DistributedExec");
 
         let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
-        let collector = TaskMetricsCollector::new();
-        let result = collector.collect(dist_exec.plan.clone()).unwrap();
 
         // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
         for expected_task_key in expected_task_keys {
-            let actual_metrics = result.input_task_metrics.get(&expected_task_key).unwrap();
+            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.local_plan().unwrap();
 

@@ -175,7 +175,7 @@ use datafusion::physical_expr::Partitioning;
 use std::fmt::Write;
 
 /// explain_analyze renders an [ExecutionPlan] with metrics.
-pub fn explain_analyze(
+pub async fn explain_analyze(
     executed: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<String, DataFusionError> {
@@ -184,7 +184,7 @@ pub fn explain_analyze(
             .indent(true)
             .to_string()),
         Some(_) => {
-            let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format)?;
+            let executed = rewrite_distributed_plan_with_metrics(executed.clone(), format).await?;
             Ok(display_plan_ascii(executed.as_ref(), true))
         }
     }
