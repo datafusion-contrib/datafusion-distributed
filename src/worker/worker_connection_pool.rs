@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -98,6 +99,11 @@ impl WorkerConnectionPool {
 
 type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 
+/// Soft byte budget the demux task will buffer in memory before pausing the gRPC
+/// pull. Per-partition channels are unbounded (to avoid head-of-line blocking
+/// between sibling partitions), so backpressure is enforced globally here instead.
+const PER_CONNECTION_BUFFER_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
 /// data from single partitions while the actual network communication is handling all the partitions
 /// under the hood.
@@ -114,6 +120,9 @@ pub(crate) struct WorkerConnection {
     not_consumed_streams: Arc<AtomicUsize>,
     cancel_token: CancellationToken,
     per_partition_rx: DashMap<usize, UnboundedReceiver<WorkerMsg>>,
+
+    // Signals the demux task that buffered memory has been freed by a consumer.
+    mem_available_notify: Arc<Notify>,
 
     // Metrics collection stuff.
     memory_reservation: Arc<MemoryReservation>,
@@ -182,9 +191,11 @@ impl WorkerConnection {
         };
 
         // The senders and receivers are unbounded queues used for multiplexing the record
-        // batches sent through the single gRPC stream into one stream per partition.
-        // The received record batches contain information of the partition to which they belong,
-        // so we use that for determining where to put them.
+        // batches sent through the single gRPC stream into one stream per partition. They
+        // are unbounded to avoid head-of-line blocking: a single bounded queue could block
+        // the demux task and starve all sibling partitions even though they have capacity,
+        // which deadlocks queries with cross-partition dependencies.
+        // Total memory is bounded globally below via `mem_available_notify`.
         let mut per_partition_tx = Vec::with_capacity(target_partition_range.len());
         let per_partition_rx = DashMap::with_capacity(target_partition_range.len());
         for partition in target_partition_range.clone() {
@@ -192,6 +203,9 @@ impl WorkerConnection {
             per_partition_tx.push(tx);
             per_partition_rx.insert(partition, rx);
         }
+
+        let mem_available_notify = Arc::new(Notify::new());
+        let mem_available_notify_for_task = Arc::clone(&mem_available_notify);
 
         // Cancellation token allows us to stop the background task promptly when all partition
         // streams are dropped (e.g., when the query is cancelled).
@@ -215,6 +229,20 @@ impl WorkerConnection {
             };
 
             loop {
+                // Backpressure gate. Per-partition channels are unbounded, so we cap
+                // total in-flight buffered bytes here by pausing the gRPC pull when
+                // consumers haven't drained enough. This propagates flow control all
+                // the way back to the worker without coupling sibling partitions.
+                // We always allow a message through when reservation == 0 to avoid
+                // livelock if a single message is larger than the budget.
+                while memory_reservation.size() >= PER_CONNECTION_BUFFER_BUDGET_BYTES {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = mem_available_notify_for_task.notified() => {}
+                    }
+                }
+
                 // Check for cancellation while waiting for the next message.
                 let flight_data = tokio::select! {
                     biased;
@@ -291,6 +319,7 @@ impl WorkerConnection {
             cancel_token,
             not_consumed_streams: Arc::new(AtomicUsize::new(per_partition_rx.len())),
             per_partition_rx,
+            mem_available_notify,
 
             // metrics stuff
             memory_reservation: memory_reservation_clone,
@@ -324,8 +353,11 @@ impl WorkerConnection {
         let stream = UnboundedReceiverStream::new(partition_receiver);
         let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
         let reservation = Arc::clone(&self.memory_reservation);
+        let mem_available_notify = Arc::clone(&self.mem_available_notify);
         let stream = stream.map_ok(move |(data, meta)| {
             reservation.shrink(data.encoded_len());
+            // Wake the demux task in case it is blocked on the byte budget.
+            mem_available_notify.notify_one();
             let _ = &task; // <- keep the task that polls data from the network alive.
             on_metadata(meta);
             data
