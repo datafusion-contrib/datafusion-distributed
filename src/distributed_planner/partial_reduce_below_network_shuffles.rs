@@ -116,17 +116,17 @@ mod tests {
             sql_to_explain(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
                 .await;
         assert_snapshot!(explain, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │   RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │     AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]

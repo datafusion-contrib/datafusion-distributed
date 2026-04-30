@@ -298,14 +298,14 @@ mod tests {
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -329,14 +329,14 @@ mod tests {
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=2 partitions=3
@@ -358,17 +358,17 @@ mod tests {
         };
         let plan = explain_test_plan(query, options, true, |b| b).await;
         assert_snapshot!(plan, @r#"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0] t2:[p0] 
+          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0] t2:[p0]
           │ ProjectionExec: expr=[MinTemp@0 as MinTemp, row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rn]
           │   BoundedWindowAggExec: wdw=[row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
           │     SortExec: expr=[RainToday@1 ASC NULLS LAST, MinTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2]
             │ RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=1
             │   PartitionIsolatorExec: tasks=3 partitions=3
             │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
@@ -417,7 +417,7 @@ mod tests {
         │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
         │           [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p0] t2:[p0] 
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p0] t2:[p0]
           │ RepartitionExec: partitioning=Hash([RainToday@0], 1), input_partitions=1
           │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -464,14 +464,14 @@ mod tests {
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -536,13 +536,13 @@ mod tests {
         │       AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
         │         [Stage 3] => NetworkShuffleExec: output_partitions=1, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ ProjectionExec: expr=[avg(weather.MinTemp)@1 as MinTemp, RainTomorrow@0 as RainTomorrow]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainTomorrow@0 as RainTomorrow], aggr=[avg(weather.MinTemp)]
           │     LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainTomorrow@0]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 2), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MinTemp)]
             │     FilterExec: RainToday@1 = yes, projection=[MinTemp@0, RainTomorrow@2]
@@ -550,7 +550,7 @@ mod tests {
             │         PartitionIsolatorExec: tasks=3 partitions=3
             │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@19 = yes, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= yes AND yes <= RainToday_max@1, required_guarantees=[RainToday in (yes)]
             └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0] t1:[p0] t2:[p0] 
+          ┌───── Stage 3 ── Tasks: t0:[p0] t1:[p0] t2:[p0]
           │ RepartitionExec: partitioning=Hash([RainTomorrow@0], 1), input_partitions=4
           │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
           │     FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
@@ -597,12 +597,12 @@ mod tests {
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
           │   LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0, WindGustDir@1]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0, WindGustDir@1], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday, WindGustDir@1 as WindGustDir], aggr=[]
             │     PartitionIsolatorExec: tasks=3 partitions=3

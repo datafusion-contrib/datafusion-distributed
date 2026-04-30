@@ -269,7 +269,7 @@ mod tests {
         │       AggregateExec: mode=FinalPartitioned, gby=[env@0 as env, time_bin@1 as time_bin], aggr=[avg(a.max_bin_value)]
         │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p0] 
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p0]
           │ RepartitionExec: partitioning=Hash([env@0, time_bin@1], 1), input_partitions=2
           │   AggregateExec: mode=Partial, gby=[env@1 as env, time_bin@0 as time_bin], aggr=[avg(a.max_bin_value)]
           │     ProjectionExec: expr=[date_bin(IntervalMonthDayNano("IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 30000000000 }"),j.timestamp)@1 as time_bin, env@2 as env, max(j.value)@3 as max_bin_value]

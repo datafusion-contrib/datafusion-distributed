@@ -49,19 +49,19 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -132,17 +132,17 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[RainToday@0]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
