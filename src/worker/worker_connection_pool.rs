@@ -96,7 +96,7 @@ impl WorkerConnectionPool {
     }
 }
 
-type WorkerMsg = Result<(FlightData, FlightAppMetadata, MemoryReservation), Status>;
+type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
 /// data from single partitions while the actual network communication is handling all the partitions
@@ -116,7 +116,7 @@ pub(crate) struct WorkerConnection {
     per_partition_rx: DashMap<usize, UnboundedReceiver<WorkerMsg>>,
 
     // Metrics collection stuff.
-    curr_mem_used: Arc<AtomicUsize>,
+    memory_reservation: Arc<MemoryReservation>,
     elapsed_compute: Time,
 }
 
@@ -129,10 +129,11 @@ impl WorkerConnection {
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
-
-        // Stuff for collecting metrics.
-        let curr_mem_used = Arc::new(AtomicUsize::new(0));
-        let curr_mem_used_clone = Arc::clone(&curr_mem_used);
+        // We are retaining record batches in memory until they are consumed, so we need to account
+        // for them in the memory pool.
+        let memory_reservation =
+            Arc::new(MemoryConsumer::new("WorkerConnection").register(ctx.memory_pool()));
+        let memory_reservation_clone = Arc::clone(&memory_reservation);
 
         // Track the maximum memory used to buffer recieved messages.
         let mut curr_max_mem = 0;
@@ -192,10 +193,6 @@ impl WorkerConnection {
             per_partition_rx.insert(partition, rx);
         }
 
-        // We are retaining record batches in memory until they are consumed, so we need to account
-        // for them in the memory pool.
-        let memory_pool = Arc::clone(ctx.memory_pool());
-
         // Cancellation token allows us to stop the background task promptly when all partition
         // streams are dropped (e.g., when the query is cancelled).
         let cancel_token = CancellationToken::new();
@@ -217,11 +214,9 @@ impl WorkerConnection {
                 Err(err) => return fanout(&per_partition_tx, err),
             };
 
-            let consumer = MemoryConsumer::new("WorkerConnection");
-
             loop {
                 // Check for cancellation while waiting for the next message.
-                let msg = tokio::select! {
+                let flight_data = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return,
                     msg = interleaved_stream.next() => {
@@ -236,7 +231,7 @@ impl WorkerConnection {
                 // Earliest time at which the msg was received.
                 let msg_received_time = SystemTime::now();
 
-                let flight_metadata = match FlightAppMetadata::decode(msg.app_metadata.as_ref()) {
+                let flight_metadata = match FlightAppMetadata::decode(flight_data.app_metadata.as_ref()) {
                     Ok(v) => v,
                     Err(err) => {
                         return fanout(&per_partition_tx, Status::internal(err.to_string()));
@@ -273,20 +268,19 @@ impl WorkerConnection {
                 // so that it gets dropped as soon as the message leaves the queue. Dropping the
                 // memory reservation means releasing the memory from the pool for that specific
                 // message
-                let reservation = consumer.clone_with_new_id().register(&memory_pool);
-                let size = msg.encoded_len();
+                let size = flight_data.encoded_len();
+                memory_reservation.grow(size);
 
                 // Update memory related metrics.
                 msg_count.add(1);
                 bytes_transferred.add_bytes(size);
-                let curr_mem_used = curr_mem_used.fetch_add(size, Ordering::Relaxed);
-                if curr_mem_used > curr_max_mem {
-                    curr_max_mem = curr_mem_used;
+                let curr_mem = memory_reservation.size();
+                if curr_mem > curr_max_mem {
+                    curr_max_mem = curr_mem;
                     max_mem_used.set(curr_max_mem);
                 }
 
-                reservation.grow(size);
-                if o_tx.send(Ok((msg, flight_metadata, reservation))).is_err() {
+                if o_tx.send(Ok((flight_data, flight_metadata))).is_err() {
                     return; // channel closed
                 };
             }
@@ -299,7 +293,7 @@ impl WorkerConnection {
             per_partition_rx,
 
             // metrics stuff
-            curr_mem_used: curr_mem_used_clone,
+            memory_reservation: memory_reservation_clone,
             elapsed_compute: elapsed_compute_clone,
         })
     }
@@ -326,13 +320,12 @@ impl WorkerConnection {
         };
         let task = Arc::clone(&self.task);
         let cancel_token = self.cancel_token.clone();
-        let curr_mem_used = Arc::clone(&self.curr_mem_used);
 
         let stream = UnboundedReceiverStream::new(partition_receiver);
         let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
-        let stream = stream.map_ok(move |(data, meta, reservation)| {
-            curr_mem_used.fetch_sub(reservation.size(), Ordering::Relaxed);
-            drop(reservation); // <- drop the reservation, freeing memory on the memory pool.
+        let reservation = Arc::clone(&self.memory_reservation);
+        let stream = stream.map_ok(move |(data, meta)| {
+            reservation.shrink(data.encoded_len());
             let _ = &task; // <- keep the task that polls data from the network alive.
             on_metadata(meta);
             data
