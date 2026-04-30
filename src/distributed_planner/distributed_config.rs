@@ -58,6 +58,13 @@ extensions_options! {
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
         /// aggregation significantly reduces cardinality, but adds overhead when it does not.
         pub partial_reduce: bool, default = false
+        /// Soft byte budget that each per-worker connection will buffer in memory before pausing
+        /// the gRPC pull from that worker. Per-partition channels are unbounded (to avoid
+        /// head-of-line blocking between sibling partitions), so backpressure is enforced
+        /// globally per [WorkerConnection] using this budget. A single message larger than this
+        /// budget will still be admitted (otherwise we would livelock), so the actual peak per
+        /// connection is `worker_connection_buffer_budget_bytes + max_message_size`.
+        pub worker_connection_buffer_budget_bytes: usize, default = 64 * 1024 * 1024
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

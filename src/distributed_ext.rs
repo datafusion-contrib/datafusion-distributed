@@ -541,6 +541,22 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_partial_reduce] but with an in-place mutation.
     fn set_distributed_partial_reduce(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
+    /// Sets the soft byte budget that each per-worker connection will buffer in memory before
+    /// pausing the gRPC pull from that worker. Per-partition channels are unbounded (to avoid
+    /// head-of-line blocking between sibling partitions), so backpressure is enforced globally
+    /// per worker connection using this budget.
+    fn with_distributed_worker_connection_buffer_budget_bytes(
+        self,
+        budget_bytes: usize,
+    ) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_worker_connection_buffer_budget_bytes] but with
+    /// an in-place mutation.
+    fn set_distributed_worker_connection_buffer_budget_bytes(
+        &mut self,
+        budget_bytes: usize,
+    ) -> Result<(), DataFusionError>;
+
     /// Registers a [WorkUnitFeed] so that Distributed DataFusion can discover it while traversing
     /// plans. For more info, refer to [WorkUnitFeed] docs.
     ///
@@ -693,6 +709,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_worker_connection_buffer_budget_bytes(
+        &mut self,
+        budget_bytes: usize,
+    ) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.worker_connection_buffer_budget_bytes = budget_bytes;
+        Ok(())
+    }
+
     fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
     where
         T: ExecutionPlan + 'static,
@@ -774,6 +799,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_worker_connection_buffer_budget_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_worker_connection_buffer_budget_bytes(mut self, budget_bytes: usize) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_work_unit_feed)]
             #[expr($;self)]
@@ -874,6 +903,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_worker_connection_buffer_budget_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_worker_connection_buffer_budget_bytes(mut self, budget_bytes: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
             where
@@ -981,6 +1015,11 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
+            fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_worker_connection_buffer_budget_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_worker_connection_buffer_budget_bytes(mut self, budget_bytes: usize) -> Result<Self, DataFusionError>;
+
             fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
             where
                 T: ExecutionPlan + 'static,
@@ -1086,6 +1125,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_partial_reduce)]
             #[expr($?;Ok(self))]
             fn with_distributed_partial_reduce(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_worker_connection_buffer_budget_bytes(&mut self, budget_bytes: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_worker_connection_buffer_budget_bytes)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_worker_connection_buffer_budget_bytes(self, budget_bytes: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_work_unit_feed<T, P, F>(&mut self, getter: F)
             where
