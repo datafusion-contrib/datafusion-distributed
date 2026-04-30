@@ -43,9 +43,34 @@ const SPLIT_CHANNEL_CAPACITY: usize = 2;
 /// [RepartitionExec](datafusion::physical_plan::repartition::RepartitionExec). It preserves the
 /// upstream task's ownership and only redistributes rows among local output partitions.
 ///
+/// # Fields
+///
+/// - `hash_exprs`: the hash keys used to assign rows to local output partitions. These are the
+///   same expressions the upstream [crate::NetworkShuffleExec] used to assign the input partition
+///   to this task, so global ownership is preserved.
+/// - `base_partition_count`: the number of input partitions this task owns from the upstream
+///   shuffle (typically 1 after the planner sets `RepartitionExec` to `consumer_task_count`).
+/// - `local_partition_count`: the local fanout factor — each input partition is split into this
+///   many output partitions on the same task.
+///
+/// # Diagram
+///
 /// ```text
-/// TODO diagram: one owned shuffle partition -> LocalExchangeSplitExec -> several local output
-/// partitions on the same consumer task.
+///                           ┌───────────────────────────────────┐                              ■
+///                           │      LocalExchangeSplitExec       │                              │
+///                           │             (task K)              │                          Consumer
+///                           └─┬─┬─┬─┬───────────────────────────┘                              │
+///                             │0││1││2││3│                                                     │
+///                             └─┘└─┘└─┘└─┘                                                     ■
+///                              ▲  ▲  ▲  ▲
+///                              └──┴──┼──┘   re-hash on `hash_exprs`
+///                                    │
+///                                   ┌─┐                                                        ■
+///                                   │p│                                                        │
+///                          ┌────────┴─┴────────┐                                            Inbound
+///                          │ NetworkShuffleExec │   owns 1 logical hash partition `p`           │
+///                          │      (task K)      │                                              │
+///                          └───────────────────┘                                                ■
 /// ```
 ///
 /// Consumers must eventually execute every output partition for a given input partition. The

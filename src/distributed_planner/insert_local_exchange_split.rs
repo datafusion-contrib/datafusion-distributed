@@ -8,12 +8,132 @@ use std::sync::Arc;
 
 /// Inserts [LocalExchangeSplitExec] above narrow post-shuffle consumers.
 ///
-/// This pass runs after network exchange insertion, when every [NetworkShuffleExec] already has an
-/// assigned [crate::distributed_planner::ExchangeLayout]. It only adds local fanout inside the
-/// consumer task via [LocalExchangeSplitExec] when the next operator would benefit from more
-/// partitions.
+/// # Ordering
 ///
-/// The default policy targets final partitioned aggregates and partitioned hash joins.
+/// This pass runs after network-boundary insertion in [crate::distributed_planner::distribute_plan].
+/// Thus, by the time it executes, every [NetworkShuffleExec] has its
+/// [crate::distributed_planner::ExchangeLayout] assigned. This pass does not change network
+/// ownership; it only adds local parallelism inside each consumer task.
+///
+/// # What it inserts
+///
+/// A [LocalExchangeSplitExec] is placed directly above a narrow shuffle consumer:
+/// - [AggregateExec] in [AggregateMode::FinalPartitioned] mode
+/// - [HashJoinExec] in [PartitionMode::Partitioned] mode
+///
+/// It splits the owned logical partition range into `local_partition_count` local output
+/// partitions per owned partition, re-hashing on the same keys the upstream
+/// [datafusion::physical_plan::repartition::RepartitionExec] used.
+///
+/// # Modes
+///
+/// Behavior is determined by [DistributedConfig::local_exchange_split_mode]:
+///
+/// - [crate::distributed_planner::LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG]
+///   — only insert above final partitioned aggregates.
+/// - [crate::distributed_planner::LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN]
+///   — insert above final partitioned aggregates and partitioned hash joins (default).
+/// - [crate::distributed_planner::LOCAL_EXCHANGE_SPLIT_MODE_ALL_NARROW_SHUFFLES]
+///   — insert above any narrow post-shuffle consumer that requires more partitions.
+///
+/// # Before
+///
+/// ```text
+///               ┌─┐                                 ┌─┐
+///               │1│                                 │1│
+/// ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐
+/// │  AggregationExec(Final) /   │     │  AggregationExec(Final) /   │
+/// │  HashJoinExec(Partitioned)  │ ... │  HashJoinExec(Partitioned)  │
+/// │          (Task 1)           │     │          (Task M)           │
+/// │                             │     │                             │
+/// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
+///               │1│                                 │1│
+///               └▲┘                                 └▲┘
+///                │                                   │
+///                │                                   │
+///                │                                   │
+///               ┌─┐                                 ┌─┐
+///               │1│                                 │1│
+/// ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐
+/// │                             │     │                             │
+/// │     NetworkShuffleExec      │ ... │     NetworkShuffleExec      │
+/// │          (Task 1)           │     │          (Task M)           │
+/// │                             │     │                             │
+/// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
+///               │1│                                 │1│
+///               └▲┘                                 └▲┘
+///                │                                   │
+///                │                                   │
+///                └─────────────┐       ┌─────────────┘
+///                              │       │
+///                              │       │
+///                              │       │
+///                             ┌─┐ ... ┌─┐
+///                             │1│     │N│
+///                   ┌─────────┴─┴─────┴─┴─────────┐
+///                   │                             │
+///                   │       RepartitionExec       │
+///                   │          (Task 1)           │
+///                   │                             │
+///                   └─────────┬─┬─────┬─┬─────────┘
+///                             │1│     │N│
+///                             └─┘ ... └─┘
+/// ```
+///
+/// # After
+///
+/// ```text
+///           ┌─┐ ... ┌─┐                         ┌─┐ ... ┌─┐
+///           │1│     │L│                         │1│     │L│
+/// ┌─────────┴─┴─────┴─┴─────────┐     ┌─────────┴─┴─────┴─┴─────────┐
+/// │  AggregationExec(Final) /   │     │  AggregationExec(Final) /   │
+/// │  HashJoinExec(Partitioned)  │ ... │  HashJoinExec(Partitioned)  │
+/// │          (Task 1)           │     │          (Task M)           │
+/// │                             │     │                             │
+/// └─────────┬─┬─────┬─┬─────────┘     └─────────┬─┬─────┬─┬─────────┘
+///           │1│     │L│                         │1│     │L│
+///           └▲┘ ... └▲┘                         └▲┘ ... └▲┘
+///            │       │                           │       │
+///            │       │                           │       │
+///           ┌─┐ ... ┌─┐                         ┌─┐ ... ┌─┐
+///           │1│     │L│                         │1│     │L│
+/// ┌─────────┴─┴─────┴─┴─────────┐     ┌─────────┴─┴─────┴─┴─────────┐
+/// │                             │     │                             │
+/// │   LocalExchangeSplitExec    │ ... │   LocalExchangeSplitExec    │
+/// │          (Task 1)           │     │          (Task M)           │
+/// │                             │     │                             │
+/// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
+///               │1│                                 │1│
+///               └▲┘                                 └▲┘
+///                │                                   │
+///                │                                   │
+///               ┌─┐                                 ┌─┐
+///               │1│                                 │1│
+/// ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐
+/// │                             │     │                             │
+/// │     NetworkShuffleExec      │ ... │     NetworkShuffleExec      │
+/// │          (Task 1)           │     │          (Task M)           │
+/// │                             │     │                             │
+/// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
+///               │1│                                 │1│
+///               └▲┘                                 └▲┘
+///                │                                   │
+///                │                                   │
+///                └─────────────┐       ┌─────────────┘
+///                              │       │
+///                              │       │
+///                              │       │
+///                             ┌─┐ ... ┌─┐
+///                             │1│     │N│
+///                   ┌─────────┴─┴─────┴─┴─────────┐
+///                   │                             │
+///                   │       RepartitionExec       │
+///                   │          (Task 1)           │
+///                   │                             │
+///                   └─────────┬─┬─────┬─┬─────────┘
+///                             │1│     │N│
+///                             └─┘ ... └─┘
+/// ```
 pub(crate) fn insert_local_exchange_split_execs(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
@@ -90,20 +210,13 @@ fn target_partition_count_for_candidate(
         FanoutRequirement::PolicyDriven
             if d_cfg.local_exchange_split_mode_is_all_narrow_shuffles() =>
         {
-            default_target_partition_count_for_candidate(candidate, d_cfg)
+            default_target_partition_count_for_owned(
+                candidate.owned_partition_count,
+                d_cfg.local_exchange_split_target_partitions_per_task,
+            )
         }
         FanoutRequirement::PolicyDriven => None,
     }
-}
-
-fn default_target_partition_count_for_candidate(
-    candidate: &LocalExchangeSplitCandidate,
-    d_cfg: &DistributedConfig,
-) -> Option<usize> {
-    default_target_partition_count_for_owned(
-        candidate.owned_partition_count,
-        d_cfg.local_exchange_split_target_partitions_per_task,
-    )
 }
 
 fn rewrite_final_partitioned_aggregate(
@@ -123,7 +236,10 @@ fn rewrite_final_partitioned_aggregate(
             let candidate =
                 LocalExchangeSplitCandidate::try_find_source(Arc::clone(&input), d_cfg)?;
             candidate.as_ref().and_then(|candidate| {
-                default_target_partition_count_for_candidate(candidate, d_cfg)
+                default_target_partition_count_for_owned(
+                    candidate.owned_partition_count,
+                    d_cfg.local_exchange_split_target_partitions_per_task,
+                )
             })
         }
     };
@@ -185,6 +301,7 @@ fn can_join_produce_target_partition_count(
         return true;
     }
 
+    // Widening both join sides is only safe when they refine the same upstream hash.
     left.base_partition_count == right.base_partition_count
 }
 
@@ -217,6 +334,8 @@ fn rewrite_partitioned_join(
     let right_candidate = LocalExchangeSplitCandidate::try_find_source(Arc::clone(&right), d_cfg)?;
 
     let (Some(left_candidate), Some(right_candidate)) = (&left_candidate, &right_candidate) else {
+        // Partitioned joins require equal input partition counts. If only one side can be split,
+        // recurse with each child's current count rather than widening one side independently.
         return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
     };
 
@@ -651,19 +770,19 @@ mod tests {
         "#;
         let plan = weather_query_to_split_plan(query, FINAL_AGG_SPLIT_OPTIONS).await;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=4, exprs=[RainToday@0]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -682,18 +801,18 @@ mod tests {
         "#;
         let plan = weather_query_to_split_plan(query, FINAL_AGG_SKIP_OPTIONS).await;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0] 
+          ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p0]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] t2:[p0..p1]
             │ RepartitionExec: partitioning=Hash([RainToday@0], 2), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3
@@ -729,13 +848,13 @@ mod tests {
         let distributed = DistributedExec::new(plan);
 
         assert_snapshot!(display_plan_ascii(&distributed, false), @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(key@0, key@0)]
         │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         │     EmptyExec
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
@@ -780,7 +899,7 @@ mod tests {
         let distributed = DistributedExec::new(plan);
 
         assert_snapshot!(display_plan_ascii(&distributed, false), @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(key@0, key@0)]
         │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(key@0, key@0)]
@@ -788,15 +907,15 @@ mod tests {
         │       [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         │     [Stage 3] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 3 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
@@ -852,7 +971,7 @@ mod tests {
         let distributed = DistributedExec::new(plan);
 
         assert_snapshot!(display_plan_ascii(&distributed, false), @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=Partitioned, join_type=Inner, on=[(key@0, key@0)]
         │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(key@0, key@0)]
@@ -862,15 +981,15 @@ mod tests {
         │         [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         │     [Stage 3] => NetworkShuffleExec: output_partitions=1, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+          ┌───── Stage 3 ── Tasks: t0:[p0..p1] t1:[p0..p1]
           │ RepartitionExec: partitioning=Hash([key@0], 2), input_partitions=1
           │   EmptyExec
           └──────────────────────────────────────────────────
@@ -889,24 +1008,24 @@ mod tests {
         "#;
         let plan = join_query_to_split_plan(query, PARTITIONED_JOIN_SPLIT_OPTIONS).await;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=16, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 3 ── Tasks: t0:[p0..p7] t1:[p0..p7] 
+          ┌───── Stage 3 ── Tasks: t0:[p0..p7] t1:[p0..p7]
           │ HashJoinExec: mode=Partitioned, join_type=Inner, on=[(d_dkey@1, f_dkey@2)], projection=[env@0, timestamp@2, value@3]
           │   LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[d_dkey@1]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           │   LocalExchangeSplitExec: input_partitions=1, base_partitions=2, local_partitions=8, exprs=[f_dkey@2]
           │     [Stage 2] => NetworkShuffleExec: output_partitions=1, input_tasks=2
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p0..p1]
             │ RepartitionExec: partitioning=Hash([d_dkey@1], 2), input_partitions=2
             │   FilterExec: service@1 = log, projection=[env@0, d_dkey@2]
             │     PartitionIsolatorExec: tasks=2 partitions=4
             │       DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/dim/d_dkey=A/data0.parquet], [/testdata/join/parquet/dim/d_dkey=B/data0.parquet], [/testdata/join/parquet/dim/d_dkey=C/data0.parquet], [/testdata/join/parquet/dim/d_dkey=D/data0.parquet]]}, projection=[env, service, d_dkey], file_type=parquet, predicate=service@1 = log, pruning_predicate=service_null_count@2 != row_count@3 AND service_min@0 <= log AND log <= service_max@1, required_guarantees=[service in (log)]
             └──────────────────────────────────────────────────
-            ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1] 
+            ┌───── Stage 2 ── Tasks: t0:[p0..p1] t1:[p0..p1]
             │ RepartitionExec: partitioning=Hash([f_dkey@2], 2), input_partitions=2
             │   PartitionIsolatorExec: tasks=2 partitions=4
             │     DataSourceExec: file_groups={4 groups: [[/testdata/join/parquet/fact/f_dkey=A/data0.parquet], [/testdata/join/parquet/fact/f_dkey=B/data0.parquet], [/testdata/join/parquet/fact/f_dkey=C/data0.parquet], [/testdata/join/parquet/fact/f_dkey=D/data0.parquet]]}, projection=[timestamp, value, f_dkey], file_type=parquet, predicate=DynamicFilter [ empty ]
@@ -924,18 +1043,18 @@ mod tests {
         "#;
         let plan = weather_query_to_split_plan(query, ALL_NARROW_WINDOW_OPTIONS).await;
         assert_snapshot!(plan, @r#"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3]
           │ ProjectionExec: expr=[RainToday@1 as RainToday, row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rn]
           │   BoundedWindowAggExec: wdw=[row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "row_number() PARTITION BY [weather.RainToday] ORDER BY [weather.MinTemp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
           │     SortExec: expr=[RainToday@1 ASC NULLS LAST, MinTemp@0 ASC NULLS LAST], preserve_partitioning=[true]
           │       LocalExchangeSplitExec: input_partitions=1, base_partitions=3, local_partitions=4, exprs=[RainToday@1]
           │         [Stage 1] => NetworkShuffleExec: output_partitions=1, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2]
             │ RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=1
             │   PartitionIsolatorExec: tasks=3 partitions=3
             │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
