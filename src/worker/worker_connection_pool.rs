@@ -5,7 +5,7 @@ use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
 use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
-use crate::{BytesMetricExt, ChannelResolver, Stage};
+use crate::{BytesMetricExt, ChannelResolver, DistributedConfig, Stage};
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -99,11 +99,6 @@ impl WorkerConnectionPool {
 
 type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 
-/// Soft byte budget the demux task will buffer in memory before pausing the gRPC
-/// pull. Per-partition channels are unbounded (to avoid head-of-line blocking
-/// between sibling partitions), so backpressure is enforced globally here instead.
-const PER_CONNECTION_BUFFER_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
 /// data from single partitions while the actual network communication is handling all the partitions
 /// under the hood.
@@ -138,6 +133,9 @@ impl WorkerConnection {
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let channel_resolver = get_distributed_channel_resolver(ctx.as_ref());
+        let buffer_budget_bytes =
+            DistributedConfig::from_config_options(ctx.session_config().options())?
+                .worker_connection_buffer_budget_bytes;
         // We are retaining record batches in memory until they are consumed, so we need to account
         // for them in the memory pool.
         let memory_reservation =
@@ -235,7 +233,7 @@ impl WorkerConnection {
                 // the way back to the worker without coupling sibling partitions.
                 // We always allow a message through when reservation == 0 to avoid
                 // livelock if a single message is larger than the budget.
-                while memory_reservation.size() >= PER_CONNECTION_BUFFER_BUDGET_BYTES {
+                while memory_reservation.size() >= buffer_budget_bytes {
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => return,
