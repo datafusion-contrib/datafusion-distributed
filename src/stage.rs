@@ -390,20 +390,19 @@ fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> Stri
     let partitioning = head.properties().output_partitioning();
     let input_partitions = partitioning.partition_count();
     let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
-    let mut result = "Tasks: ".to_string();
+    let mut tasks = Vec::with_capacity(n_tasks);
     let mut off = 0;
     for i in 0..n_tasks {
-        result += &format!("t{i}:[");
         let end = off + input_partitions - 1;
-        if input_partitions == 1 {
-            result += &format!("p{off}");
+        let partitions = if input_partitions == 1 {
+            format!("p{off}")
         } else {
-            result += &format!("p{off}..p{end}");
-        }
-        result += "] ";
+            format!("p{off}..p{end}")
+        };
+        tasks.push(format!("t{i}:[{partitions}]"));
         off += if hash_shuffle { 0 } else { input_partitions }
     }
-    result
+    format!("Tasks: {}", tasks.join(" "))
 }
 
 // num_colors must agree with the colorscheme selected from
