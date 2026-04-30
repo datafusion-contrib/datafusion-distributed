@@ -9,6 +9,8 @@ mod plan_annotator;
 mod session_state_builder_ext;
 mod task_estimator;
 
+#[cfg(test)]
+pub(crate) use distribute_plan::test_helpers::insert_network_boundaries_for_test;
 pub use distributed_config::{
     DistributedConfig, LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG,
     LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN, LOCAL_EXCHANGE_SPLIT_MODE_OFF,

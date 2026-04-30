@@ -50,8 +50,6 @@ use std::sync::Arc;
 ///               │1│                                 │1│
 ///               └▲┘                                 └▲┘
 ///                │                                   │
-///                │                                   │
-///                │                                   │
 ///               ┌─┐                                 ┌─┐
 ///               │1│                                 │1│
 /// ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐
@@ -63,10 +61,7 @@ use std::sync::Arc;
 ///               │1│                                 │1│
 ///               └▲┘                                 └▲┘
 ///                │                                   │
-///                │                                   │
 ///                └─────────────┐       ┌─────────────┘
-///                              │       │
-///                              │       │
 ///                              │       │
 ///                             ┌─┐ ... ┌─┐
 ///                             │1│     │N│
@@ -94,7 +89,6 @@ use std::sync::Arc;
 ///           │1│     │L│                         │1│     │L│
 ///           └▲┘ ... └▲┘                         └▲┘ ... └▲┘
 ///            │       │                           │       │
-///            │       │                           │       │
 ///           ┌─┐ ... ┌─┐                         ┌─┐ ... ┌─┐
 ///           │1│     │L│                         │1│     │L│
 /// ┌─────────┴─┴─────┴─┴─────────┐     ┌─────────┴─┴─────┴─┴─────────┐
@@ -105,7 +99,6 @@ use std::sync::Arc;
 /// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
 ///               │1│                                 │1│
 ///               └▲┘                                 └▲┘
-///                │                                   │
 ///                │                                   │
 ///               ┌─┐                                 ┌─┐
 ///               │1│                                 │1│
@@ -118,10 +111,7 @@ use std::sync::Arc;
 ///               │1│                                 │1│
 ///               └▲┘                                 └▲┘
 ///                │                                   │
-///                │                                   │
 ///                └─────────────┐       ┌─────────────┘
-///                              │       │
-///                              │       │
 ///                              │       │
 ///                             ┌─┐ ... ┌─┐
 ///                             │1│     │N│
@@ -145,35 +135,43 @@ pub(crate) fn insert_local_exchange_split_execs(
     rewrite_plan(plan, d_cfg, None)
 }
 
+/// How a downstream consumer asks its input path to expose more local partitions.
+#[derive(Clone, Copy)]
+enum SplitPolicy {
+    /// Choose a target from the shuffle ownership and per-task target.
+    Infer,
+    /// Require an exact target, used to keep partitioned join sides aligned.
+    Fixed(usize),
+}
+
 fn rewrite_plan(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    required_output_partition_count: Option<usize>,
+    requirement: Option<SplitPolicy>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
         && d_cfg.local_exchange_split_mode_allows_partitioned_join()
         && join.partition_mode() == &PartitionMode::Partitioned
     {
-        return rewrite_partitioned_join(plan, d_cfg, required_output_partition_count);
+        return rewrite_partitioned_join(plan, d_cfg, requirement);
     }
 
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
         && aggregate.mode() == &AggregateMode::FinalPartitioned
-        && (d_cfg.local_exchange_split_mode_allows_final_agg()
-            || required_output_partition_count.is_some())
+        && (d_cfg.local_exchange_split_mode_allows_final_agg() || requirement.is_some())
     {
-        return rewrite_final_partitioned_aggregate(plan, d_cfg, required_output_partition_count);
+        return rewrite_final_partitioned_aggregate(plan, d_cfg, requirement);
     }
 
     // A shuffle/split boundary starts an independent producer stage. Consumer-side partition
     // requirements must not leak through it, even if that shuffle is not itself split-eligible.
-    let child_required_output_partition_count = if is_requirement_boundary(&plan) {
+    let child_requirement = if is_requirement_boundary(&plan) {
         None
     } else {
-        required_output_partition_count
+        requirement
     };
-    let plan = rewrite_children(plan, d_cfg, child_required_output_partition_count)?;
-    if let Some(target) = required_output_partition_count
+    let plan = rewrite_children(plan, d_cfg, child_requirement)?;
+    if let Some(target) = requirement
         && let Some(rewritten) = try_insert_split_after_shuffle(Arc::clone(&plan), d_cfg, target)?
     {
         return Ok(rewritten);
@@ -186,67 +184,125 @@ fn is_requirement_boundary(plan: &Arc<dyn ExecutionPlan>) -> bool {
     plan.as_any().is::<NetworkShuffleExec>() || plan.as_any().is::<LocalExchangeSplitExec>()
 }
 
-fn default_target_partition_count_for_owned(
-    owned: usize,
-    target_partitions_per_task: usize,
-) -> Option<usize> {
-    if owned == 0 || target_partitions_per_task == 0 || owned >= target_partitions_per_task {
-        return None;
-    }
-
-    Some(target_partitions_per_task.div_ceil(owned) * owned)
-}
-
-fn rewrite_final_partitioned_aggregate(
+fn rewrite_children(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    required_output_partition_count: Option<usize>,
+    requirement: Option<SplitPolicy>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let children = plan.children();
     if children.is_empty() {
         return Ok(plan);
     }
 
-    let input = Arc::clone(children[0]);
-    let target = match required_output_partition_count {
-        Some(target) => Some(target),
-        None => final_agg_target_partition_count(Arc::clone(&input), d_cfg)?,
-    };
+    let plan_output_partition_count = plan.output_partitioning().partition_count();
 
-    let mut new_children = Vec::with_capacity(children.len());
-    new_children.push(rewrite_plan(input, d_cfg, target)?);
-    for child in children.into_iter().skip(1) {
-        new_children.push(rewrite_plan(Arc::clone(child), d_cfg, None)?);
-    }
+    let new_children = children
+        .into_iter()
+        .map(|child| {
+            // Keep the requirement on the partition-count-preserving path. This covers unary
+            // transparent nodes and the streamed side of collect-left joins.
+            let child_req = if requirement.is_some()
+                && child.output_partitioning().partition_count() == plan_output_partition_count
+            {
+                requirement
+            } else {
+                None
+            };
+            rewrite_plan(Arc::clone(child), d_cfg, child_req)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     plan.with_new_children(new_children)
 }
 
-fn final_agg_target_partition_count(
-    input: Arc<dyn ExecutionPlan>,
+fn rewrite_final_partitioned_aggregate(
+    plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-) -> Result<Option<usize>> {
-    let Some(input) = find_split_input(input, d_cfg)? else {
-        return Ok(None);
+    requirement: Option<SplitPolicy>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    let [input] = children.as_slice() else {
+        return Ok(plan);
     };
-
-    Ok(default_target_partition_count_for_owned(
-        input.owned_partition_count,
-        d_cfg.local_exchange_split_target_partitions_per_task,
-    ))
+    // Final aggregates can split one input path independently.
+    let child_requirement = requirement.or(Some(SplitPolicy::Infer));
+    Arc::clone(&plan).with_new_children(vec![rewrite_plan(
+        Arc::clone(input),
+        d_cfg,
+        child_requirement,
+    )?])
 }
 
-fn lcm(lhs: usize, rhs: usize) -> Option<usize> {
-    fn gcd(mut lhs: usize, mut rhs: usize) -> usize {
-        while rhs != 0 {
-            let rem = lhs % rhs;
-            lhs = rhs;
-            rhs = rem;
-        }
-        lhs
-    }
+fn rewrite_partitioned_join(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+    requirement: Option<SplitPolicy>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    let [left, right] = children.as_slice() else {
+        return Ok(plan);
+    };
+    let (left, right) = (Arc::clone(left), Arc::clone(right));
 
-    lhs.checked_div(gcd(lhs, rhs))?.checked_mul(rhs)
+    // Partitioned joins must expose the same partition count on both sides.
+    let Some(left_input) = find_split_input(Arc::clone(&left), d_cfg)? else {
+        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
+    };
+    let Some(right_input) = find_split_input(Arc::clone(&right), d_cfg)? else {
+        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
+    };
+
+    let required_count = match requirement {
+        Some(SplitPolicy::Fixed(n)) => Some(n),
+        _ => None,
+    };
+    let Some(target_partition_count) = partitioned_join_target_partition_count(
+        &left_input,
+        &right_input,
+        d_cfg.local_exchange_split_target_partitions_per_task,
+        required_count,
+    ) else {
+        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
+    };
+
+    let fixed = Some(SplitPolicy::Fixed(target_partition_count));
+    let rewritten = Arc::clone(&plan).with_new_children(vec![
+        rewrite_plan(Arc::clone(&left), d_cfg, fixed)?,
+        rewrite_plan(Arc::clone(&right), d_cfg, fixed)?,
+    ])?;
+
+    if has_hash_partition_count(&rewritten, target_partition_count) {
+        Ok(rewritten)
+    } else {
+        // Some node on a join input did not preserve the widened hash partitioning.
+        rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg)
+    }
+}
+
+fn rewrite_partitioned_join_children_preserving_output_counts(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    let [left, right] = children.as_slice() else {
+        return Ok(plan);
+    };
+    Arc::clone(&plan).with_new_children(vec![
+        rewrite_plan(
+            Arc::clone(left),
+            d_cfg,
+            Some(SplitPolicy::Fixed(
+                left.output_partitioning().partition_count(),
+            )),
+        )?,
+        rewrite_plan(
+            Arc::clone(right),
+            d_cfg,
+            Some(SplitPolicy::Fixed(
+                right.output_partitioning().partition_count(),
+            )),
+        )?,
+    ])
 }
 
 fn partitioned_join_target_partition_count(
@@ -288,104 +344,20 @@ fn partitioned_join_target_partition_count(
     (left.base_partition_count == right.base_partition_count).then_some(target)
 }
 
-fn rewrite_partitioned_join_children_preserving_output_counts(
-    plan: Arc<dyn ExecutionPlan>,
-    d_cfg: &DistributedConfig,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let children = plan.children();
-    let mut new_children = Vec::with_capacity(children.len());
-
-    for child in children {
-        let required_partition_count = child.output_partitioning().partition_count();
-        new_children.push(rewrite_plan(
-            Arc::clone(child),
-            d_cfg,
-            Some(required_partition_count),
-        )?);
+fn lcm(lhs: usize, rhs: usize) -> Option<usize> {
+    fn gcd(mut lhs: usize, mut rhs: usize) -> usize {
+        while rhs != 0 {
+            let rem = lhs % rhs;
+            lhs = rhs;
+            rhs = rem;
+        }
+        lhs
     }
 
-    plan.with_new_children(new_children)
+    lhs.checked_div(gcd(lhs, rhs))?.checked_mul(rhs)
 }
 
-fn rewrite_partitioned_join(
-    plan: Arc<dyn ExecutionPlan>,
-    d_cfg: &DistributedConfig,
-    required_output_partition_count: Option<usize>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let children = plan.children();
-    if children.len() < 2 {
-        return Ok(plan);
-    }
-
-    let left = Arc::clone(children[0]);
-    let right = Arc::clone(children[1]);
-
-    // Partitioned joins must widen both hash-partitioned sides to the same target.
-    let Some(left_input) = find_split_input(Arc::clone(&left), d_cfg)? else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
-    };
-    let Some(right_input) = find_split_input(Arc::clone(&right), d_cfg)? else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
-    };
-
-    let Some(target_partition_count) = partitioned_join_target_partition_count(
-        &left_input,
-        &right_input,
-        d_cfg.local_exchange_split_target_partitions_per_task,
-        required_output_partition_count,
-    ) else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
-    };
-
-    let mut new_children = Vec::with_capacity(children.len());
-    for (idx, child) in children.into_iter().enumerate() {
-        let child = Arc::clone(child);
-        let target = match idx {
-            0 | 1 => Some(target_partition_count),
-            _ => None,
-        };
-        new_children.push(rewrite_plan(child, d_cfg, target)?);
-    }
-
-    let rewritten = Arc::clone(&plan).with_new_children(new_children)?;
-    if has_hash_partition_count(&rewritten, target_partition_count) {
-        Ok(rewritten)
-    } else {
-        rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg)
-    }
-}
-
-fn rewrite_children(
-    plan: Arc<dyn ExecutionPlan>,
-    d_cfg: &DistributedConfig,
-    required_output_partition_count: Option<usize>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let children = plan.children();
-    if children.is_empty() {
-        return Ok(plan);
-    }
-
-    let plan_output_partition_count = plan.output_partitioning().partition_count();
-
-    let new_children = children
-        .into_iter()
-        .map(|child| {
-            // Push a required count only through children that determine this node's output count.
-            let child_target = if required_output_partition_count.is_some()
-                && child.output_partitioning().partition_count() == plan_output_partition_count
-            {
-                required_output_partition_count
-            } else {
-                None
-            };
-            rewrite_plan(Arc::clone(child), d_cfg, child_target)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    plan.with_new_children(new_children)
-}
-
-/// The first shuffle-side input on a consumer path.
+/// The first shuffle-side source on a consumer input path.
 ///
 /// `NetworkShuffleExec` can be widened by inserting a `LocalExchangeSplitExec` above it. An
 /// existing `LocalExchangeSplitExec` cannot be widened again, but it can satisfy a parent join that
@@ -439,14 +411,12 @@ impl SplitInput {
             return Ok(None);
         }
 
-        let output_partition_count = layout.max_partition_count_per_consumer();
-
         Ok(Some(Self {
             plan,
             hash_exprs,
             base_partition_count,
+            output_partition_count: owned_partition_count,
             owned_partition_count,
-            output_partition_count,
             already_split: false,
         }))
     }
@@ -465,12 +435,13 @@ impl SplitInput {
         target_partition_count > self.output_partition_count
     }
 
-    fn insert_or_keep(&self, target_partition_count: usize) -> Result<Arc<dyn ExecutionPlan>> {
-        if self.output_partition_count == target_partition_count {
-            return Ok(Arc::clone(&self.plan));
-        }
+    fn insert(&self, target_partition_count: usize) -> Result<Arc<dyn ExecutionPlan>> {
+        debug_assert!(
+            self.can_produce(target_partition_count),
+            "insert called with target {target_partition_count} that can_produce rejected"
+        );
 
-        if !self.can_produce(target_partition_count) {
+        if self.output_partition_count == target_partition_count {
             return Ok(Arc::clone(&self.plan));
         }
 
@@ -500,20 +471,32 @@ fn find_split_input(
 }
 
 /// Inserts a split immediately after the first shuffle on a unary consumer input path.
+///
+/// Unary nodes are allowed only if the rebuilt path still advertises hash partitioning; otherwise
+/// the insertion is rejected.
 fn try_insert_split_after_shuffle(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    target_partition_count: usize,
+    target: SplitPolicy,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     if let Some(input) = SplitInput::try_from_source(Arc::clone(&plan), d_cfg)? {
-        if !input.can_produce(target_partition_count) {
+        let target_count = match target {
+            SplitPolicy::Fixed(n) => n,
+            SplitPolicy::Infer => {
+                let Some(n) = default_target_partition_count_for_owned(
+                    input.owned_partition_count,
+                    d_cfg.local_exchange_split_target_partitions_per_task,
+                ) else {
+                    return Ok(None);
+                };
+                n
+            }
+        };
+        if !input.can_produce(target_count) {
             return Ok(None);
         }
-
-        let rewritten = input.insert_or_keep(target_partition_count)?;
-        return Ok(
-            has_hash_partition_count(&rewritten, target_partition_count).then_some(rewritten)
-        );
+        let rewritten = input.insert(target_count)?;
+        return Ok(has_hash_partition_count(&rewritten, target_count).then_some(rewritten));
     }
 
     let children = plan.children();
@@ -527,8 +510,7 @@ fn try_insert_split_after_shuffle(
         return Ok(None);
     }
 
-    let Some(rewritten_child) =
-        try_insert_split_after_shuffle(Arc::clone(child), d_cfg, target_partition_count)?
+    let Some(rewritten_child) = try_insert_split_after_shuffle(Arc::clone(child), d_cfg, target)?
     else {
         return Ok(None);
     };
@@ -537,11 +519,28 @@ fn try_insert_split_after_shuffle(
         return Ok(None);
     };
 
-    if !has_hash_partition_count(&rebuilt, target_partition_count) {
+    // `Infer` resolves its target at the split source; outer frames only need to preserve hash
+    // partitioning.
+    let partitioning_ok = match target {
+        SplitPolicy::Fixed(n) => has_hash_partition_count(&rebuilt, n),
+        SplitPolicy::Infer => matches!(rebuilt.output_partitioning(), Partitioning::Hash(_, _)),
+    };
+    if !partitioning_ok {
         return Ok(None);
     }
 
     Ok(Some(rebuilt))
+}
+
+fn default_target_partition_count_for_owned(
+    owned: usize,
+    target_partitions_per_task: usize,
+) -> Option<usize> {
+    if owned == 0 || target_partitions_per_task == 0 || owned >= target_partitions_per_task {
+        return None;
+    }
+
+    Some(target_partitions_per_task.div_ceil(owned) * owned)
 }
 
 fn has_hash_partition_count(plan: &Arc<dyn ExecutionPlan>, partition_count: usize) -> bool {
@@ -555,11 +554,12 @@ fn has_hash_partition_count(plan: &Arc<dyn ExecutionPlan>, partition_count: usiz
 #[cfg(test)]
 mod tests {
     use super::{
-        SplitInput, default_target_partition_count_for_owned, insert_local_exchange_split_execs,
-        partitioned_join_target_partition_count, try_insert_split_after_shuffle,
+        SplitInput, SplitPolicy, default_target_partition_count_for_owned,
+        insert_local_exchange_split_execs, partitioned_join_target_partition_count,
+        try_insert_split_after_shuffle,
     };
     use crate::assert_snapshot;
-    use crate::distributed_planner::distribute_plan::test_helpers::insert_network_boundaries_for_test;
+    use crate::distributed_planner::insert_network_boundaries_for_test;
     use crate::test_utils::plans::{base_session_builder, context_with_query};
     use crate::{
         DistributedConfig, DistributedExec, LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN,
@@ -568,7 +568,6 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::NullEquality;
     use datafusion::common::Result;
-    use datafusion::config::ConfigOptions;
     use datafusion::execution::context::SessionContext;
     use datafusion::logical_expr::JoinType;
     use datafusion::physical_expr::PhysicalExpr;
@@ -629,18 +628,6 @@ mod tests {
         split_plan_from_ctx(&ctx, query, options).await
     }
 
-    fn apply_test_options(cfg: &mut ConfigOptions, options: SplitTestOptions) {
-        if options.force_partitioned_join {
-            cfg.optimizer.hash_join_single_partition_threshold = 0;
-            cfg.optimizer.hash_join_single_partition_threshold_rows = 0;
-        }
-
-        let d_cfg = cfg.extensions.get_mut::<DistributedConfig>().unwrap();
-        d_cfg.local_exchange_split_mode = options.mode.to_string();
-        d_cfg.local_exchange_split_max_owned_partitions = options.max_owned_partitions;
-        d_cfg.local_exchange_split_target_partitions_per_task = options.target_partitions_per_task;
-    }
-
     async fn split_plan_from_ctx(
         ctx: &SessionContext,
         query: &str,
@@ -649,7 +636,16 @@ mod tests {
         {
             let state_ref = ctx.state_ref();
             let mut state = state_ref.write();
-            apply_test_options(state.config_mut().options_mut(), options);
+            let cfg = state.config_mut().options_mut();
+            if options.force_partitioned_join {
+                cfg.optimizer.hash_join_single_partition_threshold = 0;
+                cfg.optimizer.hash_join_single_partition_threshold_rows = 0;
+            }
+            let d_cfg = cfg.extensions.get_mut::<DistributedConfig>().unwrap();
+            d_cfg.local_exchange_split_mode = options.mode.to_string();
+            d_cfg.local_exchange_split_max_owned_partitions = options.max_owned_partitions;
+            d_cfg.local_exchange_split_target_partitions_per_task =
+                options.target_partitions_per_task;
         }
 
         let df = ctx.sql(query).await.unwrap();
@@ -720,15 +716,6 @@ mod tests {
         }
     }
 
-    fn count_by_rain_today_query() -> &'static str {
-        r#"
-        SELECT count(*), "RainToday"
-        FROM weather
-        GROUP BY "RainToday"
-        ORDER BY count(*)
-        "#
-    }
-
     fn split_test_config(target_partitions_per_task: usize) -> DistributedConfig {
         DistributedConfig {
             local_exchange_split_mode: LOCAL_EXCHANGE_SPLIT_MODE_FINAL_AGG_AND_JOIN.to_string(),
@@ -736,14 +723,6 @@ mod tests {
             local_exchange_split_target_partitions_per_task: target_partitions_per_task,
             ..DistributedConfig::default()
         }
-    }
-
-    fn split_and_display_plan(
-        plan: Arc<dyn ExecutionPlan>,
-        d_cfg: &DistributedConfig,
-    ) -> Result<String> {
-        let plan = insert_local_exchange_split_execs(plan, d_cfg)?;
-        Ok(display_plan_ascii(&DistributedExec::new(plan), false))
     }
 
     #[test]
@@ -810,7 +789,7 @@ mod tests {
             local_exchange_split_max_owned_partitions: 2,
             ..DistributedConfig::default()
         };
-        let rewritten = try_insert_split_after_shuffle(limit, &d_cfg, 4)?;
+        let rewritten = try_insert_split_after_shuffle(limit, &d_cfg, SplitPolicy::Fixed(4))?;
 
         assert!(rewritten.is_none());
         Ok(())
@@ -818,8 +797,11 @@ mod tests {
 
     #[tokio::test]
     async fn final_agg_inserts_split() {
-        let plan =
-            weather_query_to_split_plan(count_by_rain_today_query(), FINAL_AGG_SPLIT_OPTIONS).await;
+        let plan = weather_query_to_split_plan(
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#,
+            FINAL_AGG_SPLIT_OPTIONS,
+        )
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
@@ -844,8 +826,11 @@ mod tests {
 
     #[tokio::test]
     async fn final_agg_respects_owned_partition_cap() {
-        let plan =
-            weather_query_to_split_plan(count_by_rain_today_query(), FINAL_AGG_SKIP_OPTIONS).await;
+        let plan = weather_query_to_split_plan(
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#,
+            FINAL_AGG_SKIP_OPTIONS,
+        )
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
@@ -869,7 +854,11 @@ mod tests {
 
     #[tokio::test]
     async fn off_mode_skips_final_agg_split() {
-        let plan = weather_query_to_split_plan(count_by_rain_today_query(), OFF_OPTIONS).await;
+        let plan = weather_query_to_split_plan(
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#,
+            OFF_OPTIONS,
+        )
+        .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
@@ -908,7 +897,8 @@ mod tests {
         )?);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(join));
 
-        let plan = split_and_display_plan(plan, &split_test_config(8))?;
+        let plan = insert_local_exchange_split_execs(plan, &split_test_config(8))?;
+        let plan = display_plan_ascii(&DistributedExec::new(plan), false);
 
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
@@ -952,7 +942,8 @@ mod tests {
         )?);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(parent_join));
 
-        let plan = split_and_display_plan(plan, &split_test_config(8))?;
+        let plan = insert_local_exchange_split_execs(plan, &split_test_config(8))?;
+        let plan = display_plan_ascii(&DistributedExec::new(plan), false);
 
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
@@ -1017,7 +1008,8 @@ mod tests {
         )?);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(parent_join));
 
-        let plan = split_and_display_plan(plan, &split_test_config(8))?;
+        let plan = insert_local_exchange_split_execs(plan, &split_test_config(8))?;
+        let plan = display_plan_ascii(&DistributedExec::new(plan), false);
 
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]

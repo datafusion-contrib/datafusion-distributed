@@ -20,10 +20,11 @@ use uuid::Uuid;
 
 /// Network boundary that gathers partitions from upstream tasks without repartitioning rows.
 ///
-/// This is the equivalent of a
-/// [CoalescePartitionsExec](datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec)
-/// but coalescing tasks across the network between distributed stages. The [ExchangeLayout]
-/// assigns each consumer task a contiguous group of producer tasks to read.
+/// This is the distributed equivalent of
+/// [CoalescePartitionsExec](datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec).
+/// The [ExchangeLayout] assigns each consumer task a contiguous group of producer tasks to read.
+/// Each output slot maps to exactly one `(producer_task, partition)` pair
+/// ([`SlotReadPlan::Single`]) since there is no cross-task fanout.
 ///
 /// ```text
 ///                                ┌───────────────────────────┐                                   ■
@@ -68,10 +69,6 @@ use uuid::Uuid;
 /// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
 /// ```
 ///
-/// This node has two variants.
-/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
-/// 2. Ready: runs within a distributed stage and queries the next input stage over the network
-///    using Arrow Flight.
 #[derive(Debug, Clone)]
 pub struct NetworkCoalesceExec {
     /// the properties we advertise for this execution plan
@@ -181,34 +178,34 @@ impl ExecutionPlan for NetworkCoalesceExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let resolver = self.layout.resolver();
-        if task_context.task_count != resolver.consumer_task_count() {
+        let layout = &self.layout;
+        if task_context.task_count != layout.consumer_task_count() {
             return exec_err!(
-                "NetworkCoalesceExec expected task_count={} from layout resolver, got {}",
-                resolver.consumer_task_count(),
+                "NetworkCoalesceExec expected task_count={} from layout, got {}",
+                layout.consumer_task_count(),
                 task_context.task_count
             );
         }
-        if task_context.task_index >= resolver.consumer_task_count() {
+        if task_context.task_index >= layout.consumer_task_count() {
             return exec_err!(
                 "NetworkCoalesceExec invalid task context: task_index={} >= consumer_tasks={}",
                 task_context.task_index,
-                resolver.consumer_task_count()
+                layout.consumer_task_count()
             );
         }
 
         let Some(SlotReadPlan::Single {
             producer_task: target_task,
             producer_partition: target_partition,
-        }) = resolver.resolve_slot(task_context.task_index, partition)
+        }) = layout.resolve_slot(task_context.task_index, partition)
         else {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         };
 
-        let producer_tasks = resolver.producer_task_range(task_context.task_index);
+        let producer_tasks = layout.producer_task_range(task_context.task_index);
         if !producer_tasks.contains(&target_task) {
             return internal_err!(
-                "NetworkCoalesceExec derived target_task={} outside resolver range {:?}",
+                "NetworkCoalesceExec derived target_task={} outside layout range {:?}",
                 target_task,
                 producer_tasks
             );
@@ -216,7 +213,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
             &self.input_stage,
-            0..resolver.partitions_per_producer_task(),
+            0..layout.partitions_per_producer_task(),
             target_task,
             &context,
         )?;
@@ -247,7 +244,6 @@ mod tests {
 
         let exec = NetworkCoalesceExec::try_new(Arc::clone(&child), Uuid::nil(), 1, 2, 5)?;
         let layout = &exec.layout;
-        let resolver = layout.resolver();
 
         assert_eq!(
             exec.properties().partitioning.partition_count(),
@@ -255,18 +251,18 @@ mod tests {
         );
         assert_eq!(layout.producer_task_count(), 5);
         assert_eq!(layout.consumer_task_count(), 2);
-        assert_eq!(resolver.producer_task_range(0), 0..3);
-        assert_eq!(resolver.producer_task_range(1), 3..5);
+        assert_eq!(layout.producer_task_range(0), 0..3);
+        assert_eq!(layout.producer_task_range(1), 3..5);
         assert_eq!(layout.consumer_partition_range(0), &(0..3));
         assert_eq!(layout.consumer_partition_range(1), &(3..5));
         assert_eq!(
-            resolver.resolve_slot(1, 1),
+            layout.resolve_slot(1, 1),
             Some(SlotReadPlan::Single {
                 producer_task: 4,
                 producer_partition: 0,
             })
         );
-        assert_eq!(resolver.resolve_slot(1, 2), None);
+        assert_eq!(layout.resolve_slot(1, 2), None);
 
         Ok(())
     }

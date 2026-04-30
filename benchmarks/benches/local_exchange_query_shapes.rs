@@ -19,7 +19,6 @@ fn local_exchange_query_shapes(c: &mut Criterion) {
         QueryBenchShape::HighCardinalityFinalAgg,
         QueryBenchShape::BalancedPartitionedJoin,
         QueryBenchShape::SkewedPartitionedJoin,
-        QueryBenchShape::AsymmetricPartitionedJoin,
         QueryBenchShape::JoinThenRegroupTopK,
         QueryBenchShape::DistinctRegroup,
     ] {

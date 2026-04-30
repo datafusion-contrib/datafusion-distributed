@@ -121,13 +121,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         producer_task_count,
                         consumer_task_count,
                     )?;
-                    let ExchangeLayout::Shuffle(shuffle_layout) = layout.as_ref() else {
-                        unreachable!("ExchangeLayout::try_shuffle returned a non-shuffle layout")
-                    };
                     validate_ranges(
                         "ShuffleExchangeAssignmentProto",
                         &consumer_partition_ranges,
-                        &shuffle_layout.consumer_partition_ranges,
+                        layout.all_consumer_partition_ranges(),
                     )?;
 
                     Ok(layout)
@@ -141,15 +138,16 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     )?;
 
                     let producer_task_ranges = decode_ranges(coalesce.producer_task_ranges)?;
-                    let consumer_slot_ranges = decode_ranges(coalesce.consumer_slot_ranges)?;
-                    if producer_task_ranges.len() != consumer_slot_ranges.len() {
+                    let consumer_partition_ranges =
+                        decode_ranges(coalesce.consumer_partition_ranges)?;
+                    if producer_task_ranges.len() != consumer_partition_ranges.len() {
                         return Err(proto_error(format!(
-                            "CoalesceExchangeAssignmentProto range length mismatch: producer_task_ranges={} consumer_slot_ranges={}",
+                            "CoalesceExchangeAssignmentProto range length mismatch: producer_task_ranges={} consumer_partition_ranges={}",
                             producer_task_ranges.len(),
-                            consumer_slot_ranges.len()
+                            consumer_partition_ranges.len()
                         )));
                     }
-                    let consumer_task_count = consumer_slot_ranges.len();
+                    let consumer_task_count = consumer_partition_ranges.len();
                     if consumer_task_count == 0 {
                         return Err(proto_error(
                             "CoalesceExchangeAssignmentProto requires at least one consumer range",
@@ -161,18 +159,19 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         consumer_task_count,
                         coalesce.partitions_per_producer_task as usize,
                     )?;
-                    let ExchangeLayout::Coalesce(coalesce_layout) = layout.as_ref() else {
-                        unreachable!("ExchangeLayout::try_coalesce returned a non-coalesce layout")
-                    };
                     validate_ranges(
                         "CoalesceExchangeAssignmentProto producer task",
                         &producer_task_ranges,
-                        &coalesce_layout.producer_task_ranges,
+                        layout.all_producer_task_ranges().ok_or_else(|| {
+                            proto_error(
+                                "CoalesceExchangeAssignmentProto missing producer task ranges",
+                            )
+                        })?,
                     )?;
                     validate_ranges(
-                        "CoalesceExchangeAssignmentProto consumer slot",
-                        &consumer_slot_ranges,
-                        &coalesce_layout.consumer_slot_ranges,
+                        "CoalesceExchangeAssignmentProto consumer partition",
+                        &consumer_partition_ranges,
+                        layout.all_consumer_partition_ranges(),
                     )?;
 
                     Ok(layout)
@@ -199,15 +198,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         consumer_task_count,
                         broadcast.partitions_per_producer_task as usize,
                     )?;
-                    let ExchangeLayout::Broadcast(broadcast_layout) = layout.as_ref() else {
-                        unreachable!(
-                            "ExchangeLayout::try_broadcast returned a non-broadcast layout"
-                        )
-                    };
                     validate_ranges(
                         "BroadcastExchangeAssignmentProto",
                         &consumer_partition_ranges,
-                        &broadcast_layout.consumer_partition_ranges,
+                        layout.all_consumer_partition_ranges(),
                     )?;
 
                     Ok(layout)
@@ -285,7 +279,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     )));
                 }
 
-                let child = inputs.first().unwrap();
+                let child = &inputs[0];
 
                 Ok(Arc::new(PartitionIsolatorExec::new(
                     child.clone(),
@@ -332,7 +326,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     )));
                 }
 
-                let child = inputs.first().unwrap();
+                let child = &inputs[0];
                 Ok(Arc::new(BroadcastExec::new(
                     child.clone(),
                     consumer_task_count as usize,
@@ -389,7 +383,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     )));
                 }
 
-                let child = inputs.first().unwrap();
+                let child = &inputs[0];
                 let schema = child.schema();
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
@@ -698,7 +692,7 @@ pub struct CoalesceExchangeAssignmentProto {
     #[prost(message, repeated, tag = "3")]
     producer_task_ranges: Vec<PartitionRangeProto>,
     #[prost(message, repeated, tag = "4")]
-    consumer_slot_ranges: Vec<PartitionRangeProto>,
+    consumer_partition_ranges: Vec<PartitionRangeProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -860,30 +854,36 @@ fn encode_exchange_layout_proto(
     layout: &ExchangeLayout,
 ) -> Result<ExchangeAssignmentProto, DataFusionError> {
     let assignment = match layout {
-        ExchangeLayout::Shuffle(assignment) => {
+        ExchangeLayout::Shuffle(_) => {
+            let producer_partitioning = layout.producer_partitioning().ok_or_else(|| {
+                internal_datafusion_err!("shuffle layout is missing producer_partitioning")
+            })?;
             exchange_assignment_proto::Assignment::Shuffle(ShuffleExchangeAssignmentProto {
-                producer_task_count: assignment.producer_task_count as u64,
+                producer_task_count: layout.producer_task_count() as u64,
                 producer_partitioning: Some(serialize_partitioning(
-                    &assignment.producer_partitioning,
+                    producer_partitioning,
                     &DistributedCodec {},
                     &DefaultPhysicalProtoConverter,
                 )?),
-                consumer_partition_ranges: encode_ranges(&assignment.consumer_partition_ranges),
+                consumer_partition_ranges: encode_ranges(layout.all_consumer_partition_ranges()),
             })
         }
-        ExchangeLayout::Coalesce(assignment) => {
+        ExchangeLayout::Coalesce(_) => {
+            let producer_task_ranges = layout.all_producer_task_ranges().ok_or_else(|| {
+                internal_datafusion_err!("coalesce layout is missing producer_task_ranges")
+            })?;
             exchange_assignment_proto::Assignment::Coalesce(CoalesceExchangeAssignmentProto {
-                producer_task_count: assignment.producer_task_count as u64,
-                partitions_per_producer_task: assignment.partitions_per_producer_task as u64,
-                producer_task_ranges: encode_ranges(&assignment.producer_task_ranges),
-                consumer_slot_ranges: encode_ranges(&assignment.consumer_slot_ranges),
+                producer_task_count: layout.producer_task_count() as u64,
+                partitions_per_producer_task: layout.partitions_per_producer_task() as u64,
+                producer_task_ranges: encode_ranges(producer_task_ranges),
+                consumer_partition_ranges: encode_ranges(layout.all_consumer_partition_ranges()),
             })
         }
-        ExchangeLayout::Broadcast(assignment) => {
+        ExchangeLayout::Broadcast(_) => {
             exchange_assignment_proto::Assignment::Broadcast(BroadcastExchangeAssignmentProto {
-                producer_task_count: assignment.producer_task_count as u64,
-                partitions_per_producer_task: assignment.partitions_per_producer_task as u64,
-                consumer_partition_ranges: encode_ranges(&assignment.consumer_partition_ranges),
+                producer_task_count: layout.producer_task_count() as u64,
+                partitions_per_producer_task: layout.partitions_per_producer_task() as u64,
+                consumer_partition_ranges: encode_ranges(layout.all_consumer_partition_ranges()),
             })
         }
     };
@@ -940,7 +940,7 @@ mod tests {
             query_id: Default::default(),
             num: 0,
             plan: None,
-            tasks: vec![],
+            tasks: vec![ExecutionTask { url: None }],
         }
     }
 
@@ -949,7 +949,7 @@ mod tests {
             query_id: Default::default(),
             num: 0,
             plan: Some(empty_exec()),
-            tasks: vec![],
+            tasks: vec![ExecutionTask { url: None }],
         }
     }
 

@@ -21,85 +21,44 @@ use uuid::Uuid;
 
 /// Network boundary that reads hash-partitioned data from an upstream distributed stage.
 ///
-/// The planner inserts this node above a hash repartition boundary. The child stage produces a
-/// shared logical hash partition space, and the [ExchangeLayout] assigns contiguous logical
-/// partition ranges to consumer tasks. Local fanout above the network boundary is handled
-/// separately by [crate::LocalExchangeSplitExec].
-///
-/// This node allows fanning out data from N producer tasks to M consumer tasks. Each consumer
-/// output partition reads one logical hash partition from every producer task. Here are some
-/// examples of how data can be shuffled in different scenarios:
-///
-/// # 1 to many
+/// The planner scales the upstream `RepartitionExec` to produce exactly `consumer_task_count`
+/// logical hash partitions (one per consumer task). Each consumer task owns one of those
+/// partitions and reads it from every producer task ([`SlotReadPlan::Fanout`]). Local
+/// parallelism above this boundary is provided by [crate::LocalExchangeSplitExec], not by this node.
 ///
 /// ```text
-/// ┌───────────────────────────┐  ┌───────────────────────────┐ ┌───────────────────────────┐     ■
-/// │    NetworkShuffleExec     │  │    NetworkShuffleExec     │ │    NetworkShuffleExec     │     │
-/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
-/// └┬─┬┬─┬┬─┬──────────────────┘  └─────────┬─┬┬─┬┬─┬─────────┘ └──────────────────┬─┬┬─┬┬─┬┘  Stage N+1
-///  │1││2││3│                               │4││5││6│                              │7││8││9│      │
-///  └─┘└─┘└─┘                               └─┘└─┘└─┘                              └─┘└─┘└─┘      │
-///   ▲  ▲  ▲                                 ▲  ▲  ▲                                ▲  ▲  ▲       ■
-///   └──┴──┴────────────────────────┬──┬──┐  │  │  │  ┌──┬──┬───────────────────────┴──┴──┘
-///                                  │  │  │  │  │  │  │  │  │                                     ■
-///                                 ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐                                    │
-///                                 │1││2││3││4││5││6││7││8││9│                                    │
-///                                ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐                                Stage N
-///                                │      RepartitionExec      │                                   │
-///                                │         (task 1)          │                                   │
-///                                └───────────────────────────┘                                   ■
+///               ┌─┐                                 ┌─┐                                 ┌─┐
+///               │1│                                 │1│                                 │1│
+/// ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐     ┌─────────────┴─┴─────────────┐
+/// │                             │     │                             │     │                             │
+/// │     NetworkShuffleExec      │     │     NetworkShuffleExec      │ ... │     NetworkShuffleExec      │
+/// │          (Task 1)           │     │          (Task 2)           │     │          (Task M)           │
+/// │                             │     │                             │     │                             │
+/// └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘     └─────────────┬─┬─────────────┘
+///               │1│                                 │2│                                 │M│
+///               └▲┘                                 └▲┘                                 └▲┘
+///                │                                   │                                   │
+///                │                                   │                                   │
+///                │                                                                       │
+///                │                                                                       │
+///                │                                                                       │
+///                │                                                                       │
+///                └───────────────────────────────┐       ┌───────────────────────────────┘
+///                                                │       │
+///                                               ┌─┐ ... ┌─┐
+///                                               │1│     │M│
+///                                     ┌─────────┴─┴─────┴─┴─────────┐
+///                                     │                             │
+///                                     │       RepartitionExec       │
+///                                     │          (Task 1)           │
+///                                     │                             │
+///                                     └─────────┬─┬─────┬─┬─────────┘
+///                                               │1│     │N│
+///                                               └─┘ ... └─┘
 /// ```
 ///
-/// # many to 1
-///
-/// ```text
-///                                ┌───────────────────────────┐                                   ■
-///                                │    NetworkShuffleExec     │                                   │
-///                                │         (task 1)          │                                   │
-///                                └┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┬─┬┘                                Stage N+1
-///                                 │1││2││3││4││5││6││7││8││9│                                    │
-///                                 └─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘└─┘                                    │
-///                                 ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲                                    ■
-///   ┌──┬──┬──┬──┬──┬──┬──┬──┬─────┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴┴┼┴────┬──┬──┬──┬──┬──┬──┬──┬──┐
-///   │  │  │  │  │  │  │  │  │      │  │  │  │  │  │  │  │  │     │  │  │  │  │  │  │  │  │       ■
-///  ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐    ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐   ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐      │
-///  │1││2││3││4││5││6││7││8││9│    │1││2││3││4││5││6││7││8││9│   │1││2││3││4││5││6││7││8││9│      │
-/// ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐  ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐ ┌┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┐  Stage N
-/// │      RepartitionExec      │  │      RepartitionExec      │ │      RepartitionExec      │     │
-/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
-/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
-/// ```
-///
-/// # many to many
-///
-/// ```text
-///                    ┌───────────────────────────┐  ┌───────────────────────────┐                ■
-///                    │    NetworkShuffleExec     │  │    NetworkShuffleExec     │                │
-///                    │         (task 1)          │  │         (task 2)          │                │
-///                    └┬─┬┬─┬┬─┬┬─┬───────────────┘  └───────────────┬─┬┬─┬┬─┬┬─┬┘             Stage N+1
-///                     │1││2││3││4│                                  │5││6││7││8│                 │
-///                     └─┘└─┘└─┘└─┘                                  └─┘└─┘└─┘└─┘                 │
-///                     ▲▲▲▲▲▲▲▲▲▲▲▲                                  ▲▲▲▲▲▲▲▲▲▲▲▲                 ■
-///     ┌──┬──┬──┬──┬──┬┴┴┼┴┴┼┴┴┴┴┴┴───┬──┬──┬──┬──┬──┬──┬──┬────────┬┴┴┼┴┴┼┴┴┼┴┴┼──┬──┬──┐
-///     │  │  │  │  │  │  │  │         │  │  │  │  │  │  │  │        │  │  │  │  │  │  │  │        ■
-///    ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐       ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐      ┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐┌─┐       │
-///    │1││2││3││4││5││6││7││8│       │1││2││3││4││5││6││7││8│      │1││2││3││4││5││6││7││8│       │
-/// ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐  ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐ ┌──┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴┴─┴─┐  Stage N
-/// │      RepartitionExec      │  │      RepartitionExec      │ │      RepartitionExec      │     │
-/// │         (task 1)          │  │         (task 2)          │ │         (task 3)          │     │
-/// └───────────────────────────┘  └───────────────────────────┘ └───────────────────────────┘     ■
-/// ```
-///
-/// The communication between two stages across a [NetworkShuffleExec] has two implications:
-///
-/// - Each task in Stage N+1 gathers data from all tasks in Stage N
-/// - The total number of partitions across all tasks in Stage N+1 is equal to the
-///   number of partitions in a single task in Stage N. (e.g. (1,2,3,4)+(5,6,7,8) = (1,2,3,4,5,6,7,8) )
-///
-/// This node has two variants.
-/// 1. Pending: acts as a placeholder for the distributed optimization step to mark it as ready.
-/// 2. Ready: runs within a distributed stage and queries the next input stage over the network
-///    using Arrow Flight.
+/// Each consumer task in Stage N+1 gathers its one assigned partition from all producer tasks
+/// in Stage N.
 #[derive(Debug, Clone)]
 pub struct NetworkShuffleExec {
     /// the properties we advertise for this execution plan
@@ -215,30 +174,30 @@ impl ExecutionPlan for NetworkShuffleExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let resolver = self.layout.resolver();
-        if task_context.task_count != resolver.consumer_task_count() {
+        let layout = &self.layout;
+        if task_context.task_count != layout.consumer_task_count() {
             return exec_err!(
-                "NetworkShuffleExec expected task_count={} from layout resolver, got {}",
-                resolver.consumer_task_count(),
+                "NetworkShuffleExec expected task_count={} from layout, got {}",
+                layout.consumer_task_count(),
                 task_context.task_count
             );
         }
-        if task_context.task_index >= resolver.consumer_task_count() {
+        if task_context.task_index >= layout.consumer_task_count() {
             return exec_err!(
-                "NetworkShuffleExec task_index={} is out of range for resolver with {} consumer tasks",
+                "NetworkShuffleExec task_index={} is out of range for layout with {} consumer tasks",
                 task_context.task_index,
-                resolver.consumer_task_count()
+                layout.consumer_task_count()
             );
         }
         let Some(SlotReadPlan::Fanout {
             producer_tasks,
             producer_partition: target_partition,
-        }) = resolver.resolve_slot(task_context.task_index, partition)
+        }) = layout.resolve_slot(task_context.task_index, partition)
         else {
             return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
         };
 
-        let target_partition_range = resolver
+        let target_partition_range = layout
             .consumer_partition_range(task_context.task_index)
             .clone();
         let mut streams = Vec::with_capacity(producer_tasks.len());

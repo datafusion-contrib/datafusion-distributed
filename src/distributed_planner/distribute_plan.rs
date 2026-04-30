@@ -224,10 +224,10 @@ fn _distribute_plan(
 }
 
 #[cfg(test)]
-pub(super) mod test_helpers {
+pub(crate) mod test_helpers {
     use super::*;
 
-    pub(in crate::distributed_planner) async fn insert_network_boundaries_for_test(
+    pub(crate) async fn insert_network_boundaries_for_test(
         original: Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
     ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {

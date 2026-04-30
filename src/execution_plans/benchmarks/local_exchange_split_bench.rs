@@ -68,19 +68,6 @@ impl LocalExchangeSplitBench {
         }
     }
 
-    pub fn many_owned(input_partitions: usize, local_partitions: usize) -> Self {
-        Self {
-            scenario_name: "many_owned",
-            strategy: LocalFanoutStrategy::Split,
-            input_partitions,
-            base_partitions: 8,
-            local_partitions,
-            total_rows: 1_000_000,
-            batch_size: 1024,
-            id_mode: LocalExchangeIdMode::Uniform,
-        }
-    }
-
     pub fn with_total_rows(mut self, total_rows: usize) -> Self {
         self.total_rows = total_rows;
         self

@@ -19,12 +19,16 @@ pub(crate) enum SlotReadPlan {
 }
 
 /// Layout for a hash shuffle exchange.
+///
+/// Each producer task runs a `RepartitionExec` that outputs all `N` logical hash partitions
+/// locally. Consumers own a contiguous range of those partitions and read each owned partition
+/// from every producer task ([`SlotReadPlan::Fanout`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ShuffleExchangeLayout {
-    pub(crate) producer_task_count: usize,
-    pub(crate) consumer_task_count: usize,
-    pub(crate) producer_partitioning: Partitioning,
-    pub(crate) consumer_partition_ranges: Vec<Range<usize>>,
+    pub(super) producer_task_count: usize,
+    pub(super) consumer_task_count: usize,
+    pub(super) producer_partitioning: Partitioning,
+    pub(super) consumer_partition_ranges: Vec<Range<usize>>,
 }
 
 impl ShuffleExchangeLayout {
@@ -34,10 +38,16 @@ impl ShuffleExchangeLayout {
         consumer_task_count: usize,
     ) -> Result<Self> {
         let logical_partition_count = producer_partitioning.partition_count();
+        if producer_task_count == 0 {
+            return plan_err!("shuffle exchange requires producer_task_count > 0");
+        }
         if consumer_task_count == 0 {
             return plan_err!("shuffle exchange requires consumer_task_count > 0");
         }
-        if logical_partition_count > 0 && consumer_task_count > logical_partition_count {
+        if logical_partition_count == 0 {
+            return plan_err!("shuffle exchange requires at least one logical partition");
+        }
+        if consumer_task_count > logical_partition_count {
             return plan_err!(
                 "shuffle exchange requires consumer_task_count <= logical_partition_count, got {} > {}",
                 consumer_task_count,
@@ -87,13 +97,17 @@ impl ShuffleExchangeLayout {
 }
 
 /// Layout for a coalesce exchange.
+///
+/// Producer tasks are partitioned into groups, one group per consumer. Each consumer reads all
+/// partitions from its assigned producer tasks exclusively ([`SlotReadPlan::Single`], one
+/// specific `(task, partition)` pair per slot, no fanout).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CoalesceExchangeLayout {
-    pub(crate) producer_task_count: usize,
-    pub(crate) consumer_task_count: usize,
-    pub(crate) partitions_per_producer_task: usize,
-    pub(crate) producer_task_ranges: Vec<Range<usize>>,
-    pub(crate) consumer_slot_ranges: Vec<Range<usize>>,
+    pub(super) producer_task_count: usize,
+    pub(super) consumer_task_count: usize,
+    pub(super) partitions_per_producer_task: usize,
+    pub(super) producer_task_ranges: Vec<Range<usize>>,
+    pub(super) consumer_partition_ranges: Vec<Range<usize>>,
 }
 
 impl CoalesceExchangeLayout {
@@ -110,7 +124,7 @@ impl CoalesceExchangeLayout {
         }
 
         let producer_task_ranges = split_ranges(producer_task_count, consumer_task_count);
-        let consumer_slot_ranges = producer_task_ranges
+        let consumer_partition_ranges = producer_task_ranges
             .iter()
             .map(|task_range| {
                 let start = task_range.start * partitions_per_producer_task;
@@ -124,12 +138,12 @@ impl CoalesceExchangeLayout {
             consumer_task_count,
             partitions_per_producer_task,
             producer_task_ranges,
-            consumer_slot_ranges,
+            consumer_partition_ranges,
         })
     }
 
     fn max_partition_count_per_consumer(&self) -> usize {
-        self.consumer_slot_ranges
+        self.consumer_partition_ranges
             .iter()
             .map(|range| range.len())
             .max()
@@ -154,7 +168,7 @@ impl CoalesceExchangeLayout {
         local_partition_idx: usize,
     ) -> Option<SlotReadPlan> {
         let global_slot = self
-            .consumer_slot_ranges
+            .consumer_partition_ranges
             .get(consumer_task_idx)?
             .clone()
             .nth(local_partition_idx)?;
@@ -166,12 +180,16 @@ impl CoalesceExchangeLayout {
 }
 
 /// Layout for a broadcast exchange.
+///
+/// All producer tasks hold identical copies of the data. Consumers each own a contiguous slice
+/// of the global partition range and read their slice from every producer task
+/// ([`SlotReadPlan::Fanout`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BroadcastExchangeLayout {
-    pub(crate) producer_task_count: usize,
-    pub(crate) consumer_task_count: usize,
-    pub(crate) partitions_per_producer_task: usize,
-    pub(crate) consumer_partition_ranges: Vec<Range<usize>>,
+    pub(super) producer_task_count: usize,
+    pub(super) consumer_task_count: usize,
+    pub(super) partitions_per_producer_task: usize,
+    pub(super) consumer_partition_ranges: Vec<Range<usize>>,
 }
 
 impl BroadcastExchangeLayout {
@@ -315,7 +333,7 @@ impl ExchangeLayout {
     pub fn consumer_partition_range(&self, consumer_task_idx: usize) -> &Range<usize> {
         match self {
             Self::Shuffle(layout) => &layout.consumer_partition_ranges[consumer_task_idx],
-            Self::Coalesce(layout) => &layout.consumer_slot_ranges[consumer_task_idx],
+            Self::Coalesce(layout) => &layout.consumer_partition_ranges[consumer_task_idx],
             Self::Broadcast(layout) => &layout.consumer_partition_ranges[consumer_task_idx],
         }
     }
@@ -336,36 +354,28 @@ impl ExchangeLayout {
         }
     }
 
-    /// Runtime routing view for this layout.
-    pub(crate) fn resolver(&self) -> ExchangeResolver<'_> {
-        ExchangeResolver { layout: self }
-    }
-}
-
-/// Execution-time resolver derived from an [ExchangeLayout].
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ExchangeResolver<'a> {
-    layout: &'a ExchangeLayout,
-}
-
-impl ExchangeResolver<'_> {
-    pub(crate) fn consumer_task_count(&self) -> usize {
-        self.layout.consumer_task_count()
+    /// All computed consumer partition ranges, one per consumer task.
+    pub(crate) fn all_consumer_partition_ranges(&self) -> &[Range<usize>] {
+        match self {
+            Self::Shuffle(l) => &l.consumer_partition_ranges,
+            Self::Coalesce(l) => &l.consumer_partition_ranges,
+            Self::Broadcast(l) => &l.consumer_partition_ranges,
+        }
     }
 
-    pub(crate) fn partitions_per_producer_task(&self) -> usize {
-        self.layout.partitions_per_producer_task()
-    }
-
-    pub(crate) fn consumer_partition_range(&self, consumer_task_idx: usize) -> &Range<usize> {
-        self.layout.consumer_partition_range(consumer_task_idx)
+    /// Computed producer task ranges for coalesce layouts; `None` for shuffle and broadcast.
+    pub(crate) fn all_producer_task_ranges(&self) -> Option<&[Range<usize>]> {
+        match self {
+            Self::Coalesce(l) => Some(&l.producer_task_ranges),
+            Self::Shuffle(_) | Self::Broadcast(_) => None,
+        }
     }
 
     pub(crate) fn producer_task_range(&self, consumer_task_idx: usize) -> Range<usize> {
-        match self.layout {
-            ExchangeLayout::Shuffle(layout) => layout.producer_task_range(consumer_task_idx),
-            ExchangeLayout::Coalesce(layout) => layout.producer_task_range(consumer_task_idx),
-            ExchangeLayout::Broadcast(layout) => layout.producer_task_range(consumer_task_idx),
+        match self {
+            Self::Shuffle(layout) => layout.producer_task_range(consumer_task_idx),
+            Self::Coalesce(layout) => layout.producer_task_range(consumer_task_idx),
+            Self::Broadcast(layout) => layout.producer_task_range(consumer_task_idx),
         }
     }
 
@@ -375,16 +385,10 @@ impl ExchangeResolver<'_> {
         consumer_task_idx: usize,
         local_partition_idx: usize,
     ) -> Option<SlotReadPlan> {
-        match self.layout {
-            ExchangeLayout::Shuffle(layout) => {
-                layout.resolve_slot(consumer_task_idx, local_partition_idx)
-            }
-            ExchangeLayout::Coalesce(layout) => {
-                layout.resolve_slot(consumer_task_idx, local_partition_idx)
-            }
-            ExchangeLayout::Broadcast(layout) => {
-                layout.resolve_slot(consumer_task_idx, local_partition_idx)
-            }
+        match self {
+            Self::Shuffle(layout) => layout.resolve_slot(consumer_task_idx, local_partition_idx),
+            Self::Coalesce(layout) => layout.resolve_slot(consumer_task_idx, local_partition_idx),
+            Self::Broadcast(layout) => layout.resolve_slot(consumer_task_idx, local_partition_idx),
         }
     }
 }
@@ -421,7 +425,7 @@ mod tests {
         match layout {
             ExchangeLayout::Shuffle(layout) => layout.producer_partitioning.partition_count(),
             ExchangeLayout::Coalesce(layout) => layout
-                .consumer_slot_ranges
+                .consumer_partition_ranges
                 .last()
                 .map(|range| range.end)
                 .unwrap_or(0),
@@ -433,37 +437,37 @@ mod tests {
     fn shuffle_layout_splits_hash_partitions() {
         let layout =
             ExchangeLayout::try_shuffle(Partitioning::Hash(vec![col("a", 0)], 17), 4, 8).unwrap();
-        let resolver = layout.resolver();
+
         assert_eq!(layout.producer_task_count(), 4);
         assert_eq!(layout.consumer_task_count(), 8);
         assert_eq!(layout.partitions_per_producer_task(), 17);
         assert_eq!(logical_slot_count(&layout), 17);
         assert_eq!(layout.consumer_partition_range(0), &(0..3));
         assert_eq!(layout.consumer_partition_range(7), &(15..17));
-        assert_eq!(resolver.producer_task_range(3), 0..4);
+        assert_eq!(layout.producer_task_range(3), 0..4);
         assert_eq!(layout.max_partition_count_per_consumer(), 3);
         assert_eq!(
-            resolver.resolve_slot(0, 0),
+            layout.resolve_slot(0, 0),
             Some(SlotReadPlan::Fanout {
                 producer_tasks: 0..4,
                 producer_partition: 0,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(0, 2),
+            layout.resolve_slot(0, 2),
             Some(SlotReadPlan::Fanout {
                 producer_tasks: 0..4,
                 producer_partition: 2,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(7, 1),
+            layout.resolve_slot(7, 1),
             Some(SlotReadPlan::Fanout {
                 producer_tasks: 0..4,
                 producer_partition: 16,
             })
         );
-        assert_eq!(resolver.resolve_slot(7, 2), None);
+        assert_eq!(layout.resolve_slot(7, 2), None);
     }
 
     #[test]
@@ -479,75 +483,75 @@ mod tests {
     #[test]
     fn coalesce_layout_assigns_task_groups() {
         let layout = ExchangeLayout::try_coalesce(3, 2, 4).unwrap();
-        let resolver = layout.resolver();
+
         assert_eq!(layout.producer_task_count(), 3);
         assert_eq!(layout.consumer_task_count(), 2);
         assert_eq!(layout.partitions_per_producer_task(), 4);
         assert_eq!(logical_slot_count(&layout), 12);
         assert_eq!(layout.max_input_task_count_per_consumer(), Some(2));
-        assert_eq!(resolver.producer_task_range(0), 0..2);
-        assert_eq!(resolver.producer_task_range(1), 2..3);
+        assert_eq!(layout.producer_task_range(0), 0..2);
+        assert_eq!(layout.producer_task_range(1), 2..3);
         assert_eq!(layout.consumer_partition_range(0), &(0..8));
         assert_eq!(layout.consumer_partition_range(1), &(8..12));
         assert_eq!(layout.max_partition_count_per_consumer(), 8);
         assert_eq!(
-            resolver.resolve_slot(0, 0),
+            layout.resolve_slot(0, 0),
             Some(SlotReadPlan::Single {
                 producer_task: 0,
                 producer_partition: 0,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(0, 3),
+            layout.resolve_slot(0, 3),
             Some(SlotReadPlan::Single {
                 producer_task: 0,
                 producer_partition: 3,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(0, 4),
+            layout.resolve_slot(0, 4),
             Some(SlotReadPlan::Single {
                 producer_task: 1,
                 producer_partition: 0,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(1, 3),
+            layout.resolve_slot(1, 3),
             Some(SlotReadPlan::Single {
                 producer_task: 2,
                 producer_partition: 3,
             })
         );
-        assert_eq!(resolver.resolve_slot(1, 4), None);
+        assert_eq!(layout.resolve_slot(1, 4), None);
     }
 
     #[test]
     fn broadcast_layout_splits_partitions() {
         let layout = ExchangeLayout::try_broadcast(2, 3, 6).unwrap();
-        let resolver = layout.resolver();
+
         assert_eq!(layout.producer_task_count(), 2);
         assert_eq!(layout.consumer_task_count(), 3);
         assert_eq!(layout.partitions_per_producer_task(), 6);
         assert_eq!(logical_slot_count(&layout), 6);
-        assert_eq!(resolver.producer_task_range(0), 0..2);
+        assert_eq!(layout.producer_task_range(0), 0..2);
         assert_eq!(layout.consumer_partition_range(0), &(0..2));
         assert_eq!(layout.consumer_partition_range(1), &(2..4));
         assert_eq!(layout.consumer_partition_range(2), &(4..6));
         assert_eq!(layout.max_partition_count_per_consumer(), 2);
         assert_eq!(
-            resolver.resolve_slot(0, 0),
+            layout.resolve_slot(0, 0),
             Some(SlotReadPlan::Fanout {
                 producer_tasks: 0..2,
                 producer_partition: 0,
             })
         );
         assert_eq!(
-            resolver.resolve_slot(1, 1),
+            layout.resolve_slot(1, 1),
             Some(SlotReadPlan::Fanout {
                 producer_tasks: 0..2,
                 producer_partition: 3,
             })
         );
-        assert_eq!(resolver.resolve_slot(2, 2), None);
+        assert_eq!(layout.resolve_slot(2, 2), None);
     }
 }

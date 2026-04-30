@@ -41,49 +41,60 @@ const SPLIT_CHANNEL_CAPACITY: usize = 2;
 /// subdivides partitions that the current task is already reading.
 ///
 /// ```text
-/// one input partition on task K
-/// ┌──────────────────────────────┐
-/// │ p0: [r0, r1, r2, r3, r4, r5] │
-/// └──────────────┬───────────────┘
-///                │ hash rows by `hash_exprs`
-///                ▼
-/// ┌──────────────────────────────┐
-/// │    LocalExchangeSplitExec    │
-/// └───┬────────┬────────┬────────┘
-///     ▼        ▼        ▼
-///   p0.0     p0.1     p0.2       local output partitions
-///  [r1,r4]  [r0,r5]  [r2,r3]
+///    ┌────────┐     ┌────────┐
+///    │  P1.1  │     │  P1.L  │
+///    │[r1, r4]│     │[r0, r3]│
+///    └────────┘ ... └────────┘
+///          ▲           ▲
+///          │           │
+///         ┌─┐         ┌─┐
+///         │1│         │L│
+/// ┌───────┴─┴─────────┴─┴───────┐
+/// │                             │
+/// │   LocalExchangeSplitExec    │
+/// │          (Task M)           │
+/// │                             │
+/// └─────────────┬─┬─────────────┘
+///               │1│
+///               └▲┘
+///                │
+///                │
+/// ┌─────────────────────────────┐
+/// │      Partition 1 (P1)       │
+/// │  [r0, r1, r2, r3, r4, ...]  │
+/// │                             │
+/// └─────────────────────────────┘
 /// ```
 ///
-/// Each input partition has one splitter task and one bounded channel per local output partition.
-/// The first requested output partition initializes the splitter. Sibling output partitions then
-/// read from the receivers created by that shared splitter.
+/// The first `execute()` call for a given input partition initializes a background splitter task
+/// and one bounded channel per local output partition via [`OnceLock`]. Subsequent calls for
+/// sibling local partitions receive their channel endpoint from the shared state.
 ///
-/// ```text
-/// execute(input=0, output=0) ─────┐
-/// execute(input=0, output=1) ──┐  │
-/// execute(input=0, output=2) ─┐│  │
-///                             ▼▼  ▼
-///                      ┌────────────────┐
-/// input partition 0 ──▶│ splitter task  │
-///                      └──┬────┬────┬───┘
-///                         ▼    ▼    ▼
-///                       ch0  ch1  ch2
-/// ```
+/// # Contract
 ///
-/// Downstream operators must eventually poll every output partition for an input partition. If a
-/// sibling output partition is never polled, the splitter can block once that bounded channel is
-/// full.
+/// All `local_partition_count` output partitions for a given input partition must be consumed.
+/// If a sibling is never polled, its bounded channel fills and the splitter stalls, preventing
+/// other consumers from making progress. This is safe in practice since the planning pass only
+/// inserts this operator above [AggregateExec(FinalPartitioned)] and [HashJoinExec(Partitioned)]
+/// which consume every input partition.
 #[derive(Debug)]
 pub struct LocalExchangeSplitExec {
     input: Arc<dyn ExecutionPlan>,
+    /// Expressions to hash — must match the upstream shuffle keys.
     hash_exprs: Vec<Arc<dyn PhysicalExpr>>,
+    /// Total logical hash partitions from the upstream `RepartitionExec` (`N` in `Hash([exprs], N)`).
+    /// Used in the sub-partition formula to keep same-key rows on the same local partition.
     base_partition_count: usize,
+    /// Number of local output partitions each input partition fans out into.
     local_partition_count: usize,
+    /// `input.output_partitioning().partition_count()`. In practice always 1: the distributed
+    /// planner normalizes the upstream shuffle to one logical partition per consumer task.
     input_partition_count: usize,
+    /// `input_partition_count * local_partition_count`
     output_partition_count: usize,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
+    /// One entry per input partition, initialized on the first `execute()` call for that partition.
     split_states: Vec<OnceLock<Result<SplitState, SharedError>>>,
 }
 
@@ -272,15 +283,36 @@ impl LocalExchangeSplitExec {
     }
 }
 
+/// Per-input-partition batch router for [LocalExchangeSplitExec].
+///
+/// `Splitter` runs as a background task. It reads one input stream and routes each row to a local
+/// output partition using the same hash seed as DataFusion's `RepartitionExec`
+/// (`REPARTITION_RANDOM_STATE`). This ensures that rows with the same key always land on the same
+/// local partition.
+///
+/// # Routing Formula
+///
+/// The routing formula is `(hash / base_partition_count) % local_partition_count`. The upstream
+/// `RepartitionExec` used `hash % base_partition_count` to assign rows to logical partitions, so
+/// dividing by `base_partition_count` eliminates that selector and gives us the higher-order bits.
+/// Using those with `local_partition_count` consistently sub-partitions each logical partition
+/// while preserving that same-key rows share a partition.
 struct Splitter {
+    /// Same expressions and seed used by the upstream `RepartitionExec`.
     hash_exprs: Vec<Arc<dyn PhysicalExpr>>,
+    /// `N` from the upstream `Hash([exprs], N)`, the logical partition count.
     base_partition_count: usize,
+    /// Number of local output partitions to fan out into.
     local_partition_count: usize,
     schema: SchemaRef,
     metrics: SplitMetrics,
+    /// Reused buffer for evaluated hash expression columns.
     evaluated: Vec<ArrayRef>,
+    /// Reused buffer for per-row hash values.
     hashes: Vec<u64>,
+    /// Reused per-partition row index lists, one inner `Vec` per local output partition.
     indices: Vec<Vec<u32>>,
+    /// Reused output batch list returned from `split_batch`.
     output_batches: Vec<(usize, RecordBatch)>,
 }
 
@@ -470,6 +502,8 @@ impl ExecutionPlan for LocalExchangeSplitExec {
                     }
                     Err(err) => Err(datafusion::error::DataFusionError::Shared(err)),
                 })
+                // Keeps the SpawnedTask alive for the stream's lifetime. Without this the task
+                // could be dropped and cancelled before the stream is fully drained.
                 .inspect(move |_| {
                     let _ = &task;
                 }),

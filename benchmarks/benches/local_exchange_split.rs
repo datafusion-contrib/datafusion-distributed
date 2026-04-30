@@ -26,17 +26,13 @@ fn local_exchange_split(c: &mut Criterion) {
             .with_local_partitions(32)
             .with_total_rows(1_000_000),
     ));
+    // Small batches stress channel overhead relative to hash throughput.
     benches.extend(split_and_repartition(
-        LocalExchangeSplitBench::many_owned(4, 4).with_total_rows(1_000_000),
+        LocalExchangeSplitBench::one_owned_baseline()
+            .with_local_partitions(32)
+            .with_total_rows(1_000_000)
+            .with_batch_size(256),
     ));
-    for batch_size in [256, 16_384] {
-        benches.extend(split_and_repartition(
-            LocalExchangeSplitBench::one_owned_baseline()
-                .with_local_partitions(32)
-                .with_total_rows(1_000_000)
-                .with_batch_size(batch_size),
-        ));
-    }
 
     for bench in benches {
         let name = bench.label();

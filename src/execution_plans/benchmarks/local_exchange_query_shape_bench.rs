@@ -30,7 +30,6 @@ pub enum QueryBenchShape {
     HighCardinalityFinalAgg,
     BalancedPartitionedJoin,
     SkewedPartitionedJoin,
-    AsymmetricPartitionedJoin,
     JoinThenRegroupTopK,
     DistinctRegroup,
 }
@@ -42,7 +41,6 @@ impl Display for QueryBenchShape {
             Self::HighCardinalityFinalAgg => write!(f, "high_cardinality_final_agg"),
             Self::BalancedPartitionedJoin => write!(f, "balanced_partitioned_join"),
             Self::SkewedPartitionedJoin => write!(f, "skewed_partitioned_join"),
-            Self::AsymmetricPartitionedJoin => write!(f, "asymmetric_partitioned_join"),
             Self::JoinThenRegroupTopK => write!(f, "join_then_regroup_topk"),
             Self::DistinctRegroup => write!(f, "distinct_regroup"),
         }
@@ -131,11 +129,6 @@ impl LocalExchangeQueryBench {
             QueryBenchShape::SkewedPartitionedJoin => {
                 self.join_sources(KeyDistribution::HotKey, self.total_rows, self.key_domain)
             }
-            QueryBenchShape::AsymmetricPartitionedJoin => self.join_sources(
-                KeyDistribution::Uniform,
-                (self.total_rows / 8).max(self.batch_rows),
-                self.key_domain / 2,
-            ),
         }
     }
 
@@ -198,9 +191,7 @@ impl LocalExchangeQueryBench {
             QueryBenchShape::HighCardinalityFinalAgg => {
                 self.build_high_cardinality_final_agg(sources.single()?.exec()?)
             }
-            QueryBenchShape::BalancedPartitionedJoin
-            | QueryBenchShape::SkewedPartitionedJoin
-            | QueryBenchShape::AsymmetricPartitionedJoin => {
+            QueryBenchShape::BalancedPartitionedJoin | QueryBenchShape::SkewedPartitionedJoin => {
                 let (left, right) = sources.join()?;
                 self.build_partitioned_join(left.exec()?, right.exec()?)
             }

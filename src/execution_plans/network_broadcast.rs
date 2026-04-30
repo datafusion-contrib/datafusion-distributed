@@ -18,11 +18,11 @@ use uuid::Uuid;
 
 /// Network boundary for broadcasting data to all consumer tasks.
 ///
-/// This operator works with [BroadcastExec] which scales up partitions so each
-/// consumer task fetches a unique set of partition numbers. Each partition request
-/// is sent to all stage tasks because PartitionIsolatorExec maps the same logical
-/// partition to different actual data on each task.
-///
+/// Works alongside [BroadcastExec], which caches the build-side data locally and scales out
+/// its output partitions so each consumer task is assigned a unique partition range. Each
+/// consumer reads its assigned partition range from every producer task
+/// ([`SlotReadPlan::Fanout`]).
+//
 /// Here are some examples of how [NetworkBroadcastExec] distributes data:
 ///
 /// # 1 to many
@@ -240,30 +240,30 @@ impl ExecutionPlan for NetworkBroadcastExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let resolver = self.layout.resolver();
-        if task_context.task_count != resolver.consumer_task_count() {
+        let layout = &self.layout;
+        if task_context.task_count != layout.consumer_task_count() {
             return exec_err!(
-                "NetworkBroadcastExec expected task_count={} from layout resolver, got {}",
-                resolver.consumer_task_count(),
+                "NetworkBroadcastExec expected task_count={} from layout, got {}",
+                layout.consumer_task_count(),
                 task_context.task_count
             );
         }
-        if task_context.task_index >= resolver.consumer_task_count() {
+        if task_context.task_index >= layout.consumer_task_count() {
             return exec_err!(
                 "NetworkBroadcastExec invalid task context: task_index={} >= consumer_tasks={}",
                 task_context.task_index,
-                resolver.consumer_task_count()
+                layout.consumer_task_count()
             );
         }
         let Some(SlotReadPlan::Fanout {
             producer_tasks,
             producer_partition: target_partition,
-        }) = resolver.resolve_slot(task_context.task_index, partition)
+        }) = layout.resolve_slot(task_context.task_index, partition)
         else {
             return exec_err!(
                 "NetworkBroadcastExec invalid partition={} for owned range {:?}",
                 partition,
-                resolver
+                layout
                     .consumer_partition_range(task_context.task_index)
                     .clone()
             );
@@ -273,7 +273,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
         for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 &self.input_stage,
-                resolver
+                layout
                     .consumer_partition_range(task_context.task_index)
                     .clone(),
                 input_task_index,
