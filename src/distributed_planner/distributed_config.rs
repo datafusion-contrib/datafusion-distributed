@@ -76,8 +76,6 @@ extensions_options! {
         pub local_exchange_split_max_owned_partitions: usize, default = 3
         /// Target number of local post-shuffle partitions to expose per consumer task.
         pub local_exchange_split_target_partitions_per_task: usize, default = 8
-        /// Maximum split factor derived from the local target width.
-        pub local_exchange_split_max_factor: usize, default = 8
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()

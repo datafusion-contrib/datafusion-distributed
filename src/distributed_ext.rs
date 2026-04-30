@@ -618,18 +618,6 @@ pub trait DistributedExt: Sized {
         &mut self,
         target_partitions_per_task: usize,
     ) -> Result<(), DataFusionError>;
-
-    /// Sets a safety cap for the derived local split factor.
-    fn with_distributed_local_exchange_split_max_factor(
-        self,
-        max_factor: usize,
-    ) -> Result<Self, DataFusionError>;
-
-    /// Same as [DistributedExt::with_distributed_local_exchange_split_max_factor] but with an in-place mutation.
-    fn set_distributed_local_exchange_split_max_factor(
-        &mut self,
-        max_factor: usize,
-    ) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -807,15 +795,6 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_local_exchange_split_max_factor(
-        &mut self,
-        max_factor: usize,
-    ) -> Result<(), DataFusionError> {
-        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.local_exchange_split_max_factor = max_factor;
-        Ok(())
-    }
-
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -911,9 +890,6 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
 
-            #[call(set_distributed_local_exchange_split_max_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1041,10 +1017,6 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_local_exchange_split_max_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1172,10 +1144,6 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_local_exchange_split_target_partitions_per_task(mut self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_local_exchange_split_max_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_local_exchange_split_max_factor(mut self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1303,10 +1271,6 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_local_exchange_split_target_partitions_per_task(self, target_partitions_per_task: usize) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_local_exchange_split_max_factor(&mut self, max_factor: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_local_exchange_split_max_factor)]
-            #[expr($?;Ok(self))]
-            fn with_distributed_local_exchange_split_max_factor(self, max_factor: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
