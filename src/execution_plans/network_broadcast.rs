@@ -1,9 +1,9 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
-use crate::stage::Stage;
+use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::{internal_datafusion_err, not_impl_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -149,11 +149,14 @@ impl NetworkBroadcastExec {
         let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
             .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
 
-        let input_stage = Stage::new(query_id, stage_num, broadcast_exec, input_task_count);
-
         Ok(Self {
             properties: properties.into(),
-            input_stage,
+            input_stage: Stage::Local(LocalStage {
+                query_id,
+                num: stage_num,
+                plan: broadcast_exec,
+                tasks: input_task_count,
+            }),
             worker_connections: WorkerConnectionPool::new(input_task_count),
         })
     }
@@ -176,12 +179,12 @@ impl NetworkBoundary for NetworkBroadcastExec {
 
 impl DisplayAs for NetworkBroadcastExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.tasks.len();
-        let stage = self.input_stage.num;
+        let input_tasks = self.input_stage.task_count();
+        let stage = self.input_stage.num();
         let consumer_partitions = self.properties.partitioning.partition_count();
         let stage_partitions = self
             .input_stage
-            .plan
+            .local_plan()
             .as_ref()
             .map(|p| p.properties().partitioning.partition_count())
             .unwrap_or(0);
@@ -206,7 +209,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.plan {
+        match &self.input_stage.local_plan() {
             Some(plan) => vec![plan],
             None => vec![],
         }
@@ -217,7 +220,12 @@ impl ExecutionPlan for NetworkBroadcastExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+        }
         Ok(Arc::new(self_clone))
     }
 
@@ -226,13 +234,18 @@ impl ExecutionPlan for NetworkBroadcastExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self.properties.partitioning.partition_count() * task_context.task_index;
-        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
+        let mut streams = Vec::with_capacity(self.input_stage.task_count());
 
-        for input_task_index in 0..self.input_stage.tasks.len() {
+        for input_task_index in 0..self.input_stage.task_count() {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
-                &self.input_stage,
+                remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 &context,

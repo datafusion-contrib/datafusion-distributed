@@ -3,9 +3,10 @@ use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
+use crate::stage::RemoteStage;
 use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
-use crate::{BytesMetricExt, ChannelResolver, DistributedConfig, Stage};
+use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -67,7 +68,7 @@ impl WorkerConnectionPool {
     /// returns it.
     pub(crate) fn get_or_init_worker_connection(
         &self,
-        input_stage: &Stage,
+        input_stage: &RemoteStage,
         target_partitions: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
@@ -126,7 +127,7 @@ pub(crate) struct WorkerConnection {
 
 impl WorkerConnection {
     fn init(
-        input_stage: &Stage,
+        input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
@@ -181,11 +182,8 @@ impl WorkerConnection {
             },
         );
 
-        let Some(task) = input_stage.tasks.get(target_task) else {
+        let Some(url) = input_stage.workers.get(target_task).cloned() else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
-        };
-        let Some(url) = task.url.clone() else {
-            return internal_err!("ProgrammingError: task is unassigned, cannot proceed");
         };
 
         // The senders and receivers are unbounded queues used for multiplexing the record
