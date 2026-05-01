@@ -1,4 +1,5 @@
 use crate::{NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
+use datafusion::common::Result;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
@@ -10,10 +11,7 @@ pub trait NetworkBoundary: ExecutionPlan {
     /// information to perform any internal transformations necessary for distributed execution.
     ///
     /// Typically, [NetworkBoundary]s will use this call for transitioning from "Pending" to "ready".
-    fn with_input_stage(
-        &self,
-        input_stage: Stage,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>>;
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>>;
 
     /// Returns the assigned input [Stage], if any.
     fn input_stage(&self) -> &Stage;
@@ -41,4 +39,40 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
             None
         }
     }
+}
+
+/// Scales up the head node of the input stage of a network boundary. Different network boundaries
+/// have different needs for scaling up their input, like for example, scaling up a RepartitionExec
+/// during shuffles.
+pub(crate) fn network_boundary_scale_input(
+    input: Arc<dyn ExecutionPlan>,
+    consumer_partitions: usize,
+    consumer_task_count: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let transformed = NetworkShuffleExec::scale_input(
+        Arc::clone(&input),
+        consumer_partitions,
+        consumer_task_count,
+    )?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+    let transformed = NetworkBroadcastExec::scale_input(
+        Arc::clone(&input),
+        consumer_partitions,
+        consumer_task_count,
+    )?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+    let transformed = NetworkCoalesceExec::scale_input(
+        Arc::clone(&input),
+        consumer_partitions,
+        consumer_task_count,
+    )?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+
+    Ok(input)
 }

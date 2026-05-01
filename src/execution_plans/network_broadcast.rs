@@ -1,9 +1,10 @@
-use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use datafusion::common::{internal_datafusion_err, not_impl_err};
+use crate::{BroadcastExec, DistributedTaskContext};
+use datafusion::common::tree_node::Transformed;
+use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -123,51 +124,58 @@ pub struct NetworkBroadcastExec {
 }
 
 impl NetworkBroadcastExec {
-    /// Creates a [NetworkBroadcastExec].
-    ///
-    /// Extracts its child, a BroadcastExec, and creates a new BroadcastExec with
-    /// the correct consumer_task_count.
-    pub fn try_new(
-        input: Arc<dyn ExecutionPlan>,
-        query_id: Uuid,
-        stage_num: usize,
+    pub(crate) fn scale_input(
+        plan: Arc<dyn ExecutionPlan>,
+        _consumer_partitions: usize,
         consumer_task_count: usize,
-        input_task_count: usize,
-    ) -> Result<Self, DataFusionError> {
-        let Some(broadcast) = input.as_any().downcast_ref::<super::BroadcastExec>() else {
-            return Err(internal_datafusion_err!(
-                "NetworkBroadcastExec requires a BroadcastExec input, found: {}",
-                input.name()
-            ));
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(broadcast) = plan.as_any().downcast_ref::<BroadcastExec>() else {
+            return Ok(Transformed::no(plan));
         };
 
-        let child = require_one_child(broadcast.children())?;
-        let input_partition_count = child.properties().partitioning.partition_count();
-        let broadcast_exec: Arc<dyn ExecutionPlan> =
-            Arc::new(super::BroadcastExec::new(child, consumer_task_count));
+        Ok(Transformed::yes(Arc::new(BroadcastExec::new(
+            require_one_child(broadcast.children())?,
+            consumer_task_count,
+        ))))
+    }
 
-        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
-            .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count));
+    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
+        let input_partition_count = input_stage.plan.properties().partitioning.partition_count();
+        let properties = Arc::new(
+            PlanProperties::clone(input_stage.plan.properties())
+                .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
+        );
 
-        Ok(Self {
-            properties: properties.into(),
-            input_stage: Stage::Local(LocalStage {
-                query_id,
-                num: stage_num,
-                plan: broadcast_exec,
-                tasks: input_task_count,
-            }),
-            worker_connections: WorkerConnectionPool::new(input_task_count),
-        })
+        Self {
+            properties,
+            worker_connections: WorkerConnectionPool::new(0),
+            input_stage: Stage::Local(input_stage),
+        }
+    }
+
+    /// Creates a new [NetworkBroadcastExec] fed by the provided [BroadcastExec]. The input plan
+    /// will be executed in a remote worker in `producer_tasks` number of tasks.
+    pub fn try_new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Result<Self> {
+        if !input.as_any().is::<BroadcastExec>() {
+            return plan_err!("The input of a NetworkBroadcastExec can only be a BroadcastExec");
+        }
+
+        Ok(Self::from_stage(LocalStage {
+            // At this point, query_id and num are just placeholders that will be filled by
+            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+            // these two parameters.
+            query_id: Uuid::nil(),
+            num: 0,
+            plan: input,
+            tasks: producer_tasks,
+        }))
     }
 }
 
 impl NetworkBoundary for NetworkBroadcastExec {
-    fn with_input_stage(
-        &self,
-        input_stage: Stage,
-    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.clone();
+        self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
     }
