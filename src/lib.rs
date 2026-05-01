@@ -39,8 +39,7 @@ pub use networking::{
     create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
 pub use stage::{
-    DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
-    explain_analyze,
+    DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
 };
 pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
