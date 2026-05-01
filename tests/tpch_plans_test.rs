@@ -976,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpch_20() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q20").await?;
-        assert_snapshot!(plan, @"
+        assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [s_name@0 ASC NULLS LAST]
         │   SortExec: expr=[s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
