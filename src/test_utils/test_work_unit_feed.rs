@@ -1,6 +1,7 @@
+use crate::distributed_planner::DistributedPlan;
 use crate::{
-    DistributedTaskContext, PlannedLeafNode, TaskEstimation, TaskEstimator, WorkUnitFeed,
-    WorkUnitFeedProto, WorkUnitFeedProvider,
+    DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeed, WorkUnitFeedProto,
+    WorkUnitFeedProvider,
 };
 use async_trait::async_trait;
 use datafusion::arrow::array::{Int64Array, StringArray};
@@ -261,12 +262,12 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         Ok(Some(TaskEstimation::desired(provider.task_count)))
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<crate::PlannedLeafNode>> {
+    ) -> Result<Option<crate::distributed_planner::DistributedPlan>> {
         let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() else {
             return Ok(None);
         };
@@ -289,7 +290,15 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
             Ok(Transformed::no(plan))
         })?;
 
-        Ok(Some(PlannedLeafNode::from_plan(&transformed.data)))
+        Ok(Some(DistributedPlan::from_plan(transformed.data)))
+    }
+
+    fn route_tasks(
+        &self,
+        _tasks: Vec<crate::stage::ExecutionTask>,
+        _urls: &[url::Url],
+    ) -> Result<Option<Vec<url::Url>>> {
+        Ok(None)
     }
 }
 

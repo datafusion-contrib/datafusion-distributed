@@ -1,10 +1,11 @@
 use crate::config_extension_ext::set_distributed_option_extension;
+use crate::stage::ExecutionTask;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
@@ -89,35 +90,17 @@ impl TaskEstimation {
     }
 }
 
-pub struct PlannedLeafNode {
-    pub plan: Arc<dyn ExecutionPlan>,
-    // Optional field used for routing tasks to URLs.
-    urls: Option<Vec<Url>>,
+pub struct DistributedPlan {
+    plan: Arc<dyn ExecutionPlan>,
 }
 
-impl PlannedLeafNode {
-    pub fn from_plan(plan: &Arc<dyn ExecutionPlan>) -> Self {
-        Self {
-            plan: plan.clone(),
-            urls: None,
-        }
+impl DistributedPlan {
+    pub fn from_plan(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self { plan }
     }
 
-    pub fn with_urls(&mut self, urls: Option<Vec<Url>>, task_count: usize) -> Result<()> {
-        if let Some(urls_ref) = &urls
-            && urls_ref.len() != task_count
-        {
-            // Routing tasks to URLs means that the number of tasks and URLs must be the same.
-            return Err(internal_datafusion_err!(
-                "number of urls must be equal to number of tasks"
-            ));
-        }
-        self.urls = urls;
-        Ok(())
-    }
-
-    pub fn urls(&self) -> Option<Vec<Url>> {
-        self.urls.clone()
+    pub fn plan(&self) -> Arc<dyn ExecutionPlan> {
+        Arc::clone(&self.plan)
     }
 }
 
@@ -150,12 +133,14 @@ pub trait TaskEstimator {
     /// After a final task_count is decided, taking into account all the leaf nodes in the [Stage],
     /// this allows performing a transformation in the leaf nodes for accounting for the fact that
     /// they are going to run in multiple tasks, including scaling and routing tasks to specific URLs.
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Result<Option<PlannedLeafNode>>;
+    ) -> Result<Option<DistributedPlan>>;
+
+    fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
 }
 
 impl TaskEstimator for usize {
@@ -173,12 +158,16 @@ impl TaskEstimator for usize {
         }
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
-        _: &Arc<dyn ExecutionPlan>,
-        _: usize,
-        _: &ConfigOptions,
-    ) -> Result<Option<PlannedLeafNode>> {
+        _plan: &Arc<dyn ExecutionPlan>,
+        _task_count: usize,
+        _cfg: &ConfigOptions,
+    ) -> Result<Option<DistributedPlan>> {
+        Ok(None)
+    }
+
+    fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
         Ok(None)
     }
 }
@@ -187,7 +176,8 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
-            fn plan_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<PlannedLeafNode>>;
+            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<DistributedPlan>>;
+            fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -196,7 +186,8 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
-            fn plan_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<PlannedLeafNode>>;
+            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<DistributedPlan>>;
+            fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -222,6 +213,18 @@ pub(crate) fn set_distributed_task_estimator(
             },
         )
     }
+}
+
+pub fn get_distributed_task_estimator(
+    cfg: &SessionConfig,
+) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
+    let opts = cfg.options();
+    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
+        return exec_err!("WorkerResolver not present in the session config");
+    };
+    let task_estimator: Arc<dyn TaskEstimator> =
+        Arc::new(distributed_cfg.__private_task_estimator.clone());
+    Ok(Arc::clone(&task_estimator))
 }
 
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
@@ -262,14 +265,14 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         }))
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<PlannedLeafNode>> {
+    ) -> Result<Option<DistributedPlan>> {
         if task_count == 1 {
-            return Ok(Some(PlannedLeafNode::from_plan(plan)));
+            return Ok(Some(DistributedPlan::from_plan(plan.clone())));
         }
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of
@@ -290,7 +293,11 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         }
         let plan = DataSourceExec::from_data_source(new_file_scan);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(plan, task_count));
-        Ok(Some(PlannedLeafNode::from_plan(&plan)))
+        Ok(Some(DistributedPlan::from_plan(plan)))
+    }
+
+    fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
+        Ok(None)
     }
 }
 
@@ -324,14 +331,14 @@ impl TaskEstimator for CombinedTaskEstimator {
         Ok(None)
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Result<Option<PlannedLeafNode>> {
+    ) -> Result<Option<DistributedPlan>> {
         for estimator in &self.user_provided {
-            if let Some(result) = estimator.plan_leaf_node(plan, task_count, cfg)? {
+            if let Some(result) = estimator.distribute_plan(plan, task_count, cfg)? {
                 return Ok(Some(result));
             }
         }
@@ -339,10 +346,14 @@ impl TaskEstimator for CombinedTaskEstimator {
         // a chance of providing an estimation.
         // If none of the user-provided returned an estimation, the default ones are used.
         for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
-            if let Some(result) = default_estimator.plan_leaf_node(plan, task_count, cfg)? {
+            if let Some(result) = default_estimator.distribute_plan(plan, task_count, cfg)? {
                 return Ok(Some(result));
             }
         }
+        Ok(None)
+    }
+
+    fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
         Ok(None)
     }
 }
@@ -438,12 +449,20 @@ mod tests {
             Ok(self(plan, cfg))
         }
 
-        fn plan_leaf_node(
+        fn distribute_plan(
             &self,
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Result<Option<PlannedLeafNode>> {
+        ) -> Result<Option<DistributedPlan>> {
+            Ok(None)
+        }
+
+        fn route_tasks(
+            &self,
+            _tasks: Vec<crate::stage::ExecutionTask>,
+            _urls: &[Url],
+        ) -> Result<Option<Vec<Url>>> {
             Ok(None)
         }
     }

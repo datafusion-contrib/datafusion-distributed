@@ -39,7 +39,7 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedTaskContext, PlannedLeafNode, SessionStateBuilderExt,
+    DistributedExt, DistributedPlan, DistributedTaskContext, SessionStateBuilderExt,
     TaskEstimation, TaskEstimator, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -327,12 +327,12 @@ impl TaskEstimator for NumbersTaskEstimator {
         Ok(Some(TaskEstimation::desired(task_count.ceil() as usize)))
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Result<Option<PlannedLeafNode>> {
+    ) -> Result<Option<DistributedPlan>> {
         let Some(plan) = plan.as_any().downcast_ref::<NumbersExec>() else {
             return Ok(None);
         };
@@ -347,7 +347,15 @@ impl TaskEstimator for NumbersTaskEstimator {
 
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(NumbersExec::new(ranges_per_task, plan.schema()));
-        Ok(Some(PlannedLeafNode::from_plan(&plan)))
+        Ok(Some(DistributedPlan::from_plan(plan)))
+    }
+
+    fn route_tasks(
+        &self,
+        _tasks: Vec<datafusion_distributed::ExecutionTask>,
+        _urls: &[url::Url],
+    ) -> Result<Option<Vec<url::Url>>> {
+        Ok(None)
     }
 }
 

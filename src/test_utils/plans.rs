@@ -196,12 +196,20 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         }
     }
 
-    fn plan_leaf_node(
+    fn distribute_plan(
         &self,
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+    ) -> datafusion::error::Result<Option<crate::distributed_planner::DistributedPlan>> {
+        Ok(None)
+    }
+
+    fn route_tasks(
+        &self,
+        _tasks: Vec<crate::stage::ExecutionTask>,
+        _urls: &[url::Url],
+    ) -> datafusion::error::Result<Option<Vec<url::Url>>> {
         Ok(None)
     }
 }

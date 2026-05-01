@@ -20,7 +20,6 @@ use datafusion::physical_plan::{
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use url::Url;
 use uuid::Uuid;
 
 /// [ExecutionPlan] that coalesces partitions from multiple tasks into a one or more task without
@@ -102,7 +101,6 @@ impl NetworkCoalesceExec {
     /// - [SortPreservingMergeExec]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        input_urls: Option<Vec<Url>>,
         query_id: Uuid,
         num: usize,
         task_count: usize,
@@ -122,13 +120,7 @@ impl NetworkCoalesceExec {
                 query_id,
                 num,
                 plan: Some(input),
-                tasks: input_urls
-                    .map(|urls| {
-                        urls.into_iter()
-                            .map(|url| ExecutionTask { url: Some(url) })
-                            .collect()
-                    })
-                    .unwrap_or_else(|| vec![ExecutionTask { url: None }; input_task_count]),
+                tasks: vec![ExecutionTask { url: None }; input_task_count],
             },
             worker_connections: WorkerConnectionPool::new(input_task_count),
             metrics_collection: Default::default(),
@@ -359,7 +351,6 @@ mod tests {
 
         let exec = NetworkCoalesceExec::try_new(
             Arc::clone(&child),
-            None,
             Uuid::nil(),
             STAGE_NUM,
             case.consumer_tasks,

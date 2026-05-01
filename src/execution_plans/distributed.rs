@@ -1,6 +1,6 @@
 use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::NetworkBoundaryExt;
+use crate::distributed_planner::{NetworkBoundaryExt, get_distributed_task_estimator};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -89,7 +89,6 @@ impl DistributedExec {
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let urls = worker_resolver.get_urls()?;
-
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
         let metrics = CoordinatorToWorkerMetrics {
@@ -139,6 +138,8 @@ fn distribute_tasks(
         return Ok(Transformed::no(plan));
     };
 
+    let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
+
     let stage = plan.input_stage();
 
     let mut spawner = CoordinatorToWorkerTaskSpawner::new(stage, metrics, codec, join_set)?;
@@ -146,30 +147,30 @@ fn distribute_tasks(
     // Default routing assigns tasks to URLs round-robin from a random starting point.
     let start_idx = rand::rng().random_range(0..urls.len());
 
+    // If the user has not defined custom routing through the route_task API, we
+    // default to round-robin task assignation with a randomized starting point.
+    //
+    // If the user has defined custom routing through the route_task interface,
+    // we attempt to route the task to the specified URL.
+    let routed_urls = match task_estimator.route_tasks(stage.tasks.clone(), urls) {
+        Ok(Some(routed_urls)) => routed_urls,
+        Ok(None) => (0..stage.tasks.len())
+            .map(|i| urls[(start_idx + i) % urls.len()].clone())
+            .collect(),
+        Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
+    };
+
+    if routed_urls.len() != stage.tasks.len() {
+        return Err(exec_datafusion_err!(
+            "number of tasks ({}) was not equal to number of urls ({}) at execution time",
+            routed_urls.len(),
+            stage.tasks.len()
+        ));
+    }
+
     let mut tasks = Vec::with_capacity(stage.tasks.len());
-    for (i, task) in stage.tasks.iter().enumerate() {
-        // If the user has not defined custom routing through the plan_leaf_node API, we
-        // default to round-robin task assignation with a randomized starting point.
-        //
-        // If the user has defined custom routing through the plan_leaf_node interface,
-        // we attempt to route the task to the specified URL.
-        //
-        // Notably, it is possible that a task is assigned to a machine that goes offline
-        // in between the moment that the task URL is assigned and the moment the task is
-        // routed. In that case, we fail the query and surface the error to the user.
-        let url = match task.url.clone() {
-            Some(url) => {
-                if urls.contains(&url) {
-                    Ok(url)
-                } else {
-                    Err(exec_datafusion_err!(
-                        "tried to distribute task to machine not found in cluster, url: {:?}",
-                        url
-                    ))
-                }
-            }
-            None => Ok(urls[(start_idx + i) % urls.len()].clone()),
-        }?;
+    for (i, _task) in stage.tasks.iter().enumerate() {
+        let url = routed_urls[i].clone();
         tasks.push(ExecutionTask {
             url: Some(url.clone()),
         });

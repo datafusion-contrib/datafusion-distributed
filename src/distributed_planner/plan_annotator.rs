@@ -410,11 +410,12 @@ mod tests {
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
         sql_to_physical_plan,
     };
-    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
+    use crate::{DistributedExt, DistributedPlan, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::filter::FilterExec;
+    use url::Url;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -885,12 +886,20 @@ mod tests {
             Ok((self.f)(plan.as_ref()))
         }
 
-        fn plan_leaf_node(
+        fn distribute_plan(
             &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+            _plan: &Arc<dyn ExecutionPlan>,
+            _task_count: usize,
+            _cfg: &ConfigOptions,
+        ) -> Result<Option<DistributedPlan>> {
+            Ok(None)
+        }
+
+        fn route_tasks(
+            &self,
+            _tasks: Vec<crate::stage::ExecutionTask>,
+            _urls: &[Url],
+        ) -> Result<Option<Vec<Url>>> {
             Ok(None)
         }
     }
@@ -914,12 +923,20 @@ mod tests {
             }
         }
 
-        fn plan_leaf_node(
+        fn distribute_plan(
             &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> datafusion::error::Result<Option<crate::PlannedLeafNode>> {
+            _plan: &Arc<dyn ExecutionPlan>,
+            _task_count: usize,
+            _cfg: &ConfigOptions,
+        ) -> Result<Option<crate::distributed_planner::task_estimator::DistributedPlan>> {
+            Ok(None)
+        }
+
+        fn route_tasks(
+            &self,
+            _tasks: Vec<crate::stage::ExecutionTask>,
+            _urls: &[url::Url],
+        ) -> Result<Option<Vec<url::Url>>> {
             Ok(None)
         }
     }
