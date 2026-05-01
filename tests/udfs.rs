@@ -38,18 +38,18 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(*)@1 as count(*)]
         │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] 
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2]
           │ SortExec: expr=[count(*)@1 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday), count(Int64(1))@1 as count(*), count(Int64(1))@1 as count(Int64(1))]
           │     AggregateExec: mode=FinalPartitioned, gby=[test_udf(weather.RainToday)@0 as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5] 
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5]
             │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 6), input_partitions=1
             │   AggregateExec: mode=Partial, gby=[test_udf(RainToday@0) as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
             │     PartitionIsolatorExec: tasks=3 partitions=3

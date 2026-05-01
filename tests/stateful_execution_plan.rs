@@ -65,11 +65,11 @@ mod tests {
 
         assert_snapshot!(plan_str,
             @"
-        ┌───── DistributedExec ── Tasks: t0:[p0] 
+        ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2] 
+          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2]
           │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
           │   FilterExec: MinTemp@0 > 20
           │     PartitionIsolatorExec: tasks=3 partitions=3

@@ -21,13 +21,14 @@ where
     El: MemoryFootPrint + Send + 'static,
     Err: Send + 'static,
 {
-    let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
+    let reservation = Arc::new(MemoryConsumer::new("NetworkBoundary").register(&pool));
 
-    let mut tasks = vec![];
+    let mut tasks = Vec::with_capacity(inner.len());
+    let mut in_rxs = Vec::with_capacity(inner.len());
     for mut t in inner {
-        let tx = tx.clone();
-        let pool = Arc::clone(&pool);
-        let consumer = MemoryConsumer::new("NetworkBoundary");
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel(queue_size);
+        in_rxs.push(ReceiverStream::new(in_rx));
+        let reservation = Arc::clone(&reservation);
 
         tasks.push(SpawnedTask::spawn(async move {
             loop {
@@ -35,24 +36,26 @@ where
                 // extra work if we know nobody is going to listen to it.
                 let msg = tokio::select! {
                     biased;
-                    _ = tx.closed() => return,
+                    _ = in_tx.closed() => return,
                     msg = t.next() => msg
                 };
                 let Some(msg) = msg else { return };
 
-                let reservation = consumer.clone_with_new_id().register(&pool);
                 if let Ok(msg) = &msg {
                     reservation.grow(msg.get_memory_size());
                 }
 
-                if tx.send((msg, reservation)).await.is_err() {
+                if in_tx.send(msg).await.is_err() {
                     return;
                 };
             }
         }))
     }
 
-    ReceiverStream::new(rx).map(move |(msg, _reservation)| {
+    futures::stream::select_all(in_rxs).map(move |msg| {
+        if let Ok(msg) = &msg {
+            reservation.shrink(msg.get_memory_size());
+        }
         // keep the tasks alive as long as the stream lives
         let _ = &tasks;
         msg
@@ -99,13 +102,13 @@ mod tests {
         let reserved = pool.reserved();
         assert_eq!(reserved, 15);
 
-        for i in [1, 2, 3] {
-            let n = stream.next().await.unwrap()?;
-            assert_eq!(i, n)
+        let mut consumed = 0;
+        for _ in 0..3 {
+            consumed += stream.next().await.unwrap()?;
         }
 
         let reserved = pool.reserved();
-        assert_eq!(reserved, 9);
+        assert_eq!(reserved, 15 - consumed);
 
         drop(stream);
 
