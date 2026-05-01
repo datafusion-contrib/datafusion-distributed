@@ -148,6 +148,18 @@ impl ChildrenIsolatorUnionExec {
             task_idx_map,
         })
     }
+
+    fn child_task_counts(&self) -> Vec<usize> {
+        // Preserve the task assignment in task_idx_map and allow child plans to be
+        // replaced and properties to be recomputed from these new children.
+        let mut counts = vec![0; self.children.len()];
+        for children_in_task in &self.task_idx_map {
+            for (child_idx, child_task_ctx) in children_in_task {
+                counts[*child_idx] = counts[*child_idx].max(child_task_ctx.task_count);
+            }
+        }
+        counts
+    }
 }
 
 impl DisplayAs for ChildrenIsolatorUnionExec {
@@ -205,9 +217,11 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
-        let mut clone = self.as_ref().clone();
-        clone.children = children;
-        Ok(Arc::new(clone))
+        Ok(Arc::new(Self::from_children_and_task_counts(
+            children,
+            self.child_task_counts(),
+            self.task_idx_map.len(),
+        )?))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -452,6 +466,11 @@ fn split_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use std::sync::Arc;
 
     #[test]
     fn children_split_all_1_task() -> Result<(), Box<dyn std::error::Error>> {
@@ -530,5 +549,41 @@ mod tests {
             task_index,
             task_count,
         }
+    }
+
+    fn empty_partitions(partitions: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        Arc::new(EmptyExec::new(schema).with_partitions(partitions))
+    }
+
+    #[test]
+    fn with_new_children_recomputes_partitioning() -> Result<(), Box<dyn std::error::Error>> {
+        let child0 = empty_partitions(2);
+        let child1 = empty_partitions(1);
+
+        let union = Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
+            vec![Arc::clone(&child0), Arc::clone(&child1)],
+            vec![2, 1],
+            3,
+        )?);
+        assert_eq!(
+            union.properties().output_partitioning().partition_count(),
+            2
+        );
+
+        // Rewrites can wrap a child in a partition-changing operator. The cached union
+        // properties must be part of the replacement. If not, the downstream planning can skip
+        // partitions that the new child produces.
+        let repartitioned_child0: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            child0,
+            Partitioning::RoundRobinBatch(8),
+        )?);
+        let rebuilt = union.with_new_children(vec![repartitioned_child0, child1])?;
+        assert_eq!(
+            rebuilt.properties().output_partitioning().partition_count(),
+            8
+        );
+
+        Ok(())
     }
 }
