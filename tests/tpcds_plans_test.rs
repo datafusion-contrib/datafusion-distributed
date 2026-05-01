@@ -20,7 +20,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_1() -> Result<()> {
         let display = test_tpcds_query("q1").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_customer_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 9] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -198,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_3() -> Result<()> {
         let display = test_tpcds_query("q3").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [d_year@0 ASC NULLS LAST, sum_agg@3 DESC, brand_id@1 ASC NULLS LAST], fetch=100
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_4() -> Result<()> {
         let display = test_tpcds_query("q4").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [customer_id@0 ASC, customer_first_name@1 ASC, customer_last_name@2 ASC, customer_preferred_cust_flag@3 ASC], fetch=100
         │   [Stage 24] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -480,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_5() -> Result<()> {
         let display = test_tpcds_query("q5").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [channel@0 ASC, id@1 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[channel@0 ASC, id@1 ASC], preserve_partitioning=[true]
@@ -609,7 +609,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_6() -> Result<()> {
         let display = test_tpcds_query("q6").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [cnt@1 ASC, state@0 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[cnt@1 ASC, state@0 ASC], preserve_partitioning=[true]
@@ -696,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_7() -> Result<()> {
         let display = test_tpcds_query("q7").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -840,7 +840,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_9() -> Result<()> {
         let display = test_tpcds_query("q9").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   ProjectionExec: expr=[CASE WHEN count(*)@0 > 74129 THEN avg(store_sales.ss_ext_discount_amt)@1 ELSE avg(store_sales.ss_net_paid)@2 END as bucket1, CASE WHEN count(*)@3 > 122840 THEN avg(store_sales.ss_ext_discount_amt)@4 ELSE avg(store_sales.ss_net_paid)@5 END as bucket2, CASE WHEN count(*)@6 > 56580 THEN avg(store_sales.ss_ext_discount_amt)@7 ELSE avg(store_sales.ss_net_paid)@8 END as bucket3, CASE WHEN count(*)@9 > 10097 THEN avg(store_sales.ss_ext_discount_amt)@10 ELSE avg(store_sales.ss_net_paid)@11 END as bucket4, CASE WHEN count(*)@12 > 165306 THEN avg(store_sales.ss_ext_discount_amt)@13 ELSE avg(store_sales.ss_net_paid)@14 END as bucket5]
@@ -1015,7 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_10() -> Result<()> {
         let display = test_tpcds_query("q10").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST, cd_dep_count@8 ASC NULLS LAST, cd_dep_employed_count@10 ASC NULLS LAST, cd_dep_college_count@12 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST, cd_dep_count@8 ASC NULLS LAST, cd_dep_employed_count@10 ASC NULLS LAST, cd_dep_college_count@12 ASC NULLS LAST], preserve_partitioning=[true]
@@ -1115,7 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_11() -> Result<()> {
         let display = test_tpcds_query("q11").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [customer_id@0 ASC, customer_first_name@1 ASC, customer_last_name@2 ASC, customer_preferred_cust_flag@3 ASC], fetch=100
         │   [Stage 16] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -1324,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_13() -> Result<()> {
         let display = test_tpcds_query("q13").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[avg(store_sales.ss_quantity)@0 as avg1, avg(store_sales.ss_ext_sales_price)@1 as avg2, avg(store_sales.ss_ext_wholesale_cost)@2 as avg3, sum(store_sales.ss_ext_wholesale_cost)@3 as sum(store_sales.ss_ext_wholesale_cost)]
         │   AggregateExec: mode=Final, gby=[], aggr=[avg(store_sales.ss_quantity), avg(store_sales.ss_ext_sales_price), avg(store_sales.ss_ext_wholesale_cost), sum(store_sales.ss_ext_wholesale_cost)]
@@ -1938,7 +1938,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_15() -> Result<()> {
         let display = test_tpcds_query("q15").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ca_zip@0 ASC], fetch=100
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -1994,7 +1994,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_16() -> Result<()> {
         let display = test_tpcds_query("q16").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(alias1)@0 as order count, sum(alias2)@1 as total shipping cost, sum(alias3)@2 as total net profit]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -2055,7 +2055,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_17() -> Result<()> {
         let display = test_tpcds_query("q17").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC, i_item_desc@1 ASC, s_state@2 ASC], fetch=100
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -2153,7 +2153,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_18() -> Result<()> {
         let display = test_tpcds_query("q18").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ca_country@1 ASC, ca_state@2 ASC, ca_county@3 ASC, i_item_id@0 ASC], fetch=100
         │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -2244,7 +2244,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_19() -> Result<()> {
         let display = test_tpcds_query("q19").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ext_price@4 DESC, brand@1 ASC NULLS LAST, brand_id@0 ASC NULLS LAST, i_manufact_id@2 ASC NULLS LAST, i_manufact@3 ASC NULLS LAST], fetch=100
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -2419,7 +2419,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_22() -> Result<()> {
         let display = test_tpcds_query("q22").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [qoh@4 ASC, i_product_name@0 ASC, i_brand@1 ASC, i_class@2 ASC, i_category@3 ASC], fetch=100
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -2461,7 +2461,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_23() -> Result<()> {
         let display = test_tpcds_query("q23").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC, c_first_name@1 ASC, sales@2 ASC], fetch=100
         │   [Stage 33] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -2762,7 +2762,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_24() -> Result<()> {
         let display = test_tpcds_query("q24").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC NULLS LAST, c_first_name@1 ASC NULLS LAST, s_store_name@2 ASC NULLS LAST]
         │   SortExec: expr=[c_last_name@0 ASC NULLS LAST, c_first_name@1 ASC NULLS LAST, s_store_name@2 ASC NULLS LAST], preserve_partitioning=[true]
@@ -2910,7 +2910,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_25() -> Result<()> {
         let display = test_tpcds_query("q25").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], fetch=100
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -3008,7 +3008,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_26() -> Result<()> {
         let display = test_tpcds_query("q26").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -3075,7 +3075,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_27() -> Result<()> {
         let display = test_tpcds_query("q27").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC, s_state@1 ASC], fetch=100
         │   [Stage 19] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
@@ -3253,7 +3253,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_28() -> Result<()> {
         let display = test_tpcds_query("q28").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[b1_lp@3 as b1_lp, b1_cnt@4 as b1_cnt, b1_cntd@5 as b1_cntd, b2_lp@6 as b2_lp, b2_cnt@7 as b2_cnt, b2_cntd@8 as b2_cntd, b3_lp@9 as b3_lp, b3_cnt@10 as b3_cnt, b3_cntd@11 as b3_cntd, b4_lp@12 as b4_lp, b4_cnt@13 as b4_cnt, b4_cntd@14 as b4_cntd, b5_lp@15 as b5_lp, b5_cnt@16 as b5_cnt, b5_cntd@17 as b5_cntd, b6_lp@0 as b6_lp, b6_cnt@1 as b6_cnt, b6_cntd@2 as b6_cntd]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -3342,7 +3342,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_29() -> Result<()> {
         let display = test_tpcds_query("q29").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST, i_item_desc@1 ASC NULLS LAST, s_store_id@2 ASC NULLS LAST, s_store_name@3 ASC NULLS LAST], fetch=100
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -3447,7 +3447,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_31() -> Result<()> {
         let display = test_tpcds_query("q31").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ca_county@0 ASC NULLS LAST]
         │   [Stage 24] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -3680,7 +3680,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_32() -> Result<()> {
         let display = test_tpcds_query("q32").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[sum(catalog_sales.cs_ext_discount_amt)@0 as excess discount amount]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -3747,7 +3747,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_33() -> Result<()> {
         let display = test_tpcds_query("q33").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [total_sales@1 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[total_sales@1 ASC NULLS LAST], preserve_partitioning=[true]
@@ -3896,7 +3896,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_34() -> Result<()> {
         let display = test_tpcds_query("q34").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC, c_first_name@1 ASC, c_salutation@2 ASC, c_preferred_cust_flag@3 DESC, ss_ticket_number@4 ASC]
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -3964,7 +3964,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_35() -> Result<()> {
         let display = test_tpcds_query("q35").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ca_state@0 ASC, cd_gender@1 ASC, cd_marital_status@2 ASC, cd_dep_count@3 ASC, cd_dep_employed_count@8 ASC, cd_dep_college_count@13 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[ca_state@0 ASC, cd_gender@1 ASC, cd_marital_status@2 ASC, cd_dep_count@3 ASC, cd_dep_employed_count@8 ASC, cd_dep_college_count@13 ASC], preserve_partitioning=[true]
@@ -4228,7 +4228,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_37() -> Result<()> {
         let display = test_tpcds_query("q37").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -4279,7 +4279,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_38() -> Result<()> {
         let display = test_tpcds_query("q38").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -4403,7 +4403,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_39() -> Result<()> {
         let display = test_tpcds_query("q39").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[wsk1@0 as wsk1, isk1@1 as isk1, dmoy1@2 as dmoy1, mean1@3 as mean1, cov1@4 as cov1, w_warehouse_sk@5 as w_warehouse_sk, i_item_sk@6 as i_item_sk, d_moy@7 as d_moy, mean@8 as mean, cov@9 as cov]
         │   SortPreservingMergeExec: [w_warehouse_sk@10 ASC, i_item_sk@11 ASC, d_moy@12 ASC, mean@13 ASC, cov@14 ASC, d_moy@7 ASC, mean@8 ASC, cov@9 ASC]
@@ -4571,7 +4571,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_41() -> Result<()> {
         let display = test_tpcds_query("q41").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_product_name@0 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[i_product_name@0 ASC NULLS LAST], preserve_partitioning=[true]
@@ -4612,7 +4612,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_42() -> Result<()> {
         let display = test_tpcds_query("q42").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [sum(store_sales.ss_ext_sales_price)@3 DESC, d_year@0 ASC NULLS LAST, i_category_id@1 ASC NULLS LAST, i_category@2 ASC NULLS LAST], fetch=100
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -4802,7 +4802,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_45() -> Result<()> {
         let display = test_tpcds_query("q45").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ca_zip@0 ASC NULLS LAST, ca_city@1 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[ca_zip@0 ASC NULLS LAST, ca_city@1 ASC NULLS LAST], preserve_partitioning=[true]
@@ -4870,7 +4870,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_46() -> Result<()> {
         let display = test_tpcds_query("q46").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC, c_first_name@1 ASC, ca_city@2 ASC, bought_city@3 ASC, ss_ticket_number@4 ASC], fetch=100
         │   [Stage 8] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -5111,7 +5111,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_48() -> Result<()> {
         let display = test_tpcds_query("q48").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ AggregateExec: mode=Final, gby=[], aggr=[sum(store_sales.ss_quantity)]
         │   CoalescePartitionsExec
@@ -5325,7 +5325,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_50() -> Result<()> {
         let display = test_tpcds_query("q50").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [s_store_name@0 ASC NULLS LAST, s_company_id@1 ASC NULLS LAST, s_street_number@2 ASC NULLS LAST, s_street_name@3 ASC NULLS LAST, s_street_type@4 ASC NULLS LAST, s_suite_number@5 ASC NULLS LAST, s_city@6 ASC NULLS LAST, s_county@7 ASC NULLS LAST, s_state@8 ASC NULLS LAST, s_zip@9 ASC NULLS LAST], fetch=100
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -5466,7 +5466,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_52() -> Result<()> {
         let display = test_tpcds_query("q52").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [d_year@0 ASC NULLS LAST, ext_price@3 DESC, brand_id@1 ASC NULLS LAST], fetch=100
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -5694,7 +5694,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_55() -> Result<()> {
         let display = test_tpcds_query("q55").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [ext_price@2 DESC, brand_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -5738,7 +5738,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_56() -> Result<()> {
         let display = test_tpcds_query("q56").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [total_sales@1 ASC, i_item_id@0 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[total_sales@1 ASC, i_item_id@0 ASC], preserve_partitioning=[true]
@@ -6301,7 +6301,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_60() -> Result<()> {
         let display = test_tpcds_query("q60").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST, total_sales@1 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[i_item_id@0 ASC NULLS LAST, total_sales@1 ASC NULLS LAST], preserve_partitioning=[true]
@@ -6450,7 +6450,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_61() -> Result<()> {
         let display = test_tpcds_query("q61").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortExec: TopK(fetch=100), expr=[total@1 ASC NULLS LAST], preserve_partitioning=[false]
         │   ProjectionExec: expr=[promotions@0 as promotions, total@1 as total, CAST(promotions@0 AS Decimal128(15, 4)) / CAST(total@1 AS Decimal128(15, 4)) * Some(100),20,0 as promotional_sales.promotions / all_sales.total * Int64(100)]
@@ -6595,7 +6595,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_62() -> Result<()> {
         let display = test_tpcds_query("q62").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [w_substr@0 ASC, sm_type@1 ASC, web_name@2 ASC], fetch=100
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -6713,7 +6713,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_64() -> Result<()> {
         let display = test_tpcds_query("q64").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[product_name@0 as product_name, store_name@1 as store_name, store_zip@2 as store_zip, b_street_number@3 as b_street_number, b_street_name@4 as b_street_name, b_city@5 as b_city, b_zip@6 as b_zip, c_street_number@7 as c_street_number, c_street_name@8 as c_street_name, c_city@9 as c_city, c_zip@10 as c_zip, cs1syear@11 as cs1syear, cs1cnt@12 as cs1cnt, s11@13 as s11, s21@14 as s21, s31@15 as s31, s12@16 as s12, s22@17 as s22, s32@18 as s32, syear@19 as syear, cnt@20 as cnt]
         │   SortPreservingMergeExec: [product_name@0 ASC NULLS LAST, store_name@1 ASC NULLS LAST, cnt@20 ASC NULLS LAST, s1@21 ASC NULLS LAST, s1@22 ASC NULLS LAST]
@@ -7103,7 +7103,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_65() -> Result<()> {
         let display = test_tpcds_query("q65").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [s_store_name@0 ASC, i_item_desc@1 ASC], fetch=100
         │   [Stage 9] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -7188,7 +7188,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_66() -> Result<()> {
         let display = test_tpcds_query("q66").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [w_warehouse_name@0 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[w_warehouse_name@0 ASC], preserve_partitioning=[true]
@@ -7371,7 +7371,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_68() -> Result<()> {
         let display = test_tpcds_query("q68").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC, ss_ticket_number@4 ASC], fetch=100
         │   [Stage 8] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -7457,7 +7457,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_69() -> Result<()> {
         let display = test_tpcds_query("q69").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [cd_gender@0 ASC NULLS LAST, cd_marital_status@1 ASC NULLS LAST, cd_education_status@2 ASC NULLS LAST, cd_purchase_estimate@4 ASC NULLS LAST, cd_credit_rating@6 ASC NULLS LAST], fetch=100
         │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -7650,7 +7650,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_72() -> Result<()> {
         let display = test_tpcds_query("q72").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [total_cnt@5 DESC, i_item_desc@0 ASC, w_warehouse_name@1 ASC, d_week_seq@2 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[total_cnt@5 DESC, i_item_desc@0 ASC, w_warehouse_name@1 ASC, d_week_seq@2 ASC], preserve_partitioning=[true]
@@ -7766,7 +7766,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_73() -> Result<()> {
         let display = test_tpcds_query("q73").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [cnt@5 DESC, c_last_name@0 ASC NULLS LAST]
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -7834,7 +7834,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_74() -> Result<()> {
         let display = test_tpcds_query("q74").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [customer_id@0 ASC], fetch=100
         │   [Stage 16] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -7995,7 +7995,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_75() -> Result<()> {
         let display = test_tpcds_query("q75").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [sales_cnt_diff@8 ASC NULLS LAST, sales_amt_diff@9 ASC NULLS LAST], fetch=100
         │   SortExec: TopK(fetch=100), expr=[sales_cnt_diff@8 ASC NULLS LAST, sales_amt_diff@9 ASC NULLS LAST], preserve_partitioning=[true]
@@ -8238,7 +8238,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_76() -> Result<()> {
         let display = test_tpcds_query("q76").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [channel@0 ASC, col_name@1 ASC, d_year@2 ASC, d_qoy@3 ASC, i_category@4 ASC], fetch=100
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -8338,7 +8338,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_77() -> Result<()> {
         let display = test_tpcds_query("q77").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [channel@0 ASC, id@1 ASC, returns_@3 DESC], fetch=100
         │   [Stage 21] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -8537,7 +8537,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_78() -> Result<()> {
         let display = test_tpcds_query("q78").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[ss_sold_year@0 as ss_sold_year, ss_item_sk@1 as ss_item_sk, ss_customer_sk@2 as ss_customer_sk, ratio@3 as ratio, store_qty@4 as store_qty, store_wholesale_cost@5 as store_wholesale_cost, store_sales_price@6 as store_sales_price, other_chan_qty@7 as other_chan_qty, other_chan_wholesale_cost@8 as other_chan_wholesale_cost, other_chan_sales_price@9 as other_chan_sales_price]
         │   SortPreservingMergeExec: [ss_sold_year@0 ASC NULLS LAST, ss_item_sk@1 ASC NULLS LAST, ss_customer_sk@2 ASC NULLS LAST, ss_qty@10 DESC, ss_wc@11 DESC, ss_sp@12 DESC, other_chan_qty@7 ASC NULLS LAST, other_chan_wholesale_cost@8 ASC NULLS LAST, other_chan_sales_price@9 ASC NULLS LAST, ratio@3 ASC NULLS LAST], fetch=100
@@ -8668,7 +8668,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_79() -> Result<()> {
         let display = test_tpcds_query("q79").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_last_name@0 ASC, c_first_name@1 ASC, substr(ms.s_city,Int64(1),Int64(30))@2 ASC, profit@5 ASC, ss_ticket_number@3 ASC NULLS LAST], fetch=100
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -8736,7 +8736,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_80() -> Result<()> {
         let display = test_tpcds_query("q80").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [channel@0 ASC, id@1 ASC], fetch=100
         │   SortExec: TopK(fetch=100), expr=[channel@0 ASC, id@1 ASC], preserve_partitioning=[true]
@@ -8946,7 +8946,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_81() -> Result<()> {
         let display = test_tpcds_query("q81").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [c_customer_id@0 ASC NULLS LAST, c_salutation@1 ASC NULLS LAST, c_first_name@2 ASC NULLS LAST, c_last_name@3 ASC NULLS LAST, ca_street_number@4 ASC NULLS LAST, ca_street_name@5 ASC NULLS LAST, ca_street_type@6 ASC NULLS LAST, ca_suite_number@7 ASC NULLS LAST, ca_city@8 ASC NULLS LAST, ca_county@9 ASC NULLS LAST, ca_state@10 ASC NULLS LAST, ca_zip@11 ASC NULLS LAST, ca_country@12 ASC NULLS LAST, ca_gmt_offset@13 ASC NULLS LAST, ca_location_type@14 ASC NULLS LAST, ctr_total_return@15 ASC NULLS LAST], fetch=100
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -9053,7 +9053,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_82() -> Result<()> {
         let display = test_tpcds_query("q82").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [i_item_id@0 ASC NULLS LAST], fetch=100
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -9272,7 +9272,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_84() -> Result<()> {
         let display = test_tpcds_query("q84").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[customer_id@0 as customer_id, customername@1 as customername]
         │   SortPreservingMergeExec: [c_customer_id@2 ASC], fetch=100
@@ -9337,7 +9337,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_85() -> Result<()> {
         let display = test_tpcds_query("q85").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [substr(reason.r_reason_desc,Int64(1),Int64(20))@0 ASC NULLS LAST, avg1@1 ASC NULLS LAST, avg2@2 ASC NULLS LAST, avg(web_returns.wr_fee)@3 ASC NULLS LAST], fetch=100
         │   [Stage 10] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -9437,7 +9437,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_87() -> Result<()> {
         let display = test_tpcds_query("q87").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
@@ -9560,7 +9560,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_88() -> Result<()> {
         let display = test_tpcds_query("q88").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[h8_30_to_9@1 as h8_30_to_9, h9_to_9_30@2 as h9_to_9_30, h9_30_to_10@3 as h9_30_to_10, h10_to_10_30@4 as h10_to_10_30, h10_30_to_11@5 as h10_30_to_11, h11_to_11_30@6 as h11_to_11_30, h11_30_to_12@7 as h11_30_to_12, h12_to_12_30@0 as h12_to_12_30]
         │   CrossJoinExec
@@ -9976,7 +9976,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_90() -> Result<()> {
         let display = test_tpcds_query("q90").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortExec: TopK(fetch=100), expr=[am_pm_ratio@0 ASC NULLS LAST], preserve_partitioning=[false]
         │   ProjectionExec: expr=[CASE WHEN pmc@1 = 0 THEN None,23,8 ELSE CAST(amc@0 AS Decimal128(15, 4)) / CAST(pmc@1 AS Decimal128(15, 4)) END as am_pm_ratio]
@@ -10072,7 +10072,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_91() -> Result<()> {
         let display = test_tpcds_query("q91").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [returns_loss@3 DESC]
         │   [Stage 8] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -10154,7 +10154,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_92() -> Result<()> {
         let display = test_tpcds_query("q92").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[sum(web_sales.ws_ext_discount_amt)@0 as Excess Discount Amount]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -10221,7 +10221,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_93() -> Result<()> {
         let display = test_tpcds_query("q93").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [sumsales@1 ASC, ss_customer_sk@0 ASC], fetch=100
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -10268,7 +10268,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_94() -> Result<()> {
         let display = test_tpcds_query("q94").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(alias1)@0 as order count, sum(alias2)@1 as total shipping cost, sum(alias3)@2 as total net profit]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -10423,7 +10423,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_96() -> Result<()> {
         let display = test_tpcds_query("q96").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -10475,7 +10475,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_97() -> Result<()> {
         let display = test_tpcds_query("q97").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[sum(CASE WHEN ssci.customer_sk IS NOT NULL AND csci.customer_sk IS NULL THEN Int64(1) ELSE Int64(0) END)@0 as store_only, sum(CASE WHEN ssci.customer_sk IS NULL AND csci.customer_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END)@1 as catalog_only, sum(CASE WHEN ssci.customer_sk IS NOT NULL AND csci.customer_sk IS NOT NULL THEN Int64(1) ELSE Int64(0) END)@2 as store_and_catalog]
         │   GlobalLimitExec: skip=0, fetch=100
@@ -10583,7 +10583,7 @@ mod tests {
     #[tokio::test]
     async fn test_tpcds_99() -> Result<()> {
         let display = test_tpcds_query("q99").await?;
-        assert_snapshot!(display, @r"
+        assert_snapshot!(display, @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [w_substr@0 ASC, sm_type@1 ASC, cc_name_lower@2 ASC], fetch=100
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
