@@ -2,9 +2,10 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::stage::RemoteStage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
-use crate::{DistributedExt, DistributedTaskContext, ExecutionTask, NetworkShuffleExec, Stage};
+use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage};
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;
 use datafusion::common::Result;
@@ -165,16 +166,14 @@ impl ShuffleBench {
             .build()
             .task_ctx();
         let input_stage_tasks = (0..bench.producer_tasks)
-            .map(|i| ExecutionTask {
-                url: Some(Url::parse(&format!("http://localhost:{i}")).unwrap()),
-            })
+            .map(|i| Url::parse(&format!("http://localhost:{i}")).unwrap())
             .collect();
 
         Ok(ShuffleFixture {
             bench,
             schema,
             task_ctx,
-            input_stage_tasks,
+            input_stage_workers: input_stage_tasks,
             workers,
         })
     }
@@ -190,7 +189,7 @@ pub struct ShuffleFixture {
     bench: ShuffleBench,
     schema: Arc<Schema>,
     task_ctx: Arc<datafusion::execution::TaskContext>,
-    input_stage_tasks: Vec<ExecutionTask>,
+    input_stage_workers: Vec<Url>,
     workers: Vec<MemoryWorkerHandle>,
 }
 
@@ -213,12 +212,11 @@ impl ShuffleFixture {
                 .await?;
         }
 
-        let input_stage = Stage {
+        let input_stage = Stage::Remote(RemoteStage {
             query_id,
             num: 0,
-            plan: None,
-            tasks: self.input_stage_tasks.clone(),
-        };
+            workers: self.input_stage_workers.clone(),
+        });
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {

@@ -1,10 +1,10 @@
+use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::execution_plans::common::scale_partitioning_props;
-use crate::stage::Stage;
+use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, ExecutionTask};
-use datafusion::common::{exec_err, plan_err};
+use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -103,12 +103,12 @@ impl NetworkCoalesceExec {
         let max_input_task_count = input_task_count.div_ceil(task_count).max(1);
         Ok(Self {
             properties: scale_partitioning_props(input.properties(), |p| p * max_input_task_count),
-            input_stage: Stage {
+            input_stage: Stage::Local(LocalStage {
                 query_id,
                 num,
-                plan: Some(input),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
-            },
+                plan: input,
+                tasks: input_task_count,
+            }),
             worker_connections: WorkerConnectionPool::new(input_task_count),
         })
     }
@@ -128,9 +128,9 @@ impl NetworkBoundary for NetworkCoalesceExec {
 
 impl DisplayAs for NetworkCoalesceExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.tasks.len();
+        let input_tasks = self.input_stage.task_count();
         let partitions = self.properties.partitioning.partition_count();
-        let stage = self.input_stage.num;
+        let stage = self.input_stage.num();
         write!(
             f,
             "[Stage {stage}] => NetworkCoalesceExec: output_partitions={partitions}, input_tasks={input_tasks}",
@@ -152,7 +152,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.plan {
+        match &self.input_stage.local_plan() {
             Some(v) => vec![v],
             None => vec![],
         }
@@ -163,7 +163,12 @@ impl ExecutionPlan for NetworkCoalesceExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+        }
         Ok(Arc::new(self_clone))
     }
 
@@ -172,6 +177,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         if task_context.task_index >= task_context.task_count {
             return exec_err!(
@@ -187,8 +197,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             .partition_count()
             .checked_div(
                 self.input_stage
-                    .tasks
-                    .len()
+                    .task_count()
                     .div_ceil(task_context.task_count)
                     .max(1),
             )
@@ -197,7 +206,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             return exec_err!("NetworkCoalesceExec has 0 partitions per input task");
         }
 
-        let input_task_count = self.input_stage.tasks.len();
+        let input_task_count = self.input_stage.task_count();
         let group = task_group(
             input_task_count,
             task_context.task_index,
@@ -228,7 +237,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
         let target_task = group.start_task + input_task_offset;
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
-            &self.input_stage,
+            remote_stage,
             0..partitions_per_task,
             target_task,
             &context,
