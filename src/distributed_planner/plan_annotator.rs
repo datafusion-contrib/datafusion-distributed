@@ -298,19 +298,11 @@ async fn _annotate_plan(
             // If it's a normal plan, continue with the propagation.
             PlanOrNetworkBoundary::Plan(plan) => plan,
             // Broadcast is a stage split only propagate a Maximum cap into the build stage.
-            PlanOrNetworkBoundary::Broadcast => {
-                if let Maximum(max) = task_count {
-                    for child in annotation.children.iter_mut() {
-                        let child_task_count = child.task_count.clone().limit(*max);
-                        propagate_task_count(child, &child_task_count, d_cfg)?;
-                    }
-                }
-                return Ok(());
-            }
             // This is a network boundary.
             //
             // Nothing to propagate here, all the nodes below the network boundary were already
             // assigned a task count, we do not want to overwrite it.
+            PlanOrNetworkBoundary::Broadcast => return Ok(()),
             PlanOrNetworkBoundary::Shuffle => return Ok(()),
             PlanOrNetworkBoundary::Coalesce => return Ok(()),
         };
@@ -766,8 +758,8 @@ mod tests {
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
             [NetworkBoundary] Broadcast: task_count=Maximum(1)
-              BroadcastExec: task_count=Desired(1)
-                DataSourceExec: task_count=Desired(1)
+              BroadcastExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
           DataSourceExec: task_count=Maximum(1)
         ");
     }
@@ -838,20 +830,20 @@ mod tests {
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               [NetworkBoundary] Broadcast: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(1)
-                  DataSourceExec: task_count=Desired(1)
+                BroadcastExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               [NetworkBoundary] Broadcast: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(1)
-                  DataSourceExec: task_count=Desired(1)
+                BroadcastExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(2)
             CoalescePartitionsExec: task_count=Maximum(2)
               [NetworkBoundary] Broadcast: task_count=Maximum(2)
-                BroadcastExec: task_count=Desired(2)
-                  DataSourceExec: task_count=Desired(2)
+                BroadcastExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Maximum(2)
         ");
     }
