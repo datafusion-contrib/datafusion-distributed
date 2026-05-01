@@ -449,7 +449,12 @@ fn propagate_task_count(
             task_count.as_usize(),
         )?;
         let mut new_children = Vec::with_capacity(children.len());
-        for (child, task_count) in c_i_union.children_and_task_count() {
+
+        let children_and_task_count = c_i_union
+            .children()
+            .into_iter()
+            .zip(c_i_union.child_task_counts());
+        for (child, task_count) in children_and_task_count {
             new_children.push(propagate_task_count(child, Maximum(task_count), ctx)?);
         }
         let c_i_union = Arc::new(c_i_union).with_new_children(new_children)?;

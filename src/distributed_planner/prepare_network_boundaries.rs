@@ -28,9 +28,8 @@ fn prepare(
     // count, not the full stage's task count, otherwise hash partitioning is over-scaled and
     // data ends up routed to partitions no consumer reads.
     if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
-        let new_children = ciu
-            .children_and_task_count()
-            .into_iter()
+        let children_and_task_count = ciu.children().into_iter().zip(ciu.child_task_counts());
+        let new_children = children_and_task_count
             .map(|(child, per_child_count)| {
                 prepare(Arc::clone(child), per_child_count, query_id, num)
             })
