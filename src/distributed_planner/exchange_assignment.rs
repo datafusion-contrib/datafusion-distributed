@@ -204,7 +204,7 @@ impl BroadcastExchangeLayout {
         if partitions_per_producer_task == 0 {
             return plan_err!("broadcast exchange requires partitions_per_producer_task > 0");
         }
-        if partitions_per_producer_task % consumer_task_count != 0 {
+        if !partitions_per_producer_task.is_multiple_of(consumer_task_count) {
             return plan_err!(
                 "broadcast exchange requires consumer_task_count to divide partitions_per_producer_task evenly, got {} and {}",
                 partitions_per_producer_task,

@@ -332,7 +332,7 @@ impl Splitter {
         self.hashes.resize(batch.num_rows(), 0);
         create_hashes(
             &self.evaluated,
-            &REPARTITION_RANDOM_STATE.random_state(),
+            REPARTITION_RANDOM_STATE.random_state(),
             &mut self.hashes,
         )?;
         self.metrics.hash_eval_time.add_elapsed(hash_start);
@@ -565,7 +565,7 @@ mod tests {
             let mut hashes = vec![0; batch.num_rows()];
             create_hashes(
                 &evaluated,
-                &REPARTITION_RANDOM_STATE.random_state(),
+                REPARTITION_RANDOM_STATE.random_state(),
                 &mut hashes,
             )?;
 
@@ -618,7 +618,8 @@ mod tests {
 
         let actual0 = batches0.iter().flat_map(batch_values).collect::<Vec<_>>();
         let actual1 = batches1.iter().flat_map(batch_values).collect::<Vec<_>>();
-        let expected0 = expected_local_values(&[input_batch.clone()], &hash_exprs, 2, 2, 0)?;
+        let expected0 =
+            expected_local_values(std::slice::from_ref(&input_batch), &hash_exprs, 2, 2, 0)?;
         let expected1 = expected_local_values(&[input_batch], &hash_exprs, 2, 2, 1)?;
 
         assert_eq!(actual0, expected0);
@@ -715,8 +716,11 @@ mod tests {
             int32_batch(Arc::clone(&schema), &[0, 1, 2, 3])?,
             int32_batch(Arc::clone(&schema), &[4, 5, 6, 7])?,
         ];
-        let input =
-            TestMemoryExec::try_new_exec(&[input_batches.clone()], Arc::clone(&schema), None)?;
+        let input = TestMemoryExec::try_new_exec(
+            std::slice::from_ref(&input_batches),
+            Arc::clone(&schema),
+            None,
+        )?;
         let input = Arc::unwrap_or_clone(input).try_with_sort_information(vec![
             [datafusion::physical_expr::PhysicalSortExpr::new_default(
                 Arc::new(Column::new("k", 0)),

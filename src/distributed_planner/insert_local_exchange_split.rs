@@ -427,7 +427,7 @@ impl SplitInput {
         }
         if self.already_split
             || target_partition_count == 0
-            || target_partition_count % self.owned_partition_count != 0
+            || !target_partition_count.is_multiple_of(self.owned_partition_count)
         {
             return false;
         }
@@ -657,7 +657,7 @@ mod tests {
                 .unwrap()
                 .unwrap_or(physical_plan);
         let d_cfg = DistributedConfig::from_config_options(state.config_options()).unwrap();
-        let split = insert_local_exchange_split_execs(distributed, &d_cfg).unwrap();
+        let split = insert_local_exchange_split_execs(distributed, d_cfg).unwrap();
         let distributed_exec = DistributedExec::new(split);
         display_plan_ascii(&distributed_exec, false)
     }

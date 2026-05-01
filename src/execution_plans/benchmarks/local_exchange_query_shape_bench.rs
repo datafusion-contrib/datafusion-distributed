@@ -142,13 +142,15 @@ impl LocalExchangeQueryBench {
         Ok(QueryBenchSources::Single {
             input: make_fact_source(
                 value_name,
-                self.total_rows,
-                self.batch_rows,
-                self.source_partitions,
-                self.key_domain,
-                grp_domain,
-                key_distribution,
-                value_offset,
+                FactSourceSpec {
+                    total_rows: self.total_rows,
+                    batch_rows: self.batch_rows,
+                    source_partitions: self.source_partitions,
+                    key_domain: self.key_domain,
+                    grp_domain,
+                    key_distribution,
+                    value_offset,
+                },
             )?,
         })
     }
@@ -162,23 +164,27 @@ impl LocalExchangeQueryBench {
         Ok(QueryBenchSources::Join {
             left: make_fact_source(
                 "left_value",
-                self.total_rows,
-                self.batch_rows,
-                self.source_partitions,
-                self.key_domain,
-                16,
-                left_distribution,
-                0,
+                FactSourceSpec {
+                    total_rows: self.total_rows,
+                    batch_rows: self.batch_rows,
+                    source_partitions: self.source_partitions,
+                    key_domain: self.key_domain,
+                    grp_domain: 16,
+                    key_distribution: left_distribution,
+                    value_offset: 0,
+                },
             )?,
             right: make_fact_source(
                 "right_value",
-                right_total_rows,
-                self.batch_rows,
-                self.source_partitions,
-                right_key_domain,
-                16,
-                KeyDistribution::Uniform,
-                17,
+                FactSourceSpec {
+                    total_rows: right_total_rows,
+                    batch_rows: self.batch_rows,
+                    source_partitions: self.source_partitions,
+                    key_domain: right_key_domain,
+                    grp_domain: 16,
+                    key_distribution: KeyDistribution::Uniform,
+                    value_offset: 17,
+                },
             )?,
         })
     }
@@ -586,8 +592,8 @@ fn group_cols_to_exprs(group_cols: &[(&str, usize)]) -> Vec<(Arc<dyn PhysicalExp
         .iter()
         .map(|(name, index)| {
             (
-                Arc::new(Column::new(*name, *index)) as Arc<dyn PhysicalExpr>,
-                (*name).to_string(),
+                Arc::new(Column::new(name, *index)) as Arc<dyn PhysicalExpr>,
+                name.to_string(),
             )
         })
         .collect()
@@ -599,8 +605,8 @@ fn group_cols_to_final_exprs(group_cols: &[(&str, usize)]) -> Vec<(Arc<dyn Physi
         .enumerate()
         .map(|(index, (name, _))| {
             (
-                Arc::new(Column::new(*name, index)) as Arc<dyn PhysicalExpr>,
-                (*name).to_string(),
+                Arc::new(Column::new(name, index)) as Arc<dyn PhysicalExpr>,
+                name.to_string(),
             )
         })
         .collect()
@@ -610,7 +616,7 @@ fn partial_group_columns(group_cols: &[(&str, usize)]) -> Vec<Arc<dyn PhysicalEx
     group_cols
         .iter()
         .enumerate()
-        .map(|(index, (name, _))| Arc::new(Column::new(*name, index)) as Arc<dyn PhysicalExpr>)
+        .map(|(index, (name, _))| Arc::new(Column::new(name, index)) as Arc<dyn PhysicalExpr>)
         .collect()
 }
 
@@ -620,8 +626,8 @@ enum KeyDistribution {
     HotKey,
 }
 
-fn make_fact_source(
-    value_name: &str,
+#[derive(Clone, Copy)]
+struct FactSourceSpec {
     total_rows: usize,
     batch_rows: usize,
     source_partitions: usize,
@@ -629,18 +635,11 @@ fn make_fact_source(
     grp_domain: usize,
     key_distribution: KeyDistribution,
     value_offset: i64,
-) -> Result<PreparedFactSource> {
+}
+
+fn make_fact_source(value_name: &str, spec: FactSourceSpec) -> Result<PreparedFactSource> {
     let schema = fact_schema(value_name);
-    let partitions = make_fact_batches(
-        Arc::clone(&schema),
-        total_rows,
-        batch_rows,
-        source_partitions,
-        key_domain,
-        grp_domain,
-        key_distribution,
-        value_offset,
-    )?;
+    let partitions = make_fact_batches(Arc::clone(&schema), spec)?;
     Ok(PreparedFactSource { schema, partitions })
 }
 
@@ -652,16 +651,17 @@ fn fact_schema(value_name: &str) -> SchemaRef {
     ]))
 }
 
-fn make_fact_batches(
-    schema: SchemaRef,
-    total_rows: usize,
-    batch_rows: usize,
-    source_partitions: usize,
-    key_domain: usize,
-    grp_domain: usize,
-    key_distribution: KeyDistribution,
-    value_offset: i64,
-) -> Result<Vec<Vec<RecordBatch>>> {
+fn make_fact_batches(schema: SchemaRef, spec: FactSourceSpec) -> Result<Vec<Vec<RecordBatch>>> {
+    let FactSourceSpec {
+        total_rows,
+        batch_rows,
+        source_partitions,
+        key_domain,
+        grp_domain,
+        key_distribution,
+        value_offset,
+    } = spec;
+
     if batch_rows == 0 {
         return exec_err!("benchmark batch_rows must be greater than zero");
     }
