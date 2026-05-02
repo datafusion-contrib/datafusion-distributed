@@ -1,328 +1,68 @@
-use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
+use crate::common::{serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::NetworkBoundaryExt;
+use crate::coordinator::MetricsStore;
 use crate::execution_plans::ChildrenIsolatorUnionExec;
-use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
-use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
-use crate::stage::{LocalStage, RemoteStage, Stage};
-use crate::worker::generated::worker as pb;
+use crate::protobuf::tonic_status_to_datafusion_error;
+use crate::stage::LocalStage;
+use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, SetPlanRequest, TaskKey, WorkUnit, WorkerToCoordinatorMsg,
-    coordinator_to_worker_msg::Inner, worker_to_coordinator_msg,
+    CoordinatorToWorkerMsg, SetPlanRequest, WorkUnit, WorkerToCoordinatorMsg,
+    worker_to_coordinator_msg,
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
+    DistributedWorkUnitFeedContext, TaskKey, get_distributed_channel_resolver,
 };
-use datafusion::common::HashMap;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, exec_err};
-use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
-use datafusion::error::DataFusionError;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr_common::metrics::MetricsSet;
-use datafusion::physical_plan::metrics::{
+use datafusion::common::{DataFusionError, exec_datafusion_err};
+use datafusion::execution::TaskContext;
+use datafusion::physical_expr_common::metrics::{
     Count, ExecutionPlanMetricsSet, Label, MetricBuilder, MetricValue, Time,
 };
-use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use http::Extensions;
 use prost::Message;
-use rand::Rng;
-use std::any::Any;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::watch;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
 use uuid::Uuid;
 
-/// Stores the metrics collected from all worker tasks, and notifies waiters when new entries arrive.
-#[derive(Debug, Clone)]
-pub struct MetricsStore {
-    tx: watch::Sender<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
-    rx: watch::Receiver<HashMap<TaskKey, Vec<pb::MetricsSet>>>,
+/// Metrics that measure network details about communications between [DistributedExec] and a
+/// worker.
+#[derive(Clone)]
+pub(super) struct CoordinatorToWorkerMetrics {
+    pub(super) plan_bytes_sent: Count,
+    pub(super) plan_send_latency: Arc<LatencyMetric>,
 }
 
-impl MetricsStore {
-    fn new() -> Self {
-        let (tx, rx) = watch::channel(HashMap::new());
-        Self { tx, rx }
-    }
-
-    pub fn insert(&self, key: TaskKey, metrics: Vec<pb::MetricsSet>) {
-        self.tx.send_modify(|map| {
-            map.insert(key, metrics);
-        });
-    }
-
-    pub fn get(&self, key: &TaskKey) -> Option<Vec<pb::MetricsSet>> {
-        self.rx.borrow().get(key).cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_entries(
-        entries: impl IntoIterator<Item = (TaskKey, Vec<pb::MetricsSet>)>,
-    ) -> Self {
-        let map: HashMap<_, _> = entries.into_iter().collect();
-        let (tx, rx) = watch::channel(map);
-        Self { tx, rx }
-    }
-}
-
-/// [ExecutionPlan] that executes the inner plan in distributed mode.
-/// Before executing it, two modifications are lazily performed on the plan:
-/// 1. Assigns worker URLs to all the stages. A random set of URLs are sampled from the
-///    channel resolver and assigned to each task in each stage.
-/// 2. Encodes all the plans in protobuf format so that network boundary nodes can send them
-///    over the wire.
-#[derive(Debug)]
-pub struct DistributedExec {
-    pub plan: Arc<dyn ExecutionPlan>,
-    pub prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
-    metrics: ExecutionPlanMetricsSet,
-    pub task_metrics: Arc<MetricsStore>,
-}
-
-struct PreparedPlan {
-    plan: Arc<dyn ExecutionPlan>,
-    join_set: JoinSet<Result<()>>,
-}
-
-impl DistributedExec {
-    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+impl CoordinatorToWorkerMetrics {
+    pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
-            plan,
-            prepared_plan: Arc::new(Mutex::new(None)),
-            metrics: ExecutionPlanMetricsSet::new(),
-            task_metrics: Arc::new(MetricsStore::new()),
-        }
-    }
-
-    /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
-    ///
-    /// Metrics are delivered asynchronously after query execution completes, so callers that need
-    /// complete metrics (e.g. for observability or display) should await this before inspecting
-    /// [`Self::task_metrics`] or calling [`rewrite_distributed_plan_with_metrics`].
-    ///
-    /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
-    pub async fn wait_for_metrics(&self) {
-        let mut expected_keys: Vec<TaskKey> = Vec::new();
-        let _ = self.plan.apply(|plan| {
-            if let Some(boundary) = plan.as_network_boundary() {
-                let stage = boundary.input_stage();
-                for i in 0..stage.task_count() {
-                    expected_keys.push(TaskKey {
-                        query_id: serialize_uuid(&stage.query_id()),
-                        stage_id: stage.num() as u64,
-                        task_number: i as u64,
-                    });
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        });
-        if expected_keys.is_empty() {
-            return;
-        }
-        let mut rx = self.task_metrics.rx.clone();
-        let _ = rx
-            .wait_for(|map| expected_keys.iter().all(|key| map.contains_key(key)))
-            .await;
-    }
-
-    /// Returns the plan which is lazily prepared on execute() and actually gets executed.
-    /// It is updated on every call to execute(). Returns an error if .execute() has not been called.
-    pub(crate) fn prepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        self.prepared_plan
-            .lock()
-            .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?
-            .clone()
-            .ok_or_else(|| {
-                internal_datafusion_err!("No prepared plan found. Was execute() called?")
-            })
-    }
-
-    /// Prepares the distributed plan for execution, which implies:
-    /// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-    ///    URL per task.
-    /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-    ///    network call feeding the subplan is necessary.
-    /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-    ///    become nodes without children and traversing them will not go further down in.
-    /// 4. Spawn a background task per worker that waits for the worker to finish and collects
-    ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
-    fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
-        let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
-        let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-
-        let urls = worker_resolver.get_urls()?;
-
-        let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
-            plan_bytes_sent: MetricBuilder::new(&self.metrics)
+            plan_bytes_sent: MetricBuilder::new(metrics)
                 .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
                 .global_counter("plan_bytes_sent"),
             // Latency statistics about the network calls issued to the workers for feeding subplans.
             plan_send_latency: Arc::new(LatencyMetric::new(
                 "plan_send_latency",
                 |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
-                &self.metrics,
+                metrics,
             )),
-        };
-
-        let mut join_set = JoinSet::new();
-        let prepared = Arc::clone(&self.plan).transform_up(|plan| {
-            // The following logic is just applied on network boundaries.
-            let Some(plan) = plan.as_network_boundary() else {
-                return Ok(Transformed::no(plan));
-            };
-
-            let Stage::Local(stage) = plan.input_stage() else {
-                return exec_err!("Input stage from network boundary was not in Local state");
-            };
-
-            let mut spawner = CoordinatorToWorkerTaskSpawner::new(
-                stage,
-                &metrics,
-                &self.task_metrics,
-                &codec,
-                &mut join_set,
-            )?;
-
-            // Right now, we assign random workers to tasks. This might change in the future.
-            let start_idx = rand::rng().random_range(0..urls.len());
-
-            let mut workers = Vec::with_capacity(stage.tasks);
-            for i in 0..stage.tasks {
-                let url = urls[(start_idx + i) % urls.len()].clone();
-                workers.push(url.clone());
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
-                spawner.metrics_collection_task(i, worker_rx);
-                spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
-            }
-
-            Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
-                RemoteStage {
-                    query_id: stage.query_id,
-                    num: stage.num,
-                    workers,
-                },
-            ))?))
-        })?;
-        Ok(PreparedPlan {
-            plan: prepared.data,
-            join_set,
-        })
-    }
-}
-
-impl DisplayAs for DistributedExec {
-    fn fmt_as(&self, _: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "DistributedExec")
-    }
-}
-
-impl ExecutionPlan for DistributedExec {
-    fn name(&self) -> &str {
-        "DistributedExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        self.plan.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.plan]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(DistributedExec {
-            plan: require_one_child(&children)?,
-            prepared_plan: self.prepared_plan.clone(),
-            metrics: self.metrics.clone(),
-            task_metrics: Arc::clone(&self.task_metrics),
-        }))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        if partition > 0 {
-            // The DistributedExec node calls try_assign_urls() lazily upon calling .execute(). This means
-            // that .execute() must only be called once, as we cannot afford to perform several
-            // random URL assignation while calling multiple partitions, as they will differ,
-            // producing an invalid plan
-            return exec_err!(
-                "DistributedExec must only have 1 partition, but it was called with partition index {partition}"
-            );
         }
-
-        let PreparedPlan { plan, join_set } = self.prepare_plan(&context)?;
-        {
-            let mut guard = self
-                .prepared_plan
-                .lock()
-                .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {e}"))?;
-            *guard = Some(plan.clone());
-        }
-        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
-        let tx = builder.tx();
-        // Spawn the task that pulls data from child...
-        builder.spawn(async move {
-            let mut stream = plan.execute(partition, context)?;
-            while let Some(msg) = stream.next().await {
-                if tx.send(msg).await.is_err() {
-                    break; // channel closed
-                }
-            }
-            Ok(())
-        });
-        // ...in parallel to the one that feeds the plan to workers.
-        builder.spawn(async move {
-            for res in join_set.join_all().await {
-                res?;
-            }
-            Ok(())
-        });
-        Ok(builder.build())
     }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-}
-
-/// Metrics that measure network details about communications between [DistributedExec] and a
-/// worker.
-#[derive(Clone)]
-struct CoordinatorToWorkerMetrics {
-    plan_bytes_sent: Count,
-    plan_send_latency: Arc<LatencyMetric>,
 }
 
 /// Builder for the different kind of tasks that handle the communications between the
@@ -333,10 +73,11 @@ struct CoordinatorToWorkerMetrics {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-type WorkerResponseRx =
-    tokio::sync::mpsc::UnboundedReceiver<Result<WorkerToCoordinatorMsg, tonic::Status>>;
+type WorkerResponseRx = tokio::sync::mpsc::UnboundedReceiver<
+    datafusion::common::Result<WorkerToCoordinatorMsg, tonic::Status>,
+>;
 
-struct CoordinatorToWorkerTaskSpawner<'a> {
+pub(super) struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     plan_proto: Vec<u8>,
     query_id: Uuid,
@@ -344,19 +85,19 @@ struct CoordinatorToWorkerTaskSpawner<'a> {
     task_count: usize,
     metrics: &'a CoordinatorToWorkerMetrics,
     task_metrics: &'a Arc<MetricsStore>,
-    join_set: &'a mut JoinSet<Result<()>>,
+    join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
 }
 
 impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     /// Builds a new [CoordinatorToWorkerTaskSpawner] based on the [Stage] that needs to be
     /// fanned out to multiple workers.
-    fn new(
+    pub(super) fn new(
         stage: &'a LocalStage,
         metrics: &'a CoordinatorToWorkerMetrics,
         task_metrics: &'a Arc<MetricsStore>,
         codec: &'a dyn PhysicalExtensionCodec,
-        join_set: &'a mut JoinSet<Result<()>>,
-    ) -> Result<Self> {
+        join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
+    ) -> datafusion::common::Result<Self> {
         let plan_proto = PhysicalPlanNode::try_from_physical_plan(Arc::clone(&stage.plan), codec)?
             .encode_to_vec();
 
@@ -375,12 +116,13 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     /// Sends a serialized plan to a specific worker and sets up the bidirectional gRPC stream.
     /// Returns the sender for outbound coordinator-to-worker messages and the receiver for
     /// inbound worker-to-coordinator messages.
-    fn send_plan_task(
+    pub(super) fn send_plan_task(
         &mut self,
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
-    ) -> Result<(UnboundedSender<CoordinatorToWorkerMsg>, WorkerResponseRx)> {
+    ) -> datafusion::common::Result<(UnboundedSender<CoordinatorToWorkerMsg>, WorkerResponseRx)>
+    {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
         /// feeds, keeping into account that some of them might be executed within a
@@ -488,9 +230,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         Ok((coordinator_to_worker_tx, worker_to_coordinator_rx))
     }
 
-    /// Receives worker-to-coordinator messages and inserts any collected metrics into the store.
-    /// Runs in a detached spawn so it is not cancelled when the output stream is dropped early.
-    fn metrics_collection_task(
+    pub(super) fn metrics_collection_task(
         &mut self,
         task_i: usize,
         mut worker_to_coordinator_rx: WorkerResponseRx,
@@ -500,15 +240,16 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
-        let task_metrics_collection = Arc::clone(self.task_metrics);
+        let task_metrics = self.task_metrics.clone();
         tokio::spawn(async move {
             while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
-                let Some(worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics)) =
-                    msg.inner
-                else {
-                    continue;
-                };
-                task_metrics_collection.insert(task_key.clone(), pre_order_metrics.metrics);
+                let Some(inner) = msg.inner else { continue };
+
+                match inner {
+                    worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
+                        task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
+                    }
+                }
             }
         });
     }
@@ -518,12 +259,12 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     /// The returned task is just a future that does nothing unless polled.
     ///
     /// Once this function is called, all the [WorkUnitFeedExec]s feeds will be consumed.
-    fn work_unit_feed_task(
+    pub(super) fn work_unit_feed_task(
         &mut self,
         ctx: Arc<TaskContext>,
         task_i: usize,
         tx: UnboundedSender<CoordinatorToWorkerMsg>,
-    ) -> Result<()> {
+    ) -> datafusion::common::Result<()> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Recurses into the plan looking for [WorkUnitFeedExec] nodes that should be handled by
         /// the provided [task_i]. Because of [ChildrenIsolatorUnionExec]s being present in the
@@ -538,8 +279,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             t_ctx: &Arc<TaskContext>,
             d_cfg: &DistributedConfig,
             tx: &UnboundedSender<CoordinatorToWorkerMsg>,
-            out: &mut Vec<BoxFuture<'static, Result<()>>>,
-        ) -> Result<()> {
+            out: &mut Vec<BoxFuture<'static, datafusion::common::Result<()>>>,
+        ) -> datafusion::common::Result<()> {
             let wuf = if let Some(wuf) = d_cfg
                 .__private_work_unit_feed_registry
                 .get_work_unit_feed(plan)
@@ -623,7 +364,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
 
 /// DataFusion metrics system is pretty limited from an API standpoint. This intermediate struct
 /// bridges the gaps that are not satisfied by upstream API for measuring latency.
-struct LatencyMetric {
+pub(super) struct LatencyMetric {
     max: Time,
     avg: Time,
     max_latency_micros: AtomicU64,
@@ -644,7 +385,7 @@ impl Drop for LatencyMetric {
 }
 
 impl LatencyMetric {
-    fn new(
+    pub(super) fn new(
         name: impl Display,
         builder: impl Fn(MetricBuilder) -> MetricBuilder,
         metrics: &ExecutionPlanMetricsSet,

@@ -28,7 +28,7 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
 
-    use crate::execution_plans::DistributedExec;
+    use crate::coordinator::DistributedExec;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };

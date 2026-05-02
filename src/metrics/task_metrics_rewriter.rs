@@ -1,6 +1,7 @@
 use crate::common::serialize_uuid;
+use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::execution_plans::{DistributedExec, MetricsStore, MetricsWrapperExec};
+use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::collect_plan_metrics;
 use crate::metrics::proto::metrics_set_proto_to_df;
@@ -270,7 +271,7 @@ pub fn stage_metrics_rewriter(
 
 #[cfg(test)]
 mod tests {
-    use crate::execution_plans::MetricsStore;
+    use crate::coordinator::MetricsStore;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
     use crate::metrics::proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
     use crate::metrics::task_metrics_rewriter::{
