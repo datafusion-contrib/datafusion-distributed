@@ -15,7 +15,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::oneshot;
@@ -132,17 +132,16 @@ impl Worker {
         // Stream back the metrics once the task finishes executing.
         // The oneshot receiver resolves when impl_execute_task sends the collected
         // metrics after all partitions have finished or been dropped.
-        let stream = futures::stream::once(async move {
-            match metrics_rx.await {
-                Ok(task_metrics) => Ok(WorkerToCoordinatorMsg {
+        let metrics_stream = metrics_rx.into_stream();
+        let metrics_stream = metrics_stream.filter_map(|task_metrics| async move {
+            match task_metrics {
+                Ok(task_metrics) => Some(WorkerToCoordinatorMsg {
                     inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
                 }),
-                Err(_) => Err(Status::internal(
-                    "Metrics channel closed before metrics were sent",
-                )),
+                Err(_) => None, // channel dropped without sending any message
             }
         });
-        Ok(Response::new(stream.boxed()))
+        Ok(Response::new(metrics_stream.map(Ok).boxed()))
     }
 }
 
