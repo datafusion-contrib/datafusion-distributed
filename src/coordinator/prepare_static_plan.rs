@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub(super) fn prepare_static_plan(
     base_plan: &Arc<dyn ExecutionPlan>,
     metrics: &ExecutionPlanMetricsSet,
-    task_metrics: &Arc<MetricsStore>,
+    task_metrics: &Option<Arc<MetricsStore>>,
     ctx: &Arc<TaskContext>,
 ) -> Result<PreparedPlan> {
     let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;

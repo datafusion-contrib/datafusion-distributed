@@ -84,7 +84,7 @@ pub(super) struct CoordinatorToWorkerTaskSpawner<'a> {
     stage_id: usize,
     task_count: usize,
     metrics: &'a CoordinatorToWorkerMetrics,
-    task_metrics: &'a Arc<MetricsStore>,
+    task_metrics: &'a Option<Arc<MetricsStore>>,
     join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
 }
 
@@ -94,7 +94,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     pub(super) fn new(
         stage: &'a LocalStage,
         metrics: &'a CoordinatorToWorkerMetrics,
-        task_metrics: &'a Arc<MetricsStore>,
+        task_metrics: &'a Option<Arc<MetricsStore>>,
         codec: &'a dyn PhysicalExtensionCodec,
         join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
     ) -> datafusion::common::Result<Self> {
@@ -247,7 +247,9 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
 
                 match inner {
                     worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
-                        task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
+                        if let Some(task_metrics) = &task_metrics {
+                            task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
+                        }
                     }
                 }
             }

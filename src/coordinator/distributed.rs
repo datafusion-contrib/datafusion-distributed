@@ -29,7 +29,7 @@ pub struct DistributedExec {
     plan: Arc<dyn ExecutionPlan>,
     prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
-    pub(crate) task_metrics: Arc<MetricsStore>,
+    pub(crate) task_metrics: Option<Arc<MetricsStore>>,
 }
 
 pub(super) struct PreparedPlan {
@@ -43,8 +43,17 @@ impl DistributedExec {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
-            task_metrics: Arc::new(MetricsStore::new()),
+            task_metrics: None,
         }
+    }
+
+    /// Enables task metrics collection from remote workers.
+    pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
+        self.task_metrics = match enabled {
+            true => Some(Arc::new(MetricsStore::new())),
+            false => None,
+        };
+        self
     }
 
     /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
@@ -56,6 +65,9 @@ impl DistributedExec {
     /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
     pub async fn wait_for_metrics(&self) {
         let mut expected_keys: Vec<TaskKey> = Vec::new();
+        let Some(task_metrics) = &self.task_metrics else {
+            return;
+        };
         let _ = self.plan.apply(|plan| {
             if let Some(boundary) = plan.as_network_boundary() {
                 let stage = boundary.input_stage();
@@ -72,7 +84,7 @@ impl DistributedExec {
         if expected_keys.is_empty() {
             return;
         }
-        let mut rx = self.task_metrics.rx.clone();
+        let mut rx = task_metrics.rx.clone();
         let _ = rx
             .wait_for(|map| expected_keys.iter().all(|key| map.contains_key(key)))
             .await;
@@ -123,7 +135,7 @@ impl ExecutionPlan for DistributedExec {
             plan: require_one_child(&children)?,
             prepared_plan: self.prepared_plan.clone(),
             metrics: self.metrics.clone(),
-            task_metrics: Arc::clone(&self.task_metrics),
+            task_metrics: self.task_metrics.clone(),
         }))
     }
 

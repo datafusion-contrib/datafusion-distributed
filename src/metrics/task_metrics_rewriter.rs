@@ -55,7 +55,9 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
     distributed_exec.wait_for_metrics().await;
 
-    let metrics_collection = Arc::clone(&distributed_exec.task_metrics);
+    let Some(metrics_collection) = distributed_exec.task_metrics.clone() else {
+        return Ok(plan);
+    };
 
     let task_metrics = collect_plan_metrics(&prepared)?;
 
