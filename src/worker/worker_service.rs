@@ -1,13 +1,10 @@
-use crate::common::deserialize_uuid;
 use crate::worker::WorkerSessionBuilder;
-use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
-use crate::worker::generated::worker::worker_to_coordinator_msg;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
 };
-use crate::worker::impl_set_plan::TaskData;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
+use crate::worker::task_data::TaskData;
 use crate::{
     DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
 };
@@ -16,7 +13,6 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
-use futures::StreamExt;
 use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -186,51 +182,7 @@ impl WorkerService for Worker {
         &self,
         request: Request<Streaming<CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        let (grpc_headers, _ext, mut body) = request.into_parts();
-
-        // The first message must be a SetPlanRequest.
-        let Some(msg) = body.next().await else {
-            return Err(Status::internal("Empty Coordinator stream"));
-        };
-        let Some(Inner::SetPlanRequest(request)) = msg?.inner else {
-            return Err(Status::internal(
-                "First Coordinator message must be SetPlanRequest",
-            ));
-        };
-        let (work_unit_senders, metrics_rx) = self.impl_set_plan(request, grpc_headers).await?;
-
-        // Continue reading remaining messages (work unit feed data) in the background.
-        tokio::spawn(async move {
-            while let Some(Ok(msg)) = body.next().await {
-                let Some(Inner::WorkUnit(msg)) = msg.inner else {
-                    continue;
-                };
-                let Ok(id) = deserialize_uuid(&msg.id) else {
-                    continue;
-                };
-                let Some(tx) = work_unit_senders.get(&(id, msg.partition as usize)) else {
-                    continue;
-                };
-                if tx.send(Ok(msg.body)).is_err() {
-                    break; // channel closed
-                }
-            }
-        });
-
-        // Stream back the metrics once the task finishes executing.
-        // The oneshot receiver resolves when impl_execute_task sends the collected
-        // metrics after all partitions have finished or been dropped.
-        let stream = futures::stream::once(async move {
-            match metrics_rx.await {
-                Ok(task_metrics) => Ok(WorkerToCoordinatorMsg {
-                    inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
-                }),
-                Err(_) => Err(Status::internal(
-                    "Metrics channel closed before metrics were sent",
-                )),
-            }
-        });
-        Ok(Response::new(stream.boxed()))
+        self.impl_coordinator_channel(request).await
     }
 
     type ExecuteTaskStream = BoxStream<FlightData>;
