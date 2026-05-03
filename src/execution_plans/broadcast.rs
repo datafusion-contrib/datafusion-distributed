@@ -1,4 +1,4 @@
-use crate::common::require_one_child;
+use crate::common::{OnceLockResult, require_one_child};
 use crossbeam_queue::SegQueue;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
@@ -73,7 +73,7 @@ pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: Arc<PlanProperties>,
-    queues: Vec<OnceLock<Result<StreamAndTask, Arc<DataFusionError>>>>,
+    queues: Vec<OnceLockResult<StreamAndTask>>,
 }
 
 type StreamAndTask = (SegQueue<SendableRecordBatchStream>, Arc<SpawnedTask<()>>);

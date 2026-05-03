@@ -1,4 +1,4 @@
-use crate::common::{on_drop_stream, serialize_uuid};
+use crate::common::{OnceLockResult, on_drop_stream, serialize_uuid};
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -62,7 +62,7 @@ pub(crate) struct LocalWorkerContext {
 /// it will initialize the corresponding position in the vector matching the provided `target_task`
 /// index.
 pub(crate) struct WorkerConnectionPool {
-    connections: Vec<OnceLock<Result<Box<dyn WorkerConnection + Sync + Send>, Arc<DataFusionError>>>>,
+    connections: Vec<OnceLockResult<Box<dyn WorkerConnection + Sync + Send>>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
