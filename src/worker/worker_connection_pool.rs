@@ -427,8 +427,11 @@ impl LocalWorkerConnection {
         target_partition_range: Range<usize>,
         target_task: usize,
         lw_ctx: Arc<LocalWorkerContext>,
-        _metrics: &ExecutionPlanMetricsSet,
+        metrics: &ExecutionPlanMetricsSet,
     ) -> Self {
+        MetricBuilder::new(metrics)
+            .global_counter("local_connections_used")
+            .add(1);
         Self {
             lw_ctx,
             request_template: ExecuteTaskRequest {
