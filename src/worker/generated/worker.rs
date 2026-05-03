@@ -70,6 +70,10 @@ pub struct SetPlanRequest {
     #[prost(message, repeated, tag = "4")]
     pub work_unit_feed_declarations:
         ::prost::alloc::vec::Vec<set_plan_request::WorkUnitFeedDeclaration>,
+    /// The worker URL to which this message will go. The receiving worker will use this information to identify
+    /// itself, and avoid further gRPC calls in case it needs to call itself for executing remote tasks.
+    #[prost(string, tag = "5")]
+    pub target_worker_url: ::prost::alloc::string::String,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {

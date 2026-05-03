@@ -273,7 +273,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             &context,
         )?;
 
-        let stream = worker_connection.stream_partition(target_partition, |_meta| {})?;
+        let stream = worker_connection.execute(target_partition)?;
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),

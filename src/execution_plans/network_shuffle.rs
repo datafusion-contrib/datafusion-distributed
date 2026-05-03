@@ -233,7 +233,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 &context,
             )?;
 
-            let stream = worker_connection.stream_partition(off + partition, |_meta| {})?;
+            let stream = worker_connection.execute(off + partition)?;
             streams.push(stream);
         }
 

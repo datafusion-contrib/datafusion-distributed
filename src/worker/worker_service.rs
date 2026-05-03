@@ -1,8 +1,10 @@
+use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
 use crate::worker::WorkerSessionBuilder;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
 };
+use crate::worker::impl_execute_task::execute_remote_task;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::worker::task_data::TaskData;
 use crate::{
@@ -20,8 +22,6 @@ use std::time::Duration;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
-
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
 pub(super) struct WorkerHooks {
@@ -30,6 +30,7 @@ pub(super) struct WorkerHooks {
 }
 
 type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
 
 #[derive(Clone)]
 pub struct Worker {
@@ -37,7 +38,7 @@ pub struct Worker {
     /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
     /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
     /// access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    pub(super) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
@@ -191,7 +192,7 @@ impl WorkerService for Worker {
         &self,
         request: Request<ExecuteTaskRequest>,
     ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
-        self.impl_execute_task(request).await
+        execute_remote_task(&self.task_data_entries, request).await
     }
 
     async fn get_worker_info(
