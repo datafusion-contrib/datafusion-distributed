@@ -95,7 +95,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let total_partitions = task_data.total_partitions() as u64;
                 let remaining = task_data.num_partitions_remaining() as u64;
                 let completed_partitions = total_partitions.saturating_sub(remaining);
-                let output_rows = output_rows_from_plan(&task_data.plan);
+                let output_rows = output_rows_from_plan(&task_data.base_plan);
 
                 tasks.push(TaskProgress {
                     task_key: Some((*internal_key).clone()),

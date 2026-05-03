@@ -1,8 +1,10 @@
-use crate::NetworkBoundaryExt;
-use crate::distributed_planner::inject_network_boundaries::inject_network_boundaries;
+use crate::distributed_planner::inject_network_boundaries::{
+    CardinalityTaskCountStrategy, inject_network_boundaries,
+};
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
+use crate::{DistributedConfig, NetworkBoundaryExt};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -60,8 +62,14 @@ pub(super) async fn distribute_plan(
     // `inject_network_boundaries` can wrap them in `NetworkBroadcastExec` afterwards.
     plan = insert_broadcast_execs(plan, cfg)?;
 
+    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    if d_cfg.dynamic_task_count {
+        // The task count will be decided dynamically at execution time.
+        return Ok(Some(plan));
+    }
+
     // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
-    plan = inject_network_boundaries(plan, cfg).await?;
+    plan = inject_network_boundaries(plan, CardinalityTaskCountStrategy, cfg).await?;
 
     // Run some preparations on the network boundaries, like optimizing them out if there is one
     // task at both sides of the boundary or assigning it proper unique identifiers.

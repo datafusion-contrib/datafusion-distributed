@@ -1,5 +1,7 @@
+use crate::DistributedConfig;
 use crate::common::{require_one_child, serialize_uuid};
 use crate::coordinator::metrics_store::MetricsStore;
+use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::worker::generated::worker::TaskKey;
@@ -26,22 +28,25 @@ use std::sync::Mutex;
 ///    over the wire.
 #[derive(Debug)]
 pub struct DistributedExec {
-    plan: Arc<dyn ExecutionPlan>,
-    prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
+    base_plan: Arc<dyn ExecutionPlan>,
+    final_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
+    head_stage: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
     pub(crate) task_metrics: Option<Arc<MetricsStore>>,
 }
 
 pub(super) struct PreparedPlan {
     pub(super) head_stage: Arc<dyn ExecutionPlan>,
+    pub(super) final_plan: Arc<dyn ExecutionPlan>,
     pub(super) join_set: JoinSet<Result<()>>,
 }
 
 impl DistributedExec {
-    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+    pub fn new(base_plan: Arc<dyn ExecutionPlan>) -> Self {
         Self {
-            plan,
-            prepared_plan: Arc::new(Mutex::new(None)),
+            base_plan,
+            final_plan: Arc::new(Mutex::new(None)),
+            head_stage: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             task_metrics: None,
         }
@@ -68,7 +73,10 @@ impl DistributedExec {
         let Some(task_metrics) = &self.task_metrics else {
             return;
         };
-        let _ = self.plan.apply(|plan| {
+        let Some(plan) = self.final_plan.lock().unwrap().as_ref().cloned() else {
+            return;
+        };
+        let _ = plan.apply(|plan| {
             if let Some(boundary) = plan.as_network_boundary() {
                 let stage = boundary.input_stage();
                 for i in 0..stage.task_count() {
@@ -94,13 +102,25 @@ impl DistributedExec {
     /// It is updated on every call to `execute()`. Returns an error if `.execute()` has not been
     /// called.
     pub(crate) fn prepared_plan(&self) -> Result<Arc<dyn ExecutionPlan>> {
-        self.prepared_plan
+        self.final_plan
             .lock()
             .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {}", e))?
             .clone()
             .ok_or_else(|| {
                 internal_datafusion_err!("No prepared plan found. Was execute() called?")
             })
+    }
+
+    /// Returns the head stage that was actually executed. Unlike [`Self::prepared_plan`] (which is
+    /// reconstructed for visualization, with `Stage::Local` boundaries and rebuilt ancestor
+    /// `Arc`s), this returns the original `Arc` instances whose metrics were populated during
+    /// execution.
+    pub(crate) fn head_stage(&self) -> Result<Arc<dyn ExecutionPlan>> {
+        self.head_stage
+            .lock()
+            .map_err(|e| internal_datafusion_err!("Failed to lock head stage: {}", e))?
+            .clone()
+            .ok_or_else(|| internal_datafusion_err!("No head stage found. Was execute() called?"))
     }
 }
 
@@ -120,11 +140,11 @@ impl ExecutionPlan for DistributedExec {
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
-        self.plan.properties()
+        self.base_plan.properties()
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.plan]
+        vec![&self.base_plan]
     }
 
     fn with_new_children(
@@ -132,8 +152,9 @@ impl ExecutionPlan for DistributedExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(DistributedExec {
-            plan: require_one_child(&children)?,
-            prepared_plan: self.prepared_plan.clone(),
+            base_plan: require_one_child(&children)?,
+            final_plan: Arc::new(Mutex::new(None)),
+            head_stage: Arc::new(Mutex::new(None)),
             metrics: self.metrics.clone(),
             task_metrics: self.task_metrics.clone(),
         }))
@@ -154,31 +175,56 @@ impl ExecutionPlan for DistributedExec {
             );
         }
 
-        let PreparedPlan {
-            head_stage,
-            join_set,
-        } = prepare_static_plan(&self.plan, &self.metrics, &self.task_metrics, &context)?;
-        {
-            let mut guard = self
-                .prepared_plan
-                .lock()
-                .map_err(|e| internal_datafusion_err!("Failed to lock prepared plan: {e}"))?;
-            *guard = Some(head_stage.clone());
-        }
+        let this = Self {
+            base_plan: Arc::clone(&self.base_plan),
+            final_plan: Arc::clone(&self.final_plan),
+            head_stage: Arc::clone(&self.head_stage),
+            metrics: self.metrics.clone(),
+            task_metrics: self.task_metrics.clone(),
+        };
+
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
         // Spawn the task that pulls data from child...
         builder.spawn(async move {
+            let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
+
+            let PreparedPlan {
+                head_stage,
+                final_plan,
+                join_set,
+            } = match d_cfg.dynamic_task_count {
+                false => prepare_static_plan(
+                    &this.base_plan,
+                    &this.metrics,
+                    &this.task_metrics,
+                    &context,
+                )?,
+                true => {
+                    prepare_dynamic_plan(
+                        &this.base_plan,
+                        &this.metrics,
+                        &this.task_metrics,
+                        &context,
+                    )
+                    .await?
+                }
+            };
+
+            this.final_plan
+                .lock()
+                .expect("poisoned lock")
+                .replace(final_plan);
+            this.head_stage
+                .lock()
+                .expect("poisoned lock")
+                .replace(Arc::clone(&head_stage));
             let mut stream = head_stage.execute(partition, context)?;
             while let Some(msg) = stream.next().await {
                 if tx.send(msg).await.is_err() {
                     break; // channel closed
                 }
             }
-            Ok(())
-        });
-        // ...in parallel to the one that feeds the plan to workers.
-        builder.spawn(async move {
             for res in join_set.join_all().await {
                 res?;
             }

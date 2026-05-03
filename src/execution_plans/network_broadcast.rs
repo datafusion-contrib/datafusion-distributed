@@ -1,5 +1,6 @@
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
+use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{BroadcastExec, DistributedTaskContext};
@@ -139,6 +140,18 @@ impl NetworkBroadcastExec {
         ))))
     }
 
+    pub(crate) fn inject_sampler(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(broadcast_exec) = plan.as_any().downcast_ref::<BroadcastExec>() else {
+            return Ok(Transformed::no(plan));
+        };
+
+        let child = require_one_child(broadcast_exec.children())?;
+        plan.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            .map(Transformed::yes)
+    }
+
     pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
         let input_partition_count = input_stage.plan.properties().partitioning.partition_count();
         let properties = Arc::new(
@@ -173,7 +186,7 @@ impl NetworkBroadcastExec {
 }
 
 impl NetworkBoundary for NetworkBroadcastExec {
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
@@ -248,7 +261,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let out_partitions = self.properties.partitioning.partition_count();
+        let off = out_partitions * task_context.task_index;
         let mut streams = Vec::with_capacity(self.input_stage.task_count());
 
         for input_task_index in 0..self.input_stage.task_count() {
@@ -256,6 +270,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                out_partitions,
+                task_context.task_count,
                 &context,
             )?;
 

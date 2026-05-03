@@ -582,6 +582,13 @@ pub trait DistributedExt: Sized {
         P: WorkUnitFeedProvider + 'static,
         P::WorkUnit: 'static,
         F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+    /// Dynamically allocates tasks to the different stages based on runtime statistics
+    /// collected during execution.
+    fn with_distributed_dynamic_task_count(self, enabled: bool) -> Result<Self, DataFusionError>;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_task_count] but with an in-place mutation.
+    fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 }
 
 impl DistributedExt for SessionConfig {
@@ -730,6 +737,12 @@ impl DistributedExt for SessionConfig {
         })
     }
 
+    fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError> {
+        let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
+        d_cfg.dynamic_task_count = enabled;
+        Ok(())
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -812,6 +825,10 @@ impl DistributedExt for SessionConfig {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            #[call(set_distributed_dynamic_task_count)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -923,6 +940,11 @@ impl DistributedExt for SessionStateBuilder {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_task_count)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1034,6 +1056,11 @@ impl DistributedExt for SessionState {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_task_count)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1145,6 +1172,11 @@ impl DistributedExt for SessionContext {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_dynamic_task_count(&mut self, enabled: bool) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_task_count)]
+            #[expr($?;Ok(self))]
+            fn with_distributed_dynamic_task_count(self, enabled: bool) -> Result<Self, DataFusionError>;
         }
     }
 }

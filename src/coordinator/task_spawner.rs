@@ -235,17 +235,18 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         Ok((coordinator_to_worker_tx, worker_to_coordinator_rx))
     }
 
-    pub(super) fn metrics_collection_task(
+    pub(super) fn load_info_and_metrics_collection_task(
         &mut self,
         task_i: usize,
         mut worker_to_coordinator_rx: UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
-    ) {
+    ) -> UnboundedReceiver<pb::LoadInfoBatch> {
         let task_key = TaskKey {
             query_id: serialize_uuid(&self.query_id),
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
         let task_metrics = self.task_metrics.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 let Some(inner) = msg.inner else { continue };
@@ -256,9 +257,13 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                             task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
                         }
                     }
+                    pb::worker_to_coordinator_msg::Inner::LoadInfoBatch(load_info_batch) => {
+                        let _ = tx.send(load_info_batch);
+                    }
                 }
             }
         });
+        rx
     }
 
     /// Instantiates and returns the task that based on the different local [WorkUnitFeedExec]

@@ -21,7 +21,7 @@ pub mod coordinator_to_worker_msg {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
-    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1")]
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2")]
     pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
 }
 /// Nested message and enum types in `WorkerToCoordinatorMsg`.
@@ -34,6 +34,10 @@ pub mod worker_to_coordinator_msg {
         /// metrics\[i\] is the set of metrics for plan node i in pre-order traversal order.
         #[prost(message, tag = "1")]
         TaskMetrics(super::PreOrderTaskMetrics),
+        /// Load information reported by a task. This information is used for dynamically
+        /// sizing the number of workers involved in a query.
+        #[prost(message, tag = "2")]
+        LoadInfoBatch(super::LoadInfoBatch),
     }
 }
 /// Metrics for a single task's plan nodes in pre-order traversal order.
@@ -43,6 +47,31 @@ pub mod worker_to_coordinator_msg {
 pub struct PreOrderTaskMetrics {
     #[prost(message, repeated, tag = "1")]
     pub metrics: ::prost::alloc::vec::Vec<MetricsSet>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LoadInfoBatch {
+    #[prost(message, repeated, tag = "1")]
+    pub batch: ::prost::alloc::vec::Vec<LoadInfo>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LoadInfo {
+    #[prost(uint64, tag = "1")]
+    pub partition: u64,
+    #[prost(uint64, tag = "2")]
+    pub row_count: u64,
+    #[prost(uint64, tag = "3")]
+    pub byte_size: u64,
+    #[prost(bool, tag = "4")]
+    pub eos: bool,
+    #[prost(uint64, tag = "5")]
+    pub time_mark_ns: u64,
+    /// True on the first sample emitted after the partition's sampler buffer
+    /// exceeded its configured byte budget. Consumers (the coordinator's
+    /// calculate_task_count) treat this as a "saturation" signal that the
+    /// producer can produce at least this much data, and can decide the next
+    /// stage's task count without waiting for further samples.
+    #[prost(bool, tag = "6")]
+    pub max_memory_reached: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}
@@ -110,6 +139,12 @@ pub struct ExecuteTaskRequest {
     /// The end of the partition range of the specified task that is going to be executed.
     #[prost(uint64, tag = "3")]
     pub target_partition_end: u64,
+    /// The amount of partitions per task that are going to consume from this task.
+    #[prost(uint64, tag = "4")]
+    pub consumer_partitions: u64,
+    /// The amount of tasks that are going to consume from this task.
+    #[prost(uint64, tag = "5")]
+    pub consumer_task_count: u64,
 }
 /// A key that uniquely identifies a task in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
