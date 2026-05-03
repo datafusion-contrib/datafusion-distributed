@@ -5,16 +5,14 @@ use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::tonic_status_to_datafusion_error;
 use crate::stage::LocalStage;
+use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
-use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, SetPlanRequest, WorkUnit, WorkerToCoordinatorMsg,
-    worker_to_coordinator_msg,
-};
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
     DistributedWorkUnitFeedContext, TaskKey, get_distributed_channel_resolver,
 };
+use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::{DataFusionError, exec_datafusion_err};
@@ -33,7 +31,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Request;
 use tonic::metadata::MetadataMap;
@@ -73,10 +71,6 @@ impl CoordinatorToWorkerMetrics {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
-type WorkerResponseRx = tokio::sync::mpsc::UnboundedReceiver<
-    datafusion::common::Result<WorkerToCoordinatorMsg, tonic::Status>,
->;
-
 pub(super) struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     plan_proto: Vec<u8>,
@@ -85,7 +79,7 @@ pub(super) struct CoordinatorToWorkerTaskSpawner<'a> {
     task_count: usize,
     metrics: &'a CoordinatorToWorkerMetrics,
     task_metrics: &'a Option<Arc<MetricsStore>>,
-    join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
+    join_set: &'a mut JoinSet<Result<()>>,
 }
 
 impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
@@ -96,8 +90,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         metrics: &'a CoordinatorToWorkerMetrics,
         task_metrics: &'a Option<Arc<MetricsStore>>,
         codec: &'a dyn PhysicalExtensionCodec,
-        join_set: &'a mut JoinSet<datafusion::common::Result<()>>,
-    ) -> datafusion::common::Result<Self> {
+        join_set: &'a mut JoinSet<Result<()>>,
+    ) -> Result<Self> {
         let plan_proto = PhysicalPlanNode::try_from_physical_plan(Arc::clone(&stage.plan), codec)?
             .encode_to_vec();
 
@@ -121,8 +115,10 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         ctx: Arc<TaskContext>,
         task_i: usize,
         url: Url,
-    ) -> datafusion::common::Result<(UnboundedSender<CoordinatorToWorkerMsg>, WorkerResponseRx)>
-    {
+    ) -> Result<(
+        UnboundedSender<pb::CoordinatorToWorkerMsg>,
+        UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
+    )> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Searches recursively for nodes exposing [crate::WorkUnitFeed]s, and executes their
         /// feeds, keeping into account that some of them might be executed within a
@@ -179,8 +175,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
-        let msg = CoordinatorToWorkerMsg {
-            inner: Some(Inner::SetPlanRequest(SetPlanRequest {
+        let msg = pb::CoordinatorToWorkerMsg {
+            inner: Some(Inner::SetPlanRequest(pb::SetPlanRequest {
                 plan_proto: self.plan_proto.clone(),
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
@@ -218,8 +214,16 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             })?;
             metrics.plan_send_latency.record(&start);
             metrics.plan_bytes_sent.add(plan_size);
-            let mut stream = response.into_inner();
-            while let Some(msg) = stream.next().await {
+            let mut worker_to_coordinator_stream = response.into_inner();
+            while let Some(msg_or_err) = worker_to_coordinator_stream.next().await {
+                let msg = match msg_or_err {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        return Err(tonic_status_to_datafusion_error(err).unwrap_or_else(|| {
+                            exec_datafusion_err!("Unknown error on worker to coordinator stream")
+                        }));
+                    }
+                };
                 if worker_to_coordinator_tx.send(msg).is_err() {
                     break; // receiver dropped
                 }
@@ -233,7 +237,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     pub(super) fn metrics_collection_task(
         &mut self,
         task_i: usize,
-        mut worker_to_coordinator_rx: WorkerResponseRx,
+        mut worker_to_coordinator_rx: UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
     ) {
         let task_key = TaskKey {
             query_id: serialize_uuid(&self.query_id),
@@ -242,11 +246,11 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         };
         let task_metrics = self.task_metrics.clone();
         tokio::spawn(async move {
-            while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
+            while let Some(msg) = worker_to_coordinator_rx.recv().await {
                 let Some(inner) = msg.inner else { continue };
 
                 match inner {
-                    worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
+                    pb::worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
                         if let Some(task_metrics) = &task_metrics {
                             task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
                         }
@@ -265,8 +269,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         &mut self,
         ctx: Arc<TaskContext>,
         task_i: usize,
-        tx: UnboundedSender<CoordinatorToWorkerMsg>,
-    ) -> datafusion::common::Result<()> {
+        tx: UnboundedSender<pb::CoordinatorToWorkerMsg>,
+    ) -> Result<()> {
         let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
         /// Recurses into the plan looking for [WorkUnitFeedExec] nodes that should be handled by
         /// the provided [task_i]. Because of [ChildrenIsolatorUnionExec]s being present in the
@@ -280,9 +284,9 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             dt_ctx: DistributedTaskContext,
             t_ctx: &Arc<TaskContext>,
             d_cfg: &DistributedConfig,
-            tx: &UnboundedSender<CoordinatorToWorkerMsg>,
-            out: &mut Vec<BoxFuture<'static, datafusion::common::Result<()>>>,
-        ) -> datafusion::common::Result<()> {
+            tx: &UnboundedSender<pb::CoordinatorToWorkerMsg>,
+            out: &mut Vec<BoxFuture<'static, Result<()>>>,
+        ) -> Result<()> {
             let wuf = if let Some(wuf) = d_cfg
                 .__private_work_unit_feed_registry
                 .get_work_unit_feed(plan)
@@ -326,8 +330,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                     // so they must be encoded in order to send them over the wire.
                     while let Some(data_or_err) = work_unit_feed.next().await {
                         if tx
-                            .send(CoordinatorToWorkerMsg {
-                                inner: Some(Inner::WorkUnit(WorkUnit {
+                            .send(pb::CoordinatorToWorkerMsg {
+                                inner: Some(Inner::WorkUnit(pb::WorkUnit {
                                     id: serialize_uuid(&id),
                                     partition: partition as u64,
                                     body: data_or_err?.encode_to_bytes(),
