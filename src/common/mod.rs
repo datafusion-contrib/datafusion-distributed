@@ -13,5 +13,5 @@ pub(crate) use on_drop_stream::on_drop_stream;
 pub(crate) use once_lock::OnceLockResult;
 pub(crate) use recursion::TreeNodeExt;
 pub(crate) use task_context_helpers::task_ctx_with_extension;
-pub(crate) use time::now_nanos;
+pub(crate) use time::now_ns;
 pub(crate) use uuid::{deserialize_uuid, serialize_uuid};

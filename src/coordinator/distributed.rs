@@ -30,7 +30,7 @@ pub struct DistributedExec {
     plan: Arc<dyn ExecutionPlan>,
     prepared_plan: Arc<Mutex<Option<Arc<dyn ExecutionPlan>>>>,
     metrics: ExecutionPlanMetricsSet,
-    pub(crate) task_metrics: Option<Arc<MetricsStore>>,
+    pub(crate) metrics_store: Option<Arc<MetricsStore>>,
 }
 
 pub(super) struct PreparedPlan {
@@ -44,13 +44,13 @@ impl DistributedExec {
             plan,
             prepared_plan: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
-            task_metrics: None,
+            metrics_store: None,
         }
     }
 
     /// Enables task metrics collection from remote workers.
     pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
-        self.task_metrics = match enabled {
+        self.metrics_store = match enabled {
             true => Some(Arc::new(MetricsStore::new())),
             false => None,
         };
@@ -66,7 +66,7 @@ impl DistributedExec {
     /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
     pub async fn wait_for_metrics(&self) {
         let mut expected_keys: Vec<TaskKey> = Vec::new();
-        let Some(task_metrics) = &self.task_metrics else {
+        let Some(task_metrics) = &self.metrics_store else {
             return;
         };
         let _ = self.plan.apply(|plan| {
@@ -136,7 +136,7 @@ impl ExecutionPlan for DistributedExec {
             plan: require_one_child(&children)?,
             prepared_plan: self.prepared_plan.clone(),
             metrics: self.metrics.clone(),
-            task_metrics: self.task_metrics.clone(),
+            metrics_store: self.metrics_store.clone(),
         }))
     }
 
@@ -158,7 +158,7 @@ impl ExecutionPlan for DistributedExec {
         let PreparedPlan {
             head_stage,
             join_set,
-        } = prepare_static_plan(&self.plan, &self.metrics, &self.task_metrics, &context)?;
+        } = prepare_static_plan(&self.plan, &self.metrics, &self.metrics_store, &context)?;
         {
             let mut guard = self
                 .prepared_plan

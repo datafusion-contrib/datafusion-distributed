@@ -57,7 +57,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
     distributed_exec.wait_for_metrics().await;
 
-    let Some(metrics_collection) = distributed_exec.task_metrics.clone() else {
+    let Some(metrics_collection) = distributed_exec.metrics_store.clone() else {
         return Ok(plan);
     };
 
@@ -245,14 +245,14 @@ pub fn stage_metrics_rewriter(
 
         let mut per_task_counter = 0usize;
         stage.plan.apply_with_dt_ctx(d_ctx, |node, _ctx| {
-            if per_task_counter >= task_metrics.len() {
+            if per_task_counter >= task_metrics.pre_order_plan_metrics.len() {
                 return internal_err!(
                     "not enough metrics provided to rewrite task: {} metrics provided",
-                    task_metrics.len()
+                    task_metrics.pre_order_plan_metrics.len()
                 );
             }
 
-            let node_metrics_protos = task_metrics[per_task_counter].clone();
+            let node_metrics_protos = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
             let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
             let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
             node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
@@ -472,7 +472,11 @@ mod tests {
                     )
                 })
                 .collect::<Vec<pb::MetricsSet>>();
-            (task_key, metrics)
+            let task_metrics = pb::TaskMetrics {
+                task_metrics: None,
+                pre_order_plan_metrics: metrics,
+            };
+            (task_key, task_metrics)
         }));
         let metrics_collection = Arc::new(metrics_collection);
 
@@ -504,7 +508,8 @@ mod tests {
                         stage_id: stage.num as u64,
                         task_number: task_id as u64,
                     })
-                    .unwrap()[node_id]
+                    .unwrap()
+                    .pre_order_plan_metrics[node_id]
                     .clone();
 
                 let mut actual_metrics_set = MetricsSet::new();

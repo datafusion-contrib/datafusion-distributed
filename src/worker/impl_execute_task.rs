@@ -1,7 +1,7 @@
-use crate::common::{TreeNodeExt, map_last_stream, now_nanos, on_drop_stream};
+use crate::common::{TreeNodeExt, map_last_stream, now_ns, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
-use crate::worker::generated::worker::{FlightAppMetadata, PreOrderTaskMetrics};
+use crate::worker::generated::worker::{FlightAppMetadata, TaskMetrics};
 use crate::worker::worker_service::{TaskDataEntries, Worker};
 use crate::{DistributedConfig, DistributedTaskContext};
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
@@ -14,6 +14,7 @@ use datafusion::common::{Result, exec_err, internal_err};
 use crate::worker::generated::worker::ExecuteTaskRequest;
 use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::spawn_select_all::spawn_select_all;
+use crate::worker::task_data::TaskDataMetrics;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
@@ -58,6 +59,7 @@ pub(crate) async fn execute_local_task(
         .await
         .map_err(|e| exec_datafusion_err!("Worker::execute_task timed-out while waiting for the plan to be set by the coordinator. ({e})"))?
         .map_err(DataFusionError::Shared)?;
+    task_data.task_data_metrics.mark_execution_started_once();
 
     let plan = task_data.plan;
     let task_ctx = task_data.task_ctx;
@@ -88,10 +90,11 @@ pub(crate) async fn execute_local_task(
 
         let key_clone = key.clone();
         let plan = Arc::clone(&plan);
-        let plan_for_drop = Arc::clone(&plan);
+        let plan_cloned = Arc::clone(&plan);
         let fully_finished = Arc::new(AtomicBool::new(false));
         let fully_finished_cloned = Arc::clone(&fully_finished);
-        let d_ctx_for_last = d_ctx.clone();
+        let d_ctx_cloned = d_ctx.clone();
+        let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
         let stream = map_last_stream(stream, move |msg, last_msg_in_stream| {
             if !last_msg_in_stream {
                 return msg;
@@ -108,10 +111,16 @@ pub(crate) async fn execute_local_task(
                 tokio::spawn(async move {
                     entries.invalidate(&k).await;
                 });
+                task_data_metrics.mark_execution_finished();
                 if send_metrics {
                     // Last message of the last partition. This is the moment to send
                     // the metrics back.
-                    send_metrics_via_channel(&metrics_tx, &plan, d_ctx_for_last.clone());
+                    send_metrics_via_channel(
+                        &metrics_tx,
+                        &plan,
+                        d_ctx_cloned.clone(),
+                        &task_data_metrics,
+                    );
                 }
             }
             fully_finished.store(true, Ordering::SeqCst);
@@ -119,17 +128,18 @@ pub(crate) async fn execute_local_task(
         });
 
         let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
-        let task_data_entries_for_drop = Arc::clone(task_data_entries);
+        let task_data_entries = Arc::clone(task_data_entries);
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
-        let key_for_drop = key.clone();
-        let d_ctx_for_drop = d_ctx.clone();
+        let key_cloned = key.clone();
+        let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
+        let d_ctx_cloned = d_ctx.clone();
         let stream = on_drop_stream(stream, move || {
             if !fully_finished_cloned.load(Ordering::SeqCst) {
                 // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
                 // Send metrics via the coordinator channel so they are not lost.
                 if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                    let entries = Arc::clone(&task_data_entries_for_drop);
-                    let k = key_for_drop.clone();
+                    let entries = Arc::clone(&task_data_entries);
+                    let k = key_cloned.clone();
                     // Fire-and-forget background tokio task to handle async
                     // invalidate() within synchronous on_drop_stream.
                     #[allow(clippy::disallowed_methods)]
@@ -139,8 +149,9 @@ pub(crate) async fn execute_local_task(
                     if send_metrics {
                         send_metrics_via_channel(
                             &metrics_tx,
-                            &plan_for_drop,
-                            d_ctx_for_drop.clone(),
+                            &plan_cloned,
+                            d_ctx_cloned,
+                            &task_data_metrics,
                         );
                     }
                 }
@@ -187,7 +198,7 @@ pub(crate) async fn execute_remote_task(
             // the original per-partition streams in later steps.
             let flight_data = FlightAppMetadata {
                 partition,
-                created_timestamp_unix_nanos: now_nanos(),
+                created_timestamp_unix_nanos: now_ns(),
             };
             msg.map(|v| v.with_app_metadata(flight_data.encode_to_vec()))
         });
@@ -247,13 +258,14 @@ fn build_flight_data_stream(
 /// Collects metrics from the plan in pre-order traversal order and sends them via the
 /// coordinator channel oneshot.
 fn send_metrics_via_channel(
-    metrics_tx: &Arc<Mutex<Option<Sender<PreOrderTaskMetrics>>>>,
+    metrics_tx: &Arc<Mutex<Option<Sender<TaskMetrics>>>>,
     plan: &Arc<dyn ExecutionPlan>,
     dt_ctx: DistributedTaskContext,
+    task_data_metrics: &Arc<TaskDataMetrics>,
 ) {
-    let mut metrics = vec![];
+    let mut pre_order_plan_metrics = vec![];
     let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
-        metrics.push(
+        pre_order_plan_metrics.push(
             node.metrics()
                 .and_then(|m| df_metrics_set_to_proto(&m).ok())
                 .unwrap_or_default(),
@@ -270,7 +282,10 @@ fn send_metrics_via_channel(
     };
     let Some(tx) = tx else { return };
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
-    let _ = tx.send(PreOrderTaskMetrics { metrics });
+    let _ = tx.send(TaskMetrics {
+        pre_order_plan_metrics,
+        task_metrics: Some(task_data_metrics.to_proto_metrics_set()),
+    });
 }
 
 /// Garbage collects values sub-arrays.

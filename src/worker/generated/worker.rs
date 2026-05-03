@@ -33,16 +33,21 @@ pub mod worker_to_coordinator_msg {
         /// ensuring metrics are never lost due to early stream termination.
         /// metrics\[i\] is the set of metrics for plan node i in pre-order traversal order.
         #[prost(message, tag = "1")]
-        TaskMetrics(super::PreOrderTaskMetrics),
+        TaskMetrics(super::TaskMetrics),
     }
 }
-/// Metrics for a single task's plan nodes in pre-order traversal order.
-/// The TaskKey is implicit — it is determined by the SetPlanRequest that
-/// opened this coordinator channel connection.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PreOrderTaskMetrics {
+pub struct TaskMetrics {
+    /// Metrics for a single task's plan nodes in pre-order traversal order.
+    /// The TaskKey is implicit — it is determined by the SetPlanRequest that
+    /// opened this coordinator channel connection.
     #[prost(message, repeated, tag = "1")]
-    pub metrics: ::prost::alloc::vec::Vec<MetricsSet>,
+    pub pre_order_plan_metrics: ::prost::alloc::vec::Vec<MetricsSet>,
+    /// Metrics related to the execution of a task within a stage. This metrics, instead of being
+    /// associated to a specific node, they are global to the task, like the time at which the plan
+    /// was fed by the coordinator to the worker.
+    #[prost(message, optional, tag = "2")]
+    pub task_metrics: ::core::option::Option<MetricsSet>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}
@@ -74,6 +79,10 @@ pub struct SetPlanRequest {
     /// itself, and avoid further gRPC calls in case it needs to call itself for executing remote tasks.
     #[prost(string, tag = "5")]
     pub target_worker_url: ::prost::alloc::string::String,
+    /// Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
+    /// relative to when the query was fired in the coordinator.
+    #[prost(uint64, tag = "6")]
+    pub query_start_time_ns: u64,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {

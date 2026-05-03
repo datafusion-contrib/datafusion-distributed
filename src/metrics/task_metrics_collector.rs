@@ -176,7 +176,7 @@ mod tests {
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
             let actual_metrics = dist_exec
-                .task_metrics
+                .metrics_store
                 .as_ref()
                 .unwrap()
                 .get(&expected_task_key)
@@ -189,7 +189,7 @@ mod tests {
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
-                actual_metrics.len(),
+                actual_metrics.pre_order_plan_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );
@@ -295,7 +295,7 @@ mod tests {
 
         for expected_task_key in &expected_task_keys {
             let actual_metrics = dist_exec
-                .task_metrics
+                .metrics_store
                 .as_ref()
                 .unwrap()
                 .get(expected_task_key)
@@ -309,7 +309,7 @@ mod tests {
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
-                actual_metrics.len(),
+                actual_metrics.pre_order_plan_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );

@@ -1,4 +1,4 @@
-use crate::coordinator::DistributedExec;
+use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use datafusion::common::{HashMap, config_err};
@@ -156,6 +156,9 @@ impl DistributedTaskContext {
     }
 }
 
+use crate::common::serialize_uuid;
+use crate::metrics::proto::metric_proto_to_df;
+use crate::worker::generated::worker as pb;
 use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::common::DataFusionError;
@@ -198,7 +201,7 @@ const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
     if let Some(plan) = plan.as_any().downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
+        display_ascii(plan, Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
         match show_metrics {
@@ -211,6 +214,7 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
 }
 
 fn display_ascii(
+    root: &DistributedExec,
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
     show_metrics: bool,
@@ -227,23 +231,24 @@ fn display_ascii(
     };
     match stage {
         Either::Left(dist_exec) => {
-            writeln!(
+            write!(
                 f,
-                "{}{}{} DistributedExec {} {}{}",
+                "{}{}{} DistributedExec {} {}",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
                 HORIZONTAL.repeat(2),
                 format_tasks_for_stage(1, plan),
-                if show_metrics {
-                    format_metrics_by_task(&dist_exec.metrics().unwrap_or_default())
-                } else {
-                    "".into()
-                }
             )?;
+            if show_metrics && let Some(metrics) = dist_exec.metrics() {
+                write!(f, " ")?;
+                writeln!(f, "{}", format_metrics_by_task(&metrics))?;
+            } else {
+                writeln!(f)?;
+            }
         }
         Either::Right(stage) => {
-            writeln!(
+            write!(
                 f,
                 "{}{}{} Stage {} {} {}",
                 "  ".repeat(depth),
@@ -253,6 +258,13 @@ fn display_ascii(
                 HORIZONTAL.repeat(2),
                 format_tasks_for_stage(stage.task_count(), plan)
             )?;
+            if show_metrics && let Some(metrics_store) = &root.metrics_store {
+                let metrics = gather_stage_header_metrics(stage, metrics_store);
+                write!(f, " ")?;
+                writeln!(f, "{}", format_metrics_by_task(&metrics))?;
+            } else {
+                writeln!(f)?;
+            }
         }
     }
 
@@ -272,7 +284,7 @@ fn display_ascii(
         HORIZONTAL.repeat(50)
     )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(Either::Right(input_stage), depth + 1, show_metrics, f)?;
+        display_ascii(root, Either::Right(input_stage), depth + 1, show_metrics, f)?;
     }
     Ok(())
 }
@@ -314,6 +326,33 @@ fn display_inner_ascii(
         display_inner_ascii(child, indent + 2, show_metrics, f)?;
     }
     Ok(())
+}
+
+/// Gathers the metrics global to a stage. These metrics are not specific to any plan node, and
+/// are instead global to a whole stage.
+fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> MetricsSet {
+    let mut task_key = pb::TaskKey {
+        query_id: serialize_uuid(&stage.query_id()),
+        stage_id: stage.num() as u64,
+        task_number: 0,
+    };
+    let mut all_metrics = MetricsSet::new();
+    while let Some(task_metrics) = metrics_store.get(&task_key) {
+        let Some(metrics_set) = task_metrics.task_metrics else {
+            continue;
+        };
+        for mut metric in metrics_set.metrics {
+            metric.labels.push(pb::Label {
+                name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
+                value: task_key.task_number.to_string(),
+            });
+            if let Ok(metric) = metric_proto_to_df(metric) {
+                all_metrics.push(metric)
+            };
+        }
+        task_key.task_number += 1;
+    }
+    all_metrics
 }
 
 /// Aggregates metrics by (name, task_id), preserving the [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL]
