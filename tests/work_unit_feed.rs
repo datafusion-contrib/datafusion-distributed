@@ -14,12 +14,13 @@ mod tests {
     };
     use futures::TryStreamExt;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn single_task_no_distribution() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('source', 1, '1,1', '2')
+            SELECT * FROM test_work_unit('source', 1, 'rows(1),rows(1)', 'rows(2)')
             ORDER BY task, partition, letter
         "#,
         )
@@ -29,7 +30,7 @@ mod tests {
             @r"
         SortPreservingMergeExec: [task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST]
           SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-            RowGeneratorExec: tag=source, tasks=1, rows_per_partition=[[1, 1], [2]]
+            RowGeneratorExec: tag=source, tasks=1, partition_ops=[[rows(1), rows(1)], [rows(2)]]
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
         +--------+------+-----------+--------+
@@ -47,7 +48,7 @@ mod tests {
     async fn two_tasks() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('source', 2, '1,1', '2', '1', '2,1')
+            SELECT * FROM test_work_unit('source', 2, 'rows(1),rows(1)', 'rows(2)', 'rows(1)', 'rows(2),rows(1)')
             ORDER BY task, partition, letter
         "#,
         )
@@ -61,7 +62,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
           │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=2, rows_per_partition=[[1, 1], [2], [1], [2, 1]]
+          │   RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(1), rows(1)], [rows(2)], [rows(1)], [rows(2), rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -86,7 +87,7 @@ mod tests {
     async fn empty_work_unit_feeds() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('source', 2, '3', '', '', '1')
+            SELECT * FROM test_work_unit('source', 2, 'rows(3)', '', '', 'rows(1)')
             ORDER BY task, partition, letter
         "#,
         )
@@ -100,7 +101,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
           │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=2, rows_per_partition=[[3], [], [], [1]]
+          │   RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(3)], [], [], [rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -120,7 +121,7 @@ mod tests {
     async fn three_tasks() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('source', 3, '2', '1', '3', '1', '2', '1')
+            SELECT * FROM test_work_unit('source', 3, 'rows(2)', 'rows(1)', 'rows(3)', 'rows(1)', 'rows(2)', 'rows(1)')
             ORDER BY task, partition, letter
         "#,
         )
@@ -134,7 +135,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] t2:[p4..p5]
           │ SortExec: expr=[task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │   RowGeneratorExec: tag=source, tasks=3, rows_per_partition=[[2], [1], [3], [1], [2], [1]]
+          │   RowGeneratorExec: tag=source, tasks=3, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)], [rows(2)], [rows(1)]]
           └──────────────────────────────────────────────────
         +--------+------+-----------+--------+
         | tag    | task | partition | letter |
@@ -161,9 +162,9 @@ mod tests {
     async fn union_of_two_feeds() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('left', 2, '2', '1', '3', '1')
+            SELECT * FROM test_work_unit('left', 2, 'rows(2)', 'rows(1)', 'rows(3)', 'rows(1)')
             UNION ALL
-            SELECT * FROM test_work_unit('right', 2, '1', '2', '1', '1')
+            SELECT * FROM test_work_unit('right', 2, 'rows(1)', 'rows(2)', 'rows(1)', 'rows(1)')
             ORDER BY tag, task, partition, letter
         "#,
         )
@@ -178,9 +179,9 @@ mod tests {
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11]
           │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=left, tasks=2, rows_per_partition=[[2], [1], [3], [1]]
+          │     RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)]]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=right, tasks=2, rows_per_partition=[[1], [2], [1], [1]]
+          │     RowGeneratorExec: tag=right, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
         +-------+------+-----------+--------+
         | tag   | task | partition | letter |
@@ -210,7 +211,7 @@ mod tests {
         let (plan, results) = run_query(
             r#"
             SELECT COUNT(*) as cnt, letter
-            FROM test_work_unit('source', 2, '3', '2', '1', '4')
+            FROM test_work_unit('source', 2, 'rows(3)', 'rows(2)', 'rows(1)', 'rows(4)')
             GROUP BY letter
             ORDER BY letter
         "#,
@@ -232,7 +233,7 @@ mod tests {
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5]
             │ RepartitionExec: partitioning=Hash([letter@0], 6), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[letter@0 as letter], aggr=[count(Int64(1))]
-            │     RowGeneratorExec: tag=source, tasks=2, rows_per_partition=[[3], [2], [1], [4]]
+            │     RowGeneratorExec: tag=source, tasks=2, partition_ops=[[rows(3)], [rows(2)], [rows(1)], [rows(4)]]
             └──────────────────────────────────────────────────
         +-----+--------+
         | cnt | letter |
@@ -256,8 +257,8 @@ mod tests {
             SET datafusion.optimizer.hash_join_single_partition_threshold = 0;
             SET datafusion.optimizer.hash_join_single_partition_threshold_rows = 0;
             SELECT a.task as a_task, a.letter as a_letter, b.task as b_task, b.letter as b_letter
-            FROM test_work_unit('orders', 2, '2', '1', '1', '2') a
-            INNER JOIN test_work_unit('customers', 2, '1', '1', '2', '1') b
+            FROM test_work_unit('orders', 2, 'rows(2)', 'rows(1)', 'rows(1)', 'rows(2)') a
+            INNER JOIN test_work_unit('customers', 2, 'rows(1)', 'rows(1)', 'rows(2)', 'rows(1)') b
             ON a.letter = b.letter
             ORDER BY a_task, a_letter, b_task, b_letter
         "#,
@@ -279,11 +280,11 @@ mod tests {
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5]
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
-            │   RowGeneratorExec: tag=customers, tasks=2, rows_per_partition=[[1], [1], [2], [1]]
+            │   RowGeneratorExec: tag=customers, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(2)], [rows(1)]]
             └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5]
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
-            │   RowGeneratorExec: tag=orders, tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+            │   RowGeneratorExec: tag=orders, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
             └──────────────────────────────────────────────────
         +--------+----------+--------+----------+
         | a_task | a_letter | b_task | b_letter |
@@ -318,11 +319,11 @@ mod tests {
     async fn triple_union() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('x', 2, '2', '1')
+            SELECT * FROM test_work_unit('x', 2, 'rows(2)', 'rows(1)')
             UNION ALL
-            SELECT * FROM test_work_unit('y', 2, '1', '3')
+            SELECT * FROM test_work_unit('y', 2, 'rows(1)', 'rows(3)')
             UNION ALL
-            SELECT * FROM test_work_unit('z', 2, '1', '1')
+            SELECT * FROM test_work_unit('z', 2, 'rows(1)', 'rows(1)')
             ORDER BY tag, task, partition, letter
         "#,
         )
@@ -336,11 +337,11 @@ mod tests {
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] t2:[p4..p5]
           │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=x, tasks=2, rows_per_partition=[[2], [1]]
+          │     RowGeneratorExec: tag=x, tasks=2, partition_ops=[[rows(2)], [rows(1)]]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=y, tasks=2, rows_per_partition=[[1], [3]]
+          │     RowGeneratorExec: tag=y, tasks=2, partition_ops=[[rows(1)], [rows(3)]]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=z, tasks=2, rows_per_partition=[[1], [1]]
+          │     RowGeneratorExec: tag=z, tasks=2, partition_ops=[[rows(1)], [rows(1)]]
           └──────────────────────────────────────────────────
         +-----+------+-----------+--------+
         | tag | task | partition | letter |
@@ -365,7 +366,7 @@ mod tests {
     async fn union_feed_with_non_feed() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
-            SELECT * FROM test_work_unit('feed', 2, '2', '1', '1', '2')
+            SELECT * FROM test_work_unit('feed', 2, 'rows(2)', 'rows(1)', 'rows(1)', 'rows(2)')
             UNION ALL
             SELECT 'static' as tag, 0 as task, 0 as partition, 'x' as letter
             ORDER BY tag, task, partition, letter
@@ -381,7 +382,7 @@ mod tests {
           ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3] t2:[p4..p5]
           │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
-          │     RowGeneratorExec: tag=feed, tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+          │     RowGeneratorExec: tag=feed, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
           │   ProjectionExec: expr=[static as tag, 0 as task, 0 as partition, x as letter]
           │     PlaceholderRowExec
           └──────────────────────────────────────────────────
@@ -408,9 +409,9 @@ mod tests {
             r#"
             SELECT tag, letter, COUNT(*) as cnt
             FROM (
-                SELECT * FROM test_work_unit('left', 2, '3', '2', '1', '2')
+                SELECT * FROM test_work_unit('left', 2, 'rows(3)', 'rows(2)', 'rows(1)', 'rows(2)')
                 UNION ALL
-                SELECT * FROM test_work_unit('right', 2, '2', '1', '1', '3')
+                SELECT * FROM test_work_unit('right', 2, 'rows(2)', 'rows(1)', 'rows(1)', 'rows(3)')
             )
             GROUP BY tag, letter
             ORDER BY tag, letter
@@ -433,8 +434,8 @@ mod tests {
             │ RepartitionExec: partitioning=Hash([tag@0, letter@1], 6), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
             │     DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
-            │       RowGeneratorExec: tag=left, tasks=2, rows_per_partition=[[3], [2], [1], [2]]
-            │       RowGeneratorExec: tag=right, tasks=2, rows_per_partition=[[2], [1], [1], [3]]
+            │       RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(3)], [rows(2)], [rows(1)], [rows(2)]]
+            │       RowGeneratorExec: tag=right, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(3)]]
             └──────────────────────────────────────────────────
         +-------+--------+-----+
         | tag   | letter | cnt |
@@ -459,10 +460,10 @@ mod tests {
             SET datafusion.optimizer.hash_join_single_partition_threshold = 0;
             SET datafusion.optimizer.hash_join_single_partition_threshold_rows = 0;
             SELECT a.tag as a_tag, a.letter, b.cnt
-            FROM test_work_unit('detail', 2, '2', '1', '1', '2') a
+            FROM test_work_unit('detail', 2, 'rows(2)', 'rows(1)', 'rows(1)', 'rows(2)') a
             INNER JOIN (
                 SELECT letter, COUNT(*) as cnt
-                FROM test_work_unit('summary', 2, '3', '2', '1', '4')
+                FROM test_work_unit('summary', 2, 'rows(3)', 'rows(2)', 'rows(1)', 'rows(4)')
                 GROUP BY letter
             ) b ON a.letter = b.letter
             ORDER BY a_tag, a.letter, b.cnt
@@ -486,12 +487,12 @@ mod tests {
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5]
             │ RepartitionExec: partitioning=Hash([letter@1], 6), input_partitions=2
-            │   RowGeneratorExec: tag=detail, tasks=2, rows_per_partition=[[2], [1], [1], [2]]
+            │   RowGeneratorExec: tag=detail, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(2)]]
             └──────────────────────────────────────────────────
             ┌───── Stage 2 ── Tasks: t0:[p0..p5] t1:[p0..p5]
             │ RepartitionExec: partitioning=Hash([letter@0], 6), input_partitions=2
             │   AggregateExec: mode=Partial, gby=[letter@0 as letter], aggr=[count(Int64(1))]
-            │     RowGeneratorExec: tag=summary, tasks=2, rows_per_partition=[[3], [2], [1], [4]]
+            │     RowGeneratorExec: tag=summary, tasks=2, partition_ops=[[rows(3)], [rows(2)], [rows(1)], [rows(4)]]
             └──────────────────────────────────────────────────
         +--------+--------+-----+
         | a_tag  | letter | cnt |
@@ -515,8 +516,8 @@ mod tests {
             SELECT
                 a.tag as a_tag, a.task as a_task, a.partition as a_partition, a.letter,
                 b.tag as b_tag, b.task as b_task, b.partition as b_partition
-            FROM test_work_unit('probe', 2, '3', '1', '2', '1') a
-            INNER JOIN test_work_unit('build', 2, '1', '2', '1', '3') b
+            FROM test_work_unit('probe', 2, 'rows(3)', 'rows(1)', 'rows(2)', 'rows(1)') a
+            INNER JOIN test_work_unit('build', 2, 'rows(1)', 'rows(2)', 'rows(1)', 'rows(3)') b
             ON a.letter = b.letter
             ORDER BY a_task, a_partition, a.letter, b_task, b_partition
         "#,
@@ -534,11 +535,11 @@ mod tests {
           │     HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@3, letter@3)], projection=[tag@0, task@1, partition@2, letter@3, tag@4, task@5, partition@6]
           │       CoalescePartitionsExec
           │         [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=2, stage_partitions=4, input_tasks=2
-          │       RowGeneratorExec: tag=build, tasks=2, rows_per_partition=[[1], [2], [1], [3]]
+          │       RowGeneratorExec: tag=build, tasks=2, partition_ops=[[rows(1)], [rows(2)], [rows(1)], [rows(3)]]
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7]
             │ BroadcastExec: input_partitions=2, consumer_tasks=2, output_partitions=4
-            │   RowGeneratorExec: tag=probe, tasks=2, rows_per_partition=[[3], [1], [2], [1]]
+            │   RowGeneratorExec: tag=probe, tasks=2, partition_ops=[[rows(3)], [rows(1)], [rows(2)], [rows(1)]]
             └──────────────────────────────────────────────────
         +-------+--------+-------------+--------+-------+--------+-------------+
         | a_tag | a_task | a_partition | letter | b_tag | b_task | b_partition |
@@ -566,6 +567,117 @@ mod tests {
         | probe | 1      | 1           | a      | build | 1      | 1           |
         +-------+--------+-------------+--------+-------+--------+-------------+
         ");
+        Ok(())
+    }
+
+    /// `wait()` ops in a feed must actually delay the producing stream.
+    /// Verifies the [`crate::test_utils::test_work_unit_feed::WorkUnitOp::Wait`]
+    /// op is wired into the producer's stream.
+    #[tokio::test]
+    async fn wait_op_delays_query() -> Result<(), Box<dyn std::error::Error>> {
+        let start = Instant::now();
+        let (_, results) =
+            run_query(r#"SELECT * FROM test_work_unit('a', 1, 'rows(1), wait(800), rows(1)')"#)
+                .await?;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(800),
+            "expected query to take at least 800ms (the wait), but took {elapsed:?}"
+        );
+        // Sanity check that both rows came through after the wait.
+        let data_rows = results.lines().filter(|l| l.starts_with("| a ")).count();
+        assert_eq!(
+            data_rows, 2,
+            "expected 2 rows from feed 'a', got:\n{results}"
+        );
+        Ok(())
+    }
+
+    /// An `err()` op in the feed must surface as a query-level error.
+    /// This exercises error propagation from a coordinator-side
+    /// [`WorkUnitFeedProvider`] through the local + remote feed pipeline up
+    /// to the user calling `try_collect` on the result stream.
+    #[tokio::test]
+    async fn err_op_in_single_task_propagates() -> Result<(), Box<dyn std::error::Error>> {
+        let res =
+            run_query(r#"SELECT * FROM test_work_unit('a', 1, 'rows(1), err(boom_single)')"#).await;
+        let err = res.expect_err("query should have failed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("boom_single"),
+            "expected error to mention 'boom_single', got: {msg}"
+        );
+        Ok(())
+    }
+
+    /// Same as [`err_op_in_single_task_propagates`] but with two tasks, so the
+    /// erroring feed actually goes through the coordinator → worker gRPC path.
+    /// Guards against errors being silently swallowed as EOF on the worker side.
+    #[tokio::test]
+    async fn err_op_in_distributed_feed_propagates() -> Result<(), Box<dyn std::error::Error>> {
+        let res = run_query(
+            r#"
+            SELECT * FROM test_work_unit('a', 2, 'rows(1)', 'rows(1), err(boom_distributed)')
+            "#,
+        )
+        .await;
+        let err = res.expect_err("distributed query should have failed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("boom_distributed"),
+            "expected error to mention 'boom_distributed', got: {msg}"
+        );
+        Ok(())
+    }
+
+    /// An `err()` op in one of two independent feeds in the same query must still
+    /// surface. The other feed is otherwise valid — we want to make sure the
+    /// failing feed taints the whole query rather than the result silently
+    /// missing the rows from the failing side.
+    #[tokio::test]
+    async fn err_in_one_of_two_feeds_propagates() -> Result<(), Box<dyn std::error::Error>> {
+        let res = run_query(
+            r#"
+            SELECT * FROM test_work_unit('left', 2, 'rows(1)', 'rows(1)', 'rows(1)', 'rows(1)')
+            UNION ALL
+            SELECT * FROM test_work_unit('right', 2, 'rows(1)', 'err(boom_union)', 'rows(1)', 'rows(1)')
+            "#,
+        )
+        .await;
+        let err = res.expect_err("query should have failed because of the right feed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("boom_union"),
+            "expected error to mention 'boom_union', got: {msg}"
+        );
+        Ok(())
+    }
+
+    /// A `wait()` op in one feed should not stop another, independent feed in the
+    /// same query from making progress, and the final result should still be
+    /// correct. Acts as a regression guard against the producer side blocking
+    /// other feeds while sleeping on a single partition.
+    #[tokio::test]
+    async fn wait_in_one_feed_does_not_corrupt_other_feed_results()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, results) = run_query(
+            r#"
+            SELECT * FROM test_work_unit('fast', 2, 'rows(1)', 'rows(1)', 'rows(1)', 'rows(1)')
+            UNION ALL
+            SELECT * FROM test_work_unit('slow', 2, 'wait(500), rows(1)', 'rows(1)', 'rows(1)', 'rows(1)')
+            ORDER BY tag, task, partition, letter
+            "#,
+        )
+        .await?;
+        // 4 rows from `fast` + 4 rows from `slow` = 8 data rows.
+        let data_rows = results
+            .lines()
+            .filter(|l| l.starts_with("| fast ") || l.starts_with("| slow "))
+            .count();
+        assert_eq!(
+            data_rows, 8,
+            "expected 8 data rows across both feeds, got:\n{results}"
+        );
         Ok(())
     }
 
