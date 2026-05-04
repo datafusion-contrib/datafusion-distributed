@@ -7,7 +7,7 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::test_utils::property_based::{
-        compare_ordering, compare_result_set,
+        PerTestConfig, compare_ordering, compare_result_set,
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
@@ -26,514 +26,513 @@ mod tests {
 
     #[tokio::test]
     async fn test_tpcds_shard01_q1() -> Result<()> {
-        test_tpcds_query("q1").await
+        test_tpcds_query("q1", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q2() -> Result<()> {
-        test_tpcds_query("q2").await
+        test_tpcds_query("q2", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q3() -> Result<()> {
-        test_tpcds_query("q3").await
+        test_tpcds_query("q3", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q4() -> Result<()> {
-        test_tpcds_query("q4").await
+        test_tpcds_query("q4", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q5() -> Result<()> {
-        test_tpcds_query("q5").await
+        test_tpcds_query("q5", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q6() -> Result<()> {
-        test_tpcds_query("q6").await
+        test_tpcds_query("q6", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q7() -> Result<()> {
-        test_tpcds_query("q7").await
+        test_tpcds_query("q7", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q8() -> Result<()> {
-        test_tpcds_query("q8").await
+        test_tpcds_query("q8", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "expected no error but got: Arrow error: Invalid argument error: must either specify a row count or at least one column"]
     async fn test_tpcds_shard01_q9() -> Result<()> {
-        test_tpcds_query("q9").await
+        test_tpcds_query("q9", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard01_q10() -> Result<()> {
-        test_tpcds_query("q10").await
+        test_tpcds_query("q10", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q11() -> Result<()> {
-        test_tpcds_query("q11").await
+        test_tpcds_query("q11", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q12() -> Result<()> {
-        test_tpcds_query("q12").await
+        test_tpcds_query("q12", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "Query q13 did not get distributed"]
     async fn test_tpcds_shard02_q13() -> Result<()> {
-        test_tpcds_query("q13").await
+        test_tpcds_query("q13", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "result sets were not equal: Internal error: Row content differs between result sets\nLeft set size: 100, Right set size: 100\n\nRows only in left (71 total):\n  NULL|NULL|NULL|NULL|674173362.51|155629\n  catalog|NULL|NULL|NULL|237410857.47|46322\n  catalog|1001001.00|NULL|NULL|1697729.02|347\n  catalog|1001001.00|1.00|NULL|855204.24|167\n  catalog|1001001.00|2.00|NULL|125167.22|24\n  catalog|1001001.00|3.00|NULL|198685.08|43\n  catalog|1001001.00|4.00|NULL|109585.97|31\n  catalog|1001001.00|5.00|NULL|59790.61|17\n  catalog|1001001.00|8.00|NULL|55768.46|13\n  catalog|1001001.00|8.00|7.00|28872.49|7\n  catalog|1001001.00|8.00|10.00|26895.97|6\n  catalog|1001001.00|9.00|NULL|30944.19|5\n  catalog|1001001.00|9.00|6.00|30944.19|5\n  catalog|1001001.00|11.00|NULL|82810.87|12\n  catalog|1001001.00|11.00|9.00|82810.87|12\n  catalog|1001001.00|12.00|NULL|38427.52|9\n  catalog|1001001.00|12.00|10.00|38427.52|9\n  catalog|1001001.00|15.00|NULL|112838.10|20\n  catalog|1001001.00|15.00|9.00|53508.79|7\n  catalog|1001001.00|15.00|10.00|59329.31|13\n  catalog|1001002.00|NULL|NULL|3527831.33|706\n  catalog|1001002.00|1.00|NULL|2673969.89|530\n  catalog|1001002.00|1.00|1.00|2673969.89|530\n  catalog|1001002.00|2.00|NULL|140831.91|29\n  catalog|1001002.00|2.00|1.00|140831.91|29\n  catalog|1001002.00|3.00|NULL|320175.87|67\n  catalog|1001002.00|3.00|1.00|320175.87|67\n  catalog|1001002.00|4.00|NULL|133287.96|21\n  catalog|1001002.00|4.00|1.00|133287.96|21\n  catalog|1001002.00|5.00|NULL|16606.90|9\n  catalog|1001002.00|5.00|1.00|16606.90|9\n  catalog|1001002.00|6.00|NULL|15133.01|4\n  catalog|1001002.00|6.00|1.00|15133.01|4\n  catalog|1001002.00|7.00|NULL|24471.26|10\n  catalog|1001002.00|7.00|1.00|24471.26|10\n  catalog|1001002.00|8.00|NULL|63773.05|12\n  catalog|1001002.00|8.00|1.00|63773.05|12\n  catalog|1001002.00|9.00|NULL|9167.19|3\n  catalog|1001002.00|9.00|1.00|9167.19|3\n  catalog|1001002.00|12.00|NULL|29108.42|7\n  catalog|1001002.00|12.00|1.00|29108.42|7\n  catalog|1001002.00|15.00|NULL|31143.45|6\n  catalog|1001002.00|15.00|1.00|31143.45|6\n  catalog|1001002.00|16.00|NULL|70162.42|8\n  catalog|1001002.00|16.00|1.00|70162.42|8\n  catalog|1002001.00|NULL|NULL|2114110.72|380\n  catalog|1002001.00|1.00|NULL|348693.97|55\n  catalog|1002001.00|1.00|1.00|76392.13|14\n  catalog|1002001.00|1.00|2.00|118394.33|21\n  catalog|1002001.00|1.00|4.00|29395.79|5\n  catalog|1002001.00|1.00|5.00|35541.97|4\n  catalog|1002001.00|1.00|6.00|26104.36|3\n  catalog|1002001.00|1.00|9.00|18793.97|4\n  catalog|1002001.00|1.00|10.00|44071.42|4\n  catalog|1002001.00|2.00|NULL|1233961.70|225\n  catalog|1002001.00|2.00|1.00|239511.02|51\n  catalog|1002001.00|2.00|2.00|147993.14|26\n  catalog|1002001.00|2.00|3.00|100086.93|17\n  catalog|1002001.00|2.00|4.00|53524.42|13\n  catalog|1002001.00|2.00|5.00|48494.06|10\n  catalog|1002001.00|2.00|6.00|142857.04|20\n  catalog|1002001.00|2.00|7.00|116557.98|16\n  catalog|1002001.00|2.00|8.00|92743.93|24\n  catalog|1002001.00|2.00|9.00|203943.99|38\n  catalog|1002001.00|2.00|10.00|88249.19|10\n  catalog|1002001.00|3.00|NULL|91054.32|17\n  catalog|1002001.00|3.00|2.00|25171.13|6\n  catalog|1002001.00|3.00|7.00|27766.70|3\n  catalog|1002001.00|3.00|8.00|38116.49|8\n  catalog|1002001.00|4.00|NULL|182427.69|32\n  catalog|1002001.00|4.00|1.00|66896.68|15\n\nRows only in right (71 total):\n  NULL|NULL|NULL|NULL|47788579.87|11068\n  NULL|NULL|NULL|NULL|46294358.79|10609\n  NULL|NULL|NULL|NULL|40499040.27|9321\n  NULL|NULL|NULL|NULL|37952602.75|8889\n  NULL|NULL|NULL|NULL|50256292.02|11540\n  NULL|NULL|NULL|NULL|27943616.98|6397\n  NULL|NULL|NULL|NULL|43114338.77|10000\n  NULL|NULL|NULL|NULL|56239021.04|13003\n  NULL|NULL|NULL|NULL|25682800.66|6012\n  NULL|NULL|NULL|NULL|38529122.81|8922\n  NULL|NULL|NULL|NULL|59222982.16|13528\n  NULL|NULL|NULL|NULL|48322926.86|11228\n  NULL|NULL|NULL|NULL|39166012.10|9010\n  NULL|NULL|NULL|NULL|32661391.26|7453\n  NULL|NULL|NULL|NULL|43315152.10|10008\n  NULL|NULL|NULL|NULL|37185124.07|8641\n  catalog|NULL|NULL|NULL|16671923.72|3228\n  catalog|NULL|NULL|NULL|16630833.01|3143\n  catalog|NULL|NULL|NULL|14038550.02|2798\n  catalog|NULL|NULL|NULL|13135427.84|2638\n  catalog|NULL|NULL|NULL|17604907.44|3399\n  catalog|NULL|NULL|NULL|10119873.49|1959\n  catalog|NULL|NULL|NULL|14698922.72|2919\n  catalog|NULL|NULL|NULL|19534422.18|3931\n  catalog|NULL|NULL|NULL|9075046.95|1756\n  catalog|NULL|NULL|NULL|13829338.20|2662\n  catalog|NULL|NULL|NULL|21769645.88|4087\n  catalog|NULL|NULL|NULL|16890254.59|3343\n  catalog|NULL|NULL|NULL|13897305.68|2680\n  catalog|NULL|NULL|NULL|11719010.15|2217\n  catalog|NULL|NULL|NULL|14773719.71|2947\n  catalog|NULL|NULL|NULL|13021675.89|2615\n  catalog|1001001.00|NULL|NULL|188446.33|41\n  catalog|1001001.00|NULL|NULL|53508.79|7\n  catalog|1001001.00|NULL|NULL|100105.28|23\n  catalog|1001001.00|NULL|NULL|114412.27|25\n  catalog|1001001.00|NULL|NULL|77231.70|15\n  catalog|1001001.00|NULL|NULL|174489.15|42\n  catalog|1001001.00|NULL|NULL|206490.30|38\n  catalog|1001001.00|NULL|NULL|45473.85|13\n  catalog|1001001.00|NULL|NULL|146344.47|27\n  catalog|1001001.00|NULL|NULL|152599.38|28\n  catalog|1001001.00|NULL|NULL|206412.37|36\n  catalog|1001001.00|NULL|NULL|119368.21|23\n  catalog|1001001.00|NULL|NULL|45014.15|12\n  catalog|1001001.00|NULL|NULL|50948.80|14\n  catalog|1001001.00|NULL|NULL|16883.97|3\n  catalog|1001001.00|1.00|NULL|100105.28|23\n  catalog|1001001.00|1.00|NULL|99985.35|21\n  catalog|1001001.00|1.00|NULL|107555.43|23\n  catalog|1001001.00|1.00|NULL|161349.39|29\n  catalog|1001001.00|1.00|NULL|146344.47|27\n  catalog|1001001.00|1.00|NULL|122521.31|25\n  catalog|1001001.00|1.00|NULL|77861.85|13\n  catalog|1001001.00|1.00|NULL|22597.19|3\n  catalog|1001001.00|1.00|NULL|16883.97|3\n  catalog|1001001.00|2.00|NULL|68565.38|14\n  catalog|1001001.00|2.00|NULL|43967.97|7\n  catalog|1001001.00|2.00|NULL|12633.87|3\n  catalog|1001001.00|3.00|NULL|60551.64|14\n  catalog|1001001.00|3.00|NULL|14426.92|4\n  catalog|1001001.00|3.00|NULL|36821.61|7\n  catalog|1001001.00|3.00|NULL|30078.07|3\n  catalog|1001001.00|3.00|NULL|28455.23|4\n  catalog|1001001.00|3.00|NULL|28351.61|11\n  catalog|1001001.00|4.00|NULL|47553.20|10\n  catalog|1001001.00|4.00|NULL|45473.85|13\n  catalog|1001001.00|4.00|NULL|16558.92|8\n  catalog|1001001.00|5.00|NULL|29678.50|5\n  catalog|1001001.00|5.00|NULL|30112.11|12\n  catalog|1001001.00|8.00|NULL|26895.97|6.\nThis issue was likely caused by a bug in DataFusion's code. Please help us to resolve this by filing a bug report in our issue tracker: https://github.com/apache/datafusion/issues"]
     async fn test_tpcds_shard02_q14() -> Result<()> {
-        test_tpcds_query("q14").await
+        test_tpcds_query("q14", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q15() -> Result<()> {
-        test_tpcds_query("q15").await
+        test_tpcds_query("q15", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q16() -> Result<()> {
-        test_tpcds_query("q16").await
+        test_tpcds_query("q16", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q17() -> Result<()> {
-        test_tpcds_query("q17").await
+        test_tpcds_query("q17", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q18() -> Result<()> {
-        test_tpcds_query("q18").await
+        test_tpcds_query("q18", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q19() -> Result<()> {
-        test_tpcds_query("q19").await
+        test_tpcds_query("q19", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard02_q20() -> Result<()> {
-        test_tpcds_query("q20").await
+        test_tpcds_query("q20", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q21() -> Result<()> {
-        test_tpcds_query("q21").await
+        test_tpcds_query("q21", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q22() -> Result<()> {
-        test_tpcds_query("q22").await
+        test_tpcds_query("q22", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q23() -> Result<()> {
-        test_tpcds_query("q23").await
+        test_tpcds_query("q23", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q24() -> Result<()> {
-        test_tpcds_query("q24").await
+        test_tpcds_query("q24", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q25() -> Result<()> {
-        test_tpcds_query("q25").await
+        test_tpcds_query("q25", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q26() -> Result<()> {
-        test_tpcds_query("q26").await
+        test_tpcds_query("q26", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q27() -> Result<()> {
-        test_tpcds_query("q27").await
+        test_tpcds_query("q27", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q28() -> Result<()> {
-        test_tpcds_query("q28").await
+        test_tpcds_query("q28", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard03_q29() -> Result<()> {
-        test_tpcds_query("q29").await
+        test_tpcds_query("q29", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "Fails with column 'c_last_review_date_sk' not found"]
+    #[ignore = "fails on CI but works locally, see https://github.com/datafusion-contrib/datafusion-distributed/pull/452#issuecomment-4439115012"]
     async fn test_tpcds_shard03_q30() -> Result<()> {
-        test_tpcds_query("q30").await
+        test_tpcds_query("q30", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q31() -> Result<()> {
-        test_tpcds_query("q31").await
+        test_tpcds_query("q31", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q32() -> Result<()> {
-        test_tpcds_query("q32").await
+        test_tpcds_query("q32", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q33() -> Result<()> {
-        test_tpcds_query("q33").await
+        test_tpcds_query("q33", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q34() -> Result<()> {
-        test_tpcds_query("q34").await
+        test_tpcds_query("q34", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q35() -> Result<()> {
-        test_tpcds_query("q35").await
+        test_tpcds_query("q35", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q36() -> Result<()> {
-        test_tpcds_query("q36").await
+        test_tpcds_query("q36", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q37() -> Result<()> {
-        test_tpcds_query("q37").await
+        test_tpcds_query("q37", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q38() -> Result<()> {
-        test_tpcds_query("q38").await
+        test_tpcds_query("q38", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q39() -> Result<()> {
-        test_tpcds_query("q39").await
+        test_tpcds_query("q39", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard04_q40() -> Result<()> {
-        test_tpcds_query("q40").await
+        test_tpcds_query("q40", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q41() -> Result<()> {
-        test_tpcds_query("q41").await
+        test_tpcds_query("q41", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q42() -> Result<()> {
-        test_tpcds_query("q42").await
+        test_tpcds_query("q42", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q43() -> Result<()> {
-        test_tpcds_query("q43").await
+        test_tpcds_query("q43", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q44() -> Result<()> {
-        test_tpcds_query("q44").await
+        test_tpcds_query("q44", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q45() -> Result<()> {
-        test_tpcds_query("q45").await
+        test_tpcds_query("q45", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q46() -> Result<()> {
-        test_tpcds_query("q46").await
+        test_tpcds_query("q46", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q47() -> Result<()> {
-        test_tpcds_query("q47").await
+        test_tpcds_query("q47", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "Query q48 did not get distributed"]
     async fn test_tpcds_shard05_q48() -> Result<()> {
-        test_tpcds_query("q48").await
+        test_tpcds_query("q48", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q49() -> Result<()> {
-        test_tpcds_query("q49").await
+        test_tpcds_query("q49", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard05_q50() -> Result<()> {
-        test_tpcds_query("q50").await
+        test_tpcds_query("q50", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q51() -> Result<()> {
-        test_tpcds_query("q51").await
+        test_tpcds_query("q51", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q52() -> Result<()> {
-        test_tpcds_query("q52").await
+        test_tpcds_query("q52", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q53() -> Result<()> {
-        test_tpcds_query("q53").await
+        test_tpcds_query("q53", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q54() -> Result<()> {
-        test_tpcds_query("q54").await
+        test_tpcds_query("q54", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q55() -> Result<()> {
-        test_tpcds_query("q55").await
+        test_tpcds_query("q55", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q56() -> Result<()> {
-        test_tpcds_query("q56").await
+        test_tpcds_query("q56", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q57() -> Result<()> {
-        test_tpcds_query("q57").await
+        test_tpcds_query("q57", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q58() -> Result<()> {
-        test_tpcds_query("q58").await
+        test_tpcds_query("q58", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    // FIXME: this test succeeds locally, but for some reason it fails on CI
-    #[ignore = "result sets were not equal: Internal error: Row counts differ: left=100, right=0"]
     async fn test_tpcds_shard06_q59() -> Result<()> {
-        test_tpcds_query("q59").await
+        test_tpcds_query("q59", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard06_q60() -> Result<()> {
-        test_tpcds_query("q60").await
+        test_tpcds_query("q60", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q61() -> Result<()> {
-        test_tpcds_query("q61").await
+        test_tpcds_query("q61", PerTestConfig::default()).await
     }
 
     #[tokio::test]
-    #[ignore = "Query q62 did not get distributed"]
     async fn test_tpcds_shard07_q62() -> Result<()> {
-        test_tpcds_query("q62").await
+        test_tpcds_query("q62", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q63() -> Result<()> {
-        test_tpcds_query("q63").await
+        test_tpcds_query("q63", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q64() -> Result<()> {
-        test_tpcds_query("q64").await
+        test_tpcds_query("q64", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q65() -> Result<()> {
-        test_tpcds_query("q65").await
+        test_tpcds_query("q65", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q66() -> Result<()> {
-        test_tpcds_query("q66").await
+        test_tpcds_query("q66", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q67() -> Result<()> {
-        test_tpcds_query("q67").await
+        test_tpcds_query("q67", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q68() -> Result<()> {
-        test_tpcds_query("q68").await
+        test_tpcds_query("q68", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q69() -> Result<()> {
-        test_tpcds_query("q69").await
+        test_tpcds_query("q69", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard07_q70() -> Result<()> {
-        test_tpcds_query("q70").await
+        test_tpcds_query("q70", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q71() -> Result<()> {
-        test_tpcds_query("q71").await
+        test_tpcds_query("q71", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     // For some reason this test takes a ridiculous amount of time to execute. There might be
     // nothing wrong with it, and it just might be too heavy. The test passes, but it takes so
-    // long to execute that it's not worth the time.
-    #[ignore = "Query takes too long to execute"]
+    // long to execute that it's not worth the time. Gated behind the `slow-tests` feature.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "Query takes too long to execute"
+    )]
     async fn test_tpcds_shard08_q72() -> Result<()> {
-        test_tpcds_query("q72").await
+        test_tpcds_query("q72", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q73() -> Result<()> {
-        test_tpcds_query("q73").await
+        test_tpcds_query("q73", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q74() -> Result<()> {
-        test_tpcds_query("q74").await
+        test_tpcds_query("q74", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q75() -> Result<()> {
-        test_tpcds_query("q75").await
+        test_tpcds_query("q75", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q76() -> Result<()> {
-        test_tpcds_query("q76").await
+        test_tpcds_query("q76", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q77() -> Result<()> {
-        test_tpcds_query("q77").await
+        test_tpcds_query("q77", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q78() -> Result<()> {
-        test_tpcds_query("q78").await
+        test_tpcds_query("q78", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q79() -> Result<()> {
-        test_tpcds_query("q79").await
+        test_tpcds_query("q79", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard08_q80() -> Result<()> {
-        test_tpcds_query("q80").await
+        test_tpcds_query("q80", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q81() -> Result<()> {
-        test_tpcds_query("q81").await
+        test_tpcds_query("q81", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q82() -> Result<()> {
-        test_tpcds_query("q82").await
+        test_tpcds_query("q82", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q83() -> Result<()> {
-        test_tpcds_query("q83").await
+        test_tpcds_query("q83", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q84() -> Result<()> {
-        test_tpcds_query("q84").await
+        test_tpcds_query("q84", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q85() -> Result<()> {
-        test_tpcds_query("q85").await
+        test_tpcds_query("q85", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q86() -> Result<()> {
-        test_tpcds_query("q86").await
+        test_tpcds_query("q86", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q87() -> Result<()> {
-        test_tpcds_query("q87").await
+        test_tpcds_query("q87", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q88() -> Result<()> {
-        test_tpcds_query("q88").await
+        test_tpcds_query("q88", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q89() -> Result<()> {
-        test_tpcds_query("q89").await
+        test_tpcds_query("q89", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard09_q90() -> Result<()> {
-        test_tpcds_query("q90").await
+        test_tpcds_query("q90", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     #[ignore = "Query q91 did not get distributed"]
     async fn test_tpcds_shard10_q91() -> Result<()> {
-        test_tpcds_query("q91").await
+        test_tpcds_query("q91", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q92() -> Result<()> {
-        test_tpcds_query("q92").await
+        test_tpcds_query("q92", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q93() -> Result<()> {
-        test_tpcds_query("q93").await
+        test_tpcds_query("q93", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q94() -> Result<()> {
-        test_tpcds_query("q94").await
+        test_tpcds_query("q94", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q95() -> Result<()> {
-        test_tpcds_query("q95").await
+        test_tpcds_query("q95", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q96() -> Result<()> {
-        test_tpcds_query("q96").await
+        test_tpcds_query("q96", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q97() -> Result<()> {
-        test_tpcds_query("q97").await
+        test_tpcds_query("q97", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     async fn test_tpcds_shard10_q98() -> Result<()> {
-        test_tpcds_query("q98").await
+        test_tpcds_query("q98", PerTestConfig::default()).await
     }
 
     #[tokio::test]
     // For some reason this test takes a ridiculous amount of time to execute. There might be
     // nothing wrong with it, and it just might be too heavy. The test passes, but it takes so
-    // long to execute that it's not worth the time.
-    #[ignore = "Query takes too long to execute"]
+    // long to execute that it's not worth the time. Gated behind the `slow-tests` feature.
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "Query takes too long to execute"
+    )]
     async fn test_tpcds_shard10_q99() -> Result<()> {
-        test_tpcds_query("q99").await
+        test_tpcds_query("q99", PerTestConfig::default()).await
     }
 
     static INIT_TEST_TPCDS_TABLES: OnceCell<()> = OnceCell::const_new();
@@ -548,7 +547,7 @@ mod tests {
         (plan.clone(), Arc::new(collect(plan, task_ctx).await)) // Collect execution errors, do not unwrap.
     }
 
-    async fn test_tpcds_query(query_id: &str) -> Result<()> {
+    async fn test_tpcds_query(query_id: &str, config: PerTestConfig) -> Result<()> {
         let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
             "testdata/tpcds/correctness_sf{SF}_partitions{PARQUET_PARTITIONS}"
         ));
@@ -591,7 +590,7 @@ mod tests {
             let d_results = d_results.clone();
             let s_results = s_results.clone();
             tokio::task::spawn_blocking(move || async move {
-                compare_result_set(&d_results, &s_results)
+                compare_result_set(&d_results, &s_results, &config)
             })
         };
         let compare_ordering = {
