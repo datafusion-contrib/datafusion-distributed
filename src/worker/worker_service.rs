@@ -29,7 +29,7 @@ pub(super) struct WorkerHooks {
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
-type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
 
 #[derive(Clone)]

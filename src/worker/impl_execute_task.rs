@@ -3,7 +3,7 @@ use crate::common::{map_last_stream, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::worker::generated::worker::{FlightAppMetadata, PreOrderTaskMetrics};
-use crate::worker::worker_service::{TaskDataEntries, Worker};
+use crate::worker::worker_service::{ResultTaskData, TaskDataEntries, Worker};
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
@@ -11,6 +11,7 @@ use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err};
 
+use crate::worker::SingleWriteMultiRead;
 use crate::worker::generated::worker::ExecuteTaskRequest;
 use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::spawn_select_all::spawn_select_all;
@@ -36,15 +37,13 @@ const RECORD_BATCH_BUFFER_SIZE: usize = 2;
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 
 pub(crate) async fn execute_local_task(
+    entry: Arc<SingleWriteMultiRead<ResultTaskData>>,
     task_data_entries: &Arc<TaskDataEntries>,
     body: ExecuteTaskRequest,
 ) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
-    let Some(key) = body.task_key else {
+    let Some(key) = &body.task_key else {
         return exec_err!("Missing task key in protobuf message");
     };
-    let entry = task_data_entries
-        .get_with(key.clone(), async { Default::default() })
-        .await;
 
     // Other request is responsible for writing the plan that belongs to this TaskKey, so
     // we'll resolve immediately if it was already there, or wait until it's ready.
@@ -80,7 +79,6 @@ pub(crate) async fn execute_local_task(
         let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
 
-        let key = key.clone();
         let key_clone = key.clone();
         let plan = Arc::clone(&plan);
         let plan_for_drop = Arc::clone(&plan);
@@ -97,7 +95,7 @@ pub(crate) async fn execute_local_task(
             // the cache and send the collected metrics back via the coordinator channel.
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                 let entries = Arc::clone(&task_data_entries_for_map);
-                let k = key.clone();
+                let k = key_clone.clone();
                 tokio::spawn(async move {
                     entries.invalidate(&k).await;
                 });
@@ -114,7 +112,7 @@ pub(crate) async fn execute_local_task(
         let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
         let task_data_entries_for_drop = Arc::clone(task_data_entries);
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
-        let key_for_drop = key_clone.clone();
+        let key_for_drop = key.clone();
         let stream = on_drop_stream(stream, move || {
             if !fully_finished_cloned.load(Ordering::SeqCst) {
                 // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
@@ -145,7 +143,14 @@ pub(crate) async fn execute_remote_task(
     let body = request.into_inner();
     let partition_range = body.target_partition_start..body.target_partition_end;
 
-    let (arrow_streams, task_ctx) = execute_local_task(task_data_entries, body)
+    let Some(key) = &body.task_key else {
+        return Err(Status::internal("Missing task key in protobuf message"));
+    };
+    let entry = task_data_entries
+        .get_with(key.clone(), async { Default::default() })
+        .await;
+
+    let (arrow_streams, task_ctx) = execute_local_task(entry, task_data_entries, body)
         .await
         .map_err(datafusion_error_to_tonic_status)?;
 
