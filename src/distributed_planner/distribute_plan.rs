@@ -101,11 +101,9 @@ fn _distribute_plan(
         // This is a leaf node. It needs to be scaled up in order to account for it running in
         // multiple tasks.
         PlanOrNetworkBoundary::Plan(plan) if plan.children().is_empty() => {
-            let distributed_plan = d_cfg.__private_task_estimator.distribute_plan(
-                &plan,
-                annotated_plan.task_count.as_usize(),
-                cfg,
-            )?;
+            let distributed_plan = d_cfg
+                .__private_task_estimator
+                .distribute_plan(&plan, task_count, cfg)?;
             Ok(distributed_plan.unwrap_or(DistributedPlan::from_plan(plan)))
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.

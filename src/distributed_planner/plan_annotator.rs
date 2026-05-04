@@ -191,7 +191,7 @@ async fn _annotate_plan(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        return if let Ok(Some(estimate)) = estimator.task_estimation(&plan, cfg) {
+        return if let Some(estimate) = estimator.task_estimation(&plan, cfg)? {
             Ok(AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
