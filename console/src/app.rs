@@ -1,6 +1,6 @@
 use crate::state::{ClusterViewState, SortColumn, SortDirection, View, WorkerViewState};
 use crate::worker::{ConnectionStatus, WorkerConn, discover_cluster_workers};
-use std::collections::HashSet;
+use datafusion::common::HashSet;
 use std::time::{Duration, Instant};
 use url::Url;
 

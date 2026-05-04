@@ -159,11 +159,10 @@ restarting in-place), you will need to invalidate cached entries when the underl
 restarts.
 
 ```rust
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use url::Url;
-use datafusion::common::DataFusionError;
+use datafusion::common::{HashMap,DataFusionError};
 use datafusion_distributed::{
     DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
 };
