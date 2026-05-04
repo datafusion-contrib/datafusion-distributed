@@ -39,7 +39,7 @@ be found in the [benchmarks/cdk](./benchmarks/cdk) directory.
 
 # Docs
 
-The user and contributor guide can be found here:
+The user  guide can be found here:
 
 https://datafusion-contrib.github.io/datafusion-distributed
 
