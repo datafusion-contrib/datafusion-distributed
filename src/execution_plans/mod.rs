@@ -1,7 +1,6 @@
 mod broadcast;
 mod children_isolator_union;
 mod common;
-mod distributed;
 mod metrics;
 mod network_broadcast;
 mod network_coalesce;
@@ -13,7 +12,6 @@ pub mod benchmarks;
 
 pub use broadcast::BroadcastExec;
 pub use children_isolator_union::ChildrenIsolatorUnionExec;
-pub use distributed::{DistributedExec, MetricsStore};
 pub(crate) use metrics::MetricsWrapperExec;
 pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;

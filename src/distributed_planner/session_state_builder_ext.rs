@@ -1,5 +1,5 @@
-use crate::DistributedExec;
 use crate::distributed_planner::distribute_plan::distribute_plan;
+use crate::{DistributedConfig, DistributedExec};
 use async_trait::async_trait;
 use datafusion::common::Result;
 use datafusion::execution::context::QueryPlanner;
@@ -52,8 +52,11 @@ impl QueryPlanner for DistributedQueryPlanner {
                     .await?
             }
         };
+        let d_cfg = DistributedConfig::from_config_options(session_state.config_options())?;
         match distribute_plan(Arc::clone(&s_plan), session_state.config_options()).await? {
-            Some(d_plan) => Ok(Arc::new(DistributedExec::new(d_plan))),
+            Some(d_plan) => Ok(Arc::new(
+                DistributedExec::new(d_plan).with_metrics_collection(d_cfg.collect_metrics),
+            )),
             None => Ok(s_plan),
         }
     }

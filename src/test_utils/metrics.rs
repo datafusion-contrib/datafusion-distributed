@@ -1,4 +1,4 @@
-use crate::execution_plans::DistributedExec;
+use crate::coordinator::DistributedExec;
 use crate::worker::generated::worker as pb;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
