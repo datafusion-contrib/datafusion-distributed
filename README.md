@@ -43,6 +43,10 @@ The user and contributor guide can be found here:
 
 https://datafusion-contrib.github.io/datafusion-distributed
 
+If you'd like to contribute, see the contributor guide:
+
+https://datafusion-contrib.github.io/datafusion-distributed/contributor-guide/index.html
+
 ## Getting familiar with distributed DataFusion
 
 There are some runnable examples showcasing how to provide a localhost implementation for Distributed DataFusion in
