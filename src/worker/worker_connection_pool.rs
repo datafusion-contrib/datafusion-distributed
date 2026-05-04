@@ -1,4 +1,4 @@
-use crate::common::{on_drop_stream, serialize_uuid};
+use crate::common::{OnceLockResult, on_drop_stream, serialize_uuid};
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -6,6 +6,8 @@ use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion
 use crate::stage::RemoteStage;
 use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
+use crate::worker::impl_execute_task::execute_local_task;
+use crate::worker::worker_service::TaskDataEntries;
 use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -14,12 +16,13 @@ use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{DataFusionError, Result, internal_err};
+use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricValue};
 use datafusion::physical_plan::metrics::{MetricBuilder, Time};
-use futures::{Stream, TryStreamExt};
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::Extensions;
 use pin_project::{pin_project, pinned_drop};
 use prost::Message;
@@ -33,11 +36,25 @@ use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
+use url::Url;
+
+/// Context set by [crate::Worker::coordinator_channel] in DataFusion's
+/// [datafusion::prelude::SessionConfig] that contains information about the local tasks the current
+/// [crate::Worker] owns.
+///
+/// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
+/// needs to be remotely executed happens to be owned by this same worker.
+pub(crate) struct LocalWorkerContext {
+    /// The registry of in-flight tasks the [crate::Worker] in the current scope owns.
+    pub(crate) task_data_entries: Arc<TaskDataEntries>,
+    /// The URL of the [crate::Worker] in scope. When trying to reach to a target URL that happens
+    /// to be the same as this one, local comms are preferred instead.
+    pub(crate) self_url: Url,
+}
 
 /// Holds a list of lazily initialized [WorkerConnection]s. Each position in the underlying
 /// `connections` vector corresponds to the connection to one worker. It assumes a 1:1 mapping
@@ -45,7 +62,7 @@ use tonic::{Request, Status};
 /// it will initialize the corresponding position in the vector matching the provided `target_task`
 /// index.
 pub(crate) struct WorkerConnectionPool {
-    connections: Vec<OnceLock<Result<WorkerConnection, Arc<DataFusionError>>>>,
+    connections: Vec<OnceLockResult<Box<dyn WorkerConnection + Sync + Send>>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
@@ -72,7 +89,7 @@ impl WorkerConnectionPool {
         target_partitions: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
-    ) -> Result<&WorkerConnection> {
+    ) -> Result<&(dyn WorkerConnection + Sync + Send)> {
         let Some(worker_connection) = self.connections.get(target_task) else {
             return internal_err!(
                 "WorkerConnections: Task index {target_task} not found, only have {} tasks",
@@ -81,24 +98,50 @@ impl WorkerConnectionPool {
         };
 
         let conn = worker_connection.get_or_init(|| {
-            WorkerConnection::init(
-                input_stage,
-                target_partitions,
-                target_task,
-                ctx,
-                &self.metrics,
-            )
-            .map_err(Arc::new)
+            let Some(target_url) = input_stage.workers.get(target_task) else {
+                internal_err!("input_stage.workers[{target_task}] out of range.")?
+            };
+            if let Some(lw_ctx) = ctx.session_config().get_extension::<LocalWorkerContext>()
+                && &lw_ctx.self_url == target_url
+            {
+                // Instead of making a gRPC call to ourselves, better to just use local comms.
+                Ok(Box::new(LocalWorkerConnection::init(
+                    input_stage,
+                    target_partitions,
+                    target_task,
+                    lw_ctx,
+                    &self.metrics,
+                )) as Box<_>)
+            } else {
+                // We are trying to reach a URL different from ours, so use normal gRPC streams.
+                RemoteWorkerConnection::init(
+                    input_stage,
+                    target_partitions,
+                    target_task,
+                    ctx,
+                    &self.metrics,
+                )
+                .map(|v| Box::new(v) as Box<_>)
+                .map_err(Arc::new)
+            }
         });
 
         match conn {
-            Ok(v) => Ok(v),
+            Ok(v) => Ok(v.as_ref()),
             Err(err) => Err(DataFusionError::Shared(Arc::clone(err))),
         }
     }
 }
 
 type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
+
+/// Abstraction that allows treating remote and local comms as equal. Network boundaries do not
+/// care if the stream comes over the wire or locally.
+pub(crate) trait WorkerConnection {
+    /// Streams the specified partition. Consumers do not care if the implementation pulls data
+    /// from in-memory or from local comms.
+    fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>>;
+}
 
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
 /// data from single partitions while the actual network communication is handling all the partitions
@@ -111,7 +154,7 @@ type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 /// the same underlying TCP connection, there do is some overhead in having one gRPC stream per
 /// partition VS a single gRPC stream interleaving multiple partitions. The whole serialized plan
 /// needs to be sent over the wire on every gRPC call, so the less gRPC calls we do the better.
-pub(crate) struct WorkerConnection {
+struct RemoteWorkerConnection {
     task: Arc<SpawnedTask<()>>,
     not_consumed_streams: Arc<AtomicUsize>,
     cancel_token: CancellationToken,
@@ -125,7 +168,7 @@ pub(crate) struct WorkerConnection {
     elapsed_compute: Time,
 }
 
-impl WorkerConnection {
+impl RemoteWorkerConnection {
     fn init(
         input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
@@ -322,7 +365,9 @@ impl WorkerConnection {
             elapsed_compute: elapsed_compute_clone,
         })
     }
+}
 
+impl WorkerConnection for RemoteWorkerConnection {
     /// Streams the provided `partition` from the remote worker.
     ///
     /// Note that this does not issue a network request, the actual network request happened before
@@ -333,11 +378,7 @@ impl WorkerConnection {
     ///
     /// When the returned stream is dropped (e.g., due to query cancellation), the background task
     /// pulling from the Flight stream will be cancelled promptly.
-    pub(crate) fn stream_partition(
-        &self,
-        partition: usize,
-        on_metadata: impl Fn(FlightAppMetadata) + Send + Sync + 'static,
-    ) -> Result<impl Stream<Item = Result<RecordBatch>> + 'static> {
+    fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
         let Some((_, partition_receiver)) = self.per_partition_rx.remove(&partition) else {
             return internal_err!(
                 "WorkerConnection has no stream for target partition {partition}. Was it already consumed?"
@@ -350,12 +391,11 @@ impl WorkerConnection {
         let stream = stream.map_err(|err| FlightError::Tonic(Box::new(err)));
         let reservation = Arc::clone(&self.memory_reservation);
         let mem_available_notify = Arc::clone(&self.mem_available_notify);
-        let stream = stream.map_ok(move |(data, meta)| {
+        let stream = stream.map_ok(move |(data, _meta)| {
             reservation.shrink(data.encoded_len());
             // Wake the demux task in case it is blocked on the byte budget.
             mem_available_notify.notify_one();
             let _ = &task; // <- keep the task that polls data from the network alive.
-            on_metadata(meta);
             data
         });
         let stream = FlightRecordBatchStream::new_from_flight_data(stream);
@@ -369,7 +409,75 @@ impl WorkerConnection {
             if remaining_streams == 0 {
                 cancel_token.cancel();
             }
-        }))
+        })
+        .boxed())
+    }
+}
+
+/// Equivalent to [RemoteWorkerConnection], but that pulls data from the local registry of tasks
+/// rather than doing it across a gRPC interface.
+pub(crate) struct LocalWorkerConnection {
+    lw_ctx: Arc<LocalWorkerContext>,
+    request_template: ExecuteTaskRequest,
+}
+
+impl LocalWorkerConnection {
+    fn init(
+        input_stage: &RemoteStage,
+        target_partition_range: Range<usize>,
+        target_task: usize,
+        lw_ctx: Arc<LocalWorkerContext>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Self {
+        MetricBuilder::new(metrics)
+            .global_counter("local_connections_used")
+            .add(1);
+        Self {
+            lw_ctx,
+            request_template: ExecuteTaskRequest {
+                task_key: Some(TaskKey {
+                    query_id: serialize_uuid(&input_stage.query_id),
+                    stage_id: input_stage.num as u64,
+                    task_number: target_task as u64,
+                }),
+                target_partition_start: target_partition_range.start as u64,
+                target_partition_end: target_partition_range.end as u64,
+            },
+        }
+    }
+}
+
+impl WorkerConnection for LocalWorkerConnection {
+    fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+        let mut request = self.request_template.clone();
+        request.target_partition_start = partition as u64;
+        request.target_partition_end = (partition + 1) as u64;
+        let task_data_entries = Arc::clone(&self.lw_ctx.task_data_entries);
+        let Some(key) = request.task_key.as_ref().cloned() else {
+            return internal_err!("Missing task_key in LocalWorkerConnection");
+        };
+        // The task data entry needs to be eagerly retrieved, it cannot be left for until someone
+        // decides to start polling the returned stream, otherwise, there's risk that the entry is
+        // evicted by Moka's TTL, and by the time the returned stream is polled, the entry might
+        // have been lost.
+        let entry = SpawnedTask::spawn(async move {
+            task_data_entries
+                .get_with(key, async { Default::default() })
+                .await
+        });
+        let task_data_entries = Arc::clone(&self.lw_ctx.task_data_entries);
+        Ok(async move {
+            let entry = entry
+                .await
+                .map_err(|err| internal_datafusion_err!("{err}"))?;
+            let (mut streams, _) = execute_local_task(entry, &task_data_entries, request).await?;
+            if streams.len() != 1 {
+                return internal_err!("Expected exactly 1 local stream");
+            }
+            Ok(streams.swap_remove(0))
+        }
+        .try_flatten_stream()
+        .boxed())
     }
 }
 
@@ -393,7 +501,7 @@ impl Clone for WorkerConnectionPool {
     }
 }
 
-impl Debug for WorkerConnection {
+impl Debug for RemoteWorkerConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerConnection").finish()
     }

@@ -6,6 +6,7 @@ use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, WorkerToCoordinatorMsg, worker_to_coordinator_msg,
 };
+use crate::worker::worker_connection_pool::LocalWorkerContext;
 use crate::{
     DistributedCodec, DistributedConfig, DistributedExt, DistributedTaskContext, TaskData, Worker,
     WorkerQueryContext,
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, Streaming};
+use url::Url;
 
 impl Worker {
     pub(super) async fn impl_coordinator_channel(
@@ -61,6 +63,11 @@ impl Worker {
                 .with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
                     task_count: request.task_count as usize,
+                }))
+                .with_extension(Arc::new(LocalWorkerContext {
+                    task_data_entries: Arc::clone(&self.task_data_entries),
+                    self_url: Url::parse(&request.target_worker_url)
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
                 }))
                 .with_distributed_option_extension_from_headers::<DistributedConfig>(&headers)?;
 
