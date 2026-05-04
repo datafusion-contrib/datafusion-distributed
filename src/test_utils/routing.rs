@@ -1,12 +1,13 @@
 use arrow::{
-    array::RecordBatch,
+    array::{Int64Array, RecordBatch, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
-    common::Statistics,
+    common::{Statistics, internal_err},
     datasource::TableType,
     error::Result,
+    execution::TaskContext,
     physical_expr::EquivalenceProperties,
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
@@ -14,12 +15,17 @@ use datafusion::{
     },
     prelude::Expr,
 };
+use datafusion_proto::{physical_plan::PhysicalExtensionCodec, protobuf::proto_error};
 use futures::stream;
+use prost::Message;
 use std::{any::Any, fmt::Formatter, sync::Arc};
 use tonic::async_trait;
 use url::Url;
 
-use crate::{DistributedPlan, ExecutionTask, PartitionIsolatorExec, TaskEstimation, TaskEstimator};
+use crate::{
+    DistributedPlan, DistributedTaskContext, ExecutionTask, PartitionIsolatorExec, TaskEstimation,
+    TaskEstimator,
+};
 
 // Table function that creates a `URLEmitterExec` for testing task routing.
 // Called in SQL as: `SELECT * FROM test_url_emitter()`.
@@ -59,17 +65,18 @@ impl TableProvider for URLEmitterTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(URLEmitterExec::new(1)))
+        Ok(Arc::new(URLEmitterExec::new(5, 5)))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct URLEmitterExec {
     properties: Arc<PlanProperties>,
+    task_count: usize,
 }
 
 impl URLEmitterExec {
-    pub fn new(partitions: usize) -> Self {
+    pub fn new(partitions: usize, task_count: usize) -> Self {
         Self {
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(url_emitter_schema()),
@@ -77,13 +84,19 @@ impl URLEmitterExec {
                 datafusion::physical_plan::execution_plan::EmissionType::Incremental,
                 datafusion::physical_plan::execution_plan::Boundedness::Bounded,
             )),
+            task_count,
         }
     }
 }
 
 impl DisplayAs for URLEmitterExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "URLEmitterExec: [   TODO   ]")
+        write!(
+            f,
+            "URLEmitterExec: tasks={} partitions={}",
+            self.task_count,
+            self.properties.partitioning.partition_count()
+        )
     }
 }
 
@@ -114,11 +127,20 @@ impl ExecutionPlan for URLEmitterExec {
     fn execute(
         &self,
         _partition: usize,
-        _context: Arc<datafusion::execution::TaskContext>,
+        context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        let distributed_ctx = DistributedTaskContext::from_ctx(&context);
+        let batch = RecordBatch::try_new(
+            url_emitter_schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
+                Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
+                Arc::new(StringArray::from(vec!["example_url"])),
+            ],
+        )?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             url_emitter_schema(),
-            stream::iter(vec![Ok(RecordBatch::new_empty(url_emitter_schema()))]),
+            stream::iter(vec![Ok(batch)]),
         )))
     }
 
@@ -151,9 +173,8 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         _cfg: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Option<TaskEstimation>> {
-        if plan.as_any().downcast_ref::<URLEmitterExec>().is_some() {
-            // TODO
-            Ok(Some(TaskEstimation::desired(1)))
+        if let Some(exec) = plan.as_any().downcast_ref::<URLEmitterExec>() {
+            Ok(Some(TaskEstimation::desired(exec.task_count)))
         } else {
             Ok(None)
         }
@@ -187,4 +208,53 @@ fn custom_routing_fn(tasks: Vec<ExecutionTask>, mut urls: Vec<Url>) -> Vec<Url> 
     urls.reverse();
     urls.truncate(tasks.len());
     urls
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct URLEmitterExecProto {
+    #[prost(uint64, tag = "1")]
+    partitions: u64,
+    #[prost(uint64, tag = "2")]
+    task_count: u64,
+}
+
+#[derive(Debug)]
+pub struct URLEmitterExtensionCodec;
+
+impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        _ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !inputs.is_empty() {
+            return internal_err!(
+                "URLEmitterExtensionCodec should have no children, got {}",
+                inputs.len()
+            );
+        }
+        let proto = URLEmitterExecProto::decode(buf)
+            .map_err(|e| proto_error(format!("Failed to decode URLEmitterExecProto: {e}")))?;
+
+        Ok(Arc::new(URLEmitterExec::new(
+            proto.partitions as usize,
+            proto.task_count as usize,
+        )))
+    }
+
+    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+        let Some(exec) = node.as_any().downcast_ref::<URLEmitterExec>() else {
+            return internal_err!("Expected URLEmitterExec, but was {}", node.name());
+        };
+
+        let proto = URLEmitterExecProto {
+            partitions: exec.properties.partitioning.partition_count() as u64,
+            task_count: exec.task_count as u64,
+        };
+
+        proto
+            .encode(buf)
+            .map_err(|e| proto_error(format!("Failed to encode URLEmitterExec: {e}")))
+    }
 }
