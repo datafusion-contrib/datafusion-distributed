@@ -463,10 +463,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut work_unit_feed_declarations = vec![];
         gather_work_unit_feed_declarations(
             self.plan,
-            DistributedTaskContext {
-                task_index: task_i,
-                task_count: self.task_count,
-            },
+            DistributedTaskContext::new(task_i, self.task_count),
             d_cfg,
             &mut work_unit_feed_declarations,
         );
@@ -482,6 +479,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
+                task_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();
@@ -643,10 +641,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut futures = vec![];
         gather_work_unit_feed_tasks(
             self.plan,
-            DistributedTaskContext {
-                task_index: task_i,
-                task_count: self.task_count,
-            },
+            DistributedTaskContext::new(task_i, self.task_count),
             &ctx,
             d_cfg,
             &tx,

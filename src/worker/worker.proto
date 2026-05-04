@@ -67,6 +67,8 @@ message SetPlanRequest {
   //
   // If no WorkUnitFeedExec nodes are present in the plan, this should be empty.
   repeated WorkUnitFeedDeclaration work_unit_feed_declarations = 4;
+
+  string task_url = 5;
 }
 
 message WorkUnit {

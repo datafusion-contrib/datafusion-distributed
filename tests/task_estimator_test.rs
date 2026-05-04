@@ -34,15 +34,15 @@ mod tests {
           │   PartitionIsolatorExec: tasks=5 partitions=5
           │     URLEmitterExec: tasks=5 partitions=5
           └──────────────────────────────────────────────────
-        +------------+------------+-------------+
-        | task_count | task_index | worker_url  |
-        +------------+------------+-------------+
-        | 5          | 0          | example_url |
-        | 5          | 1          | example_url |
-        | 5          | 2          | example_url |
-        | 5          | 3          | example_url |
-        | 5          | 4          | example_url |
-        +------------+------------+-------------+
+        +------------+------------+-------------------------+
+        | task_count | task_index | worker_url              |
+        +------------+------------+-------------------------+
+        | 5          | 0          | http://localhost:65253/ |
+        | 5          | 1          | http://localhost:65254/ |
+        | 5          | 2          | http://localhost:65255/ |
+        | 5          | 3          | http://localhost:65256/ |
+        | 5          | 4          | http://localhost:65252/ |
+        +------------+------------+-------------------------+
         ",
         );
         Ok(())

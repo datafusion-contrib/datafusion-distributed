@@ -210,10 +210,10 @@ impl PhysicalExtensionCodec for DistributedCodec {
                                 .map(|child_ctx| {
                                     (
                                         child_ctx.child_idx as usize,
-                                        DistributedTaskContext {
-                                            task_index: child_ctx.task_idx as usize,
-                                            task_count: child_ctx.task_count as usize,
-                                        },
+                                        DistributedTaskContext::new(
+                                            child_ctx.task_idx as usize,
+                                            child_ctx.task_count as usize,
+                                        ),
                                     )
                                 })
                                 .collect_vec()

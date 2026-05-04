@@ -92,16 +92,27 @@ pub struct ExecutionTask {
 pub struct DistributedTaskContext {
     pub task_index: usize,
     pub task_count: usize,
+    pub task_url: Option<Url>,
 }
 
 impl DistributedTaskContext {
+    pub fn new(task_index: usize, task_count: usize) -> Self {
+        Self {
+            task_index,
+            task_count,
+            task_url: None,
+        }
+    }
+
+    pub fn with_url(mut self, task_url: Url) -> Self {
+        self.task_url = Some(task_url);
+        self
+    }
+
     pub fn from_ctx(ctx: &Arc<TaskContext>) -> Arc<Self> {
         ctx.session_config()
             .get_extension::<Self>()
-            .unwrap_or(Arc::new(DistributedTaskContext {
-                task_index: 0,
-                task_count: 1,
-            }))
+            .unwrap_or(Arc::new(DistributedTaskContext::new(0, 1)))
     }
 }
 

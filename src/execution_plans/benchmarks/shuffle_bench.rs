@@ -234,10 +234,7 @@ impl ShuffleFixture {
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
-                DistributedTaskContext {
-                    task_index,
-                    task_count: self.bench.consumer_tasks,
-                },
+                DistributedTaskContext::new(task_index, self.bench.consumer_tasks),
             ));
 
             for partition in 0..shuffle.properties.partitioning.partition_count() {

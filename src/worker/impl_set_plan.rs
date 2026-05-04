@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicUsize;
 use tokio::sync::oneshot;
 use tonic::Status;
 use tonic::metadata::MetadataMap;
+use url::Url;
 
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
@@ -85,10 +86,15 @@ impl Worker {
 
             let mut cfg = SessionConfig::default()
                 .with_extension(Arc::new(remote_work_unit_feed_registry.receivers))
-                .with_extension(Arc::new(DistributedTaskContext {
-                    task_index: key.task_number as usize,
-                    task_count: request.task_count as usize,
-                }));
+                .with_extension(Arc::new(
+                    DistributedTaskContext::new(
+                        key.task_number as usize,
+                        request.task_count as usize,
+                    )
+                    .with_url(
+                        Url::parse(&request.task_url).expect("coordinator sent invalid task_url"),
+                    ),
+                ));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
 
             let shuffle_batch_size =

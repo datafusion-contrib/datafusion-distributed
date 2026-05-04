@@ -441,10 +441,7 @@ fn split_children(
         for task_i in 0..child_task_count {
             result[task_idx].push((
                 child_idx,
-                DistributedTaskContext {
-                    task_index: task_i,
-                    task_count: child_task_count,
-                },
+                DistributedTaskContext::new(task_i, child_task_count),
             ));
             current_task_count += 1;
 
@@ -545,10 +542,7 @@ mod tests {
     }
 
     fn ctx(task_index: usize, task_count: usize) -> DistributedTaskContext {
-        DistributedTaskContext {
-            task_index,
-            task_count,
-        }
+        DistributedTaskContext::new(task_index, task_count)
     }
 
     fn empty_partitions(partitions: usize) -> Arc<dyn ExecutionPlan> {
