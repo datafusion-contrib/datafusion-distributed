@@ -3,7 +3,9 @@ use crate::{LocalExchangeSplitExec, NetworkShuffleExec};
 use datafusion::common::Result;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
+use datafusion::physical_plan::{
+    Distribution, ExecutionPlan, ExecutionPlanProperties, Partitioning,
+};
 use std::sync::Arc;
 
 /// Inserts [LocalExchangeSplitExec] above narrow post-shuffle consumers.
@@ -135,44 +137,52 @@ pub(crate) fn insert_local_exchange_split_execs(
     rewrite_plan(plan, d_cfg, None)
 }
 
-/// How a downstream consumer asks its input path to expose more local partitions.
-#[derive(Clone, Copy)]
-enum SplitPolicy {
-    /// Choose a target from the shuffle ownership and per-task target.
-    Infer,
-    /// Require an exact target, used to keep partitioned join sides aligned.
-    Fixed(usize),
-}
-
+/// Local exchange insertion rule.
+///
+/// Guidelines:
+/// - only [AggregateExec] with [AggregateMode::FinalPartitioned] and [HashJoinExec] with
+///   [PartitionMode::Partitioned] can request a split
+/// - the split is inserted only above the first shuffle/split source
+/// - rebuilt children must satisfy DataFusion's required input distribution
+/// - partitioned joins must expose the same partition count on both sides
+/// - fetch/limit/top-k nodes block insertion because their cap is partition-local
 fn rewrite_plan(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    requirement: Option<SplitPolicy>,
+    required_partition_count: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if let Some(join) = plan.as_any().downcast_ref::<HashJoinExec>()
-        && d_cfg.local_exchange_split_mode_allows_partitioned_join()
         && join.partition_mode() == &PartitionMode::Partitioned
     {
-        return rewrite_partitioned_join(plan, d_cfg, requirement);
+        if d_cfg.local_exchange_split_mode_allows_partitioned_join() {
+            return rewrite_partitioned_join(plan, d_cfg, required_partition_count);
+        }
+
+        // Even when this mode does not insert splits above joins, partitioned joins are
+        // alignment boundaries. Do not let a nested consumer independently widen one side.
+        return rewrite_children_preserving_current_counts(plan, d_cfg);
     }
 
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
         && aggregate.mode() == &AggregateMode::FinalPartitioned
-        && (d_cfg.local_exchange_split_mode_allows_final_agg() || requirement.is_some())
+        && d_cfg.local_exchange_split_mode_allows_final_agg()
     {
-        return rewrite_final_partitioned_aggregate(plan, d_cfg, requirement);
+        return rewrite_final_partitioned_aggregate(plan, d_cfg, required_partition_count);
     }
 
-    // A shuffle/split boundary starts an independent producer stage. Consumer-side partition
-    // requirements must not leak through it, even if that shuffle is not itself split-eligible.
-    let child_requirement = if is_requirement_boundary(&plan) {
-        None
+    // A shuffle/split boundary starts an independent producer stage. A parent partition-count
+    // request must not leak through it, even if that shuffle is not itself split-eligible.
+    let plan = if plan.as_any().is::<NetworkShuffleExec>()
+        || plan.as_any().is::<LocalExchangeSplitExec>()
+    {
+        rewrite_children_propagating_required_count(plan, d_cfg, None)?
     } else {
-        requirement
+        rewrite_children_propagating_required_count(plan, d_cfg, required_partition_count)?
     };
-    let plan = rewrite_children(plan, d_cfg, child_requirement)?;
-    if let Some(target) = requirement
-        && let Some(rewritten) = try_insert_split_after_shuffle(Arc::clone(&plan), d_cfg, target)?
+    if let Some(target) = required_partition_count
+        && let Some(rewritten) =
+            try_insert_split_on_unary_path(Arc::clone(&plan), d_cfg, Some(target))?
+        && rewritten.output_partitioning().partition_count() == target
     {
         return Ok(rewritten);
     }
@@ -180,14 +190,10 @@ fn rewrite_plan(
     Ok(plan)
 }
 
-fn is_requirement_boundary(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    plan.as_any().is::<NetworkShuffleExec>() || plan.as_any().is::<LocalExchangeSplitExec>()
-}
-
-fn rewrite_children(
+fn rewrite_children_propagating_required_count(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    requirement: Option<SplitPolicy>,
+    required_partition_count: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let children = plan.children();
     if children.is_empty() {
@@ -199,16 +205,38 @@ fn rewrite_children(
     let new_children = children
         .into_iter()
         .map(|child| {
-            // Keep the requirement on the partition-count-preserving path. This covers unary
-            // transparent nodes and the streamed side of collect-left joins.
-            let child_req = if requirement.is_some()
-                && child.output_partitioning().partition_count() == plan_output_partition_count
+            let child_partition_count = child.output_partitioning().partition_count();
+            let child_required_partition_count = if required_partition_count.is_some()
+                && child_partition_count == plan_output_partition_count
             {
-                requirement
+                required_partition_count
             } else {
                 None
             };
-            rewrite_plan(Arc::clone(child), d_cfg, child_req)
+            rewrite_plan(Arc::clone(child), d_cfg, child_required_partition_count)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    plan.with_new_children(new_children)
+}
+
+fn rewrite_children_preserving_current_counts(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    if children.is_empty() {
+        return Ok(plan);
+    }
+
+    let new_children = children
+        .into_iter()
+        .map(|child| {
+            rewrite_plan(
+                Arc::clone(child),
+                d_cfg,
+                Some(child.output_partitioning().partition_count()),
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -218,143 +246,132 @@ fn rewrite_children(
 fn rewrite_final_partitioned_aggregate(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    requirement: Option<SplitPolicy>,
+    required_partition_count: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(rewritten) =
+        try_rewrite_final_partitioned_aggregate(Arc::clone(&plan), d_cfg, required_partition_count)?
+    {
+        return Ok(rewritten);
+    }
+
+    // If a parent required this aggregate to keep a specific count, do not let nested consumers
+    // widen independently after this aggregate cannot use a split.
+    if required_partition_count.is_some() {
+        rewrite_children_preserving_current_counts(plan, d_cfg)
+    } else {
+        rewrite_children_propagating_required_count(plan, d_cfg, None)
+    }
+}
+
+fn try_rewrite_final_partitioned_aggregate(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+    required_partition_count: Option<usize>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     let children = plan.children();
     let [input] = children.as_slice() else {
-        return Ok(plan);
+        return Ok(Some(plan));
     };
-    // Final aggregates can split one input path independently.
-    let child_requirement = requirement.or(Some(SplitPolicy::Infer));
-    Arc::clone(&plan).with_new_children(vec![rewrite_plan(
+
+    let Some(required_distribution) = hash_requirement(&plan, 0) else {
+        return Ok(None);
+    };
+
+    let Some(rewritten_input) = try_split_child_and_satisfy_distribution(
         Arc::clone(input),
         d_cfg,
-        child_requirement,
-    )?])
+        &required_distribution,
+        required_partition_count,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let rebuilt = Arc::clone(&plan).with_new_children(vec![rewritten_input])?;
+    Ok(partition_count_matches(&rebuilt, required_partition_count).then_some(rebuilt))
 }
 
 fn rewrite_partitioned_join(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    requirement: Option<SplitPolicy>,
+    required_partition_count: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(rewritten) =
+        try_rewrite_partitioned_join(Arc::clone(&plan), d_cfg, required_partition_count)?
+    {
+        Ok(rewritten)
+    } else {
+        rewrite_children_preserving_current_counts(plan, d_cfg)
+    }
+}
+
+fn try_rewrite_partitioned_join(
+    plan: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+    required_partition_count: Option<usize>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     let children = plan.children();
     let [left, right] = children.as_slice() else {
-        return Ok(plan);
+        return Ok(Some(plan));
     };
     let (left, right) = (Arc::clone(left), Arc::clone(right));
 
-    // Partitioned joins must expose the same partition count on both sides.
-    let Some(left_input) = find_split_input(Arc::clone(&left), d_cfg)? else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
+    let Some(left_distribution) = hash_requirement(&plan, 0) else {
+        return Ok(None);
     };
-    let Some(right_input) = find_split_input(Arc::clone(&right), d_cfg)? else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
-    };
-
-    let required_count = match requirement {
-        Some(SplitPolicy::Fixed(n)) => Some(n),
-        _ => None,
-    };
-    let Some(target_partition_count) = partitioned_join_target_partition_count(
-        &left_input,
-        &right_input,
-        d_cfg.local_exchange_split_target_partitions_per_task,
-        required_count,
-    ) else {
-        return rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg);
+    let Some(right_distribution) = hash_requirement(&plan, 1) else {
+        return Ok(None);
     };
 
-    let fixed = Some(SplitPolicy::Fixed(target_partition_count));
-    let rewritten = Arc::clone(&plan).with_new_children(vec![
-        rewrite_plan(Arc::clone(&left), d_cfg, fixed)?,
-        rewrite_plan(Arc::clone(&right), d_cfg, fixed)?,
-    ])?;
-
-    if has_hash_partition_count(&rewritten, target_partition_count) {
-        Ok(rewritten)
-    } else {
-        // Some node on a join input did not preserve the widened hash partitioning.
-        rewrite_partitioned_join_children_preserving_output_counts(plan, d_cfg)
-    }
-}
-
-fn rewrite_partitioned_join_children_preserving_output_counts(
-    plan: Arc<dyn ExecutionPlan>,
-    d_cfg: &DistributedConfig,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let children = plan.children();
-    let [left, right] = children.as_slice() else {
-        return Ok(plan);
-    };
-    Arc::clone(&plan).with_new_children(vec![
-        rewrite_plan(
-            Arc::clone(left),
-            d_cfg,
-            Some(SplitPolicy::Fixed(
-                left.output_partitioning().partition_count(),
-            )),
-        )?,
-        rewrite_plan(
-            Arc::clone(right),
-            d_cfg,
-            Some(SplitPolicy::Fixed(
-                right.output_partitioning().partition_count(),
-            )),
-        )?,
-    ])
-}
-
-fn partitioned_join_target_partition_count(
-    left: &SplitInput,
-    right: &SplitInput,
-    target_per_task: usize,
-    required_output_partition_count: Option<usize>,
-) -> Option<usize> {
-    let target = match required_output_partition_count {
+    // Joins must pick one count before rewriting either side; changing one side independently can
+    // make the join partitioning invalid.
+    let target_partition_count = match required_partition_count {
         Some(target) => target,
         None => {
-            if left.base_partition_count != right.base_partition_count
-                || left.owned_partition_count == 0
-                || right.owned_partition_count == 0
-                || target_per_task == 0
-            {
-                return None;
-            }
-
-            let common_multiple = lcm(left.owned_partition_count, right.owned_partition_count)?;
-            let minimum_target = target_per_task
-                .max(left.output_partition_count)
-                .max(right.output_partition_count);
-            minimum_target
-                .div_ceil(common_multiple)
-                .checked_mul(common_multiple)?
+            let Some(left_input) = SplitInput::find_on_unary_path(Arc::clone(&left), d_cfg)? else {
+                return Ok(None);
+            };
+            let Some(right_input) = SplitInput::find_on_unary_path(Arc::clone(&right), d_cfg)?
+            else {
+                return Ok(None);
+            };
+            let Some(target) = left_input.aligned_target_partition_count(
+                &right_input,
+                d_cfg.local_exchange_split_target_partitions_per_task,
+            ) else {
+                return Ok(None);
+            };
+            target
         }
     };
 
-    if !left.can_produce(target) || !right.can_produce(target) {
-        return None;
+    let Some(rewritten_left) = try_split_child_and_satisfy_distribution(
+        Arc::clone(&left),
+        d_cfg,
+        &left_distribution,
+        Some(target_partition_count),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(rewritten_right) = try_split_child_and_satisfy_distribution(
+        Arc::clone(&right),
+        d_cfg,
+        &right_distribution,
+        Some(target_partition_count),
+    )?
+    else {
+        return Ok(None);
+    };
+
+    if rewritten_left.output_partitioning().partition_count() != target_partition_count
+        || rewritten_right.output_partitioning().partition_count() != target_partition_count
+    {
+        return Ok(None);
     }
 
-    if target == left.output_partition_count && target == right.output_partition_count {
-        return Some(target);
-    }
-
-    // Widening both join sides is only safe when they refine the same upstream hash.
-    (left.base_partition_count == right.base_partition_count).then_some(target)
-}
-
-fn lcm(lhs: usize, rhs: usize) -> Option<usize> {
-    fn gcd(mut lhs: usize, mut rhs: usize) -> usize {
-        while rhs != 0 {
-            let rem = lhs % rhs;
-            lhs = rhs;
-            rhs = rem;
-        }
-        lhs
-    }
-
-    lhs.checked_div(gcd(lhs, rhs))?.checked_mul(rhs)
+    let rewritten = Arc::clone(&plan).with_new_children(vec![rewritten_left, rewritten_right])?;
+    Ok(partition_count_matches(&rewritten, required_partition_count).then_some(rewritten))
 }
 
 /// The first shuffle-side source on a consumer input path.
@@ -373,6 +390,7 @@ struct SplitInput {
 }
 
 impl SplitInput {
+    /// Returns a shuffle/split boundary without recursively rewriting it.
     fn try_from_source(
         plan: Arc<dyn ExecutionPlan>,
         d_cfg: &DistributedConfig,
@@ -421,6 +439,24 @@ impl SplitInput {
         }))
     }
 
+    /// Finds the first shuffle/split source on a unary path.
+    fn find_on_unary_path(
+        plan: Arc<dyn ExecutionPlan>,
+        d_cfg: &DistributedConfig,
+    ) -> Result<Option<Self>> {
+        if let Some(input) = Self::try_from_source(Arc::clone(&plan), d_cfg)? {
+            return Ok(Some(input));
+        }
+
+        let children = plan.children();
+        let [child] = children.as_slice() else {
+            return Ok(None);
+        };
+
+        Self::find_on_unary_path(Arc::clone(child), d_cfg)
+    }
+
+    /// Returns whether this boundary can expose exactly `target_partition_count` outputs.
     fn can_produce(&self, target_partition_count: usize) -> bool {
         if self.output_partition_count == target_partition_count {
             return true;
@@ -435,6 +471,44 @@ impl SplitInput {
         target_partition_count > self.output_partition_count
     }
 
+    /// Picks the default widened count for an independently split consumer.
+    fn inferred_target_partition_count(&self, target_per_task: usize) -> Option<usize> {
+        if self.owned_partition_count == 0
+            || target_per_task == 0
+            || self.owned_partition_count >= target_per_task
+        {
+            return None;
+        }
+
+        Some(target_per_task.div_ceil(self.owned_partition_count) * self.owned_partition_count)
+    }
+
+    /// Picks the smallest shared count both join sides can produce.
+    fn aligned_target_partition_count(
+        &self,
+        other: &Self,
+        target_per_task: usize,
+    ) -> Option<usize> {
+        if self.base_partition_count != other.base_partition_count
+            || self.owned_partition_count == 0
+            || other.owned_partition_count == 0
+            || target_per_task == 0
+        {
+            return None;
+        }
+
+        let common_multiple = lcm(self.owned_partition_count, other.owned_partition_count)?;
+        let minimum_target = target_per_task
+            .max(self.output_partition_count)
+            .max(other.output_partition_count);
+        let target = minimum_target
+            .div_ceil(common_multiple)
+            .checked_mul(common_multiple)?;
+
+        (self.can_produce(target) && other.can_produce(target)).then_some(target)
+    }
+
+    /// Inserts the split, or returns the existing source if it already has the target count.
     fn insert(&self, target_partition_count: usize) -> Result<Arc<dyn ExecutionPlan>> {
         debug_assert!(
             self.can_produce(target_partition_count),
@@ -454,49 +528,72 @@ impl SplitInput {
     }
 }
 
-fn find_split_input(
-    plan: Arc<dyn ExecutionPlan>,
-    d_cfg: &DistributedConfig,
-) -> Result<Option<SplitInput>> {
-    if let Some(input) = SplitInput::try_from_source(Arc::clone(&plan), d_cfg)? {
-        return Ok(Some(input));
+/// Returns the hash distribution a child must satisfy, if the consumer benefits from it.
+fn hash_requirement(plan: &Arc<dyn ExecutionPlan>, child_idx: usize) -> Option<Distribution> {
+    if !plan
+        .benefits_from_input_partitioning()
+        .get(child_idx)
+        .copied()
+        .unwrap_or(false)
+    {
+        return None;
     }
 
-    let children = plan.children();
-    let [child] = children.as_slice() else {
+    match plan.required_input_distribution().get(child_idx)? {
+        requirement @ Distribution::HashPartitioned(_) => Some(requirement.clone()),
+        Distribution::SinglePartition | Distribution::UnspecifiedDistribution => None,
+    }
+}
+
+/// Inserts a split on a child path and validates the consumer distribution.
+fn try_split_child_and_satisfy_distribution(
+    child: Arc<dyn ExecutionPlan>,
+    d_cfg: &DistributedConfig,
+    required_distribution: &Distribution,
+    requested_target_count: Option<usize>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let Some(rewritten) = try_insert_split_on_unary_path(child, d_cfg, requested_target_count)?
+    else {
         return Ok(None);
     };
 
-    find_split_input(Arc::clone(child), d_cfg)
+    if !partition_count_matches(&rewritten, requested_target_count) {
+        return Ok(None);
+    }
+
+    Ok(rewritten
+        .output_partitioning()
+        .satisfaction(
+            required_distribution,
+            rewritten.equivalence_properties(),
+            false,
+        )
+        .is_satisfied()
+        .then_some(rewritten))
 }
 
-/// Inserts a split immediately after the first shuffle on a unary consumer input path.
-///
-/// Unary nodes are allowed only if the rebuilt path still advertises hash partitioning; otherwise
-/// the insertion is rejected.
-fn try_insert_split_after_shuffle(
+/// Walks a unary path, rewrites the producer stage at the boundary, and inserts a split.
+fn try_insert_split_on_unary_path(
     plan: Arc<dyn ExecutionPlan>,
     d_cfg: &DistributedConfig,
-    target: SplitPolicy,
+    requested_target_count: Option<usize>,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-    if let Some(input) = SplitInput::try_from_source(Arc::clone(&plan), d_cfg)? {
-        let target_count = match target {
-            SplitPolicy::Fixed(n) => n,
-            SplitPolicy::Infer => {
-                let Some(n) = default_target_partition_count_for_owned(
-                    input.owned_partition_count,
-                    d_cfg.local_exchange_split_target_partitions_per_task,
-                ) else {
-                    return Ok(None);
-                };
-                n
-            }
+    if plan.as_any().is::<NetworkShuffleExec>() || plan.as_any().is::<LocalExchangeSplitExec>() {
+        let plan = rewrite_children_propagating_required_count(plan, d_cfg, None)?;
+        let Some(input) = SplitInput::try_from_source(Arc::clone(&plan), d_cfg)? else {
+            return Ok(None);
+        };
+        let Some(target_count) = requested_target_count.or_else(|| {
+            input.inferred_target_partition_count(
+                d_cfg.local_exchange_split_target_partitions_per_task,
+            )
+        }) else {
+            return Ok(None);
         };
         if !input.can_produce(target_count) {
             return Ok(None);
         }
-        let rewritten = input.insert(target_count)?;
-        return Ok(has_hash_partition_count(&rewritten, target_count).then_some(rewritten));
+        return input.insert(target_count).map(Some);
     }
 
     let children = plan.children();
@@ -510,7 +607,8 @@ fn try_insert_split_after_shuffle(
         return Ok(None);
     }
 
-    let Some(rewritten_child) = try_insert_split_after_shuffle(Arc::clone(child), d_cfg, target)?
+    let Some(rewritten_child) =
+        try_insert_split_on_unary_path(Arc::clone(child), d_cfg, requested_target_count)?
     else {
         return Ok(None);
     };
@@ -519,45 +617,33 @@ fn try_insert_split_after_shuffle(
         return Ok(None);
     };
 
-    // `Infer` resolves its target at the split source; outer frames only need to preserve hash
-    // partitioning.
-    let partitioning_ok = match target {
-        SplitPolicy::Fixed(n) => has_hash_partition_count(&rebuilt, n),
-        SplitPolicy::Infer => matches!(rebuilt.output_partitioning(), Partitioning::Hash(_, _)),
-    };
-    if !partitioning_ok {
+    if !partition_count_matches(&rebuilt, requested_target_count) {
         return Ok(None);
     }
 
     Ok(Some(rebuilt))
 }
 
-fn default_target_partition_count_for_owned(
-    owned: usize,
-    target_partitions_per_task: usize,
-) -> Option<usize> {
-    if owned == 0 || target_partitions_per_task == 0 || owned >= target_partitions_per_task {
-        return None;
-    }
-
-    Some(target_partitions_per_task.div_ceil(owned) * owned)
+fn partition_count_matches(plan: &Arc<dyn ExecutionPlan>, required: Option<usize>) -> bool {
+    required.is_none_or(|target| plan.output_partitioning().partition_count() == target)
 }
 
-fn has_hash_partition_count(plan: &Arc<dyn ExecutionPlan>, partition_count: usize) -> bool {
-    let Partitioning::Hash(_, output_partition_count) = plan.output_partitioning() else {
-        return false;
-    };
+fn lcm(lhs: usize, rhs: usize) -> Option<usize> {
+    fn gcd(mut lhs: usize, mut rhs: usize) -> usize {
+        while rhs != 0 {
+            let rem = lhs % rhs;
+            lhs = rhs;
+            rhs = rem;
+        }
+        lhs
+    }
 
-    *output_partition_count == partition_count
+    lhs.checked_div(gcd(lhs, rhs))?.checked_mul(rhs)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SplitInput, SplitPolicy, default_target_partition_count_for_owned,
-        insert_local_exchange_split_execs, partitioned_join_target_partition_count,
-        try_insert_split_after_shuffle,
-    };
+    use super::{SplitInput, insert_local_exchange_split_execs, try_insert_split_on_unary_path};
     use crate::assert_snapshot;
     use crate::distributed_planner::insert_network_boundaries_for_test;
     use crate::test_utils::plans::{base_session_builder, context_with_query};
@@ -729,57 +815,44 @@ mod tests {
     fn join_target_uses_target_when_divisible() {
         let left = split_candidate(1, 1, true);
         let right = split_candidate(2, 2, true);
-        assert_eq!(
-            partitioned_join_target_partition_count(&left, &right, 8, None),
-            Some(8)
-        );
+        assert_eq!(left.aligned_target_partition_count(&right, 8), Some(8));
     }
 
     #[test]
     fn join_target_uses_common_multiple() {
         let left = split_candidate(2, 2, true);
         let right = split_candidate(3, 3, true);
-        assert_eq!(
-            partitioned_join_target_partition_count(&left, &right, 8, None),
-            Some(12)
-        );
+        assert_eq!(left.aligned_target_partition_count(&right, 8), Some(12));
     }
 
     #[test]
     fn join_target_rejects_existing_wide_side_that_cannot_be_matched() {
         let left = split_candidate(5, 5, true);
         let right = split_candidate(3, 12, false);
-        assert_eq!(
-            partitioned_join_target_partition_count(&left, &right, 8, None),
-            None
-        );
+        assert_eq!(left.aligned_target_partition_count(&right, 8), None);
     }
 
     #[test]
     fn join_target_matches_existing_split_side() {
         let left = split_candidate(1, 1, true);
         let right = split_candidate(1, 8, false);
-        assert_eq!(
-            partitioned_join_target_partition_count(&left, &right, 8, None),
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn join_target_accepts_required_matching_existing_count() {
-        let left = split_candidate(1, 8, false);
-        let right = split_candidate(1, 8, false);
-        assert_eq!(
-            partitioned_join_target_partition_count(&left, &right, 8, Some(8)),
-            Some(8)
-        );
+        assert_eq!(left.aligned_target_partition_count(&right, 8), Some(8));
     }
 
     #[test]
     fn target_partition_count_uses_next_multiple_of_owned_count() {
-        assert_eq!(default_target_partition_count_for_owned(2, 8), Some(8));
-        assert_eq!(default_target_partition_count_for_owned(3, 8), Some(9));
-        assert_eq!(default_target_partition_count_for_owned(8, 8), None);
+        assert_eq!(
+            split_candidate(2, 2, true).inferred_target_partition_count(8),
+            Some(8)
+        );
+        assert_eq!(
+            split_candidate(3, 3, true).inferred_target_partition_count(8),
+            Some(9)
+        );
+        assert_eq!(
+            split_candidate(8, 8, true).inferred_target_partition_count(8),
+            None
+        );
     }
 
     #[test]
@@ -789,7 +862,7 @@ mod tests {
             local_exchange_split_max_owned_partitions: 2,
             ..DistributedConfig::default()
         };
-        let rewritten = try_insert_split_after_shuffle(limit, &d_cfg, SplitPolicy::Fixed(4))?;
+        let rewritten = try_insert_split_on_unary_path(limit, &d_cfg, Some(4))?;
 
         assert!(rewritten.is_none());
         Ok(())
