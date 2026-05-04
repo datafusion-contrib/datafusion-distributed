@@ -91,6 +91,14 @@ impl NetworkCoalesceExec {
         Ok(Transformed::no(plan))
     }
 
+    /// Does nothing, but it's here for explicitly stating that this network boundary does support
+    /// input stage sampling.
+    pub(crate) fn inject_sampler(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        Ok(Transformed::no(plan))
+    }
+
     pub(crate) fn from_stage(input_stage: LocalStage, consumer_tasks: usize) -> Self {
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
@@ -145,7 +153,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
         &self.input_stage
     }
 
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
             p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
@@ -221,10 +229,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
             );
         }
 
-        let partitions_per_task = self
-            .properties()
-            .partitioning
-            .partition_count()
+        let out_partitions = self.properties().partitioning.partition_count();
+        let partitions_per_task = out_partitions
             .checked_div(
                 self.input_stage
                     .task_count()
@@ -270,6 +276,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
             remote_stage,
             0..partitions_per_task,
             target_task,
+            out_partitions,
+            task_context.task_count,
             &context,
         )?;
 

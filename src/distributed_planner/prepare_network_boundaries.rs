@@ -77,5 +77,5 @@ fn prepare(
         tasks: local_stage.tasks,
     }));
     *num += 1;
-    nb
+    Ok(nb? as Arc<dyn ExecutionPlan>)
 }

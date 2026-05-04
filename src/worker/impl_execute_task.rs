@@ -53,7 +53,10 @@ pub(crate) async fn execute_local_task(
         .map_err(|e| exec_datafusion_err!("Worker::execute_task timed-out while waiting for the plan to be set by the coordinator. ({e})"))?
         .map_err(DataFusionError::Shared)?;
 
-    let plan = task_data.plan;
+    let plan = task_data.scaled_up_plan(
+        body.consumer_partitions as usize,
+        body.consumer_task_count as usize,
+    )?;
     let task_ctx = task_data.task_ctx;
     let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())?;
 

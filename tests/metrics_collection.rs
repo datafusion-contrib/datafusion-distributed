@@ -6,6 +6,7 @@ mod tests {
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
+    use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
@@ -252,6 +253,37 @@ mod tests {
 
         let work_units_sent = node_metrics::<RowGeneratorExec>(&plan, "work_units_sent", 0);
         assert_eq!(work_units_sent, 6);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metrics_collection_dynamic() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_dynamic_task_count(true)?;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (s_physical, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical, DistributedMetricsFormat::Aggregated).await;
+        println!("{}", display_plan_ascii(s_physical.as_ref(), true));
+        println!("{}", display_plan_ascii(d_physical.as_ref(), true));
+
+        assert_metrics_equal::<DataSourceExec>(
+            ["output_rows", "output_bytes"],
+            &s_physical,
+            &d_physical,
+            0,
+        );
+
+        assert_metrics_equal::<SortPreservingMergeExec>(
+            ["output_rows", "output_bytes"],
+            &s_physical,
+            &d_physical,
+            0,
+        );
 
         Ok(())
     }

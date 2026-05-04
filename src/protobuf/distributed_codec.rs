@@ -1,7 +1,8 @@
 use super::get_distributed_user_codecs;
-use crate::common::{deserialize_uuid, serialize_uuid};
+use crate::common::{deserialize_uuid, require_one_child, serialize_uuid};
 use crate::execution_plans::{
     BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    SamplerExec,
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
@@ -238,6 +239,9 @@ impl PhysicalExtensionCodec for DistributedCodec {
                         .collect(),
                 }))
             }
+            DistributedExecNode::Sampler(SamplerExecProto {}) => {
+                Ok(Arc::new(SamplerExec::new(require_one_child(inputs)?)))
+            }
         }
     }
 
@@ -357,6 +361,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
             };
 
             wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(_node) = node.as_any().downcast_ref::<SamplerExec>() {
+            let inner = SamplerExecProto {};
+
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::Sampler(inner)),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
         } else {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
@@ -387,7 +399,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -405,6 +417,8 @@ pub enum DistributedExecNode {
     NetworkBroadcast(NetworkBroadcastExecProto),
     #[prost(message, tag = "6")]
     Broadcast(BroadcastExecProto),
+    #[prost(message, tag = "7")]
+    Sampler(SamplerExecProto),
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -512,6 +526,9 @@ pub struct BroadcastExecProto {
     #[prost(uint64, tag = "1")]
     pub consumer_task_count: u64,
 }
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SamplerExecProto {}
 
 fn new_network_broadcast_exec(
     partitioning: Partitioning,

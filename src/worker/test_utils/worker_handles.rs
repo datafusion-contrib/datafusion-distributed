@@ -212,7 +212,8 @@ pub async fn register_plan_on_worker(
     swmr_task_data
         .write(Ok(TaskData {
             task_ctx,
-            plan,
+            base_plan: plan,
+            scaled_up_plan: Default::default(),
             num_partitions_remaining: Arc::new(AtomicUsize::new(partition_count)),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
         }))

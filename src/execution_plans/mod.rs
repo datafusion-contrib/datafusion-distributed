@@ -6,6 +6,7 @@ mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
 mod partition_isolator;
+mod sampler;
 
 #[cfg(any(test, feature = "integration"))]
 pub mod benchmarks;
@@ -17,3 +18,4 @@ pub use network_broadcast::NetworkBroadcastExec;
 pub use network_coalesce::NetworkCoalesceExec;
 pub use network_shuffle::NetworkShuffleExec;
 pub use partition_isolator::PartitionIsolatorExec;
+pub use sampler::SamplerExec;

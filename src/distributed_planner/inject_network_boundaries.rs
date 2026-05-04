@@ -2,9 +2,10 @@ use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::stage::LocalStage;
 use crate::{
-    BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
+    BroadcastExec, DistributedConfig, NetworkBoundary, NetworkBoundaryExt, NetworkBroadcastExec,
     NetworkCoalesceExec, NetworkShuffleExec, TaskCountAnnotation, TaskEstimator,
 };
+use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, plan_err};
 use datafusion::config::ConfigOptions;
@@ -134,14 +135,16 @@ use uuid::Uuid;
 /// boundary injection, so the head stage is closed by running one final Phase 2 pass over
 /// the whole plan. This guarantees every node (including head-stage nodes that never sat
 /// directly above a boundary) has a task count recorded.
-pub(super) async fn inject_network_boundaries(
+pub(crate) async fn inject_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
+    task_count_strategy: impl NetworkBoundaryBuilder + Send + Sync,
     cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let ctx = Context {
         parent: None,
         cfg,
         d_cfg: DistributedConfig::from_config_options(cfg)?,
+        stage_builder: &task_count_strategy,
         task_counts: &Mutex::new(HashMap::new()),
         query_id: Uuid::new_v4(),
         stage_id: &AtomicUsize::new(1),
@@ -155,6 +158,7 @@ struct Context<'a> {
     parent: Option<&'a Arc<dyn ExecutionPlan>>,
     cfg: &'a ConfigOptions,
     d_cfg: &'a DistributedConfig,
+    stage_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
     query_id: Uuid,
     stage_id: &'a AtomicUsize,
@@ -169,6 +173,7 @@ impl<'a> Context<'a> {
             task_counts: self.task_counts,
             query_id: self.query_id,
             stage_id: self.stage_id,
+            stage_builder: self.stage_builder,
         }
     }
 
@@ -219,6 +224,13 @@ impl<'a> Context<'a> {
 
     fn fetch_add_stage_id(&self) -> usize {
         self.stage_id.fetch_add(1, Ordering::Acquire)
+    }
+
+    async fn apply_stage_builder(
+        &self,
+        nb: Arc<dyn NetworkBoundary>,
+    ) -> Result<NetworkBoundaryBuilderResult> {
+        self.stage_builder.build(nb, self.cfg).await
     }
 }
 
@@ -301,16 +313,14 @@ async fn _inject_network_boundaries(
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count(&plan, task_count, &ctx)?;
 
-            let f = calculate_scale_factor(&plan, &ctx);
-            let input_stage = LocalStage {
+            let plan = NetworkShuffleExec::from_stage(LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
                 plan,
                 tasks: task_count.as_usize(),
-            };
-            let plan = Arc::new(NetworkShuffleExec::from_stage(input_stage));
-            let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
-            return Ok(ctx.with_task_count(plan, task_count));
+            });
+            let result = ctx.apply_stage_builder(Arc::new(plan)).await?;
+            return Ok(ctx.with_task_count(result.network_boundary, result.task_count_above));
         }
     } else if let Some(parent) = ctx.parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
@@ -327,31 +337,37 @@ async fn _inject_network_boundaries(
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count(&plan, task_count, &ctx)?;
 
-            let f = calculate_scale_factor(&plan, &ctx);
-            let input_stage = LocalStage {
+            let plan = NetworkBroadcastExec::from_stage(LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
                 plan,
                 tasks: task_count.as_usize(),
-            };
-            let plan = Arc::new(NetworkBroadcastExec::from_stage(input_stage));
-            let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
-            Ok(ctx.with_task_count(plan, task_count))
+            });
+            let result = ctx.apply_stage_builder(Arc::new(plan)).await?;
+            return Ok(ctx.with_task_count(result.network_boundary, result.task_count_above));
         } else {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count(&plan, task_count, &ctx)?;
-            let input_stage = LocalStage {
-                query_id: ctx.query_id,
-                num: ctx.fetch_add_stage_id(),
-                plan,
-                tasks: task_count.as_usize(),
-            };
-            let plan = Arc::new(NetworkCoalesceExec::from_stage(input_stage, 1));
+            let plan = NetworkCoalesceExec::from_stage(
+                LocalStage {
+                    query_id: ctx.query_id,
+                    num: ctx.fetch_add_stage_id(),
+                    plan,
+                    tasks: task_count.as_usize(),
+                },
+                1,
+            );
+            let result = ctx.apply_stage_builder(Arc::new(plan)).await?;
+            if !matches!(result.task_count_above, Maximum(1)) {
+                return plan_err!(
+                    "A NetworkCoalesceExec must return exactly a Maximum(1) annotation above"
+                );
+            }
             // The parent that triggered this branch is a `CoalescePartitionsExec` or
             // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
             // stage above this boundary must run in exactly one task.
-            Ok(ctx.with_task_count(plan, Maximum(1)))
+            Ok(ctx.with_task_count(result.network_boundary, Maximum(1)))
         };
     }
 
@@ -471,6 +487,37 @@ fn propagate_task_count(
     }
 }
 
+pub(crate) struct NetworkBoundaryBuilderResult {
+    pub(crate) task_count_above: TaskCountAnnotation,
+    pub(crate) network_boundary: Arc<dyn NetworkBoundary>,
+}
+
+#[async_trait]
+pub(crate) trait NetworkBoundaryBuilder {
+    async fn build(
+        &self,
+        nb: Arc<dyn NetworkBoundary>,
+        cfg: &ConfigOptions,
+    ) -> Result<NetworkBoundaryBuilderResult>;
+}
+
+#[async_trait]
+impl<T, F> NetworkBoundaryBuilder for T
+where
+    T: Fn(Arc<dyn NetworkBoundary>, &ConfigOptions) -> Result<F>,
+    T: Send + Sync,
+    F: Future<Output = Result<NetworkBoundaryBuilderResult>>,
+    F: Send,
+{
+    async fn build(
+        &self,
+        nb: Arc<dyn NetworkBoundary>,
+        cfg: &ConfigOptions,
+    ) -> Result<NetworkBoundaryBuilderResult> {
+        self(nb, cfg)?.await
+    }
+}
+
 /// Returns a multiplicative factor describing how the data volume changes between the bottom of
 /// `plan` (at a network boundary or a leaf) and `plan` itself. The walk descends into `plan`'s
 /// children, stops at any node that is itself a network boundary (returning `1.0` there — that
@@ -504,24 +551,57 @@ fn propagate_task_count(
 ///
 /// With `cardinality_task_count_factor = 1.5`, the example above yields `sf ≈ 0.44`. The
 /// boundary's recorded task count above this stage will be `ceil(T_producer × sf)`.
-fn calculate_scale_factor(plan: &Arc<dyn ExecutionPlan>, ctx: &Context) -> f64 {
-    if plan.is_network_boundary() {
-        return 1.0;
-    };
+pub(crate) struct CardinalityTaskCountStrategy;
 
-    let mut sf = None;
-    for plan in plan.children() {
-        sf = match sf {
-            None => Some(calculate_scale_factor(plan, ctx)),
-            Some(sf) => Some(sf.max(calculate_scale_factor(plan, ctx))),
+#[async_trait]
+impl NetworkBoundaryBuilder for CardinalityTaskCountStrategy {
+    async fn build(
+        &self,
+        nb: Arc<dyn NetworkBoundary>,
+        cfg: &ConfigOptions,
+    ) -> Result<NetworkBoundaryBuilderResult> {
+        if nb.as_any().is::<NetworkCoalesceExec>() {
+            return Ok(NetworkBoundaryBuilderResult {
+                task_count_above: Maximum(1),
+                network_boundary: nb,
+            });
         }
-    }
+        let d_cfg = DistributedConfig::from_config_options(cfg)?;
 
-    let sf = sf.unwrap_or(1.0);
-    match plan.cardinality_effect() {
-        CardinalityEffect::LowerEqual => sf / ctx.d_cfg.cardinality_task_count_factor,
-        CardinalityEffect::GreaterEqual => sf * ctx.d_cfg.cardinality_task_count_factor,
-        _ => sf,
+        fn calculate_scale_factor(plan: &Arc<dyn ExecutionPlan>, d_cfg: &DistributedConfig) -> f64 {
+            if plan.is_network_boundary() {
+                return 1.0;
+            };
+
+            let mut sf = None;
+            for plan in plan.children() {
+                sf = match sf {
+                    None => Some(calculate_scale_factor(plan, d_cfg)),
+                    Some(sf) => Some(sf.max(calculate_scale_factor(plan, d_cfg))),
+                }
+            }
+
+            let sf = sf.unwrap_or(1.0);
+            match plan.cardinality_effect() {
+                CardinalityEffect::LowerEqual => sf / d_cfg.cardinality_task_count_factor,
+                CardinalityEffect::GreaterEqual => sf * d_cfg.cardinality_task_count_factor,
+                _ => sf,
+            }
+        }
+
+        let input_stage = nb.input_stage();
+        let Some(input_plan) = input_stage.local_plan() else {
+            return plan_err!(
+                "input_stage plan needs to be in local mode for cardinality calculation"
+            );
+        };
+
+        let f = calculate_scale_factor(input_plan, d_cfg);
+
+        Ok(NetworkBoundaryBuilderResult {
+            task_count_above: Desired((f * input_stage.task_count() as f64).ceil() as usize),
+            network_boundary: nb,
+        })
     }
 }
 
@@ -1139,6 +1219,7 @@ mod tests {
             task_counts: &Mutex::new(HashMap::new()),
             query_id: Uuid::new_v4(),
             stage_id: &AtomicUsize::new(1),
+            stage_builder: &CardinalityTaskCountStrategy,
         };
 
         let annotated = _inject_network_boundaries(plan, ctx.clone())

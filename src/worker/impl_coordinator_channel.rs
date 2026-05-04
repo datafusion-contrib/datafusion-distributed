@@ -1,4 +1,5 @@
 use crate::common::deserialize_uuid;
+use crate::execution_plans::SamplerExec;
 use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
@@ -17,9 +18,10 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::{FutureExt, StreamExt};
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
 
@@ -54,6 +56,7 @@ impl Worker {
         }
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
+        let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let task_data = || async {
             let headers = grpc_headers.into_headers();
@@ -97,11 +100,17 @@ impl Worker {
             for hook in self.hooks.on_plan.iter() {
                 plan = hook(plan)
             }
+            SamplerExec::kick_off_first_sampler(
+                Arc::clone(&plan),
+                &load_info_tx,
+                Arc::clone(&task_ctx),
+            )?;
 
             // Initialize partition count to the number of partitions in the stage
             let total_partitions = plan.properties().partitioning.partition_count();
             Ok::<_, DataFusionError>(TaskData {
-                plan,
+                base_plan: plan,
+                scaled_up_plan: Arc::new(OnceLock::new()),
                 task_ctx,
                 num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 metrics_tx: match collect_metrics {
@@ -136,6 +145,15 @@ impl Worker {
             }
         });
 
+        let load_info_stream = UnboundedReceiverStream::new(load_info_rx);
+        let load_info_stream = load_info_stream.map(|load_info| WorkerToCoordinatorMsg {
+            inner: Some(worker_to_coordinator_msg::Inner::LoadInfoBatch(
+                crate::worker::generated::worker::LoadInfoBatch {
+                    batch: vec![load_info],
+                },
+            )),
+        });
+
         // Stream back the metrics once the task finishes executing.
         // The oneshot receiver resolves when impl_execute_task sends the collected
         // metrics after all partitions have finished or been dropped.
@@ -148,7 +166,12 @@ impl Worker {
                 Err(_) => None, // channel dropped without sending any message
             }
         });
-        Ok(Response::new(metrics_stream.map(Ok).boxed()))
+
+        Ok(Response::new(
+            futures::stream::select(load_info_stream, metrics_stream)
+                .map(Ok)
+                .boxed(),
+        ))
     }
 }
 

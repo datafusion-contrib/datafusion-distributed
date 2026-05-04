@@ -11,7 +11,7 @@ pub trait NetworkBoundary: ExecutionPlan {
     /// information to perform any internal transformations necessary for distributed execution.
     ///
     /// Typically, [NetworkBoundary]s will use this call for transitioning from "Pending" to "ready".
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>>;
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>>;
 
     /// Returns the assigned input [Stage], if any.
     fn input_stage(&self) -> &Stage;
@@ -70,6 +70,25 @@ pub(crate) fn network_boundary_scale_input(
         consumer_partitions,
         consumer_task_count,
     )?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+
+    Ok(input)
+}
+
+pub(crate) fn network_boundary_inject_sampler(
+    input: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let transformed = NetworkShuffleExec::inject_sampler(Arc::clone(&input))?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+    let transformed = NetworkBroadcastExec::inject_sampler(Arc::clone(&input))?;
+    if transformed.transformed {
+        return Ok(transformed.data);
+    }
+    let transformed = NetworkCoalesceExec::inject_sampler(Arc::clone(&input))?;
     if transformed.transformed {
         return Ok(transformed.data);
     }

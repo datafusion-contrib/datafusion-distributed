@@ -31,6 +31,10 @@ message WorkerToCoordinatorMsg {
     // ensuring metrics are never lost due to early stream termination.
     // metrics[i] is the set of metrics for plan node i in pre-order traversal order.
     PreOrderTaskMetrics task_metrics = 1;
+
+    // Load information reported by a task. This information is used for dynamically
+    // sizing the number of workers involved in a query.
+    LoadInfoBatch load_info_batch = 2;
   }
 }
 
@@ -39,6 +43,24 @@ message WorkerToCoordinatorMsg {
 // opened this coordinator channel connection.
 message PreOrderTaskMetrics {
   repeated MetricsSet metrics = 1;
+}
+
+message LoadInfoBatch {
+  repeated LoadInfo batch = 1;
+}
+
+message LoadInfo {
+  uint64 partition = 1;
+  uint64 row_count = 2;
+  uint64 byte_size = 3;
+  bool eos = 4;
+  uint64 time_mark_ns = 5;
+  // True on the first sample emitted after the partition's sampler buffer
+  // exceeded its configured byte budget. Consumers (the coordinator's
+  // calculate_task_count) treat this as a "saturation" signal that the
+  // producer can produce at least this much data, and can decide the next
+  // stage's task count without waiting for further samples.
+  bool max_memory_reached = 6;
 }
 
 message GetWorkerInfoRequest {}
@@ -88,6 +110,10 @@ message ExecuteTaskRequest {
   uint64 target_partition_start = 2;
   // The end of the partition range of the specified task that is going to be executed.
   uint64 target_partition_end = 3;
+  // The amount of partitions per task that are going to consume from this task.
+  uint64 consumer_partitions = 4;
+  // The amount of tasks that are going to consume from this task.
+  uint64 consumer_task_count = 5;
 }
 
 // A key that uniquely identifies a task in a query.

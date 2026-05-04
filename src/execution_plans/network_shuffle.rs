@@ -1,4 +1,5 @@
 use crate::common::require_one_child;
+use crate::execution_plans::SamplerExec;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
@@ -125,6 +126,18 @@ impl NetworkShuffleExec {
         Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
     }
 
+    pub(crate) fn inject_sampler(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(repartition_exec) = plan.as_any().downcast_ref::<RepartitionExec>() else {
+            return Ok(Transformed::no(plan));
+        };
+
+        let child = require_one_child(repartition_exec.children())?;
+        plan.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            .map(Transformed::yes)
+    }
+
     pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
         Self {
             properties: input_stage.plan.properties().clone(),
@@ -157,7 +170,7 @@ impl NetworkBoundary for NetworkShuffleExec {
         &self.input_stage
     }
 
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
@@ -222,7 +235,8 @@ impl ExecutionPlan for NetworkShuffleExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let out_partitions = self.properties.partitioning.partition_count();
+        let off = out_partitions * task_context.task_index;
 
         let mut streams = Vec::with_capacity(remote_stage.workers.len());
         for input_task_index in 0..remote_stage.workers.len() {
@@ -230,6 +244,8 @@ impl ExecutionPlan for NetworkShuffleExec {
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                out_partitions,
+                task_context.task_count,
                 &context,
             )?;
 
