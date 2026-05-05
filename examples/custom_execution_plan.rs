@@ -344,8 +344,7 @@ impl TaskEstimator for NumbersTaskEstimator {
 
     fn route_tasks(
         &self,
-        _tasks: Vec<datafusion_distributed::ExecutionTask>,
-        _urls: &[url::Url],
+        _routing_ctx: &datafusion_distributed::TaskRoutingContext<'_>,
     ) -> Result<Option<Vec<url::Url>>> {
         Ok(None)
     }

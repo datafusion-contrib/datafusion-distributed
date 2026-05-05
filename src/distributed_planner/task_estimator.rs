@@ -6,6 +6,7 @@ use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
@@ -126,8 +127,16 @@ pub trait TaskEstimator {
         cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>>;
 
-    // Defines a custom protocol for routing tasks to specific URLs / physical machines.
-    fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
+    /// Defines a custom protocol for routing tasks to specific URLs / physical machines.
+    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
+}
+
+/// Context usable for routing tasks to worker URLs.
+pub struct TaskRoutingContext<'a> {
+    pub task_ctx: Arc<TaskContext>,
+    pub plan: &'a Arc<dyn ExecutionPlan>,
+    pub tasks: &'a [ExecutionTask],
+    pub urls: &'a [Url],
 }
 
 impl TaskEstimator for usize {
@@ -154,7 +163,7 @@ impl TaskEstimator for usize {
         None
     }
 
-    fn route_tasks(&self, _: Vec<ExecutionTask>, _: &[Url]) -> Result<Option<Vec<Url>>> {
+    fn route_tasks(&self, _: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
         Ok(None)
     }
 }
@@ -164,7 +173,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
-            fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -174,7 +183,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
-            fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -273,7 +282,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
     }
 
-    fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
+    fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
         Ok(None)
     }
 }
@@ -330,9 +339,9 @@ impl TaskEstimator for CombinedTaskEstimator {
         None
     }
 
-    fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>> {
+    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
         for estimator in &self.user_provided {
-            if let Some(result) = estimator.route_tasks(tasks.clone(), urls)? {
+            if let Some(result) = estimator.route_tasks(routing_ctx)? {
                 return Ok(Some(result));
             }
         }
@@ -439,11 +448,7 @@ mod tests {
             None
         }
 
-        fn route_tasks(
-            &self,
-            _tasks: Vec<crate::stage::ExecutionTask>,
-            _urls: &[Url],
-        ) -> Result<Option<Vec<Url>>> {
+        fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
             Ok(None)
         }
     }

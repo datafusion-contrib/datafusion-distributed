@@ -895,11 +895,7 @@ mod tests {
             None
         }
 
-        fn route_tasks(
-            &self,
-            _: Vec<crate::stage::ExecutionTask>,
-            _: &[Url],
-        ) -> Result<Option<Vec<Url>>> {
+        fn route_tasks(&self, _: &crate::TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
             Ok(None)
         }
     }
@@ -930,11 +926,7 @@ mod tests {
             None
         }
 
-        fn route_tasks(
-            &self,
-            _: Vec<crate::stage::ExecutionTask>,
-            _: &[url::Url],
-        ) -> Result<Option<Vec<url::Url>>> {
+        fn route_tasks(&self, _: &crate::TaskRoutingContext<'_>) -> Result<Option<Vec<url::Url>>> {
             Ok(None)
         }
     }

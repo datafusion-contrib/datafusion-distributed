@@ -14,7 +14,8 @@ use crate::worker::generated::worker::{
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
+    DistributedWorkUnitFeedContext, TaskRoutingContext, WorkerResolver,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::HashMap;
 use datafusion::common::instant::Instant;
@@ -207,7 +208,16 @@ impl DistributedExec {
             //
             // If the user has defined custom routing through the route_task interface,
             // we attempt to route the task to the specified URL.
-            let routed_urls = match task_estimator.route_tasks(stage.tasks.clone(), &urls) {
+            let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
+                task_ctx: Arc::clone(ctx),
+                plan: stage.plan.as_ref().ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "network boundary stage missing input plan during routing"
+                    )
+                })?,
+                tasks: &stage.tasks,
+                urls: &urls,
+            }) {
                 Ok(Some(routed_urls)) => routed_urls,
                 Ok(None) => (0..stage.tasks.len())
                     .map(|i| urls[(start_idx + i) % urls.len()].clone())

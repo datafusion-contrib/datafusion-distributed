@@ -286,8 +286,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
 
     fn route_tasks(
         &self,
-        _tasks: Vec<crate::stage::ExecutionTask>,
-        _urls: &[url::Url],
+        _routing_ctx: &crate::TaskRoutingContext<'_>,
     ) -> Result<Option<Vec<url::Url>>> {
         Ok(None)
     }

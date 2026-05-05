@@ -207,8 +207,7 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
 
     fn route_tasks(
         &self,
-        _: Vec<crate::stage::ExecutionTask>,
-        _: &[url::Url],
+        _: &crate::TaskRoutingContext<'_>,
     ) -> datafusion::error::Result<Option<Vec<url::Url>>> {
         Ok(None)
     }

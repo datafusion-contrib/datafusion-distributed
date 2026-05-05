@@ -23,9 +23,7 @@ use tonic::async_trait;
 use url::Url;
 
 use crate::worker::LocalWorkerContext;
-use crate::{
-    DistributedTaskContext, ExecutionTask, PartitionIsolatorExec, TaskEstimation, TaskEstimator,
-};
+use crate::{DistributedTaskContext, PartitionIsolatorExec, TaskEstimation, TaskEstimator};
 
 // Table function that creates a `URLEmitterExec` for testing task routing.
 #[derive(Debug)]
@@ -177,7 +175,9 @@ impl ExecutionPlan for URLEmitterExec {
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
                 Arc::new(StringArray::from(vec![self.tag.as_str()])),
-                Arc::new(StringArray::from(vec![local_worker_ctx.self_url.as_str()])),
+                Arc::new(StringArray::from(vec![
+                    local_worker_ctx.self_url.as_str().trim_end_matches('/'),
+                ])),
             ],
         )?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -234,13 +234,12 @@ impl TaskEstimator for URLEmitterTaskEstimator {
 
     fn route_tasks(
         &self,
-        tasks: Vec<ExecutionTask>,
-        urls: &[Url],
+        routing_ctx: &crate::TaskRoutingContext<'_>,
     ) -> datafusion::error::Result<Option<Vec<Url>>> {
         // Trivial routing policy: Assign tasks to URLs in reverse order.
-        let mut routed_urls = urls.to_vec();
+        let mut routed_urls = routing_ctx.urls.to_vec();
         routed_urls.reverse();
-        routed_urls.truncate(tasks.len());
+        routed_urls.truncate(routing_ctx.tasks.len());
         Ok(Some(routed_urls))
     }
 }

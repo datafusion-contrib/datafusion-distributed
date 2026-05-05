@@ -10,5 +10,5 @@ mod task_estimator;
 pub use distributed_config::DistributedConfig;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub use session_state_builder_ext::SessionStateBuilderExt;
-pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator};
+pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext};
 pub(crate) use task_estimator::{get_distributed_task_estimator, set_distributed_task_estimator};
