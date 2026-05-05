@@ -438,6 +438,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
+                target_worker_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();
