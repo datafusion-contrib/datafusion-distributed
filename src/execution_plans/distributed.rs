@@ -156,10 +156,20 @@ impl DistributedExec {
             })
     }
 
+    /// Prepares the distributed plan for execution.
+    /// In particular, this means we must take the following steps at each network boundary node:
+    /// 1. Assign tasks to URLs. Follow the user-specified routing defined in the TaskEstimator
+    ///    implementation, or default to random round-robin assignment.
+    /// 2. Send the sliced subplans to the assigned URLs. For each task assigned to a URL, it is here
+    ///    that we now must actually send that subplan to the URL over the wire.
+    /// 3. Set network boundary input plans to `None`. This way, network boundaries become nodes
+    ///    without children, so we stop further traversal from happening in the future.
+    /// 4. Spawn a background task per worker that waits for the worker to finish and collects
+    ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
-        let urls = worker_resolver.get_urls()?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
+        let urls = worker_resolver.get_urls()?;
 
         let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
@@ -175,99 +185,68 @@ impl DistributedExec {
         };
 
         let mut join_set = JoinSet::new();
-        // Distribute the plan by distributing tasks across workers at each network boundary from
-        // the bottom up.
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
-            distribute_tasks(
-                ctx,
-                plan,
-                &codec,
-                &urls,
-                &metrics,
-                &mut join_set,
-                Arc::clone(&self.task_metrics),
-            )
+            // The following logic is only relevant to network boundaries.
+            let Some(plan) = plan.as_network_boundary() else {
+                return Ok(Transformed::no(plan));
+            };
+
+            let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
+
+            let stage = plan.input_stage();
+
+            let mut spawner =
+                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
+
+            // Default routing assigns tasks to URLs round-robin from a random starting point.
+            let start_idx = rand::rng().random_range(0..urls.len());
+
+            // If the user has not defined custom routing through the route_task API, we
+            // default to round-robin task assignation with a randomized starting point.
+            //
+            // If the user has defined custom routing through the route_task interface,
+            // we attempt to route the task to the specified URL.
+            let routed_urls = match task_estimator.route_tasks(stage.tasks.clone(), &urls) {
+                Ok(Some(routed_urls)) => routed_urls,
+                Ok(None) => (0..stage.tasks.len())
+                    .map(|i| urls[(start_idx + i) % urls.len()].clone())
+                    .collect(),
+                Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
+            };
+
+            if routed_urls.len() != stage.tasks.len() {
+                return Err(exec_datafusion_err!(
+                    "number of tasks ({}) was not equal to number of urls ({}) at execution time",
+                    routed_urls.len(),
+                    stage.tasks.len()
+                ));
+            }
+
+            let mut tasks = Vec::with_capacity(stage.tasks.len());
+            for (i, _task) in stage.tasks.iter().enumerate() {
+                let url = routed_urls[i].clone();
+                tasks.push(ExecutionTask {
+                    url: Some(url.clone()),
+                });
+                // Spawn a task that sends the subplan to the chosen URL.
+                // There will be as many as spawned tasks as workers.
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
+                spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
+            }
+
+            Ok(Transformed::yes(plan.with_input_stage(Stage {
+                query_id: stage.query_id,
+                num: stage.num,
+                plan: None,
+                tasks,
+            })?))
         })?;
         Ok(PreparedPlan {
             plan: prepared.data,
             join_set,
         })
     }
-}
-
-/// Distribute tasks across workers.
-/// In particular, this means we must take the following steps at each network boundary node:
-/// 1. Assign tasks to URLs. Follow the user-defined routing defined in the TaskEstimator
-///    implementation, or default to random round-robin assignment.
-/// 2. Send the sliced subplans to the assigned URLs. For each task assigned to a URL, it is here
-///    that we now must actually send that subplan to the URL over the wire.
-/// 3. Set network boundary input plans to `None`. This way, network boundaries become nodes
-///    without children, so we stop further traversal from happening in the future.
-/// 4. Spawn a background task per worker that waits for the worker to finish and collects
-///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
-fn distribute_tasks(
-    ctx: &Arc<TaskContext>,
-    plan: Arc<dyn ExecutionPlan>,
-    codec: &impl PhysicalExtensionCodec,
-    urls: &[Url],
-    metrics: &CoordinatorToWorkerMetrics,
-    join_set: &mut JoinSet<Result<(), DataFusionError>>,
-    task_metrics: Arc<MetricsStore>,
-) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-    // The following logic is only relevant to network boundaries.
-    let Some(plan) = plan.as_network_boundary() else {
-        return Ok(Transformed::no(plan));
-    };
-
-    let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
-
-    let stage = plan.input_stage();
-
-    let mut spawner = CoordinatorToWorkerTaskSpawner::new(stage, metrics, codec, join_set)?;
-
-    // Default routing assigns tasks to URLs round-robin from a random starting point.
-    let start_idx = rand::rng().random_range(0..urls.len());
-
-    // If the user has not defined custom routing through the route_task API, we
-    // default to round-robin task assignation with a randomized starting point.
-    //
-    // If the user has defined custom routing through the route_task interface,
-    // we attempt to route the task to the specified URL.
-    let routed_urls = match task_estimator.route_tasks(stage.tasks.clone(), urls) {
-        Ok(Some(routed_urls)) => routed_urls,
-        Ok(None) => (0..stage.tasks.len())
-            .map(|i| urls[(start_idx + i) % urls.len()].clone())
-            .collect(),
-        Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
-    };
-
-    if routed_urls.len() != stage.tasks.len() {
-        return Err(exec_datafusion_err!(
-            "number of tasks ({}) was not equal to number of urls ({}) at execution time",
-            routed_urls.len(),
-            stage.tasks.len()
-        ));
-    }
-
-    let mut tasks = Vec::with_capacity(stage.tasks.len());
-    for (i, _task) in stage.tasks.iter().enumerate() {
-        let url = routed_urls[i].clone();
-        tasks.push(ExecutionTask {
-            url: Some(url.clone()),
-        });
-        // Spawn a task that sends the subplan to the chosen URL.
-        // There will be as many as spawned tasks as workers.
-        let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
-        spawner.metrics_collection_task(i, worker_rx, Arc::clone(&task_metrics));
-        spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
-    }
-
-    Ok(Transformed::yes(plan.with_input_stage(Stage {
-        query_id: stage.query_id,
-        num: stage.num,
-        plan: None,
-        tasks,
-    })?))
 }
 
 impl DisplayAs for DistributedExec {

@@ -95,7 +95,6 @@ fn _distribute_plan(
         .into_iter()
         .map(|child| _distribute_plan(child, cfg, query_id, stage_id))
         .collect::<Result<Vec<_>, _>>()?;
-
     match annotated_plan.plan_or_nb {
         // This is a leaf node. It needs to be scaled up in order to account for it running in
         // multiple tasks.

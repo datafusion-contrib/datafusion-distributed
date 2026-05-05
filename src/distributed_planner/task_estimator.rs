@@ -229,6 +229,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
     ) -> Option<TaskEstimation> {
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
         let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+
         let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
 
         // Count how many partitioned files we have in the FileScanConfig.
@@ -260,6 +261,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         // partitions, but as we are going to wrap it with PartitionIsolatorExec, that's fine.
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
         let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+
         let mut new_file_scan = file_scan.clone();
         new_file_scan.file_groups.clear();
         for file_group in file_scan.file_groups.clone() {

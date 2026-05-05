@@ -268,7 +268,6 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         let partitions_per_task = provider.per_partition_work_units.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
-
         let transformed = Arc::clone(plan).transform_down(|plan| {
             if let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() {
                 return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
