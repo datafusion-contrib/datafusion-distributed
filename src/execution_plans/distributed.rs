@@ -224,14 +224,13 @@ impl DistributedExec {
             }
 
             let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for (i, _task) in stage.tasks.iter().enumerate() {
-                let url = routed_urls[i].clone();
+            for (i, routed_url) in routed_urls.into_iter().enumerate() {
                 tasks.push(ExecutionTask {
-                    url: Some(url.clone()),
+                    url: Some(routed_url.clone()),
                 });
                 // Spawn a task that sends the subplan to the chosen URL.
                 // There will be as many spawned tasks as workers.
-                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, routed_url)?;
                 spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }

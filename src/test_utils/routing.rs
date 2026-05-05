@@ -22,6 +22,7 @@ use std::{any::Any, fmt::Formatter, sync::Arc};
 use tonic::async_trait;
 use url::Url;
 
+use crate::worker::LocalWorkerContext;
 use crate::{
     DistributedTaskContext, ExecutionTask, PartitionIsolatorExec, TaskEstimation, TaskEstimator,
 };
@@ -166,13 +167,17 @@ impl ExecutionPlan for URLEmitterExec {
         context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
         let distributed_ctx = DistributedTaskContext::from_ctx(&context);
+        let local_worker_ctx = context
+            .session_config()
+            .get_extension::<LocalWorkerContext>()
+            .expect("URLEmitterExec requires LocalWorkerContext during distributed execution");
         let batch = RecordBatch::try_new(
             url_emitter_schema(),
             vec![
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
                 Arc::new(StringArray::from(vec![self.tag.as_str()])),
-                Arc::new(StringArray::from(vec!["example_url"])),
+                Arc::new(StringArray::from(vec![local_worker_ctx.self_url.as_str()])),
             ],
         )?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
