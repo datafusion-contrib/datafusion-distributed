@@ -250,12 +250,6 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
             let Some(input) = self.children.get(child_idx) else {
                 return internal_err!("Could not find child with index {child_idx}");
             };
-
-            let mut child_task_ctx = child_task_ctx;
-            if let Some(url) = d_ctx.task_url.clone() {
-                child_task_ctx = child_task_ctx.with_url(url);
-            }
-
             // Calculate whether a partition belongs to the current partition
             if partition < input.output_partitioning().partition_count() {
                 // We need to intercept the DistributedTaskContext and insert a modified one that

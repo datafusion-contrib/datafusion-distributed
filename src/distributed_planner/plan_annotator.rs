@@ -191,7 +191,7 @@ async fn _annotate_plan(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        return if let Some(estimate) = estimator.task_estimation(&plan, cfg)? {
+        return if let Some(estimate) = estimator.task_estimation(&plan, cfg) {
             Ok(AnnotatedPlan {
                 plan_or_nb: PlanOrNetworkBoundary::Plan(plan),
                 children: Vec::new(),
@@ -209,7 +209,7 @@ async fn _annotate_plan(
     }
 
     let mut task_count = estimator
-        .task_estimation(&plan, cfg)?
+        .task_estimation(&plan, cfg)
         .map_or(Desired(1), |v| v.task_count);
     if d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
@@ -882,23 +882,23 @@ mod tests {
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> datafusion::error::Result<Option<TaskEstimation>> {
-            Ok((self.f)(plan.as_ref()))
+        ) -> Option<TaskEstimation> {
+            (self.f)(plan.as_ref())
         }
 
-        fn distribute_plan(
+        fn scale_up_leaf_node(
             &self,
-            _plan: &Arc<dyn ExecutionPlan>,
-            _task_count: usize,
-            _cfg: &ConfigOptions,
-        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-            Ok(None)
+            _: &Arc<dyn ExecutionPlan>,
+            _: usize,
+            _: &ConfigOptions,
+        ) -> Option<Arc<dyn ExecutionPlan>> {
+            None
         }
 
         fn route_tasks(
             &self,
-            _tasks: Vec<crate::stage::ExecutionTask>,
-            _urls: &[Url],
+            _: Vec<crate::stage::ExecutionTask>,
+            _: &[Url],
         ) -> Result<Option<Vec<Url>>> {
             Ok(None)
         }
@@ -912,30 +912,28 @@ mod tests {
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> datafusion::error::Result<Option<TaskEstimation>> {
-            let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() else {
-                return Ok(None);
-            };
+        ) -> Option<TaskEstimation> {
+            let coalesce = plan.as_any().downcast_ref::<CoalescePartitionsExec>()?;
             if coalesce.input().as_any().is::<BroadcastExec>() {
-                Ok(Some(TaskEstimation::maximum(1)))
+                Some(TaskEstimation::maximum(1))
             } else {
-                Ok(None)
+                None
             }
         }
 
-        fn distribute_plan(
+        fn scale_up_leaf_node(
             &self,
-            _plan: &Arc<dyn ExecutionPlan>,
-            _task_count: usize,
-            _cfg: &ConfigOptions,
-        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-            Ok(None)
+            _: &Arc<dyn ExecutionPlan>,
+            _: usize,
+            _: &ConfigOptions,
+        ) -> Option<Arc<dyn ExecutionPlan>> {
+            None
         }
 
         fn route_tasks(
             &self,
-            _tasks: Vec<crate::stage::ExecutionTask>,
-            _urls: &[url::Url],
+            _: Vec<crate::stage::ExecutionTask>,
+            _: &[url::Url],
         ) -> Result<Option<Vec<url::Url>>> {
             Ok(None)
         }

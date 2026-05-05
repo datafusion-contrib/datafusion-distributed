@@ -216,23 +216,21 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         &self,
         plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> datafusion::error::Result<Option<TaskEstimation>> {
-        if let Some(exec) = plan.as_any().downcast_ref::<URLEmitterExec>() {
-            Ok(Some(TaskEstimation::desired(exec.task_count)))
-        } else {
-            Ok(None)
-        }
+    ) -> Option<TaskEstimation> {
+        plan.as_any()
+            .downcast_ref::<URLEmitterExec>()
+            .map(|exec| TaskEstimation::desired(exec.task_count))
     }
 
-    fn distribute_plan(
+    fn scale_up_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
+    ) -> Option<Arc<dyn ExecutionPlan>> {
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(PartitionIsolatorExec::new(Arc::clone(plan), task_count));
-        Ok(Some(plan))
+        Some(plan)
     }
 
     fn route_tasks(

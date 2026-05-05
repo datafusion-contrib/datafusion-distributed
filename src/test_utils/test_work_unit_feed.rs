@@ -251,31 +251,24 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<TaskEstimation>> {
-        let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() else {
-            return Ok(None);
-        };
-        let Ok(provider) = exec.feed.clone().try_into_inner() else {
-            return Ok(None);
-        };
-        Ok(Some(TaskEstimation::desired(provider.task_count)))
+    ) -> Option<TaskEstimation> {
+        let exec = plan.as_any().downcast_ref::<RowGeneratorExec>()?;
+        let provider = exec.feed.clone().try_into_inner().ok()?;
+        Some(TaskEstimation::desired(provider.task_count))
     }
 
-    fn distribute_plan(
+    fn scale_up_leaf_node(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() else {
-            return Ok(None);
-        };
-        let Ok(provider) = exec.feed.clone().try_into_inner() else {
-            return Ok(None);
-        };
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        let exec = plan.as_any().downcast_ref::<RowGeneratorExec>()?;
+        let provider = exec.feed.clone().try_into_inner().ok()?;
         let partitions_per_task = provider.per_partition_work_units.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
+
         let transformed = Arc::clone(plan).transform_down(|plan| {
             if let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() {
                 return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
@@ -287,9 +280,9 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
                 ))));
             };
             Ok(Transformed::no(plan))
-        })?;
+        });
 
-        Ok(Some(transformed.data))
+        Some(transformed.ok()?.data)
     }
 
     fn route_tasks(

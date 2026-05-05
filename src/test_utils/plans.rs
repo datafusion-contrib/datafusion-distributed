@@ -182,33 +182,33 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
-    ) -> datafusion::error::Result<Option<TaskEstimation>> {
+    ) -> Option<TaskEstimation> {
         if !plan.children().is_empty() {
-            return Ok(None);
+            return None;
         }
         let schema = plan.schema();
         let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
         let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
         if has_min_temp && !has_max_temp {
-            Ok(Some(TaskEstimation::maximum(1)))
+            Some(TaskEstimation::maximum(1))
         } else {
-            Ok(None)
+            None
         }
     }
 
-    fn distribute_plan(
+    fn scale_up_leaf_node(
         &self,
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
-        Ok(None)
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        None
     }
 
     fn route_tasks(
         &self,
-        _tasks: Vec<crate::stage::ExecutionTask>,
-        _urls: &[url::Url],
+        _: Vec<crate::stage::ExecutionTask>,
+        _: &[url::Url],
     ) -> datafusion::error::Result<Option<Vec<url::Url>>> {
         Ok(None)
     }
