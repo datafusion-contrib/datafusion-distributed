@@ -353,7 +353,12 @@ impl TaskEstimator for CombinedTaskEstimator {
         Ok(None)
     }
 
-    fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
+    fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>> {
+        for estimator in &self.user_provided {
+            if let Some(result) = estimator.route_tasks(tasks.clone(), urls)? {
+                return Ok(Some(result));
+            }
+        }
         Ok(None)
     }
 }

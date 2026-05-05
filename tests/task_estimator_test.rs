@@ -2,10 +2,11 @@
 mod tests {
     use std::sync::Arc;
 
-    use arrow::util::pretty::pretty_format_batches;
+    use arrow::array::{Int64Array, StringArray};
     use datafusion::{error::DataFusionError, execution::SessionState, physical_plan::collect};
     use datafusion_distributed::{
         DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
+        get_distributed_worker_resolver,
         test_utils::{
             localhost::start_localhost_context,
             routing::{URLEmitterExtensionCodec, URLEmitterFunction, URLEmitterTaskEstimator},
@@ -14,7 +15,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_task_estimator_with_routing() -> Result<(), Box<dyn std::error::Error>> {
-        let (plan, results) = run_query(
+        let (plan, actual_routing, expected_routing) = run_query(
             r#"
             SELECT task_count, task_index, worker_url
             FROM url_emitter()
@@ -23,7 +24,7 @@ mod tests {
         )
         .await?;
 
-        assert_snapshot!(plan + &results,
+        assert_snapshot!(plan,
             @"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [task_index@1 ASC NULLS LAST]
@@ -34,22 +35,18 @@ mod tests {
           │   PartitionIsolatorExec: tasks=5 partitions=5
           │     URLEmitterExec: tasks=5 partitions=5
           └──────────────────────────────────────────────────
-        +------------+------------+-------------------------+
-        | task_count | task_index | worker_url              |
-        +------------+------------+-------------------------+
-        | 5          | 0          | http://localhost:65253/ |
-        | 5          | 1          | http://localhost:65254/ |
-        | 5          | 2          | http://localhost:65255/ |
-        | 5          | 3          | http://localhost:65256/ |
-        | 5          | 4          | http://localhost:65252/ |
-        +------------+------------+-------------------------+
         ",
         );
+
+        assert_eq!(actual_routing, expected_routing);
         Ok(())
     }
 
-    async fn run_query(sql: &str) -> Result<(String, String), DataFusionError> {
+    async fn run_query(
+        sql: &str,
+    ) -> Result<(String, Vec<(i64, String)>, Vec<(i64, String)>), DataFusionError> {
         let (mut ctx, _guard, _) = start_localhost_context(5, build_state).await;
+        let worker_urls = get_distributed_worker_resolver(ctx.state().config())?.get_urls()?;
         ctx.set_distributed_task_estimator(URLEmitterTaskEstimator);
         ctx.set_distributed_user_codec(URLEmitterExtensionCodec);
         ctx.register_udtf("url_emitter", Arc::new(URLEmitterFunction));
@@ -59,9 +56,42 @@ mod tests {
         let plan_display = display_plan_ascii(plan.as_ref(), false);
 
         let batches = collect(plan, ctx.task_ctx()).await?;
-        let formatted = pretty_format_batches(&batches)?;
 
-        Ok((plan_display, formatted.to_string()))
+        // Extract the mapping of tasks to URLs observed following query execution. We cannot
+        // simply snapshot the results, because the localhost URLs used may vary on each run.
+        let mut actual_routing = Vec::new();
+        for batch in batches {
+            let task_index = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("task_index column should be Int64Array");
+            let worker_url = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("worker_url column should be StringArray");
+
+            for row in 0..batch.num_rows() {
+                actual_routing.push((task_index.value(row), worker_url.value(row).to_string()));
+            }
+        }
+
+        // Simulate the routing function defined above. We can use this expected routing to observe
+        // whether the mapping of tasks to URLs following query execution matches what we expect.
+        let mut expected_routing = worker_urls.clone();
+        expected_routing.reverse();
+        expected_routing.truncate(actual_routing.len());
+
+        Ok((
+            plan_display,
+            actual_routing,
+            expected_routing
+                .into_iter()
+                .enumerate()
+                .map(|(task_index, url)| (task_index as i64, url.to_string()))
+                .collect(),
+        ))
     }
 
     async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {

@@ -28,7 +28,6 @@ use crate::{
 };
 
 // Table function that creates a `URLEmitterExec` for testing task routing.
-// Called in SQL as: `SELECT * FROM test_url_emitter()`.
 #[derive(Debug)]
 pub struct URLEmitterFunction;
 
@@ -65,6 +64,7 @@ impl TableProvider for URLEmitterTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Hardcoded to 5 partitions and 5 tasks for testing.
         Ok(Arc::new(URLEmitterExec::new(5, 5)))
     }
 }
@@ -203,17 +203,12 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         tasks: Vec<ExecutionTask>,
         urls: &[Url],
     ) -> datafusion::error::Result<Option<Vec<Url>>> {
-        // Add some custom routing.
-        let routed_urls = custom_routing_fn(tasks, urls.to_vec());
+        // Trivial routing policy: Assign tasks to URLs in reverse order.
+        let mut routed_urls = urls.to_vec();
+        routed_urls.reverse();
+        routed_urls.truncate(tasks.len());
         Ok(Some(routed_urls))
     }
-}
-
-fn custom_routing_fn(tasks: Vec<ExecutionTask>, mut urls: Vec<Url>) -> Vec<Url> {
-    // Trivial routing policy.
-    urls.reverse();
-    urls.truncate(tasks.len());
-    urls
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
