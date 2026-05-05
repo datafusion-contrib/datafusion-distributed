@@ -1,4 +1,3 @@
-use crate::distributed_planner::DistributedPlan;
 use crate::{
     DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeed, WorkUnitFeedProto,
     WorkUnitFeedProvider,
@@ -267,7 +266,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<crate::distributed_planner::DistributedPlan>> {
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         let Some(exec) = plan.as_any().downcast_ref::<RowGeneratorExec>() else {
             return Ok(None);
         };
@@ -290,7 +289,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
             Ok(Transformed::no(plan))
         })?;
 
-        Ok(Some(DistributedPlan::from_plan(transformed.data)))
+        Ok(Some(transformed.data))
     }
 
     fn route_tasks(

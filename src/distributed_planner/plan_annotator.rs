@@ -410,7 +410,7 @@ mod tests {
         BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
         sql_to_physical_plan,
     };
-    use crate::{DistributedExt, DistributedPlan, TaskEstimation, TaskEstimator, assert_snapshot};
+    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -891,7 +891,7 @@ mod tests {
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Result<Option<DistributedPlan>> {
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
             Ok(None)
         }
 
@@ -928,7 +928,7 @@ mod tests {
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Result<Option<crate::distributed_planner::task_estimator::DistributedPlan>> {
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
             Ok(None)
         }
 

@@ -201,7 +201,7 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> datafusion::error::Result<Option<crate::distributed_planner::DistributedPlan>> {
+    ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
         Ok(None)
     }
 

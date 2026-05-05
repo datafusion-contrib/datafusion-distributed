@@ -90,20 +90,6 @@ impl TaskEstimation {
     }
 }
 
-pub struct DistributedPlan {
-    plan: Arc<dyn ExecutionPlan>,
-}
-
-impl DistributedPlan {
-    pub fn from_plan(plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self { plan }
-    }
-
-    pub fn plan(&self) -> Arc<dyn ExecutionPlan> {
-        Arc::clone(&self.plan)
-    }
-}
-
 /// Given a leaf node, provides an estimation about how many tasks should be used in the
 /// stage containing it, and if the leaf node should be replaced by some other.
 ///
@@ -138,7 +124,7 @@ pub trait TaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Result<Option<DistributedPlan>>;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>>;
 
     fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
 }
@@ -163,7 +149,7 @@ impl TaskEstimator for usize {
         _plan: &Arc<dyn ExecutionPlan>,
         _task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<DistributedPlan>> {
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         Ok(None)
     }
 
@@ -176,7 +162,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
-            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<DistributedPlan>>;
+            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<Arc<dyn ExecutionPlan>>>;
             fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -186,7 +172,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Result<Option<TaskEstimation>>;
-            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<DistributedPlan>>;
+            fn distribute_plan(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<Arc<dyn ExecutionPlan>>>;
             fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -270,9 +256,9 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Result<Option<DistributedPlan>> {
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         if task_count == 1 {
-            return Ok(Some(DistributedPlan::from_plan(plan.clone())));
+            return Ok(Some(plan.clone()));
         }
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of
@@ -293,7 +279,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         }
         let plan = DataSourceExec::from_data_source(new_file_scan);
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(plan, task_count));
-        Ok(Some(DistributedPlan::from_plan(plan)))
+        Ok(Some(plan))
     }
 
     fn route_tasks(&self, _tasks: Vec<ExecutionTask>, _urls: &[Url]) -> Result<Option<Vec<Url>>> {
@@ -336,7 +322,7 @@ impl TaskEstimator for CombinedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Result<Option<DistributedPlan>> {
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         for estimator in &self.user_provided {
             if let Some(result) = estimator.distribute_plan(plan, task_count, cfg)? {
                 return Ok(Some(result));
@@ -459,7 +445,7 @@ mod tests {
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Result<Option<DistributedPlan>> {
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
             Ok(None)
         }
 

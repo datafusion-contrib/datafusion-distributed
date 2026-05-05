@@ -23,8 +23,7 @@ use tonic::async_trait;
 use url::Url;
 
 use crate::{
-    DistributedPlan, DistributedTaskContext, ExecutionTask, PartitionIsolatorExec, TaskEstimation,
-    TaskEstimator,
+    DistributedTaskContext, ExecutionTask, PartitionIsolatorExec, TaskEstimation, TaskEstimator,
 };
 
 // Table function that creates a `URLEmitterExec` for testing task routing.
@@ -191,11 +190,10 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> datafusion::error::Result<Option<DistributedPlan>> {
+    ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(PartitionIsolatorExec::new(Arc::clone(plan), task_count));
-        let distributed_plan = DistributedPlan::from_plan(plan);
-        Ok(Some(distributed_plan))
+        Ok(Some(plan))
     }
 
     fn route_tasks(
