@@ -341,6 +341,13 @@ impl TaskEstimator for NumbersTaskEstimator {
 
         Some(Arc::new(NumbersExec::new(ranges_per_task, plan.schema())))
     }
+
+    fn route_tasks(
+        &self,
+        _routing_ctx: &datafusion_distributed::TaskRoutingContext<'_>,
+    ) -> Result<Option<Vec<url::Url>>> {
+        Ok(None)
+    }
 }
 
 #[derive(StructOpt)]

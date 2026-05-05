@@ -10,7 +10,7 @@ mod worker_connection_pool;
 mod worker_service;
 
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
-pub(crate) use worker_connection_pool::WorkerConnectionPool;
+pub(crate) use worker_connection_pool::{LocalWorkerContext, WorkerConnectionPool};
 
 pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,

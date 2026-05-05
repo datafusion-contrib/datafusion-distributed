@@ -1,13 +1,18 @@
 use crate::config_extension_ext::set_distributed_option_extension;
+use crate::stage::ExecutionTask;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
 use std::fmt::Debug;
 use std::sync::Arc;
+use url::Url;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
@@ -121,6 +126,17 @@ pub trait TaskEstimator {
         task_count: usize,
         cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>>;
+
+    /// Defines a custom protocol for routing tasks to specific URLs / physical machines.
+    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
+}
+
+/// Context usable for routing tasks to worker URLs.
+pub struct TaskRoutingContext<'a> {
+    pub task_ctx: Arc<TaskContext>,
+    pub plan: &'a Arc<dyn ExecutionPlan>,
+    pub tasks: &'a [ExecutionTask],
+    pub urls: &'a [Url],
 }
 
 impl TaskEstimator for usize {
@@ -146,6 +162,10 @@ impl TaskEstimator for usize {
     ) -> Option<Arc<dyn ExecutionPlan>> {
         None
     }
+
+    fn route_tasks(&self, _: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        Ok(None)
+    }
 }
 
 impl TaskEstimator for Arc<dyn TaskEstimator> {
@@ -153,6 +173,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -162,6 +183,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -187,6 +209,18 @@ pub(crate) fn set_distributed_task_estimator(
             },
         )
     }
+}
+
+pub fn get_distributed_task_estimator(
+    cfg: &SessionConfig,
+) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
+    let opts = cfg.options();
+    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
+        return exec_err!("WorkerResolver not present in the session config");
+    };
+    let task_estimator: Arc<dyn TaskEstimator> =
+        Arc::new(distributed_cfg.__private_task_estimator.clone());
+    Ok(Arc::clone(&task_estimator))
 }
 
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
@@ -247,6 +281,10 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         let plan = DataSourceExec::from_data_source(new_file_scan);
         Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
     }
+
+    fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        Ok(None)
+    }
 }
 
 /// Tries multiple user-provided [TaskEstimator]s until one returns an estimation. If none
@@ -299,6 +337,15 @@ impl TaskEstimator for CombinedTaskEstimator {
             }
         }
         None
+    }
+
+    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        for estimator in &self.user_provided {
+            if let Some(result) = estimator.route_tasks(routing_ctx)? {
+                return Ok(Some(result));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -399,6 +446,10 @@ mod tests {
             _cfg: &ConfigOptions,
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None
+        }
+
+        fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+            Ok(None)
         }
     }
 }

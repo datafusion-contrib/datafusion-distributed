@@ -415,6 +415,7 @@ mod tests {
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::filter::FilterExec;
+    use url::Url;
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -893,6 +894,10 @@ mod tests {
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None
         }
+
+        fn route_tasks(&self, _: &crate::TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+            Ok(None)
+        }
     }
 
     #[derive(Debug)]
@@ -919,6 +924,10 @@ mod tests {
             _: &ConfigOptions,
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None
+        }
+
+        fn route_tasks(&self, _: &crate::TaskRoutingContext<'_>) -> Result<Option<Vec<url::Url>>> {
+            Ok(None)
         }
     }
 

@@ -283,6 +283,13 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
 
         Some(transformed.ok()?.data)
     }
+
+    fn route_tasks(
+        &self,
+        _routing_ctx: &crate::TaskRoutingContext<'_>,
+    ) -> Result<Option<Vec<url::Url>>> {
+        Ok(None)
+    }
 }
 
 impl DisplayAs for RowGeneratorExec {

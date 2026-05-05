@@ -204,4 +204,11 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
     ) -> Option<Arc<dyn ExecutionPlan>> {
         None
     }
+
+    fn route_tasks(
+        &self,
+        _: &crate::TaskRoutingContext<'_>,
+    ) -> datafusion::error::Result<Option<Vec<url::Url>>> {
+        Ok(None)
+    }
 }

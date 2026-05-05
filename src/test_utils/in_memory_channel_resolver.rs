@@ -1,15 +1,19 @@
 use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use crate::{
     BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
-    MappedWorkerSessionBuilderExt, Worker, WorkerResolver, WorkerSessionBuilder,
-    create_worker_client,
+    MappedWorkerSessionBuilderExt, SessionStateBuilderExt, Worker, WorkerResolver,
+    WorkerSessionBuilder, create_worker_client,
 };
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionContext;
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Endpoint, Server};
+use url::Url;
 
 const DUMMY_URL: &str = "http://localhost:50051";
+const DUMMY_URL_PREFIX: &str = "http://url-";
 
 /// [ChannelResolver] implementation that returns gRPC clients backed by an in-memory
 /// tokio duplex rather than a TCP connection.
@@ -85,9 +89,27 @@ impl InMemoryWorkerResolver {
 }
 
 impl WorkerResolver for InMemoryWorkerResolver {
-    fn get_urls(&self) -> Result<Vec<url::Url>, DataFusionError> {
-        // Set to a high number so that the distributed planner does not limit the maximum
-        // spawned tasks to just 1.
-        Ok(vec![url::Url::parse(DUMMY_URL).unwrap(); self.n_workers])
+    fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
+        (0..self.n_workers)
+            .map(|i| Url::parse(&format!("{}{}", DUMMY_URL_PREFIX, i)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| DataFusionError::External(Box::new(err)))
     }
+}
+
+/// Creates a distributed session context backed by a single in-memory worker service.
+/// The set of produced worker URLs is deterministic, taking the form http://worker-<i>.
+pub async fn start_in_memory_context(
+    num_workers: usize,
+    session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
+) -> SessionContext {
+    let channel_resolver = InMemoryChannelResolver::from_session_builder(session_builder);
+    let mut state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_distributed_planner()
+        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+        .with_distributed_channel_resolver(channel_resolver)
+        .build();
+    state.config_mut().options_mut().execution.target_partitions = 3;
+    SessionContext::from(state)
 }
