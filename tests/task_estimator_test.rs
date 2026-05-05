@@ -18,7 +18,7 @@ mod tests {
         let (plan, actual_routing, expected_routing) = run_query(
             r#"
             SELECT task_count, task_index, worker_url
-            FROM url_emitter()
+            FROM url_emitter(5, 5)
             ORDER BY task_index
         "#,
         )
@@ -77,7 +77,7 @@ mod tests {
             }
         }
 
-        // Simulate the routing function defined above. We can use this expected routing to observe
+        // Simulate the routing function defined above. We can use this simulated routing to observe
         // whether the mapping of tasks to URLs following query execution matches what we expect.
         let mut expected_routing = worker_urls.clone();
         expected_routing.reverse();

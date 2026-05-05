@@ -118,7 +118,7 @@ pub trait TaskEstimator {
 
     /// After a final task_count is decided, taking into account all the leaf nodes in the [Stage],
     /// this allows performing a transformation in the leaf nodes for accounting for the fact that
-    /// they are going to run in multiple tasks, including scaling and routing tasks to specific URLs.
+    /// they are going to run in multiple tasks.
     fn distribute_plan(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
@@ -126,6 +126,7 @@ pub trait TaskEstimator {
         cfg: &ConfigOptions,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>>;
 
+    // Defines a custom protocol for routing tasks to specific URLs / physical machines.
     fn route_tasks(&self, tasks: Vec<ExecutionTask>, urls: &[Url]) -> Result<Option<Vec<Url>>>;
 }
 
@@ -183,8 +184,8 @@ pub(crate) fn set_distributed_task_estimator(
     estimator: impl TaskEstimator + Send + Sync + 'static,
 ) {
     let opts = cfg.options_mut();
-    if let Some(d_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
-        d_cfg
+    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
+        distributed_cfg
             .__private_task_estimator
             .user_provided
             .push(Arc::new(estimator));
@@ -258,7 +259,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         _cfg: &ConfigOptions,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         if task_count == 1 {
-            return Ok(Some(plan.clone()));
+            return Ok(Some(Arc::clone(plan)));
         }
         // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
         // repartitioning it. This will result in a DataSourceExec with potentially a lot of

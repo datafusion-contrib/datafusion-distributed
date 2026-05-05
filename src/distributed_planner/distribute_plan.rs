@@ -103,10 +103,13 @@ fn _distribute_plan(
             let distributed_plan = d_cfg
                 .__private_task_estimator
                 .distribute_plan(&plan, task_count, cfg)?;
-            Ok(distributed_plan.unwrap_or(plan))
+            match distributed_plan {
+                Some(d_plan) => Ok(d_plan),
+                None => Ok(plan),
+            }
         }
         // This is a normal intermediate plan, just pass it through with the mapped children.
-        PlanOrNetworkBoundary::Plan(plan) => Ok(plan.with_new_children(new_children)?),
+        PlanOrNetworkBoundary::Plan(plan) => plan.with_new_children(new_children),
         // This is a shuffle, so inject a NetworkShuffleExec here in the plan.
         PlanOrNetworkBoundary::Shuffle => {
             // It would need a network boundary, but on both sides of the boundary there is just 1 task,
@@ -114,7 +117,7 @@ fn _distribute_plan(
             if task_count == 1 && max_child_task_count == Some(1) {
                 return require_one_child(new_children);
             }
-            let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkShuffleExec::try_new(
+            let node = Arc::new(NetworkShuffleExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
                 *stage_id,
@@ -132,7 +135,7 @@ fn _distribute_plan(
             if task_count == 1 && max_child_task_count == Some(1) {
                 return require_one_child(new_children);
             }
-            let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkCoalesceExec::try_new(
+            let node = Arc::new(NetworkCoalesceExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
                 *stage_id,
@@ -150,7 +153,7 @@ fn _distribute_plan(
             if task_count == 1 && max_child_task_count == Some(1) {
                 return require_one_child(new_children);
             }
-            let node: Arc<dyn ExecutionPlan> = Arc::new(NetworkBroadcastExec::try_new(
+            let node = Arc::new(NetworkBroadcastExec::try_new(
                 require_one_child(new_children)?,
                 query_id,
                 *stage_id,

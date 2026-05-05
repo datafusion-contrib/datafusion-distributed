@@ -4,7 +4,7 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
-    common::{Statistics, internal_err},
+    common::{ScalarValue, Statistics, internal_err, plan_err},
     datasource::TableType,
     error::Result,
     execution::TaskContext,
@@ -33,14 +33,36 @@ pub struct URLEmitterFunction;
 impl TableFunctionImpl for URLEmitterFunction {
     fn call(
         &self,
-        _args: &[datafusion::prelude::Expr],
+        args: &[datafusion::prelude::Expr],
     ) -> datafusion::error::Result<Arc<dyn datafusion::catalog::TableProvider>> {
-        Ok(Arc::new(URLEmitterTableProvider))
+        if args.len() != 2 {
+            return plan_err!("url_emitter(partitions, task_count) requires exactly 2 arguments");
+        }
+
+        let partitions = match &args[0] {
+            Expr::Literal(ScalarValue::Int64(Some(v)), _) if *v > 0 => *v as usize,
+            Expr::Literal(ScalarValue::Int32(Some(v)), _) if *v > 0 => *v as usize,
+            v => return plan_err!("partitions must be a positive integer literal, got {v:?}"),
+        };
+
+        let task_count = match &args[1] {
+            Expr::Literal(ScalarValue::Int64(Some(v)), _) if *v > 0 => *v as usize,
+            Expr::Literal(ScalarValue::Int32(Some(v)), _) if *v > 0 => *v as usize,
+            v => return plan_err!("task_count must be a positive integer literal, got {v:?}"),
+        };
+
+        Ok(Arc::new(URLEmitterTableProvider {
+            partitions,
+            task_count,
+        }))
     }
 }
 
 #[derive(Debug)]
-struct URLEmitterTableProvider;
+struct URLEmitterTableProvider {
+    partitions: usize,
+    task_count: usize,
+}
 
 #[async_trait]
 impl TableProvider for URLEmitterTableProvider {
@@ -63,8 +85,10 @@ impl TableProvider for URLEmitterTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Hardcoded to 5 partitions and 5 tasks for testing.
-        Ok(Arc::new(URLEmitterExec::new(5, 5)))
+        Ok(Arc::new(URLEmitterExec::new(
+            self.partitions,
+            self.task_count,
+        )))
     }
 }
 
@@ -139,7 +163,7 @@ impl ExecutionPlan for URLEmitterExec {
                         .task_url
                         .as_ref()
                         .map(|url| url.as_str())
-                        .unwrap(),
+                        .expect("URL not found in distributed context"),
                 ])),
             ],
         )?;
