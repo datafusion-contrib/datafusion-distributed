@@ -37,6 +37,20 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
+use url::Url;
+
+/// Context set by [crate::Worker::coordinator_channel] in DataFusion's
+/// [datafusion::prelude::SessionConfig] that contains information about the local tasks the current
+/// [crate::Worker] owns.
+///
+/// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
+/// needs to be remotely executed happens to be owned by this same worker.
+pub(crate) struct LocalWorkerContext {
+    /// The URL of the [crate::Worker] in scope. When trying to reach to a target URL that happens
+    /// to be the same as this one, local comms are preferred instead.
+    #[allow(dead_code)]
+    pub(crate) self_url: Url,
+}
 
 /// Holds a list of lazily initialized [WorkerConnection]s. Each position in the underlying
 /// `connections` vector corresponds to the connection to one worker. It assumes a 1:1 mapping
@@ -78,6 +92,7 @@ impl WorkerConnectionPool {
                 self.connections.len()
             );
         };
+        ctx.session_config().get_extension::<LocalWorkerContext>();
 
         let conn = worker_connection.get_or_init(|| {
             WorkerConnection::init(

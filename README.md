@@ -39,9 +39,13 @@ be found in the [benchmarks/cdk](./benchmarks/cdk) directory.
 
 # Docs
 
-The user and contributor guide can be found here:
+The user  guide can be found here:
 
 https://datafusion-contrib.github.io/datafusion-distributed
+
+If you'd like to contribute, see the contributor guide:
+
+https://datafusion-contrib.github.io/datafusion-distributed/contributor-guide/index.html
 
 ## Getting familiar with distributed DataFusion
 

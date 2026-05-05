@@ -4,6 +4,7 @@ use crate::protobuf::DistributedCodec;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedTxs};
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{PreOrderTaskMetrics, SetPlanRequest};
+use crate::worker::worker_connection_pool::LocalWorkerContext;
 use crate::{DistributedConfig, DistributedTaskContext, Worker, WorkerQueryContext};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -16,6 +17,8 @@ use std::sync::atomic::AtomicUsize;
 use tokio::sync::oneshot;
 use tonic::Status;
 use tonic::metadata::MetadataMap;
+use url::Url;
+
 #[derive(Clone, Debug)]
 /// TaskData stores state for a single task being executed by this Endpoint. It may be shared
 /// by concurrent requests for the same task which execute separate partitions.
@@ -87,6 +90,10 @@ impl Worker {
                 .with_extension(Arc::new(DistributedTaskContext {
                     task_index: key.task_number as usize,
                     task_count: request.task_count as usize,
+                }))
+                .with_extension(Arc::new(LocalWorkerContext {
+                    self_url: Url::parse(&request.target_worker_url)
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
                 }));
             set_distributed_option_extension_from_headers::<DistributedConfig>(&mut cfg, &headers)?;
 
