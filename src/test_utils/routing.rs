@@ -35,8 +35,10 @@ impl TableFunctionImpl for URLEmitterFunction {
         &self,
         args: &[datafusion::prelude::Expr],
     ) -> datafusion::error::Result<Arc<dyn datafusion::catalog::TableProvider>> {
-        if args.len() != 2 {
-            return plan_err!("url_emitter(partitions, task_count) requires exactly 2 arguments");
+        if args.len() != 3 {
+            return plan_err!(
+                "url_emitter(partitions, task_count, tag) requires exactly 3 arguments"
+            );
         }
 
         let partitions = match &args[0] {
@@ -51,9 +53,15 @@ impl TableFunctionImpl for URLEmitterFunction {
             v => return plan_err!("task_count must be a positive integer literal, got {v:?}"),
         };
 
+        let tag = match &args[2] {
+            Expr::Literal(ScalarValue::Utf8(Some(v)), _) => v.clone(),
+            v => return plan_err!("tag must be a string literal, got {v:?}"),
+        };
+
         Ok(Arc::new(URLEmitterTableProvider {
             partitions,
             task_count,
+            tag,
         }))
     }
 }
@@ -62,6 +70,7 @@ impl TableFunctionImpl for URLEmitterFunction {
 struct URLEmitterTableProvider {
     partitions: usize,
     task_count: usize,
+    tag: String,
 }
 
 #[async_trait]
@@ -88,6 +97,7 @@ impl TableProvider for URLEmitterTableProvider {
         Ok(Arc::new(URLEmitterExec::new(
             self.partitions,
             self.task_count,
+            self.tag.clone(),
         )))
     }
 }
@@ -96,10 +106,11 @@ impl TableProvider for URLEmitterTableProvider {
 pub struct URLEmitterExec {
     properties: Arc<PlanProperties>,
     task_count: usize,
+    tag: String,
 }
 
 impl URLEmitterExec {
-    pub fn new(partitions: usize, task_count: usize) -> Self {
+    pub fn new(partitions: usize, task_count: usize, tag: String) -> Self {
         Self {
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(url_emitter_schema()),
@@ -108,6 +119,7 @@ impl URLEmitterExec {
                 datafusion::physical_plan::execution_plan::Boundedness::Bounded,
             )),
             task_count,
+            tag,
         }
     }
 }
@@ -116,9 +128,10 @@ impl DisplayAs for URLEmitterExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "URLEmitterExec: tasks={} partitions={}",
+            "URLEmitterExec: tasks={} partitions={} tag={}",
             self.task_count,
-            self.properties.partitioning.partition_count()
+            self.properties.partitioning.partition_count(),
+            self.tag,
         )
     }
 }
@@ -158,6 +171,7 @@ impl ExecutionPlan for URLEmitterExec {
             vec![
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
+                Arc::new(StringArray::from(vec![self.tag.as_str()])),
                 Arc::new(StringArray::from(vec![
                     distributed_ctx
                         .task_url
@@ -189,6 +203,7 @@ fn url_emitter_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("task_count", DataType::Int64, false),
         Field::new("task_index", DataType::Int64, false),
+        Field::new("tag", DataType::Utf8, false),
         Field::new("worker_url", DataType::Utf8, false),
     ]))
 }
@@ -239,6 +254,8 @@ struct URLEmitterExecProto {
     partitions: u64,
     #[prost(uint64, tag = "2")]
     task_count: u64,
+    #[prost(string, tag = "3")]
+    tag: String,
 }
 
 #[derive(Debug)]
@@ -263,6 +280,7 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         Ok(Arc::new(URLEmitterExec::new(
             proto.partitions as usize,
             proto.task_count as usize,
+            proto.tag,
         )))
     }
 
@@ -274,6 +292,7 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         let proto = URLEmitterExecProto {
             partitions: exec.properties.partitioning.partition_count() as u64,
             task_count: exec.task_count as u64,
+            tag: exec.tag.clone(),
         };
 
         proto
