@@ -2,7 +2,7 @@
 mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use futures::TryStreamExt;
@@ -135,7 +135,7 @@ mod tests {
     // test_tpch_query runs each TPC-H query twice - once in a distributed manner and once
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
-        let (d_ctx, _guard, _) = start_localhost_context(4, DefaultSessionBuilder).await;
+        let d_ctx = start_in_memory_context(4, DefaultSessionBuilder);
         let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
 
         let results_d = run_tpch_query(d_ctx, sql.clone()).await?;

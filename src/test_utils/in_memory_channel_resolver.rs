@@ -6,6 +6,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
+use datafusion::prelude::SessionContext;
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Endpoint, Server};
 
@@ -56,6 +57,23 @@ impl InMemoryChannelResolver {
 
         this_clone
     }
+}
+pub fn start_in_memory_context<B>(num_workers: usize, session_builder: B) -> SessionContext
+where
+    B: WorkerSessionBuilder + Send + Sync + Clone + 'static,
+{
+    use crate::SessionStateBuilderExt;
+    use datafusion::execution::SessionStateBuilder;
+    let mut state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_distributed_planner()
+        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+        .with_distributed_channel_resolver(InMemoryChannelResolver::from_session_builder(
+            session_builder,
+        ))
+        .build();
+    state.config_mut().options_mut().execution.target_partitions = 3;
+    SessionContext::from(state)
 }
 
 impl Default for InMemoryChannelResolver {

@@ -5,7 +5,7 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::test_utils::localhost::start_localhost_context;
+    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::test_utils::property_based::{
         compare_ordering, compare_result_set,
     };
@@ -278,7 +278,7 @@ mod tests {
         let s_ctx = SessionContext::new();
 
         // Make distributed localhost context to run queries
-        let (d_ctx, _guard, _) = start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder);
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
