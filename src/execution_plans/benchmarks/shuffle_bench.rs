@@ -2,6 +2,7 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::distributed_planner::ExchangeLayout;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
 use crate::{DistributedExt, DistributedTaskContext, ExecutionTask, NetworkShuffleExec, Stage};
@@ -204,9 +205,7 @@ impl ShuffleFixture {
                         input,
                         Partitioning::Hash(
                             vec![Arc::new(Column::new("id", 0))],
-                            self.bench
-                                .partitions
-                                .saturating_mul(self.bench.consumer_tasks.max(1)),
+                            self.bench.partitions.max(1),
                         ),
                     )?))
                 })
@@ -220,23 +219,31 @@ impl ShuffleFixture {
             tasks: self.input_stage_tasks.clone(),
         };
 
+        let consumer_tasks = self.bench.consumer_tasks.min(self.bench.partitions.max(1));
         let mut join_set = JoinSet::default();
-        for task_index in 0..self.bench.consumer_tasks {
+        for task_index in 0..consumer_tasks {
+            let layout = ExchangeLayout::try_shuffle(
+                Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions),
+                self.bench.producer_tasks,
+                consumer_tasks,
+            )
+            .unwrap();
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::UnknownPartitioning(self.bench.partitions),
+                    Partitioning::UnknownPartitioning(layout.max_partition_count_per_consumer()),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
+                layout,
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
                 DistributedTaskContext {
                     task_index,
-                    task_count: self.bench.consumer_tasks,
+                    task_count: consumer_tasks,
                 },
             ));
 

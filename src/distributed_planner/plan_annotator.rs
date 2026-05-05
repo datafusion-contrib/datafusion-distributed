@@ -617,6 +617,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shuffle_boundary_keeps_stage_task_count() {
+        let query = r#"
+        SELECT "MinTemp", ROW_NUMBER() OVER (PARTITION BY "RainToday" ORDER BY "MinTemp") as rn
+        FROM weather
+        "#;
+        let options = TestPlanOptions {
+            target_partitions: 2,
+            num_workers: 3,
+            broadcast_enabled: false,
+        };
+        let annotated = annotate_test_plan(query, options, |b| b).await;
+        assert_snapshot!(annotated, @r"
+        ProjectionExec: task_count=Desired(3)
+          BoundedWindowAggExec: task_count=Desired(3)
+            SortExec: task_count=Desired(3)
+              [NetworkBoundary] Shuffle: task_count=Desired(3)
+                RepartitionExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
+        ")
+    }
+
+    #[tokio::test]
+    async fn nested_shuffle_uses_stage_task_count() {
+        let query = r#"
+        SELECT weather."RainToday", agg.total
+        FROM weather
+        JOIN (
+            SELECT "RainToday", count(*) AS total
+            FROM weather
+            GROUP BY "RainToday"
+        ) agg
+        ON weather."RainToday" = agg."RainToday"
+        "#;
+        let options = TestPlanOptions {
+            target_partitions: 2,
+            num_workers: 4,
+            broadcast_enabled: true,
+        };
+        let annotated = annotate_test_plan(query, options, |b| b).await;
+
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=Desired(3)
+          CoalescePartitionsExec: task_count=Desired(3)
+            [NetworkBoundary] Broadcast: task_count=Desired(3)
+              BroadcastExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+          ProjectionExec: task_count=Desired(3)
+            AggregateExec: task_count=Desired(3)
+              [NetworkBoundary] Shuffle: task_count=Desired(3)
+                RepartitionExec: task_count=Desired(3)
+                  AggregateExec: task_count=Desired(3)
+                    DataSourceExec: task_count=Desired(3)
+        ");
+    }
+
+    #[tokio::test]
     async fn test_children_isolator_union() {
         let query = r#"
         SET distributed.children_isolator_unions = true;

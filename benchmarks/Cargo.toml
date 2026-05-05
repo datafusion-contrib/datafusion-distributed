@@ -61,5 +61,13 @@ name = "local_repartition"
 harness = false
 
 [[bench]]
+name = "local_exchange_split"
+harness = false
+
+[[bench]]
+name = "local_exchange_query_shapes"
+harness = false
+
+[[bench]]
 name = "transport"
 harness = false
