@@ -359,6 +359,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                     task_number: task_i as u64,
                 }),
                 work_unit_feed_declarations,
+                target_worker_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();
