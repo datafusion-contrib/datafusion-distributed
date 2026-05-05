@@ -89,7 +89,7 @@ impl TableProvider for URLEmitterTableProvider {
     async fn scan(
         &self,
         _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -97,6 +97,7 @@ impl TableProvider for URLEmitterTableProvider {
             self.partitions,
             self.task_count,
             self.tag.clone(),
+            projection.cloned(),
         )))
     }
 }
@@ -106,19 +107,30 @@ pub struct URLEmitterExec {
     properties: Arc<PlanProperties>,
     task_count: usize,
     tag: String,
+    projection: Option<Vec<usize>>,
 }
 
 impl URLEmitterExec {
-    pub fn new(partitions: usize, task_count: usize, tag: String) -> Self {
+    pub fn new(
+        partitions: usize,
+        task_count: usize,
+        tag: String,
+        projection: Option<Vec<usize>>,
+    ) -> Self {
+        let schema = match &projection {
+            Some(indices) => Arc::new(url_emitter_schema().project(indices).unwrap()),
+            None => url_emitter_schema(),
+        };
         Self {
             properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(url_emitter_schema()),
+                EquivalenceProperties::new(schema),
                 datafusion::physical_plan::Partitioning::UnknownPartitioning(partitions),
                 datafusion::physical_plan::execution_plan::EmissionType::Incremental,
                 datafusion::physical_plan::execution_plan::Boundedness::Bounded,
             )),
             task_count,
             tag,
+            projection,
         }
     }
 }
@@ -169,19 +181,24 @@ impl ExecutionPlan for URLEmitterExec {
             .session_config()
             .get_extension::<LocalWorkerContext>()
             .expect("URLEmitterExec requires LocalWorkerContext during distributed execution");
-        let batch = RecordBatch::try_new(
-            url_emitter_schema(),
-            vec![
-                Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
-                Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
-                Arc::new(StringArray::from(vec![self.tag.as_str()])),
-                Arc::new(StringArray::from(vec![
-                    local_worker_ctx.self_url.as_str().trim_end_matches('/'),
-                ])),
-            ],
-        )?;
+        let schema = match &self.projection {
+            Some(indices) => Arc::new(url_emitter_schema().project(indices).unwrap()),
+            None => url_emitter_schema(),
+        };
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
+            Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
+            Arc::new(StringArray::from(vec![self.tag.as_str()])),
+            Arc::new(StringArray::from(vec![
+                local_worker_ctx.self_url.as_str().trim_end_matches('/'),
+            ])),
+        ];
+        if let Some(indices) = &self.projection {
+            columns = indices.iter().map(|&i| Arc::clone(&columns[i])).collect();
+        }
+        let batch = RecordBatch::try_new(schema.clone(), columns)?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            url_emitter_schema(),
+            schema,
             stream::iter(vec![Ok(batch)]),
         )))
     }
@@ -252,6 +269,8 @@ struct URLEmitterExecProto {
     task_count: u64,
     #[prost(string, tag = "3")]
     tag: String,
+    #[prost(uint64, repeated, tag = "4")]
+    projection: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -277,6 +296,11 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
             proto.partitions as usize,
             proto.task_count as usize,
             proto.tag,
+            if proto.projection.is_empty() {
+                None
+            } else {
+                Some(proto.projection.into_iter().map(|v| v as usize).collect())
+            },
         )))
     }
 
@@ -289,6 +313,13 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
             partitions: exec.properties.partitioning.partition_count() as u64,
             task_count: exec.task_count as u64,
             tag: exec.tag.clone(),
+            projection: exec
+                .projection
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| v as u64)
+                .collect(),
         };
 
         proto
