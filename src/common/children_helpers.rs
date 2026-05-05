@@ -12,7 +12,7 @@ where
 {
     let children = children.as_ref();
     if children.len() != 1 {
-        return plan_err!("Expected exactly 1 child, got {}", children.len());
+        return plan_err!("Expected exactly 1 children, got {}", children.len());
     }
     Ok(children[0].borrow().clone())
 }

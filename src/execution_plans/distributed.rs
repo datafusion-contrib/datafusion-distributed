@@ -169,6 +169,7 @@ impl DistributedExec {
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
+
         let urls = worker_resolver.get_urls()?;
 
         let metrics = CoordinatorToWorkerMetrics {
@@ -229,7 +230,7 @@ impl DistributedExec {
                     url: Some(url.clone()),
                 });
                 // Spawn a task that sends the subplan to the chosen URL.
-                // There will be as many as spawned tasks as workers.
+                // There will be as many spawned tasks as workers.
                 let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
                 spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
@@ -442,7 +443,10 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut work_unit_feed_declarations = vec![];
         gather_work_unit_feed_declarations(
             self.plan,
-            DistributedTaskContext::new(task_i, self.task_count),
+            DistributedTaskContext {
+                task_index: task_i,
+                task_count: self.task_count,
+            },
             d_cfg,
             &mut work_unit_feed_declarations,
         );
@@ -458,7 +462,6 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
-                task_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();
@@ -620,7 +623,10 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let mut futures = vec![];
         gather_work_unit_feed_tasks(
             self.plan,
-            DistributedTaskContext::new(task_i, self.task_count),
+            DistributedTaskContext {
+                task_index: task_i,
+                task_count: self.task_count,
+            },
             &ctx,
             d_cfg,
             &tx,

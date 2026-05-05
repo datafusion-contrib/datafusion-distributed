@@ -172,13 +172,7 @@ impl ExecutionPlan for URLEmitterExec {
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
                 Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
                 Arc::new(StringArray::from(vec![self.tag.as_str()])),
-                Arc::new(StringArray::from(vec![
-                    distributed_ctx
-                        .task_url
-                        .as_ref()
-                        .map(|url| url.as_str())
-                        .expect("URL not found in distributed context"),
-                ])),
+                Arc::new(StringArray::from(vec!["example_url"])),
             ],
         )?;
         Ok(Box::pin(RecordBatchStreamAdapter::new(

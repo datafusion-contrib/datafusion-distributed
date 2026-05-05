@@ -67,8 +67,6 @@ message SetPlanRequest {
   //
   // If no WorkUnitFeedExec nodes are present in the plan, this should be empty.
   repeated WorkUnitFeedDeclaration work_unit_feed_declarations = 4;
-  // The URL to which this task was assigned from the perspective of the parent.
-  string task_url = 5;
 }
 
 message WorkUnit {
