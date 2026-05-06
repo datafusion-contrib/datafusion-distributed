@@ -1,5 +1,4 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::stage::ExecutionTask;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::exec_err;
@@ -127,16 +126,25 @@ pub trait TaskEstimator {
         cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>>;
 
-    /// Defines a custom protocol for routing tasks to specific URLs / physical machines.
-    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
+    /// Optionally defines a custom protocol for routing tasks to specific worker URLs. Receives
+    /// routing context including task count and a list of available URLs, and returns a vector
+    /// of routed URLs, in order of task assignment.
+    ///
+    /// If Ok(Some(Vec<Url>)) is returned, tasks are sent in order to the URLs specified in the
+    /// returned vector. If Ok(None) is returned, execution defaults to round-robin routing.
+    fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        Ok(None)
+    }
 }
 
 /// Context usable for routing tasks to worker URLs.
 pub struct TaskRoutingContext<'a> {
     pub task_ctx: Arc<TaskContext>,
     pub plan: &'a Arc<dyn ExecutionPlan>,
-    pub tasks: &'a [ExecutionTask],
-    pub urls: &'a [Url],
+    pub task_count: usize,
+    // Contains a list of URLs representing machines available to receive a task. These URLs are
+    // sourced at execution time and thus should closely reflect the real state of the cluster.
+    pub available_urls: &'a [Url],
 }
 
 impl TaskEstimator for usize {
@@ -161,10 +169,6 @@ impl TaskEstimator for usize {
         _: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
         None
-    }
-
-    fn route_tasks(&self, _: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
-        Ok(None)
     }
 }
 
@@ -211,12 +215,12 @@ pub(crate) fn set_distributed_task_estimator(
     }
 }
 
-pub fn get_distributed_task_estimator(
+pub(crate) fn get_distributed_task_estimator(
     cfg: &SessionConfig,
 ) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
     let opts = cfg.options();
     let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return exec_err!("WorkerResolver not present in the session config");
+        return exec_err!("TaskEstimator not present in the session config");
     };
     let task_estimator: Arc<dyn TaskEstimator> =
         Arc::new(distributed_cfg.__private_task_estimator.clone());
@@ -280,10 +284,6 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         }
         let plan = DataSourceExec::from_data_source(new_file_scan);
         Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
-    }
-
-    fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
-        Ok(None)
     }
 }
 
@@ -446,10 +446,6 @@ mod tests {
             _cfg: &ConfigOptions,
         ) -> Option<Arc<dyn ExecutionPlan>> {
             None
-        }
-
-        fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
-            Ok(None)
         }
     }
 }

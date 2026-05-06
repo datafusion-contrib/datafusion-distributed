@@ -171,7 +171,7 @@ impl DistributedExec {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let urls = worker_resolver.get_urls()?;
+        let available_urls = worker_resolver.get_urls()?;
 
         let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
@@ -200,14 +200,6 @@ impl DistributedExec {
             let mut spawner =
                 CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
 
-            // Default routing assigns tasks to URLs round-robin from a random starting point.
-            let start_idx = rand::rng().random_range(0..urls.len());
-
-            // If the user has not defined custom routing through the route_task API, we
-            // default to round-robin task assignation with a randomized starting point.
-            //
-            // If the user has defined custom routing through the route_task interface,
-            // we attempt to route the task to the specified URL.
             let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
                 task_ctx: Arc::clone(ctx),
                 plan: stage.plan.as_ref().ok_or_else(|| {
@@ -215,21 +207,26 @@ impl DistributedExec {
                         "network boundary stage missing input plan during routing"
                     )
                 })?,
-                tasks: &stage.tasks,
-                urls: &urls,
+                task_count: stage.tasks.len(),
+                available_urls: &available_urls,
             }) {
                 Ok(Some(routed_urls)) => routed_urls,
-                Ok(None) => (0..stage.tasks.len())
-                    .map(|i| urls[(start_idx + i) % urls.len()].clone())
-                    .collect(),
+                // If the user has not defined custom routing with a `route_tasks` implementation, we
+                // default to round-robin task assignation from a randomized starting point.
+                Ok(None) => {
+                    let start_idx = rand::rng().random_range(0..available_urls.len());
+                    (0..stage.tasks.len())
+                        .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())
+                        .collect()
+                }
                 Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
             };
 
             if routed_urls.len() != stage.tasks.len() {
                 return Err(exec_datafusion_err!(
                     "number of tasks ({}) was not equal to number of urls ({}) at execution time",
-                    routed_urls.len(),
-                    stage.tasks.len()
+                    stage.tasks.len(),
+                    routed_urls.len()
                 ));
             }
 

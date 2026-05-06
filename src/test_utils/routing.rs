@@ -254,9 +254,9 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         routing_ctx: &crate::TaskRoutingContext<'_>,
     ) -> datafusion::error::Result<Option<Vec<Url>>> {
         // Trivial routing policy: Assign tasks to URLs in reverse order.
-        let mut routed_urls = routing_ctx.urls.to_vec();
+        let mut routed_urls = routing_ctx.available_urls.to_vec();
         routed_urls.reverse();
-        routed_urls.truncate(routing_ctx.tasks.len());
+        routed_urls.truncate(routing_ctx.task_count);
         Ok(Some(routed_urls))
     }
 }
