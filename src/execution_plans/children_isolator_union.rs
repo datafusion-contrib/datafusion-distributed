@@ -149,7 +149,7 @@ impl ChildrenIsolatorUnionExec {
         })
     }
 
-    fn child_task_counts(&self) -> Vec<usize> {
+    pub(crate) fn child_task_counts(&self) -> Vec<usize> {
         // Preserve the task assignment in task_idx_map and allow child plans to be
         // replaced and properties to be recomputed from these new children.
         let mut counts = vec![0; self.children.len()];
