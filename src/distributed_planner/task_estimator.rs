@@ -1,13 +1,17 @@
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
+use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
 use std::fmt::Debug;
 use std::sync::Arc;
+use url::Url;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
@@ -121,6 +125,29 @@ pub trait TaskEstimator {
         task_count: usize,
         cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>>;
+
+    /// Optionally defines a custom protocol for routing tasks to specific worker URLs. Receives
+    /// routing context including task count and a list of available URLs, and returns a vector
+    /// of routed URLs, in order of task assignment.
+    ///
+    /// If Ok(Some(Vec<Url>)) is returned, tasks are sent in order to the URLs specified in the
+    /// returned vector. If Ok(None) is returned, execution defaults to round-robin routing.
+    fn route_tasks(&self, _routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        Ok(None)
+    }
+}
+
+/// Context usable for routing tasks to worker URLs.
+pub struct TaskRoutingContext<'a> {
+    /// The task context active at routing time.
+    pub task_ctx: Arc<TaskContext>,
+    /// The head execution plan of the stage being routed.
+    pub plan: &'a Arc<dyn ExecutionPlan>,
+    /// The number of tasks to be assigned.
+    pub task_count: usize,
+    /// Contains a list of URLs representing machines available to receive a task. These URLs are
+    /// sourced at execution time and thus should closely reflect the real state of the cluster.
+    pub available_urls: &'a [Url],
 }
 
 impl TaskEstimator for usize {
@@ -153,6 +180,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -162,6 +190,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
 }
@@ -187,6 +216,18 @@ pub(crate) fn set_distributed_task_estimator(
             },
         )
     }
+}
+
+pub(crate) fn get_distributed_task_estimator(
+    cfg: &SessionConfig,
+) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
+    let opts = cfg.options();
+    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
+        return exec_err!("TaskEstimator not present in the session config");
+    };
+    let task_estimator: Arc<dyn TaskEstimator> =
+        Arc::new(distributed_cfg.__private_task_estimator.clone());
+    Ok(Arc::clone(&task_estimator))
 }
 
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
@@ -299,6 +340,15 @@ impl TaskEstimator for CombinedTaskEstimator {
             }
         }
         None
+    }
+
+    fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+        for estimator in &self.user_provided {
+            if let Some(result) = estimator.route_tasks(routing_ctx)? {
+                return Ok(Some(result));
+            }
+        }
+        Ok(None)
     }
 }
 
