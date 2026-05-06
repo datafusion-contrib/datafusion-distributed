@@ -139,11 +139,14 @@ pub trait TaskEstimator {
 
 /// Context usable for routing tasks to worker URLs.
 pub struct TaskRoutingContext<'a> {
+    /// The task context active at routing time.
     pub task_ctx: Arc<TaskContext>,
+    /// The head execution plan of the stage being routed.
     pub plan: &'a Arc<dyn ExecutionPlan>,
+    /// The number of tasks to be assigned.
     pub task_count: usize,
-    // Contains a list of URLs representing machines available to receive a task. These URLs are
-    // sourced at execution time and thus should closely reflect the real state of the cluster.
+    /// Contains a list of URLs representing machines available to receive a task. These URLs are
+    /// sourced at execution time and thus should closely reflect the real state of the cluster.
     pub available_urls: &'a [Url],
 }
 
