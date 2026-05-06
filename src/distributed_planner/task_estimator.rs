@@ -3,12 +3,13 @@ use crate::{DistributedConfig, PartitionIsolatorExec};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 use url::Url;
@@ -126,6 +127,25 @@ pub trait TaskEstimator {
         cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>>;
 
+    /// Specializes a leaf node for the given task by trimming the per-partition state
+    /// (e.g. file groups, ranges) for partitions outside `partition_group`. When this
+    /// returns `Some`, the leaf inside the surrounding [crate::PartitionIsolatorExec]
+    /// is replaced by the returned plan in the per-task payload sent to the worker, so
+    /// the per-task payload no longer carries data for partitions this task will not
+    /// execute. When this returns `None`, the original leaf is shipped as-is.
+    ///
+    /// Implementations MUST preserve the input partition count so the surrounding
+    /// [crate::PartitionIsolatorExec] dispatch math remains valid at runtime. The
+    /// returned plan should yield empty streams for partitions not in `partition_group`.
+    fn specialize_leaf(
+        &self,
+        _plan: &Arc<dyn ExecutionPlan>,
+        _partition_group: &[usize],
+        _cfg: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        None
+    }
+
     /// Optionally defines a custom protocol for routing tasks to specific worker URLs. Receives
     /// routing context including task count and a list of available URLs, and returns a vector
     /// of routed URLs, in order of task assignment.
@@ -180,6 +200,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn specialize_leaf(&self, plan: &Arc<dyn ExecutionPlan>, partition_group: &[usize], cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
             fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -190,6 +211,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
             fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn specialize_leaf(&self, plan: &Arc<dyn ExecutionPlan>, partition_group: &[usize], cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
             fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -288,6 +310,37 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         let plan = DataSourceExec::from_data_source(new_file_scan);
         Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
     }
+
+    fn specialize_leaf(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        partition_group: &[usize],
+        _cfg: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        // Empty out the file groups for partitions this task will not execute, while
+        // preserving the overall file_groups vector length so the partition count is
+        // unchanged. This drops the unused file metadata from the per-task payload
+        // shipped over the wire, while keeping the plan structure (and the surrounding
+        // [PartitionIsolatorExec]) intact so the runtime skipping path still works.
+        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+
+        let in_group: HashSet<usize> = partition_group.iter().copied().collect();
+        let mut new_file_scan = file_scan.clone();
+        new_file_scan.file_groups = file_scan
+            .file_groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                if in_group.contains(&i) {
+                    g.clone()
+                } else {
+                    FileGroup::new(vec![])
+                }
+            })
+            .collect();
+        Some(DataSourceExec::from_data_source(new_file_scan))
+    }
 }
 
 /// Tries multiple user-provided [TaskEstimator]s until one returns an estimation. If none
@@ -336,6 +389,25 @@ impl TaskEstimator for CombinedTaskEstimator {
         // If none of the user-provided returned an estimation, the default ones are used.
         for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
             if let Some(result) = default_estimator.scale_up_leaf_node(plan, task_count, cfg) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    fn specialize_leaf(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        partition_group: &[usize],
+        cfg: &ConfigOptions,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        for estimator in &self.user_provided {
+            if let Some(result) = estimator.specialize_leaf(plan, partition_group, cfg) {
+                return Some(result);
+            }
+        }
+        for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
+            if let Some(result) = default_estimator.specialize_leaf(plan, partition_group, cfg) {
                 return Some(result);
             }
         }

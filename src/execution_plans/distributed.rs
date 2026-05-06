@@ -1,6 +1,8 @@
 use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::{NetworkBoundaryExt, get_distributed_task_estimator};
+use crate::distributed_planner::{
+    NetworkBoundaryExt, get_distributed_task_estimator, specialize_plan_for_task,
+};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -31,6 +33,7 @@ use datafusion::physical_plan::metrics::{
 };
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use crate::TaskEstimator;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
@@ -197,8 +200,13 @@ impl DistributedExec {
 
             let stage = plan.input_stage();
 
-            let mut spawner =
-                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
+            let mut spawner = CoordinatorToWorkerTaskSpawner::new(
+                stage,
+                &metrics,
+                &codec,
+                Arc::clone(&task_estimator),
+                &mut join_set,
+            )?;
 
             let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
                 task_ctx: Arc::clone(ctx),
@@ -362,7 +370,8 @@ type WorkerResponseRx =
 
 struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
-    plan_proto: Vec<u8>,
+    codec: &'a dyn PhysicalExtensionCodec,
+    estimator: Arc<dyn TaskEstimator>,
     query_id: Uuid,
     stage_id: usize,
     task_count: usize,
@@ -377,18 +386,17 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         stage: &'a Stage,
         metrics: &'a CoordinatorToWorkerMetrics,
         codec: &'a dyn PhysicalExtensionCodec,
+        estimator: Arc<dyn TaskEstimator>,
         join_set: &'a mut JoinSet<Result<()>>,
     ) -> Result<Self> {
         let Some(plan) = &stage.plan else {
             return internal_err!("Plan is not set for stage {}", stage.num);
         };
 
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
-
         Ok(Self {
             plan,
-            plan_proto,
+            codec,
+            estimator,
             query_id: stage.query_id,
             stage_id: stage.num,
             task_count: stage.tasks.len(),
@@ -457,21 +465,36 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             &mut work_unit_feed_declarations,
         );
 
+        // Specialize the stage plan for this specific task. This drops state (e.g. file
+        // groups) for partitions the task will not execute, so the per-task payload only
+        // carries what this worker actually needs. When no [TaskEstimator] handles a given
+        // [PartitionIsolatorExec], the isolator is preserved and the runtime skipping path
+        // is used as a safe fallback.
+        let specialized_plan = specialize_plan_for_task(
+            self.plan,
+            task_i,
+            self.task_count,
+            self.estimator.as_ref(),
+            ctx.session_config().options(),
+        )?;
+        let plan_proto =
+            PhysicalPlanNode::try_from_physical_plan(specialized_plan, self.codec)?.encode_to_vec();
+
         let task_key = TaskKey {
             query_id: serialize_uuid(&self.query_id),
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
+        let plan_size = plan_proto.len();
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
-                plan_proto: self.plan_proto.clone(),
+                plan_proto,
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
                 target_worker_url: url.to_string(),
             })),
         };
-        let plan_size = self.plan_proto.len();
 
         let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
             tokio::sync::mpsc::unbounded_channel();
