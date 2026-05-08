@@ -1,6 +1,6 @@
 use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::NetworkBoundaryExt;
+use crate::distributed_planner::{NetworkBoundaryExt, get_distributed_task_estimator};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -14,7 +14,8 @@ use crate::worker::generated::worker::{
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
+    DistributedWorkUnitFeedContext, TaskRoutingContext, WorkerResolver,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::HashMap;
 use datafusion::common::instant::Instant;
@@ -156,20 +157,21 @@ impl DistributedExec {
             })
     }
 
-    /// Prepares the distributed plan for execution, which implies:
-    /// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-    ///    URL per task.
-    /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-    ///    network call feeding the subplan is necessary.
-    /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-    ///    become nodes without children and traversing them will not go further down in.
+    /// Prepares the distributed plan for execution.
+    /// In particular, this means we must take the following steps at each network boundary node:
+    /// 1. Assign tasks to URLs. Follow the user-specified routing defined in the TaskEstimator
+    ///    implementation, or default to random round-robin assignment.
+    /// 2. Send the sliced subplans to the assigned URLs. For each task assigned to a URL, it is here
+    ///    that we now must actually send that subplan to the URL over the wire.
+    /// 3. Set network boundary input plans to `None`. This way, network boundaries become nodes
+    ///    without children, so we stop further traversal from happening in the future.
     /// 4. Spawn a background task per worker that waits for the worker to finish and collects
     ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let urls = worker_resolver.get_urls()?;
+        let available_urls = worker_resolver.get_urls()?;
 
         let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
@@ -186,28 +188,56 @@ impl DistributedExec {
 
         let mut join_set = JoinSet::new();
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
-            // The following logic is just applied on network boundaries.
+            // The following logic is only relevant to network boundaries.
             let Some(plan) = plan.as_network_boundary() else {
                 return Ok(Transformed::no(plan));
             };
+
+            let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
 
             let stage = plan.input_stage();
 
             let mut spawner =
                 CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
 
-            // Right now, we assign random workers to tasks. This might change in the future.
-            let start_idx = rand::rng().random_range(0..urls.len());
+            let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
+                task_ctx: Arc::clone(ctx),
+                plan: stage.plan.as_ref().ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "network boundary stage missing input plan during routing"
+                    )
+                })?,
+                task_count: stage.tasks.len(),
+                available_urls: &available_urls,
+            }) {
+                Ok(Some(routed_urls)) => routed_urls,
+                // If the user has not defined custom routing with a `route_tasks` implementation, we
+                // default to round-robin task assignation from a randomized starting point.
+                Ok(None) => {
+                    let start_idx = rand::rng().random_range(0..available_urls.len());
+                    (0..stage.tasks.len())
+                        .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())
+                        .collect()
+                }
+                Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
+            };
+
+            if routed_urls.len() != stage.tasks.len() {
+                return Err(exec_datafusion_err!(
+                    "number of tasks ({}) was not equal to number of urls ({}) at execution time",
+                    stage.tasks.len(),
+                    routed_urls.len()
+                ));
+            }
 
             let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for i in 0..stage.tasks.len() {
-                let url = urls[(start_idx + i) % urls.len()].clone();
+            for (i, routed_url) in routed_urls.into_iter().enumerate() {
                 tasks.push(ExecutionTask {
-                    url: Some(url.clone()),
+                    url: Some(routed_url.clone()),
                 });
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
+                // Spawn a task that sends the subplan to the chosen URL.
+                // There will be as many spawned tasks as workers.
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, routed_url)?;
                 spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
@@ -438,6 +468,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
+                target_worker_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();

@@ -67,6 +67,9 @@ message SetPlanRequest {
   //
   // If no WorkUnitFeedExec nodes are present in the plan, this should be empty.
   repeated WorkUnitFeedDeclaration work_unit_feed_declarations = 4;
+  // The worker URL to which this message will go. The receiving worker will use this information to identify
+  // itself, and avoid further gRPC calls in case it needs to call itself for executing remote tasks.
+  string target_worker_url = 5;
 }
 
 message WorkUnit {

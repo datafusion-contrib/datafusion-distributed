@@ -912,7 +912,7 @@ mod tests {
 
         let query_sql = clickbench::get_query(query_id)?;
 
-        let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder);
+        let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx
             .with_distributed_files_per_task(FILES_PER_TASK)?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
