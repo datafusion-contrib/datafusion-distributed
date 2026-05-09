@@ -3,10 +3,8 @@ use crate::common::{deserialize_uuid, serialize_uuid};
 use crate::work_unit_feed::remote_work_unit_feed::RemoteFeedProvider;
 use datafusion::common::{Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion_proto::protobuf::proto_error;
-use futures::StreamExt;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::stream::BoxStream;
-use prost::Message;
 use std::fmt::Debug;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -143,14 +141,14 @@ impl<T: WorkUnitFeedProvider> RemoteOrLocalProvider<T> {
     ) -> Result<BoxStream<'static, Result<T::WorkUnit>>> {
         match self {
             Self::Local(local) => local.feed(partition, ctx),
-            Self::Remote(remote) => Ok(remote
-                .feed(partition, ctx)?
-                .map(|bytes_or_err| {
-                    let bytes = bytes_or_err?;
-                    T::WorkUnit::decode(bytes.as_slice())
-                        .map_err(|err| proto_error(format!("{err}")))
-                })
-                .boxed()),
+            Self::Remote(remote) => Ok(remote.feed::<T::WorkUnit>(partition, ctx)?),
+        }
+    }
+
+    fn metrics(&self) -> ExecutionPlanMetricsSet {
+        match self {
+            Self::Local(local) => local.metrics(),
+            Self::Remote(remote) => remote.metrics(),
         }
     }
 }
@@ -181,7 +179,10 @@ impl<T: WorkUnitFeedProvider> WorkUnitFeed<T> {
         let id = deserialize_uuid(&proto.id)?;
         Ok(WorkUnitFeed {
             id,
-            provider: RemoteOrLocalProvider::Remote(RemoteFeedProvider { id }),
+            provider: RemoteOrLocalProvider::Remote(RemoteFeedProvider {
+                id,
+                metrics: ExecutionPlanMetricsSet::new(),
+            }),
         })
     }
 
@@ -272,5 +273,10 @@ impl<T: WorkUnitFeedProvider> WorkUnitFeed<T> {
         ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<T::WorkUnit>>> {
         self.provider.feed(partition, ctx)
+    }
+
+    /// DataFusion metrics collected at runtime while streaming [WorkUnit]s through [Self::feed].
+    pub fn metrics(&self) -> ExecutionPlanMetricsSet {
+        self.provider.metrics()
     }
 }

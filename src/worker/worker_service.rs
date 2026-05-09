@@ -1,4 +1,3 @@
-use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
 use crate::worker::WorkerSessionBuilder;
 use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
 use crate::worker::generated::worker::{
@@ -8,7 +7,8 @@ use crate::worker::impl_execute_task::execute_remote_task;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::worker::task_data::TaskData;
 use crate::{
-    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
+    DefaultSessionBuilder, GetWorkerInfoRequest, GetWorkerInfoResponse, ObservabilityServiceImpl,
+    ObservabilityServiceServer, WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
