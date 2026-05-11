@@ -61,6 +61,7 @@ impl MemoryWorkerHandle {
             }));
 
         let server_worker = worker.clone();
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             Server::builder()
                 .add_service(server_worker.into_worker_server())
@@ -138,6 +139,7 @@ impl TcpWorkerHandle {
             .map_err(|err| datafusion::common::DataFusionError::External(Box::new(err)))?
             .port();
         let server_worker = worker.clone();
+        #[allow(clippy::disallowed_methods)]
         let task = tokio::spawn(async move {
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             let _ = Server::builder()

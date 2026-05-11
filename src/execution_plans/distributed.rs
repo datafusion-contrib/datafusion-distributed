@@ -528,6 +528,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             task_number: task_i as u64,
         };
         let task_metrics_collection = Arc::clone(self.task_metrics);
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
                 let Some(worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics)) =

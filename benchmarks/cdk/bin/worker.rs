@@ -260,6 +260,7 @@ struct Ec2WorkerResolver {
 }
 
 async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
+    #[allow(clippy::disallowed_methods)]
     tokio::spawn(async move {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
         let ec2_client = Ec2Client::new(&config);
@@ -317,6 +318,7 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
 impl Ec2WorkerResolver {
     fn new() -> Self {
         let urls = Arc::new(RwLock::new(Vec::new()));
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(background_ec2_worker_resolver(urls.clone()));
         Self { urls }
     }

@@ -156,6 +156,7 @@ mod tests {
             // Spawn a background task to demonstrate stateful behavior
             let mut stream = self.child.execute(partition, context)?;
 
+            #[allow(clippy::disallowed_methods)]
             let handle = tokio::spawn(async move {
                 // Simulate some background work
                 while let Some(batch) = stream.next().await {

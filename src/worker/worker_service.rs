@@ -200,6 +200,7 @@ impl WorkerService for Worker {
         let (work_unit_senders, metrics_rx) = self.impl_set_plan(request, grpc_headers).await?;
 
         // Continue reading remaining messages (work unit feed data) in the background.
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             while let Some(Ok(msg)) = body.next().await {
                 let Some(Inner::WorkUnit(msg)) = msg.inner else {

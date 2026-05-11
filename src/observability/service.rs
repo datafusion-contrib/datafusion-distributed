@@ -40,6 +40,7 @@ impl ObservabilityServiceImpl {
             let mut sys = sysinfo::System::new_all();
 
             // Spawn background task to periodically collect and send system metrics.
+            #[allow(clippy::disallowed_methods)]
             tokio::task::spawn(async move {
                 loop {
                     sys.refresh_process_specifics(
