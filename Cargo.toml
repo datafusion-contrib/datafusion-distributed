@@ -59,12 +59,7 @@ hyper-util = { version = "0.1.16", optional = true }
 
 [features]
 avro = ["datafusion/avro"]
-integration = [
-  "insta",
-  "parquet",
-  "arrow",
-  "hyper-util",
-]
+integration = ["insta", "parquet", "arrow", "hyper-util"]
 
 system-metrics = ["sysinfo"]
 
@@ -86,3 +81,4 @@ test-case = "3.3.1"
 
 [workspace.lints.clippy]
 disallowed_types = "deny"
+disallowed-methods = "deny"

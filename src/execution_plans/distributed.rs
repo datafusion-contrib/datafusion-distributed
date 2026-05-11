@@ -496,6 +496,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {
                 let Some(worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics)) =

@@ -1,8 +1,9 @@
 use crate::WorkUnitFeedProvider;
-use datafusion::common::{HashMap, exec_err};
+use datafusion::common::exec_err;
 use datafusion::execution::TaskContext;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;

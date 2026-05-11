@@ -116,6 +116,7 @@ impl Worker {
                     if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
                         let entries = Arc::clone(&task_data_entries);
                         let k = key.clone();
+                        #[allow(clippy::disallowed_methods)]
                         tokio::spawn(async move {
                             entries.invalidate(&k).await;
                         });
@@ -144,6 +145,7 @@ impl Worker {
                         let k = key_for_drop.clone();
                         // Fire-and-forget background tokio task to handle async
                         // invalidate() within synchronous on_drop_stream.
+                        #[allow(clippy::disallowed_methods)]
                         tokio::spawn(async move {
                             entries.invalidate(&k).await;
                         });

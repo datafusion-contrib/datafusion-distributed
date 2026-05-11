@@ -135,8 +135,8 @@ fn detailed_batch_comparison(
         );
     }
 
-    let left_set: datafusion::common::HashSet<_> = left_rows.iter().collect();
-    let right_set: datafusion::common::HashSet<_> = right_rows.iter().collect();
+    let left_set: std::collections::HashSet<_> = left_rows.iter().collect();
+    let right_set: std::collections::HashSet<_> = right_rows.iter().collect();
 
     if left_set != right_set {
         // Get all differences (not just samples)
