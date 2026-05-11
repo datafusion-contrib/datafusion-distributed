@@ -2,10 +2,10 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::stage::RemoteStage;
 use crate::worker::test_utils::worker_handles::{MemoryWorkerHandle, TcpWorkerHandle};
 use crate::{
-    DefaultChannelResolver, DistributedExt, DistributedTaskContext, ExecutionTask,
-    NetworkShuffleExec, Stage,
+    DefaultChannelResolver, DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage,
 };
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;
@@ -202,9 +202,7 @@ impl TransportBench {
                 .build()
                 .task_ctx(),
             input_stage_tasks: (0..self.producer_tasks)
-                .map(|i| ExecutionTask {
-                    url: Some(Url::parse(&format!("http://localhost:{i}")).unwrap()),
-                })
+                .map(|i| Url::parse(&format!("http://localhost:{i}")).unwrap())
                 .collect(),
             workers: PreparedTransportWorkers::InMemory(workers),
         })
@@ -239,12 +237,7 @@ impl TransportBench {
                 .with_distributed_compression(self.compression)?
                 .build()
                 .task_ctx(),
-            input_stage_tasks: workers
-                .iter()
-                .map(|worker| ExecutionTask {
-                    url: Some(worker.url.clone()),
-                })
-                .collect(),
+            input_stage_tasks: workers.iter().map(|worker| worker.url.clone()).collect(),
             workers: PreparedTransportWorkers::Tcp(workers),
         })
     }
@@ -260,7 +253,7 @@ pub struct TransportFixture {
     bench: TransportBench,
     schema: Arc<Schema>,
     task_ctx: Arc<datafusion::execution::TaskContext>,
-    input_stage_tasks: Vec<ExecutionTask>,
+    input_stage_tasks: Vec<Url>,
     workers: PreparedTransportWorkers,
 }
 
@@ -269,12 +262,11 @@ impl TransportFixture {
         let query_id = Uuid::new_v4();
         self.workers.register_plans(query_id).await?;
 
-        let input_stage = Stage {
+        let input_stage = Stage::Remote(RemoteStage {
             query_id,
             num: 0,
-            plan: None,
-            tasks: self.input_stage_tasks.clone(),
-        };
+            workers: self.input_stage_tasks.clone(),
+        });
 
         let mut join_set = JoinSet::default();
         for task_index in 0..self.bench.consumer_tasks {

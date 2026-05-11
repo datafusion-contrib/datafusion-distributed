@@ -57,20 +57,20 @@ pub fn get_stages_and_task_keys(
 
     while i < queue.len() {
         let stage = queue[i];
-        stages_map.insert(stage.num, stage);
+        stages_map.insert(stage.num(), stage);
         i += 1;
 
         // Add each task.
-        for j in 0..stage.tasks.len() {
+        for j in 0..stage.task_count() {
             task_keys.insert(TaskKey {
-                query_id: serialize_uuid(&stage.query_id),
-                stage_id: stage.num as u64,
+                query_id: serialize_uuid(&stage.query_id()),
+                stage_id: stage.num() as u64,
                 task_number: j as u64,
             });
         }
 
         // Add any child stages
-        queue.extend(find_input_stages(stage.plan.as_ref().unwrap().as_ref()));
+        queue.extend(find_input_stages(stage.local_plan().unwrap().as_ref()));
     }
     (stages_map, task_keys)
 }
