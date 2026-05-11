@@ -20,8 +20,18 @@ git lfs checkout
 
 Install the pre-commit hook to catch issues before committing:
 
+### paste the echo command into your terminal
+
 ```bash
-cp hook-scripts/pre-commit .git/hooks/pre-commit
+echo '#!/bin/sh
+set -e
+echo "Running cargo fmt..."
+cargo fmt --all -- --check
+echo "Running cargo clippy..."
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+echo "All pre-commit checks passed!"' > .git/hooks/pre-commit
+
+# make sure the file is executable
 chmod +x .git/hooks/pre-commit
 ```
 
