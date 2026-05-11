@@ -1,8 +1,9 @@
+use datafusion::common::{HashMap, HashSet};
 use datafusion_distributed::{
     GetClusterWorkersRequest, GetTaskProgressRequest, ObservabilityServiceClient, PingRequest,
     TaskProgress, TaskStatus,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use url::Url;

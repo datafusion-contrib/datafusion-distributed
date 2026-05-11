@@ -1,11 +1,11 @@
 use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::NetworkBoundaryExt;
+use crate::distributed_planner::{NetworkBoundaryExt, get_distributed_task_estimator};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{DistributedCodec, tonic_status_to_datafusion_error};
-use crate::stage::{ExecutionTask, Stage};
+use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::generated::worker::{
@@ -14,13 +14,14 @@ use crate::worker::generated::worker::{
 };
 use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, WorkerResolver, get_distributed_channel_resolver,
+    DistributedWorkUnitFeedContext, TaskRoutingContext, WorkerResolver,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::HashMap;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, exec_err, internal_err};
+use datafusion::common::{Result, exec_err};
 use datafusion::common::{exec_datafusion_err, internal_datafusion_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -125,10 +126,10 @@ impl DistributedExec {
         let _ = self.plan.apply(|plan| {
             if let Some(boundary) = plan.as_network_boundary() {
                 let stage = boundary.input_stage();
-                for i in 0..stage.tasks.len() {
+                for i in 0..stage.task_count() {
                     expected_keys.push(TaskKey {
-                        query_id: stage.query_id.as_bytes().to_vec(),
-                        stage_id: stage.num as u64,
+                        query_id: serialize_uuid(&stage.query_id()),
+                        stage_id: stage.num() as u64,
                         task_number: i as u64,
                     });
                 }
@@ -156,20 +157,21 @@ impl DistributedExec {
             })
     }
 
-    /// Prepares the distributed plan for execution, which implies:
-    /// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-    ///    URL per task.
-    /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
-    ///    network call feeding the subplan is necessary.
-    /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
-    ///    become nodes without children and traversing them will not go further down in.
+    /// Prepares the distributed plan for execution.
+    /// In particular, this means we must take the following steps at each network boundary node:
+    /// 1. Assign tasks to URLs. Follow the user-specified routing defined in the TaskEstimator
+    ///    implementation, or default to random round-robin assignment.
+    /// 2. Send the sliced subplans to the assigned URLs. For each task assigned to a URL, it is here
+    ///    that we now must actually send that subplan to the URL over the wire.
+    /// 3. Set network boundary input plans to `None`. This way, network boundaries become nodes
+    ///    without children, so we stop further traversal from happening in the future.
     /// 4. Spawn a background task per worker that waits for the worker to finish and collects
     ///    its metrics into [DistributedExec::task_metrics] via the coordinator channel.
     fn prepare_plan(&self, ctx: &Arc<TaskContext>) -> Result<PreparedPlan> {
         let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
         let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
-        let urls = worker_resolver.get_urls()?;
+        let available_urls = worker_resolver.get_urls()?;
 
         let metrics = CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
@@ -186,38 +188,68 @@ impl DistributedExec {
 
         let mut join_set = JoinSet::new();
         let prepared = Arc::clone(&self.plan).transform_up(|plan| {
-            // The following logic is just applied on network boundaries.
+            // The following logic is only relevant to network boundaries.
             let Some(plan) = plan.as_network_boundary() else {
                 return Ok(Transformed::no(plan));
             };
 
-            let stage = plan.input_stage();
+            let Stage::Local(stage) = plan.input_stage() else {
+                return exec_err!("Input stage from network boundary was not in Local state");
+            };
 
-            let mut spawner =
-                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
+            let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
 
-            // Right now, we assign random workers to tasks. This might change in the future.
-            let start_idx = rand::rng().random_range(0..urls.len());
+            let mut spawner = CoordinatorToWorkerTaskSpawner::new(
+                stage,
+                &metrics,
+                &self.task_metrics,
+                &codec,
+                &mut join_set,
+            )?;
 
-            let mut tasks = Vec::with_capacity(stage.tasks.len());
-            for i in 0..stage.tasks.len() {
-                let url = urls[(start_idx + i) % urls.len()].clone();
-                tasks.push(ExecutionTask {
-                    url: Some(url.clone()),
-                });
-                // Spawns the task that feeds this subplan to this worker. There will be as
-                // many as this spawned tasks as workers.
-                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, url)?;
-                spawner.metrics_collection_task(i, worker_rx, Arc::clone(&self.task_metrics));
+            let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
+                task_ctx: Arc::clone(ctx),
+                plan: &stage.plan,
+                task_count: stage.tasks,
+                available_urls: &available_urls,
+            }) {
+                Ok(Some(routed_urls)) => routed_urls,
+                // If the user has not defined custom routing with a `route_tasks` implementation, we
+                // default to round-robin task assignation from a randomized starting point.
+                Ok(None) => {
+                    let start_idx = rand::rng().random_range(0..available_urls.len());
+                    (0..stage.tasks)
+                        .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())
+                        .collect()
+                }
+                Err(e) => return Err(exec_datafusion_err!("error routing tasks to workers: {e}")),
+            };
+
+            if routed_urls.len() != stage.tasks {
+                return Err(exec_datafusion_err!(
+                    "number of tasks ({}) was not equal to number of urls ({}) at execution time",
+                    stage.tasks,
+                    routed_urls.len()
+                ));
+            }
+
+            let mut workers = Vec::with_capacity(stage.tasks);
+            for (i, routed_url) in routed_urls.into_iter().enumerate() {
+                workers.push(routed_url.clone());
+                // Spawn a task that sends the subplan to the chosen URL.
+                // There will be as many spawned tasks as workers.
+                let (tx, worker_rx) = spawner.send_plan_task(Arc::clone(ctx), i, routed_url)?;
+                spawner.metrics_collection_task(i, worker_rx);
                 spawner.work_unit_feed_task(Arc::clone(ctx), i, tx)?;
             }
 
-            Ok(Transformed::yes(plan.with_input_stage(Stage {
-                query_id: stage.query_id,
-                num: stage.num,
-                plan: None,
-                tasks,
-            })?))
+            Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
+                RemoteStage {
+                    query_id: stage.query_id,
+                    num: stage.num,
+                    workers,
+                },
+            ))?))
         })?;
         Ok(PreparedPlan {
             plan: prepared.data,
@@ -337,6 +369,7 @@ struct CoordinatorToWorkerTaskSpawner<'a> {
     stage_id: usize,
     task_count: usize,
     metrics: &'a CoordinatorToWorkerMetrics,
+    task_metrics: &'a Arc<MetricsStore>,
     join_set: &'a mut JoinSet<Result<()>>,
 }
 
@@ -344,25 +377,23 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
     /// Builds a new [CoordinatorToWorkerTaskSpawner] based on the [Stage] that needs to be
     /// fanned out to multiple workers.
     fn new(
-        stage: &'a Stage,
+        stage: &'a LocalStage,
         metrics: &'a CoordinatorToWorkerMetrics,
+        task_metrics: &'a Arc<MetricsStore>,
         codec: &'a dyn PhysicalExtensionCodec,
         join_set: &'a mut JoinSet<Result<()>>,
     ) -> Result<Self> {
-        let Some(plan) = &stage.plan else {
-            return internal_err!("Plan is not set for stage {}", stage.num);
-        };
-
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
+        let plan_proto = PhysicalPlanNode::try_from_physical_plan(Arc::clone(&stage.plan), codec)?
+            .encode_to_vec();
 
         Ok(Self {
-            plan,
+            plan: &stage.plan,
             plan_proto,
             query_id: stage.query_id,
             stage_id: stage.num,
-            task_count: stage.tasks.len(),
+            task_count: stage.tasks,
             metrics,
+            task_metrics,
             join_set,
         })
     }
@@ -438,6 +469,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
+                target_worker_url: url.to_string(),
             })),
         };
         let plan_size = self.plan_proto.len();
@@ -489,13 +521,13 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         &mut self,
         task_i: usize,
         mut worker_to_coordinator_rx: WorkerResponseRx,
-        task_metrics_collection: Arc<MetricsStore>,
     ) {
         let task_key = TaskKey {
             query_id: serialize_uuid(&self.query_id),
             stage_id: self.stage_id as u64,
             task_number: task_i as u64,
         };
+        let task_metrics_collection = Arc::clone(self.task_metrics);
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             while let Some(Ok(msg)) = worker_to_coordinator_rx.recv().await {

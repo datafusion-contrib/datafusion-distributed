@@ -446,6 +446,7 @@ mod tests {
         let mut stream1 = broadcast.execute(0, task_ctx.clone())?;
         assert_eq!(execute_counts[0].load(Ordering::SeqCst), 1);
 
+        #[allow(clippy::disallowed_methods)]
         let handle = tokio::spawn(async move { stream1.next().await });
 
         // Cancel this consumer (simulates a cancellation like a TopK)

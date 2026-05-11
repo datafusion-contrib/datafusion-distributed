@@ -3,9 +3,10 @@ use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
+use crate::stage::RemoteStage;
 use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
-use crate::{BytesMetricExt, ChannelResolver, DistributedConfig, Stage};
+use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -37,6 +38,20 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
+use url::Url;
+
+/// Context set by [crate::Worker::coordinator_channel] in DataFusion's
+/// [datafusion::prelude::SessionConfig] that contains information about the local tasks the current
+/// [crate::Worker] owns.
+///
+/// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
+/// needs to be remotely executed happens to be owned by this same worker.
+pub(crate) struct LocalWorkerContext {
+    /// The URL of the [crate::Worker] in scope. When trying to reach to a target URL that happens
+    /// to be the same as this one, local comms are preferred instead.
+    #[allow(dead_code)]
+    pub(crate) self_url: Url,
+}
 
 /// Holds a list of lazily initialized [WorkerConnection]s. Each position in the underlying
 /// `connections` vector corresponds to the connection to one worker. It assumes a 1:1 mapping
@@ -67,7 +82,7 @@ impl WorkerConnectionPool {
     /// returns it.
     pub(crate) fn get_or_init_worker_connection(
         &self,
-        input_stage: &Stage,
+        input_stage: &RemoteStage,
         target_partitions: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
@@ -78,6 +93,7 @@ impl WorkerConnectionPool {
                 self.connections.len()
             );
         };
+        ctx.session_config().get_extension::<LocalWorkerContext>();
 
         let conn = worker_connection.get_or_init(|| {
             WorkerConnection::init(
@@ -126,7 +142,7 @@ pub(crate) struct WorkerConnection {
 
 impl WorkerConnection {
     fn init(
-        input_stage: &Stage,
+        input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,
         ctx: &Arc<TaskContext>,
@@ -181,11 +197,8 @@ impl WorkerConnection {
             },
         );
 
-        let Some(task) = input_stage.tasks.get(target_task) else {
+        let Some(url) = input_stage.workers.get(target_task).cloned() else {
             return internal_err!("ProgrammingError: Task {target_task} not found");
-        };
-        let Some(url) = task.url.clone() else {
-            return internal_err!("ProgrammingError: task is unassigned, cannot proceed");
         };
 
         // The senders and receivers are unbounded queues used for multiplexing the record

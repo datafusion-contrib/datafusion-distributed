@@ -22,7 +22,7 @@ pub use arrow_ipc::CompressionType;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator,
+    TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
@@ -39,8 +39,7 @@ pub use networking::{
     create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
 pub use stage::{
-    DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
-    explain_analyze,
+    DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
 };
 pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,

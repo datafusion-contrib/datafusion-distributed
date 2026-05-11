@@ -1,10 +1,10 @@
 use crate::common::require_one_child;
 use crate::execution_plans::common::scale_partitioning;
-use crate::stage::Stage;
+use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, ExecutionTask, NetworkBoundary};
+use crate::{DistributedTaskContext, NetworkBoundary};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, plan_err};
+use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::Partitioning;
@@ -145,12 +145,12 @@ impl NetworkShuffleExec {
         })?;
 
         Ok(Self {
-            input_stage: Stage {
+            input_stage: Stage::Local(LocalStage {
                 query_id,
                 num,
-                plan: Some(transformed.data),
-                tasks: vec![ExecutionTask { url: None }; input_task_count],
-            },
+                plan: transformed.data,
+                tasks: input_task_count,
+            }),
             worker_connections: WorkerConnectionPool::new(input_task_count),
             properties: input.properties().clone(),
         })
@@ -171,9 +171,9 @@ impl NetworkBoundary for NetworkShuffleExec {
 
 impl DisplayAs for NetworkShuffleExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        let input_tasks = self.input_stage.tasks.len();
+        let input_tasks = self.input_stage.task_count();
         let partitions = self.properties.partitioning.partition_count();
-        let stage = self.input_stage.num;
+        let stage = self.input_stage.num();
         write!(
             f,
             "[Stage {stage}] => NetworkShuffleExec: output_partitions={partitions}, input_tasks={input_tasks}",
@@ -195,7 +195,7 @@ impl ExecutionPlan for NetworkShuffleExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        match &self.input_stage.plan {
+        match &self.input_stage.local_plan() {
             Some(v) => vec![v],
             None => vec![],
         }
@@ -206,7 +206,12 @@ impl ExecutionPlan for NetworkShuffleExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut self_clone = self.as_ref().clone();
-        self_clone.input_stage.plan = Some(require_one_child(children)?);
+        match &mut self_clone.input_stage {
+            Stage::Local(local) => {
+                local.plan = require_one_child(children)?;
+            }
+            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+        }
         Ok(Arc::new(self_clone))
     }
 
@@ -215,13 +220,18 @@ impl ExecutionPlan for NetworkShuffleExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let remote_stage = match &self.input_stage {
+            Stage::Local(local) => return local.execute(partition, context),
+            Stage::Remote(remote_stage) => remote_stage,
+        };
+
         let task_context = DistributedTaskContext::from_ctx(&context);
         let off = self.properties.partitioning.partition_count() * task_context.task_index;
 
-        let mut streams = Vec::with_capacity(self.input_stage.tasks.len());
-        for input_task_index in 0..self.input_stage.tasks.len() {
+        let mut streams = Vec::with_capacity(remote_stage.workers.len());
+        for input_task_index in 0..remote_stage.workers.len() {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
-                &self.input_stage,
+                remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 &context,

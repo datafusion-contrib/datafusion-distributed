@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     for listener in listeners {
         let resolver = localhost_resolver.clone();
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let worker = Worker::default();
 

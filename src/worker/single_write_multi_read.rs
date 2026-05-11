@@ -109,6 +109,7 @@ mod tests {
         let swmr = Arc::new(SingleWriteMultiRead::new());
         let handle = {
             let swmr = Arc::clone(&swmr);
+            #[allow(clippy::disallowed_methods)]
             tokio::spawn(async move { swmr.read(TIMEOUT).await.unwrap() })
         };
         swmr.write(99).unwrap();
@@ -120,6 +121,7 @@ mod tests {
         let swmr = Arc::new(SingleWriteMultiRead::new());
         let handle = {
             let swmr = Arc::clone(&swmr);
+            #[allow(clippy::disallowed_methods)]
             tokio::spawn(async move { swmr.read(TIMEOUT).await.unwrap() })
         };
         swmr.write(99).unwrap();
@@ -141,6 +143,7 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..5 {
             let swmr = Arc::clone(&swmr);
+            #[allow(clippy::disallowed_methods)]
             handles.push(tokio::spawn(
                 async move { swmr.read(TIMEOUT).await.unwrap() },
             ));
@@ -156,6 +159,7 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..10 {
             let swmr = Arc::clone(&swmr);
+            #[allow(clippy::disallowed_methods)]
             handles.push(tokio::spawn(
                 async move { swmr.read(TIMEOUT).await.unwrap() },
             ));
