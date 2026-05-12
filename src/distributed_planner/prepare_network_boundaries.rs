@@ -21,7 +21,7 @@ fn prepare(
     plan: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     query_id: Uuid,
-    num: &mut usize,
+    stage_id: &mut usize,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // A `ChildrenIsolatorUnionExec` runs each child in only a subset of the surrounding stage's
     // tasks. Boundaries living inside one of those children must scale by that child's own task
@@ -31,7 +31,7 @@ fn prepare(
         let children_and_task_count = ciu.children().into_iter().zip(ciu.child_task_counts());
         let new_children = children_and_task_count
             .map(|(child, per_child_count)| {
-                prepare(Arc::clone(child), per_child_count, query_id, num)
+                prepare(Arc::clone(child), per_child_count, query_id, stage_id)
             })
             .collect::<Result<Vec<_>>>()?;
         return plan.with_new_children(new_children);
@@ -41,7 +41,7 @@ fn prepare(
         let new_children = plan
             .children()
             .into_iter()
-            .map(|c| prepare(Arc::clone(c), consumer_task_count, query_id, num))
+            .map(|c| prepare(Arc::clone(c), consumer_task_count, query_id, stage_id))
             .collect::<Result<Vec<_>>>()?;
         return plan.with_new_children(new_children);
     };
@@ -56,7 +56,7 @@ fn prepare(
         Arc::clone(&local_stage.plan),
         producer_task_count,
         query_id,
-        num,
+        stage_id,
     )?;
     // 1) If there are both 1 producer and consumer tasks, optimize the network boundary out.
     if consumer_task_count == 1 && producer_task_count == 1 {
@@ -72,10 +72,10 @@ fn prepare(
     //    If there were already some `query_id` and `num` that's fine.
     let nb = nb.with_input_stage(Stage::Local(LocalStage {
         query_id,
-        num: *num,
+        num: *stage_id,
         plan,
         tasks: local_stage.tasks,
     }));
-    *num += 1;
+    *stage_id += 1;
     nb
 }

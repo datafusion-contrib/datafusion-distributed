@@ -30,7 +30,7 @@ use std::sync::Arc;
 ///    for execution: elides ones that aren't actually needed and finalises the survivors. If
 ///    no boundary survives, this function returns `None`.
 ///
-/// 4. **Shuffle-volume optimisation.** [partial_reduce_below_network_shuffles] inserts partial
+/// 4. **Shuffle-volume optimization.** [partial_reduce_below_network_shuffles] inserts partial
 ///    aggregation nodes underneath hash shuffles where it can, so less data crosses the network.
 pub(super) async fn distribute_plan(
     original: Arc<dyn ExecutionPlan>,
@@ -49,29 +49,19 @@ pub(super) async fn distribute_plan(
 
     let mut plan = Arc::clone(&original);
 
-    // If the plan has multiple output partitions, wrap it in a `CoalescePartitionsExec` so
-    // `inject_network_boundaries` will recognise the partition-collecting parent and inject a
-    // `NetworkCoalesceExec` above the original root.
     if plan.output_partitioning().partition_count() > 1 {
         plan = Arc::new(CoalescePartitionsExec::new(plan));
     }
 
-    // Insert `BroadcastExec` on the build side of CollectLeft hash joins so that
-    // `inject_network_boundaries` can wrap them in `NetworkBroadcastExec` afterwards.
     plan = insert_broadcast_execs(plan, cfg)?;
 
-    // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
     plan = inject_network_boundaries(plan, cfg).await?;
 
-    // Run some preparations on the network boundaries, like optimizing them out if there is one
-    // task at both sides of the boundary or assigning it proper unique identifiers.
     plan = prepare_network_boundaries(plan)?;
     if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
         return Ok(None);
     }
 
-    // Push partial aggregation below hash shuffles to shrink the volume of data sent over
-    // the network.
     let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
 
     Ok(Some(plan))

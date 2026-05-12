@@ -53,7 +53,7 @@ impl TaskCountAnnotation {
             (Desired(a), Desired(b)) => Desired(std::cmp::max(a, b)),
             (Desired(_), Maximum(b)) => Maximum(b),
             (Maximum(a), Desired(_)) => Maximum(a),
-            (Maximum(a), Maximum(b)) => Maximum(std::cmp::max(a, b)),
+            (Maximum(a), Maximum(b)) => Maximum(std::cmp::min(a, b)),
         }
     }
 }

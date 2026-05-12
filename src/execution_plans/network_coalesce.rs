@@ -5,7 +5,7 @@ use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{exec_err, not_impl_err};
+use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -120,12 +120,15 @@ impl NetworkCoalesceExec {
     ///
     /// The caller must ensure that the provided `consumer_tasks` count matches the `producer_tasks`
     /// of the network boundary immediately above.
-    pub fn new(
+    pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         producer_tasks: usize,
         consumer_tasks: usize,
-    ) -> Self {
-        Self::from_stage(
+    ) -> Result<Self> {
+        if consumer_tasks == 0 {
+            return plan_err!("The `consumer_tasks` input of a NetworkCoalesceExec must not be 0");
+        }
+        Ok(Self::from_stage(
             LocalStage {
                 // At this point, query_id and num are just placeholders that will be filled by
                 // prepare_network_boundaries.rs. Users are not expected to provide valid values for
@@ -136,7 +139,7 @@ impl NetworkCoalesceExec {
                 tasks: producer_tasks,
             },
             consumer_tasks,
-        )
+        ))
     }
 }
 
@@ -362,8 +365,11 @@ mod tests {
         let child: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let child_partitions = child.properties().partitioning.partition_count();
 
-        let exec =
-            NetworkCoalesceExec::new(Arc::clone(&child), case.input_tasks, case.consumer_tasks);
+        let exec = NetworkCoalesceExec::try_new(
+            Arc::clone(&child),
+            case.input_tasks,
+            case.consumer_tasks,
+        )?;
 
         // Output partitions are sized by the maximum group size.
         let max_group_size = case.input_tasks.div_ceil(case.consumer_tasks).max(1);

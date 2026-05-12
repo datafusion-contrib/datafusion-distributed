@@ -38,15 +38,13 @@ use uuid::Uuid;
 ///
 /// ## Phase 1 — bottom-up walk, until a stage gets delimited
 ///
-/// Starting from the leaves, we climb the plan, asking the [TaskEstimator] for a task count
-/// at each leaf and merging children's task counts at each inner node (`Desired` takes the
-/// max; a `Maximum(N)` anywhere in the subtree caps and dominates). We keep going until the
-/// current node is one that requires a network boundary **above it** — currently a hash
-/// `RepartitionExec` (→ shuffle), a `BroadcastExec` whose parent is collecting partitions
-/// (→ broadcast), or any other node whose parent is `CoalescePartitionsExec` /
-/// `SortPreservingMergeExec` (→ coalesce). At that moment, that node and the subtree
-/// underneath it form the stage we've just delimited; the boundary will be injected above it
-/// in Phase 3.
+/// - Starting from the leaves, we climb the plan, asking the [TaskEstimator] for a task count
+///   at each leaf and merging children's task counts at each inner node.
+/// - We keep going until the current node is one that requires a network boundary **above it**
+///   (e.g. currently a hash `RepartitionExec` (→ shuffle), a `BroadcastExec` (→ broadcast), or any
+///   other node whose parent is `CoalescePartitionsExec` / `SortPreservingMergeExec` (→ coalesce).
+/// - At that moment, that node and the subtree underneath it form the stage we've just delimited;
+///   the boundary will be injected above it in Phase 3.
 ///
 /// ```text
 ///                ▲
@@ -73,13 +71,15 @@ use uuid::Uuid;
 ///
 /// ## Phase 2 — top-down propagation through the stage we just delimited
 ///
-/// With the reconciled task count `T` in hand, we do a top-down walk over the producer stage
-/// — starting from the input of the boundary we're about to inject — and record `T` on every
-/// node we visit. Leaves go through [TaskEstimator::scale_up_leaf_node] (e.g. a
-/// `DataSourceExec` may be wrapped in a `PartitionIsolatorExec`) and any wrappers introduced
-/// by the scale-up also receive `T`. If the walk meets a network boundary that was already
-/// injected by an earlier iteration of this loop, it does **not** descend into it — that
-/// subtree belongs to a previously-formed stage and has already been finalised.
+/// - Starting from the input of the boundary we're about to inject, we do a top-down walk over the
+///   just delimited stage.
+/// - The `T` task count reconciled from phase 1 is assigned to every node in the stage during
+///   this top-down walk.
+/// - Leaves go through [TaskEstimator::scale_up_leaf_node] (e.g. a `DataSourceExec` may be wrapped
+///   in a `PartitionIsolatorExec`) which is called using `T` as the `task_count` argument.
+/// - If the walk meets a network boundary that was already injected by an earlier iteration of this
+///   loop, it does **not** descend into it — that subtree belongs to a previously-formed stage and
+///   has already been finalised.
 ///
 /// ```text
 ///   ┌─────────────────────────────┐
@@ -106,12 +106,11 @@ use uuid::Uuid;
 ///
 /// ## Phase 3 — inject the boundary and seed the next stage's starting task count
 ///
-/// Now we wrap the producer stage in the appropriate `Network*Exec` node and decide the task
-/// count above the boundary — i.e. the starting task count for the next stage up. We compute
-/// a scale factor from the cardinality effects of the producer-stage nodes
-/// ([calculate_scale_factor]: `LowerEqual` divides, `GreaterEqual` multiplies, by the
-/// configured `cardinality_task_count_factor`) and apply it as `ceil(T_producer × sf)`. That
-/// becomes the new node's recorded task count and feeds back into Phase 1 for the next stage.
+/// - Now we wrap the producer stage in the appropriate `Network*Exec` node and decide the task
+///   count above the boundary — i.e. the starting task count for the next stage up.
+/// - We compute a scale factor from the cardinality effects of the producer-stage nodes
+///   and apply it as `ceil(T_producer × sf)`.
+/// - That becomes the new node's recorded task count and feeds back into Phase 1 for the next stage.
 ///
 /// ```text
 ///                       ▲
@@ -444,8 +443,8 @@ fn propagate_task_count(
             children.iter().map(|v| Arc::clone(*v)),
             children
                 .iter()
-                // TODO: rather than defaulting to 1 when no task count is recorded, it's better to error out.
-                .map(|v| ctx.task_count(v).map_or(1, |v| v.as_usize())),
+                .map(|v| Ok(ctx.task_count(v)?.as_usize()))
+                .collect::<Result<Vec<_>>>()?,
             task_count.as_usize(),
         )?;
         let mut new_children = Vec::with_capacity(children.len());

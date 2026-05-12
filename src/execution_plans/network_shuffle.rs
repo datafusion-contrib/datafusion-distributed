@@ -7,6 +7,7 @@ use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -136,8 +137,11 @@ impl NetworkShuffleExec {
     /// Creates a new [NetworkShuffleExec] fed by the provided [RepartitionExec]. The input plan
     /// will be executed in a remote worker in `producer_tasks` number of tasks.
     pub fn try_new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Result<Self> {
-        if !input.as_any().is::<RepartitionExec>() {
+        let Some(r_exec) = input.as_any().downcast_ref::<RepartitionExec>() else {
             return plan_err!("The input of a NetworkShuffleExec can only be a RepartitionExec");
+        };
+        if !matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
+            return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
         }
 
         Ok(Self::from_stage(LocalStage {
