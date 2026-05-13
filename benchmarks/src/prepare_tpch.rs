@@ -22,7 +22,7 @@ use structopt::StructOpt;
 
 /// Generate TPC-H parquet files for benchmarks
 #[derive(Debug, StructOpt)]
-pub struct GenerateTpchOpt {
+pub struct PrepareTpchOpt {
     /// Output path for generated parquet files
     #[structopt(parse(from_os_str), required = true, short = "o", long = "output")]
     output_path: PathBuf,
@@ -36,7 +36,7 @@ pub struct GenerateTpchOpt {
     partitions: usize,
 }
 
-impl GenerateTpchOpt {
+impl PrepareTpchOpt {
     pub fn run(self) -> Result<()> {
         println!(
             "Generating TPC-H data at scale factor {} with {} partitions in '{}'",

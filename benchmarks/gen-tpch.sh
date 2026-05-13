@@ -19,5 +19,5 @@ if test -d "${FILE}"; then
     echo " parquet files exist ($FILE exists)."
 else
     echo " generating parquet files using tpchgen-rs..."
-    $CARGO_COMMAND -- generate-tpch --output "${TPCH_DIR}" --scale-factor "${SCALE_FACTOR}" --partitions "$PARTITIONS"
+    $CARGO_COMMAND -- prepare-tpch --output "${TPCH_DIR}" --scale-factor "${SCALE_FACTOR}" --partitions "$PARTITIONS"
 fi
