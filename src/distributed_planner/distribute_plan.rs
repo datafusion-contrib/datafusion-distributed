@@ -14,7 +14,7 @@ use std::sync::Arc;
 ///
 /// The pipeline runs four passes in order:
 ///
-/// 1. **Pre-distribution shaping.** A `CoalescePartitionsExec` is wrapped on top of the plan
+/// 1. **Pre-distribution shaping.** A [CoalescePartitionsExec] is wrapped on top of the plan
 ///    when it has more than one output partition (so [inject_network_boundaries] later sees a
 ///    partition-collecting parent and injects a `NetworkCoalesceExec` above its child). Then
 ///    [insert_broadcast_execs] adds `BroadcastExec` nodes on the build side of `CollectLeft`
