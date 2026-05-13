@@ -56,6 +56,7 @@ pub struct PartitionIsolatorExec {
     pub(crate) input: Arc<dyn ExecutionPlan>,
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) n_tasks: usize,
+    pub(crate) fixed_partition_group: Option<Vec<usize>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
@@ -72,6 +73,7 @@ impl PartitionIsolatorExec {
             input: input.clone(),
             properties: Arc::new(properties),
             n_tasks,
+            fixed_partition_group: None,
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
@@ -97,6 +99,19 @@ impl PartitionIsolatorExec {
         n_tasks: usize,
     ) -> Vec<usize> {
         Self::partition_groups(input_partitions, n_tasks)[task_i].clone()
+    }
+
+    pub(crate) fn for_task(input: Arc<dyn ExecutionPlan>, partition_group: Vec<usize>) -> Self {
+        let properties = <PlanProperties as Clone>::clone(&input.properties().clone())
+            .with_partitioning(Partitioning::UnknownPartitioning(partition_group.len()));
+
+        Self {
+            input,
+            properties: Arc::new(properties),
+            n_tasks: 1,
+            fixed_partition_group: Some(partition_group),
+            metrics: ExecutionPlanMetricsSet::new(),
+        }
     }
 }
 
@@ -165,11 +180,13 @@ impl ExecutionPlan for PartitionIsolatorExec {
         let metric = MetricBuilder::new(&self.metrics).output_rows(partition);
         let input_partitions = self.input.output_partitioning().partition_count();
 
-        let partition_group = Self::partition_group(
-            input_partitions,
-            task_context.task_index,
-            task_context.task_count,
-        );
+        let partition_group = self.fixed_partition_group.clone().unwrap_or_else(|| {
+            Self::partition_group(
+                input_partitions,
+                task_context.task_index,
+                task_context.task_count,
+            )
+        });
 
         // if our partition group is [7,8,9] and we are asked for parittion 1,
         // then look up that index in our group and execute that partition, in this

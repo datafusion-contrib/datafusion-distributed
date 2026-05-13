@@ -1,6 +1,8 @@
 use crate::common::{require_one_child, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
-use crate::distributed_planner::{NetworkBoundaryExt, get_distributed_task_estimator};
+use crate::distributed_planner::{
+    NetworkBoundaryExt, build_task_specialized_stage_plans, get_distributed_task_estimator,
+};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::networking::get_distributed_worker_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -198,7 +200,7 @@ impl DistributedExec {
             let stage = plan.input_stage();
 
             let mut spawner =
-                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set)?;
+                CoordinatorToWorkerTaskSpawner::new(stage, &metrics, &codec, &mut join_set, ctx)?;
 
             let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
                 task_ctx: Arc::clone(ctx),
@@ -362,7 +364,7 @@ type WorkerResponseRx =
 
 struct CoordinatorToWorkerTaskSpawner<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
-    plan_proto: Vec<u8>,
+    plan_protos: Vec<Vec<u8>>,
     query_id: Uuid,
     stage_id: usize,
     task_count: usize,
@@ -378,17 +380,30 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         metrics: &'a CoordinatorToWorkerMetrics,
         codec: &'a dyn PhysicalExtensionCodec,
         join_set: &'a mut JoinSet<Result<()>>,
+        ctx: &Arc<TaskContext>,
     ) -> Result<Self> {
         let Some(plan) = &stage.plan else {
             return internal_err!("Plan is not set for stage {}", stage.num);
         };
 
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(Arc::clone(plan), codec)?.encode_to_vec();
+        let task_count = stage.tasks.len();
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+
+        let plans = if d_cfg.task_specialized_stage_plans {
+            build_task_specialized_stage_plans(plan, task_count)?
+        } else {
+            vec![Arc::clone(plan); task_count]
+        };
+
+        let mut plan_protos = Vec::with_capacity(plans.len());
+        for plan in plans {
+            plan_protos
+                .push(PhysicalPlanNode::try_from_physical_plan(plan, codec)?.encode_to_vec());
+        }
 
         Ok(Self {
             plan,
-            plan_proto,
+            plan_protos,
             query_id: stage.query_id,
             stage_id: stage.num,
             task_count: stage.tasks.len(),
@@ -464,14 +479,14 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         };
         let msg = CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(SetPlanRequest {
-                plan_proto: self.plan_proto.clone(),
+                plan_proto: self.plan_protos[task_i].clone(),
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
                 target_worker_url: url.to_string(),
             })),
         };
-        let plan_size = self.plan_proto.len();
+        let plan_size = self.plan_protos[task_i].len();
 
         let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
             tokio::sync::mpsc::unbounded_channel();

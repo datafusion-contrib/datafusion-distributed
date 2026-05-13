@@ -58,6 +58,10 @@ extensions_options! {
         /// Disabled by default because its effectiveness is workload-dependent: it helps when
         /// aggregation significantly reduces cardinality, but adds overhead when it does not.
         pub partial_reduce: bool, default = false
+        /// When enabled, build per-task stage plans instead of reusing one shared stage plan
+        /// payload for all tasks. Disabled by default; currently a no-op scaffold used for
+        /// incremental rollout of task-specialized plans.
+        pub task_specialized_stage_plans: bool, default = false
         /// Soft byte budget that each per-worker connection will buffer in memory before pausing
         /// the gRPC pull from that worker. Per-partition channels are unbounded (to avoid
         /// head-of-line blocking between sibling partitions), so backpressure is enforced
