@@ -138,7 +138,6 @@ pub(super) async fn inject_network_boundaries(
     cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let ctx = Context {
-        parent: None,
         cfg,
         d_cfg: DistributedConfig::from_config_options(cfg)?,
         task_counts: &Mutex::new(HashMap::new()),
@@ -146,12 +145,11 @@ pub(super) async fn inject_network_boundaries(
         stage_id: &AtomicUsize::new(1),
     };
 
-    _inject_network_boundaries(plan, ctx).await
+    _inject_network_boundaries(plan, None, &ctx).await
 }
 
 #[derive(Clone)]
 struct Context<'a> {
-    parent: Option<&'a Arc<dyn ExecutionPlan>>,
     cfg: &'a ConfigOptions,
     d_cfg: &'a DistributedConfig,
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
@@ -160,17 +158,6 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    fn with_parent(&'a self, parent: &'a Arc<dyn ExecutionPlan>) -> Self {
-        Self {
-            parent: Some(parent),
-            cfg: self.cfg,
-            d_cfg: self.d_cfg,
-            task_counts: self.task_counts,
-            query_id: self.query_id,
-            stage_id: self.stage_id,
-        }
-    }
-
     fn max_tasks(&self) -> Result<usize> {
         Ok(match self.d_cfg.max_tasks_per_stage {
             0 => self
@@ -232,7 +219,8 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
 /// node has a recorded task count. Callers downstream depend on this invariant.
 async fn _inject_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
-    ctx: Context<'_>,
+    parent: Option<&Arc<dyn ExecutionPlan>>,
+    ctx: &Context<'_>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let broadcast_joins = ctx.d_cfg.broadcast_joins;
     let estimator = &ctx.d_cfg.__private_task_estimator;
@@ -255,7 +243,8 @@ async fn _inject_network_boundaries(
         let child = Arc::clone(child);
         futures.push(Box::pin(_inject_network_boundaries(
             child,
-            ctx.with_parent(&plan),
+            Some(&plan),
+            ctx,
         )));
     }
     let processed_children = futures::future::try_join_all(futures).await?;
@@ -298,9 +287,9 @@ async fn _inject_network_boundaries(
         if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, &ctx)?;
+            let plan = propagate_task_count(&plan, task_count, ctx)?;
 
-            let f = calculate_scale_factor(&plan, &ctx);
+            let f = calculate_scale_factor(&plan, ctx);
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
@@ -311,7 +300,7 @@ async fn _inject_network_boundaries(
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
             return Ok(ctx.with_task_count(plan, task_count));
         }
-    } else if let Some(parent) = ctx.parent
+    } else if let Some(parent) = parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
         // we don't want to do it.
         && !plan.children().is_empty()
@@ -324,9 +313,9 @@ async fn _inject_network_boundaries(
         return if plan.as_any().is::<BroadcastExec>() {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, &ctx)?;
+            let plan = propagate_task_count(&plan, task_count, ctx)?;
 
-            let f = calculate_scale_factor(&plan, &ctx);
+            let f = calculate_scale_factor(&plan, ctx);
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
@@ -339,7 +328,7 @@ async fn _inject_network_boundaries(
         } else {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, &ctx)?;
+            let plan = propagate_task_count(&plan, task_count, ctx)?;
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
@@ -354,11 +343,11 @@ async fn _inject_network_boundaries(
         };
     }
 
-    if ctx.parent.is_none() {
+    if parent.is_none() {
         // We've just finished walking the head stage's subplan. Run a final propagation so
         // every node in the head stage (which never crossed a stage boundary on the way up)
         // gets its task count recorded.
-        propagate_task_count(&plan, task_count, &ctx)
+        propagate_task_count(&plan, task_count, ctx)
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
         // to do anything else.
@@ -1132,7 +1121,6 @@ mod tests {
         let cfg = session_config.options();
 
         let ctx = Context {
-            parent: None,
             cfg,
             d_cfg: DistributedConfig::from_config_options(cfg).unwrap(),
             task_counts: &Mutex::new(HashMap::new()),
@@ -1140,7 +1128,7 @@ mod tests {
             stage_id: &AtomicUsize::new(1),
         };
 
-        let annotated = _inject_network_boundaries(plan, ctx.clone())
+        let annotated = _inject_network_boundaries(plan, None, &ctx)
             .await
             .expect("failed to annotate plan");
         debug_annotated(&annotated, 0, &ctx)
