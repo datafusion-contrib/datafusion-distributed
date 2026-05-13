@@ -222,7 +222,7 @@ async fn _inject_network_boundaries(
     parent: Option<&Arc<dyn ExecutionPlan>>,
     ctx: &Context<'_>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let broadcast_joins = ctx.d_cfg.broadcast_joins;
+    let broadcast_joins_enabled = ctx.d_cfg.broadcast_joins;
     let estimator = &ctx.d_cfg.__private_task_estimator;
 
     if plan.children().is_empty() {
@@ -263,7 +263,7 @@ async fn _inject_network_boundaries(
         task_count = Desired(count);
     } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
-        && !broadcast_joins
+        && !broadcast_joins_enabled
     {
         // Only distribute CollectLeft HashJoins after we broadcast more intelligently or when it
         // is explicitly enabled.
