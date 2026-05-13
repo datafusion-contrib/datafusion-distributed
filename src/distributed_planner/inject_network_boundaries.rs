@@ -287,7 +287,7 @@ async fn _inject_network_boundaries(
         if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, ctx)?;
+            let plan = propagate_task_count_until_network_boundaries(&plan, task_count, ctx)?;
 
             let f = calculate_scale_factor(&plan, ctx);
             let input_stage = LocalStage {
@@ -313,7 +313,7 @@ async fn _inject_network_boundaries(
         return if plan.as_any().is::<BroadcastExec>() {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, ctx)?;
+            let plan = propagate_task_count_until_network_boundaries(&plan, task_count, ctx)?;
 
             let f = calculate_scale_factor(&plan, ctx);
             let input_stage = LocalStage {
@@ -328,7 +328,7 @@ async fn _inject_network_boundaries(
         } else {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
-            let plan = propagate_task_count(&plan, task_count, ctx)?;
+            let plan = propagate_task_count_until_network_boundaries(&plan, task_count, ctx)?;
             let input_stage = LocalStage {
                 query_id: ctx.query_id,
                 num: ctx.fetch_add_stage_id(),
@@ -347,7 +347,7 @@ async fn _inject_network_boundaries(
         // We've just finished walking the head stage's subplan. Run a final propagation so
         // every node in the head stage (which never crossed a stage boundary on the way up)
         // gets its task count recorded.
-        propagate_task_count(&plan, task_count, ctx)
+        propagate_task_count_until_network_boundaries(&plan, task_count, ctx)
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
         // to do anything else.
@@ -390,7 +390,7 @@ async fn _inject_network_boundaries(
 ///   isolated in its own subset of tasks.
 /// - **Everything else**: recurse into children with the same `task_count`, then rebuild the
 ///   node with the rebuilt children.
-fn propagate_task_count(
+fn propagate_task_count_until_network_boundaries(
     plan: &Arc<dyn ExecutionPlan>,
     task_count: TaskCountAnnotation,
     ctx: &Context,
@@ -443,7 +443,11 @@ fn propagate_task_count(
             .into_iter()
             .zip(c_i_union.child_task_counts());
         for (child, task_count) in children_and_task_count {
-            new_children.push(propagate_task_count(child, Maximum(task_count), ctx)?);
+            new_children.push(propagate_task_count_until_network_boundaries(
+                child,
+                Maximum(task_count),
+                ctx,
+            )?);
         }
         let c_i_union = Arc::new(c_i_union).with_new_children(new_children)?;
         Ok(ctx.with_task_count(c_i_union, task_count))
@@ -452,7 +456,9 @@ fn propagate_task_count(
     } else {
         let mut new_children = Vec::with_capacity(plan.children().len());
         for child in plan.children() {
-            new_children.push(propagate_task_count(child, task_count, ctx)?);
+            new_children.push(propagate_task_count_until_network_boundaries(
+                child, task_count, ctx,
+            )?);
         }
         let plan = Arc::clone(plan).with_new_children(new_children)?;
         Ok(ctx.with_task_count(plan, task_count))
