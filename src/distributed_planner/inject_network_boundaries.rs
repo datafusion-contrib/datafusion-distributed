@@ -178,7 +178,7 @@ impl<'a> Context<'a> {
             .insert(plan_ptr_key(plan), task_count);
     }
 
-    fn with_task_count(
+    fn plan_with_task_count(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         task_count: TaskCountAnnotation,
@@ -215,7 +215,7 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
 }
 
 /// WARNING: every return statement in this function must funnel through
-/// [Context::with_task_count] (or [Context::set_task_count] on the way through) so the returned
+/// [Context::plan_with_task_count] (or [Context::set_task_count] on the way through) so the returned
 /// node has a recorded task count. Callers downstream depend on this invariant.
 async fn _inject_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
@@ -230,11 +230,11 @@ async fn _inject_network_boundaries(
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
         return if let Some(estimate) = estimator.task_estimation(&plan, ctx.cfg) {
-            Ok(ctx.with_task_count(plan, estimate.task_count))
+            Ok(ctx.plan_with_task_count(plan, estimate.task_count))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
             // assume it cannot be distributed and use just 1 task.
-            Ok(ctx.with_task_count(plan, Maximum(1)))
+            Ok(ctx.plan_with_task_count(plan, Maximum(1)))
         };
     }
 
@@ -298,7 +298,7 @@ async fn _inject_network_boundaries(
             };
             let plan = Arc::new(NetworkShuffleExec::from_stage(input_stage));
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
-            return Ok(ctx.with_task_count(plan, task_count));
+            return Ok(ctx.plan_with_task_count(plan, task_count));
         }
     } else if let Some(parent) = parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
@@ -324,7 +324,7 @@ async fn _inject_network_boundaries(
             };
             let plan = Arc::new(NetworkBroadcastExec::from_stage(input_stage));
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
-            Ok(ctx.with_task_count(plan, task_count))
+            Ok(ctx.plan_with_task_count(plan, task_count))
         } else {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
@@ -339,7 +339,7 @@ async fn _inject_network_boundaries(
             // The parent that triggered this branch is a `CoalescePartitionsExec` or
             // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
             // stage above this boundary must run in exactly one task.
-            Ok(ctx.with_task_count(plan, Maximum(1)))
+            Ok(ctx.plan_with_task_count(plan, Maximum(1)))
         };
     }
 
@@ -351,7 +351,7 @@ async fn _inject_network_boundaries(
     } else {
         // If this is not the root node, and it's also not a network boundary, then we don't need
         // to do anything else.
-        Ok(ctx.with_task_count(plan, task_count))
+        Ok(ctx.plan_with_task_count(plan, task_count))
     }
 }
 
@@ -403,7 +403,7 @@ fn propagate_task_count_until_network_boundaries(
             ctx.cfg,
         );
         match scaled_up {
-            None => Ok(ctx.with_task_count(Arc::clone(plan), task_count)),
+            None => Ok(ctx.plan_with_task_count(Arc::clone(plan), task_count)),
             Some(scaled_up) => {
                 // The scaled up node might contain more than 1 node, for example, if a
                 // PartitionIsolatorExec was injected.
@@ -411,14 +411,14 @@ fn propagate_task_count_until_network_boundaries(
                     ctx.set_task_count(plan, task_count);
                     Ok(TreeNodeRecursion::Continue)
                 })?;
-                Ok(ctx.with_task_count(scaled_up, task_count))
+                Ok(ctx.plan_with_task_count(scaled_up, task_count))
             }
         }
 
     // Handle network boundaries.
     } else if plan.is_network_boundary() {
         // Just annotate the network boundary and stop recursion here.
-        Ok(ctx.with_task_count(Arc::clone(plan), task_count))
+        Ok(ctx.plan_with_task_count(Arc::clone(plan), task_count))
 
     // Handle ChildrenIsolatorUnionExec.
     } else if ctx.d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
@@ -450,7 +450,7 @@ fn propagate_task_count_until_network_boundaries(
             )?);
         }
         let c_i_union = Arc::new(c_i_union).with_new_children(new_children)?;
-        Ok(ctx.with_task_count(c_i_union, task_count))
+        Ok(ctx.plan_with_task_count(c_i_union, task_count))
 
     // Handle middle nodes.
     } else {
@@ -461,7 +461,7 @@ fn propagate_task_count_until_network_boundaries(
             )?);
         }
         let plan = Arc::clone(plan).with_new_children(new_children)?;
-        Ok(ctx.with_task_count(plan, task_count))
+        Ok(ctx.plan_with_task_count(plan, task_count))
     }
 }
 
