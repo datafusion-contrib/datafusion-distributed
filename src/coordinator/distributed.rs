@@ -20,7 +20,8 @@ use std::sync::Mutex;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
-/// 1. Assigns worker URLs to all the stages. A random set of URLs are sampled from the
+/// 1. Assigns worker URLs to all the stages. Unless explicitly set in
+///    [crate::TaskEstimator::route_tasks], a random set of URLs are sampled from the
 ///    channel resolver and assigned to each task in each stage.
 /// 2. Encodes all the plans in protobuf format so that network boundary nodes can send them
 ///    over the wire.
