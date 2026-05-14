@@ -7,10 +7,10 @@ use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Prepares every [NetworkBoundary] in the plan for distributed execution: elides ones whose
-/// producer and consumer sides both run on a single task, scales the producer-stage head of
-/// the survivors to feed all consumer tasks, and stamps each surviving stage with a unique
-/// `(query_id, num)` identifier.
+/// Prepares every [NetworkBoundary] in the plan for distributed execution:
+/// - Elides ones whose producer and consumer sides both run on a single task
+/// - Scales the producer-stage head of the survivors to feed all consumer tasks
+/// - Stamps each surviving stage with a unique `(query_id, num)` identifier.
 pub(crate) fn prepare_network_boundaries(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
