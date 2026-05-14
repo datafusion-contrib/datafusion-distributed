@@ -62,6 +62,10 @@ impl QueryPlanner for DistributedQueryPlanner {
             }
         };
 
+        if original_plan.as_any().is::<DistributedExec>() {
+            return Ok(original_plan);
+        }
+
         // The plan already contains network boundaries set by the user. Just ensure they have nice
         // unique identifiers for each stage, and move forward with it.
         if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
