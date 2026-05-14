@@ -1,12 +1,16 @@
-use crate::NetworkBoundaryExt;
 use crate::distributed_planner::inject_network_boundaries::inject_network_boundaries;
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
+use crate::{DistributedExec, NetworkBoundaryExt};
+use async_trait::async_trait;
 use datafusion::common::tree_node::TreeNode;
-use datafusion::config::ConfigOptions;
+use datafusion::execution::SessionState;
+use datafusion::execution::context::QueryPlanner;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use std::sync::Arc;
 
 /// Transforms a single-node physical plan into a distributed plan by injecting network
@@ -32,39 +36,64 @@ use std::sync::Arc;
 ///
 /// 4. **Shuffle-volume optimization.** [partial_reduce_below_network_shuffles] inserts partial
 ///    aggregation nodes underneath hash shuffles where it can, so less data crosses the network.
-pub(super) async fn distribute_plan(
-    original: Arc<dyn ExecutionPlan>,
-    cfg: &ConfigOptions,
-) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
-    // The plan already contains network boundaries set by the user. Just ensure they have nice
-    // unique identifiers for each stage, and move forward with it.
-    if original.exists(|plan| Ok(plan.is_network_boundary()))? {
-        // Ensure the stages in the plan have nice unique identifiers.
-        let plan = prepare_network_boundaries(original)?;
-        if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-            return Ok(None);
+#[derive(Debug)]
+pub(crate) struct DistributedQueryPlanner {
+    pub(crate) prev: Option<Arc<dyn QueryPlanner + Send + Sync>>,
+}
+
+#[async_trait]
+impl QueryPlanner for DistributedQueryPlanner {
+    async fn create_physical_plan(
+        &self,
+        logical_plan: &LogicalPlan,
+        session_state: &SessionState,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let original_plan = match &self.prev {
+            None => {
+                // Use the default physical planner.
+                let planner = DefaultPhysicalPlanner::default();
+                planner
+                    .create_physical_plan(logical_plan, session_state)
+                    .await?
+            }
+            Some(prev) => {
+                prev.create_physical_plan(logical_plan, session_state)
+                    .await?
+            }
+        };
+
+        // The plan already contains network boundaries set by the user. Just ensure they have nice
+        // unique identifiers for each stage, and move forward with it.
+        if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+            // Ensure the stages in the plan have nice unique identifiers.
+            let plan = prepare_network_boundaries(original_plan)?;
+            if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+                return Ok(plan);
+            }
+            return Ok(Arc::new(DistributedExec::new(plan)));
         }
-        return Ok(Some(plan));
+
+        let mut plan = Arc::clone(&original_plan);
+
+        if plan.output_partitioning().partition_count() > 1 {
+            plan = Arc::new(CoalescePartitionsExec::new(plan));
+        }
+
+        let cfg = session_state.config_options();
+
+        plan = insert_broadcast_execs(plan, cfg)?;
+
+        plan = inject_network_boundaries(plan, cfg).await?;
+
+        plan = prepare_network_boundaries(plan)?;
+        if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+            return Ok(original_plan);
+        }
+
+        let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
+
+        Ok(Arc::new(DistributedExec::new(plan)))
     }
-
-    let mut plan = Arc::clone(&original);
-
-    if plan.output_partitioning().partition_count() > 1 {
-        plan = Arc::new(CoalescePartitionsExec::new(plan));
-    }
-
-    plan = insert_broadcast_execs(plan, cfg)?;
-
-    plan = inject_network_boundaries(plan, cfg).await?;
-
-    plan = prepare_network_boundaries(plan)?;
-    if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-        return Ok(None);
-    }
-
-    let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
-
-    Ok(Some(plan))
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
-mod distribute_plan;
 mod distributed_config;
+mod distributed_query_planner;
 mod inject_network_boundaries;
 mod insert_broadcast;
 mod network_boundary;
