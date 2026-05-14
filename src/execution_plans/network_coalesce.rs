@@ -82,7 +82,7 @@ pub struct NetworkCoalesceExec {
 
 impl NetworkCoalesceExec {
     /// Does nothing, but it's here for explicitly stating that this network boundary does not
-    /// need mutate the input plan in other to account for more consumer tasks.
+    /// need to mutate the input plan in other to account for more consumer tasks.
     pub(crate) fn scale_input(
         plan: Arc<dyn ExecutionPlan>,
         _consumer_partitions: usize,
