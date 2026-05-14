@@ -300,6 +300,8 @@ async fn _inject_network_boundaries(
             let task_count = Desired((f * task_count.as_usize() as f64).ceil() as usize);
             return Ok(ctx.plan_with_task_count(plan, task_count));
         }
+    // If the parent of the current node is either a `CoalescePartitionsExec` or a
+    // `SortPreservingMergeExec`, a network boundary below it is necessary.
     } else if let Some(parent) = parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
         // we don't want to do it.
