@@ -860,6 +860,33 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn nested_union_budget_exceeds_children_sum() {
+        let res = run_query(
+            r#"
+            SET distributed.broadcast_joins = true;
+            SELECT b.tag, a.tag
+            FROM test_work_unit('big', 4, 'rows(1)', 'rows(1)', 'rows(1)', 'rows(1)') b
+            INNER JOIN (
+                SELECT * FROM test_work_unit('small_a', 1, 'rows(1)', 'rows(1)', 'rows(1)')
+                UNION ALL
+                SELECT * FROM test_work_unit('small_b', 1, 'rows(1)', 'rows(1)', 'rows(1)')
+            ) a ON a.letter = b.letter
+            "#,
+        )
+        .await;
+
+        let err = res.expect_err(
+            "expected the planner to reject the inconsistent CIU input (budget > children sum)",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ChildrenIsolatorUnionExec had a task count")
+                && msg.contains("greater than the sum of child task counts"),
+            "unexpected error message: {msg}"
+        );
+    }
+
     async fn run_query(sql: &str) -> Result<(String, String), DataFusionError> {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
