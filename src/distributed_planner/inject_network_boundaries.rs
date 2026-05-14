@@ -230,7 +230,7 @@ async fn _inject_network_boundaries(
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
         return if let Some(estimate) = estimator.task_estimation(&plan, ctx.cfg) {
-            Ok(ctx.plan_with_task_count(plan, estimate.task_count))
+            Ok(ctx.plan_with_task_count(plan, estimate.task_count.limit(ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
             // assume it cannot be distributed and use just 1 task.
