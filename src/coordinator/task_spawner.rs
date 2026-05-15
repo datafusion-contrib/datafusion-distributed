@@ -262,9 +262,8 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         });
     }
 
-    /// Instantiates and returns the task that based on the different local [WorkUnitFeedExec]
-    /// nodes, sends their inner [WorkUnitFeeds] over the network to their remote counterparts.
-    /// The returned task is just a future that does nothing unless polled.
+    /// Launches the task that based on the different local [WorkUnitFeedExec] nodes, sends their
+    /// inner [WorkUnitFeeds] over the network to their remote counterparts.
     ///
     /// Once this function is called, all the [WorkUnitFeedExec]s feeds will be consumed.
     pub(super) fn work_unit_feed_task(

@@ -19,8 +19,9 @@ use rand::Rng;
 use std::sync::Arc;
 
 /// Prepares the distributed plan for execution, which implies:
-/// 1. Perform some worker assignation, choosing randomly from the given URLs and assigning one
-///    URL per task.
+/// 1. Perform some worker URL assignation, choosing either:
+///    - The URLs set by the user with [crate::TaskEstimator::route_tasks].
+///    - Randomly otherwise
 /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
 ///    network call feeding the subplan is necessary.
 /// 3. In each network boundary, set the input plan to `None`. That way, network boundaries
