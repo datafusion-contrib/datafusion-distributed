@@ -1,4 +1,5 @@
-use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
+use crate::coordinator::DistributedExec;
+use crate::execution_plans::NetworkCoalesceExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{HashMap, config_err};

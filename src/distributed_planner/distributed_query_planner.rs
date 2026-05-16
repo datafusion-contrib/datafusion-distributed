@@ -2,7 +2,7 @@ use crate::distributed_planner::inject_network_boundaries::inject_network_bounda
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
-use crate::{DistributedExec, NetworkBoundaryExt};
+use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::execution::SessionState;
@@ -66,6 +66,8 @@ impl QueryPlanner for DistributedQueryPlanner {
             return Ok(original_plan);
         }
 
+        let d_cfg = DistributedConfig::from_config_options(session_state.config_options())?;
+
         // The plan already contains network boundaries set by the user. Just ensure they have nice
         // unique identifiers for each stage, and move forward with it.
         if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
@@ -74,7 +76,9 @@ impl QueryPlanner for DistributedQueryPlanner {
             if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
                 return Ok(plan);
             }
-            return Ok(Arc::new(DistributedExec::new(plan)));
+            return Ok(Arc::new(
+                DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
+            ));
         }
 
         let mut plan = Arc::clone(&original_plan);
@@ -96,7 +100,9 @@ impl QueryPlanner for DistributedQueryPlanner {
 
         let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
 
-        Ok(Arc::new(DistributedExec::new(plan)))
+        Ok(Arc::new(
+            DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
+        ))
     }
 }
 

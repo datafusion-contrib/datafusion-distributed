@@ -1,8 +1,8 @@
 use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
 use crate::common::serialize_uuid;
+use crate::coordinator::DistributedExec;
 use crate::distributed_ext::DistributedExt;
-use crate::execution_plans::DistributedExec;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
