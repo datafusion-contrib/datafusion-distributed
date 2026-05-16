@@ -86,6 +86,10 @@ pub struct ChildrenIsolatorUnionExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
     pub(crate) children: Vec<Arc<dyn ExecutionPlan>>,
+    /// The original per-child weights (and their optional hard caps) used to build the
+    /// `task_idx_map`. Stored so `with_new_children` can re-run the allocator with the same
+    /// inputs and preserve `Maximum(N)` caps across plan rewrites.
+    pub(crate) child_weights: Vec<ChildWeight>,
     pub(crate) task_idx_map: Vec<
         /* outer distributed task idx */
         Vec<(
@@ -95,24 +99,63 @@ pub struct ChildrenIsolatorUnionExec {
     >,
 }
 
+/// Per-child allocation hint passed to
+/// [`ChildrenIsolatorUnionExec::from_children_and_weights`].
+///
+/// `weight` sets the child's *relative* share of the stage's task budget — only the ratios
+/// among the non-zero entries matter. Valid values are any finite, non-negative `f64`:
+/// `0.0` means "no proportional share" (the child still runs but gets packed into an
+/// existing slot rather than earning its own). Negative and non-finite (`NaN`, `±∞`)
+/// values are rejected with an error. If every weight is `0.0`, the distribution falls
+/// back to uniform so the planner never has to special-case "no signal".
+///
+/// `max` is an optional *absolute* cap: the allocator will never assign the child more than
+/// `max` task slots, even if its proportional share would be larger. Use it to surface
+/// annotations like `Maximum(N)` that hard-limit how much parallelism a child can take.
+/// Leaving `max` unset means "no cap" — the child can absorb surplus budget from other
+/// capped siblings.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChildWeight {
+    pub weight: f64,
+    pub max: Option<usize>,
+}
+
+impl ChildWeight {
+    /// Convenience: a child with relative weight `w` and no cap.
+    pub fn desired(w: f64) -> Self {
+        Self {
+            weight: w,
+            max: None,
+        }
+    }
+
+    /// Convenience: a child whose relative weight equals its hard cap `n`.
+    pub fn maximum(n: usize) -> Self {
+        Self {
+            weight: n as f64,
+            max: Some(n),
+        }
+    }
+}
+
 impl ChildrenIsolatorUnionExec {
-    pub(crate) fn from_children_and_task_counts(
+    pub(crate) fn from_children_and_weights(
         children: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
-        children_task_count: impl IntoIterator<Item = usize>,
+        children_weights: impl IntoIterator<Item = ChildWeight>,
         task_count: usize,
     ) -> Result<Self, DataFusionError> {
         let children = children.into_iter().collect_vec();
-        let task_count_per_children = children_task_count.into_iter().collect_vec();
+        let weights = children_weights.into_iter().collect_vec();
 
-        if children.len() != task_count_per_children.len() {
+        if children.len() != weights.len() {
             return internal_err!(
-                "ChildrenIsolatorUnionExec received {} children but a vec of {} positions for those children. This is a bug in the distributed planning logic, please report it",
+                "ChildrenIsolatorUnionExec received {} children but a vec of {} weights for those children. This is a bug in the distributed planning logic, please report it",
                 children.len(),
-                task_count_per_children.len()
+                weights.len()
             );
         }
 
-        let task_idx_map = split_children(task_count_per_children, task_count)?;
+        let task_idx_map = split_children(&weights, task_count)?;
 
         // Because different children might return a different number of partitions, and we might
         // execute a different number of children in different tasks, the reality is that this node,
@@ -145,6 +188,7 @@ impl ChildrenIsolatorUnionExec {
             properties: Arc::new(properties),
             metrics: ExecutionPlanMetricsSet::default(),
             children,
+            child_weights: weights,
             task_idx_map,
         })
     }
@@ -217,9 +261,9 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
                 self.children.len()
             );
         }
-        Ok(Arc::new(Self::from_children_and_task_counts(
+        Ok(Arc::new(Self::from_children_and_weights(
             children,
-            self.child_task_counts(),
+            self.child_weights.clone(),
             self.task_idx_map.len(),
         )?))
     }
@@ -336,54 +380,49 @@ impl Stream for ObservedStream {
     }
 }
 
-/// Given a list of children with a different number of tasks assigned each, it redistributes them
-/// and re-assign tasks numbers to them so that they fit in the provided `task_count`.
+/// Given a per-child [`ChildWeight`] slice and a `task_count_budget`, distribute the budget
+/// across children proportional to their weights, honoring any per-child caps.
 ///
-/// For example, given these inputs:
-///     `task_count_per_children`: [1, 1, 1]
-///     `task_count`: 3
-/// It returns the following output:
-///     `[[(0, 0/1)], [(1, 0/1)], [(2, 0/1)]]`
-/// That means that:
-/// - Task 0 will execute task 0 from child 0
-/// - Task 1 will execute task 0 from child 1
-/// - Task 2 will execute task 0 from child 2
+/// Behavior (a single proportional allocation handles every regime — `budget < n`, `budget
+/// == n`, and `budget > n`):
+///  - The budget is allocated proportionally with the Hare largest-remainder method (ties
+///    broken by lower child index first, so the output is deterministic).
+///  - A child with `max = Some(N)` never receives more than `N` task slots; any excess that
+///    would have gone to it is redistributed to uncapped siblings. When every child is at
+///    its cap, the leftover budget stays as empty trailing task slots.
+///  - A child whose proportional share rounds down to zero is *packed* into the last
+///    occupied task slot — sharing execution with whoever is already there — rather than
+///    stealing a slot from a heavy-weight sibling. This is also what makes the `budget < n`
+///    case work: most children end up at zero share and pile into the few occupied slots.
 ///
-/// Things can get more complicated if the sum of all the tasks from the children is greater than
-/// the `task_count` passed:
+/// ## Examples (read alongside the unit tests for the full picture):
 ///
-/// For example, given these inputs:
-///     `task_count_per_children`: [2, 1, 1]
-///     `task_count`: 3
-/// It returns the following output:
-///     `[[(0, 0/1)], [(1, 0/1)], [(2, 0/1)]]`
-/// As we have 3 tasks available for executing 3 children with a total sum of 2+1+1=4 tasks, we
-/// need to tell that first child to be executed in 1 task.
+/// ```text
+///   weights: [w(1), w(1), w(1)], budget: 3  →  one task slot per child
+///       [[(0, 0/1)], [(1, 0/1)], [(2, 0/1)]]
 ///
-/// In this other case:
-///     `task_count_per_children`: [2, 3, 1]
-///     `task_count`: 5
-/// It returns the following output:
-///     `[[(0, 0/2)], [(0, 1/2)], [(1, 0/2)], [(1, 1/2)], [(2, 0/1)]]`
-/// Note how in this case there are 2+3+1=6 tasks to be executed, but we only have 5 tasks
-/// available. We need to trim a task from somewhere, and the only candidates are child 0 and 1.
-/// As child 1 is the one with the greatest task count (3), we prefer to trim the task from there,
-/// as that's what will yield the most even distribution of tasks given the 5 tasks budget.
+///   weights: [w(1), w(2), w(3)], budget: 6  →  weights match the budget exactly
+///       [[(0, 0/1)], [(1, 0/2)], [(1, 1/2)], [(2, 0/3)], [(2, 1/3)], [(2, 2/3)]]
 ///
-/// Going to the other extreme, given this input:
-///     `task_count_per_children`: [1, 1, 1, 1, 1]
-///     `task_count`: 2
-/// It returns the following output:
-///     `[[(0, 0/1), (1, 0/1), (2, 0/1)] , [(3, 0/1), (4, 0/1)]]`
-/// In this case, we have very few `task_count` available, so we cannot afford to execute one
-/// child per task. We need to group children so that one task executes several of them, and the
-/// other tasks execute the several other remaining.
+///   weights: [w(1), w(1)], budget: 3  →  more budget than the total weight — the heavier-
+///       share child (after tiebreak) covers two slots:
+///       [[(0, 0/2)], [(0, 1/2)], [(1, 0/1)]]
 ///
-/// The function looks pretty much like the solution of a LeetCode problem, so it's not super
-/// easy to understand just be looking at the code. The best way to get a grasp of what its doing
-/// is by looking at the tests.
+///   weights: [Maximum(1), Maximum(1)], budget: 3  →  both children are capped at 1; the
+///       third slot stays empty:
+///       [[(0, 0/1)], [(1, 0/1)], []]
+///
+///   weights: [Maximum(1), w(1)], budget: 3  →  the capped child gets exactly 1 slot, the
+///       uncapped sibling absorbs the surplus:
+///       [[(0, 0/1)], [(1, 0/2)], [(1, 1/2)]]
+///
+///   weights: [w(10), w(1), w(1)], budget: 3  →  child 0's proportional share is 2.5
+///       (rounds up to 3 via the largest-remainder pass); children 1 and 2 round down to 0
+///       and are packed into the last occupied slot instead of stealing one from child 0:
+///       [[(0, 0/3)], [(0, 1/3)], [(0, 2/3), (1, 0/1), (2, 0/1)]]
+/// ```
 fn split_children(
-    mut task_count_per_children: Vec<usize>,
+    children: &[ChildWeight],
     task_count_budget: usize,
 ) -> Result<
     // Task idx. This Vec will have `task_count_budget` length.
@@ -396,86 +435,153 @@ fn split_children(
     >,
     DataFusionError,
 > {
-    let total_children_tasks = task_count_per_children.iter().sum::<usize>();
-    if task_count_budget > total_children_tasks {
-        return internal_err!(
-            "ChildrenIsolatorUnionExec had a task count {task_count_budget}, which is greater than the sum of child task counts {total_children_tasks}. This is a bug in the distributed planning logic, please report it"
-        );
-    } else if task_count_budget == 0 {
+    if task_count_budget == 0 {
         return internal_err!(
             "ChildrenIsolatorUnionExec had a task count {task_count_budget}. This is a bug in the distributed planning logic, please report it"
         );
     }
+    if children.is_empty() {
+        return internal_err!(
+            "ChildrenIsolatorUnionExec built with no children. This is a bug in the distributed planning logic, please report it"
+        );
+    }
+    for (i, weight) in children.iter().enumerate() {
+        if weight.max == Some(0) {
+            return plan_err!(
+                "ChildrenIsolatorUnionExec child {i} has a max task count of 0, which is invalid"
+            );
+        }
+        if weight.weight < 0.0 {
+            return plan_err!(
+                "ChildrenIsolatorUnionExec child {i} has a negative desired wait of {}, which is invalid.",
+                weight.weight
+            );
+        }
+        if !weight.weight.is_finite() {
+            return plan_err!(
+                "ChildrenIsolatorUnionExec child {i} has a non-finite desired wait of {}, which is invalid.",
+                weight.weight
+            );
+        }
+    }
 
-    let mut tasks_to_trim = total_children_tasks - task_count_budget;
-    while tasks_to_trim > 0 {
-        let mut max_child_task_count_idx = 0;
-        let mut max_child_task_count_value = 1;
-        for (i, child_task_count) in task_count_per_children.iter().enumerate() {
-            if child_task_count > &max_child_task_count_value {
-                max_child_task_count_idx = i;
-                max_child_task_count_value = *child_task_count;
+    // Two running examples (A and B) traced through every step below.
+    // A: [w(10), w(1), w(1)], budget=3   (heavy child dominates)
+    // B: [max(1), w(1)],      budget=3   (cap kicks in during remainder pass)
+    let child_weights: Vec<f64> = children.iter().map(|w| w.weight).collect();
+    let total_weight: f64 = child_weights.iter().sum(); // A→12.0  B→2.0
+    let child_count = children.len();
+
+    // Ideal share per child = budget * w_i / Σw.
+    // A: [2.5, 0.25, 0.25]
+    // B: [1.5, 1.5]
+    let unrounded_child_task_counts: Vec<f64> = if total_weight > 0.0 {
+        child_weights
+            .iter()
+            .map(|w| task_count_budget as f64 * w / total_weight)
+            .collect()
+    } else {
+        // All weights zero → even split.
+        vec![task_count_budget as f64 / child_count as f64; child_count]
+    };
+
+    // Floor each share, then clamp by any per-child cap.
+    // A: floor:[2,0,0] cap:unchanged
+    // B: floor:[1,1]   cap:c0        min(1,1)=1 → unchanged
+    let mut child_task_counts = unrounded_child_task_counts
+        .iter()
+        .map(|x| x.floor() as usize)
+        .collect::<Vec<_>>();
+    for (task_count, child_weight) in child_task_counts.iter_mut().zip(children.iter()) {
+        if let Some(max) = child_weight.max {
+            *task_count = (*task_count).min(max);
+        }
+    }
+
+    // Hare largest-remainder: give the remaining slots to children with the biggest
+    // fractional parts, skipping any already at their cap.
+    // A: Σfloors=2, unallocated=1; remainders=[0.5,0.25,0.25] → c0 wins → [3,0,0]
+    // B: Σfloors=2, unallocated=1; remainders=[0.5,0.5] → c0 tied-wins but capped → c1 wins → [1,2]
+    let allocated_task_counts: usize = child_task_counts.iter().sum();
+    let mut unallocated_task_counts = task_count_budget.saturating_sub(allocated_task_counts);
+    if unallocated_task_counts > 0 {
+        let mut order: Vec<usize> = (0..child_count).collect();
+        // Sort descending by fractional part; lower index breaks ties deterministically.
+        order.sort_by(|&a, &b| {
+            let ra = unrounded_child_task_counts[a] - unrounded_child_task_counts[a].floor();
+            let rb = unrounded_child_task_counts[b] - unrounded_child_task_counts[b].floor();
+            rb.partial_cmp(&ra)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+        while unallocated_task_counts > 0 {
+            let mut made_progress = false;
+            for &idx in &order {
+                if unallocated_task_counts == 0 {
+                    break;
+                }
+                if let Some(max) = children[idx].max
+                    && child_task_counts[idx] >= max
+                {
+                    continue;
+                }
+                child_task_counts[idx] += 1;
+                unallocated_task_counts -= 1;
+                made_progress = true;
+            }
+            if !made_progress {
+                // All remaining children are at their cap; leftover budget becomes empty slots.
+                break;
             }
         }
-        if max_child_task_count_value == 1 {
-            break;
-        }
-        task_count_per_children[max_child_task_count_idx] -= 1;
-        tasks_to_trim -= 1;
     }
 
-    let total_child_tasks: usize = task_count_per_children.iter().sum();
-    let base_per_task = total_child_tasks / task_count_budget;
-    let mut extra = total_child_tasks % task_count_budget;
-
+    // Lay out each child's alloc in consecutive result slots.
+    // A: c0×3 → slots 0=(0,0/3), 1=(0,1/3), 2=(0,2/3); c1,c2 alloc=0 → skipped; task_idx=3
+    // B: c0×1 → slot  0=(0,0/1); c1×2 → slots 1=(1,0/2), 2=(1,1/2);       task_idx=3
     let mut result = vec![vec![]; task_count_budget];
     let mut task_idx = 0;
-    let mut current_task_count = 0;
-    let mut current_task_capacity = base_per_task;
-    if extra > 0 {
-        extra -= 1;
-        current_task_capacity += 1
-    }
-
-    for (child_idx, &child_task_count) in task_count_per_children.iter().enumerate() {
-        for task_i in 0..child_task_count {
+    for (child_idx, &task_count) in child_task_counts.iter().enumerate() {
+        for task_i in 0..task_count {
             result[task_idx].push((
                 child_idx,
                 DistributedTaskContext {
                     task_index: task_i,
-                    task_count: child_task_count,
+                    task_count,
                 },
             ));
-            current_task_count += 1;
-
-            if current_task_count >= current_task_capacity && task_idx < task_count_budget - 1 {
-                task_idx += 1;
-                current_task_count = 0;
-                current_task_capacity = base_per_task;
-                if extra > 0 {
-                    extra -= 1;
-                    current_task_capacity += 1
-                }
-            }
+            task_idx += 1;
         }
     }
 
+    // Pack zero-alloc children into the last occupied slot so their data still gets produced.
+    // A: c1,c2 → appended to slot 2: [(0,2/3),(1,0/1),(2,0/1)]
+    // B: no zero-alloc children → result unchanged
+    if let Some(last_occupied) = task_idx.checked_sub(1) {
+        for (child_idx, &task_count) in child_task_counts.iter().enumerate() {
+            if task_count != 0 {
+                continue;
+            }
+            result[last_occupied].push((
+                child_idx,
+                DistributedTaskContext {
+                    task_index: 0,
+                    task_count: 1,
+                },
+            ));
+        }
+    }
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_plan::ExecutionPlan;
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use std::sync::Arc;
 
     #[test]
     fn children_split_all_1_task() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            split_children(vec![1, 1, 1], 3)?,
+            split_children(&[des(1.0), des(1.0), des(1.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -483,11 +589,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(vec![1, 1, 1], 2)?,
-            vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1))], vec![(2, ctx(0, 1))]]
+            split_children(&[des(1.0), des(1.0), des(1.0)], 2)?,
+            // Floor = [0,0,0]. The remainder pass gives one slot each to c0 and c1 (tiebreak
+            // by lower index); c2 rounds to zero and is packed into the last occupied slot.
+            vec![vec![(0, ctx(0, 1))], vec![(1, ctx(0, 1)), (2, ctx(0, 1))]]
         );
         assert_eq!(
-            split_children(vec![1, 1, 1], 1)?,
+            split_children(&[des(1.0), des(1.0), des(1.0)], 1)?,
             vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1)), (2, ctx(0, 1))]]
         );
         Ok(())
@@ -496,7 +604,7 @@ mod tests {
     #[test]
     fn split_children_different_tasks() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            split_children(vec![1, 2, 3], 6)?,
+            split_children(&[des(1.0), des(2.0), des(3.0)], 6)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -507,7 +615,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(vec![1, 2, 3], 5)?,
+            split_children(&[des(1.0), des(2.0), des(3.0)], 5)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 2))],
@@ -517,7 +625,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(vec![1, 2, 3], 4)?,
+            split_children(&[des(1.0), des(2.0), des(3.0)], 4)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -526,7 +634,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(vec![1, 2, 3], 3)?,
+            split_children(&[des(1.0), des(2.0), des(3.0)], 3)?,
             vec![
                 vec![(0, ctx(0, 1))],
                 vec![(1, ctx(0, 1))],
@@ -534,14 +642,192 @@ mod tests {
             ]
         );
         assert_eq!(
-            split_children(vec![1, 2, 3], 2)?,
-            vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1))], vec![(2, ctx(0, 1))]]
+            split_children(&[des(1.0), des(2.0), des(3.0)], 2)?,
+            // Floor = [0, 0, 1] (only c2's share is ≥ 1). Remainder of 1 goes to c1 (highest
+            // fractional remainder). c0 rounds to zero and packs into the last occupied slot.
+            vec![vec![(1, ctx(0, 1))], vec![(2, ctx(0, 1)), (0, ctx(0, 1))]]
         );
         assert_eq!(
-            split_children(vec![1, 2, 3], 1)?,
-            vec![vec![(0, ctx(0, 1)), (1, ctx(0, 1)), (2, ctx(0, 1))]]
+            split_children(&[des(1.0), des(2.0), des(3.0)], 1)?,
+            // Only c2 (the highest weight) wins the single slot via the remainder pass; c0
+            // and c1 pack onto it.
+            vec![vec![(2, ctx(0, 1)), (0, ctx(0, 1)), (1, ctx(0, 1))]]
         );
         Ok(())
+    }
+
+    /// Regression test for a production planner bug: the budget can legitimately exceed the
+    /// sum of children weights (when a sibling subtree in the same stage drives the stage
+    /// budget up). The CIU redistributes the surplus proportionally rather than rejecting it.
+    #[test]
+    fn split_children_budget_exceeds_children_weight_sum() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // weights=[1,1], budget=3 → fractional shares of 1.5 each; lower-index child wins the
+        // tiebreak and absorbs the surplus, getting 2 task slots; the other gets 1.
+        assert_eq!(
+            split_children(&[des(1.0), des(1.0)], 3)?,
+            vec![
+                vec![(0, ctx(0, 2))],
+                vec![(0, ctx(1, 2))],
+                vec![(1, ctx(0, 1))],
+            ]
+        );
+        // weights=[1,1], budget=5 → fractional shares of 2.5 each; tiebreak gives the extra to
+        // the lower-index child.
+        assert_eq!(
+            split_children(&[des(1.0), des(1.0)], 5)?,
+            vec![
+                vec![(0, ctx(0, 3))],
+                vec![(0, ctx(1, 3))],
+                vec![(0, ctx(2, 3))],
+                vec![(1, ctx(0, 2))],
+                vec![(1, ctx(1, 2))],
+            ]
+        );
+        // weights=[1,2], budget=4 → shares of 4/3≈1.33 and 8/3≈2.67; floors are [1,2] with one
+        // leftover, awarded to the larger-remainder child (idx 1).
+        assert_eq!(
+            split_children(&[des(1.0), des(2.0)], 4)?,
+            vec![
+                vec![(0, ctx(0, 1))],
+                vec![(1, ctx(0, 3))],
+                vec![(1, ctx(1, 3))],
+                vec![(1, ctx(2, 3))],
+            ]
+        );
+        Ok(())
+    }
+
+    /// A child whose proportional share rounds down to zero doesn't steal a slot from heavier
+    /// children — instead it's packed into the last occupied task slot, so its data still
+    /// gets produced without disturbing the proportional layout for the heavy children.
+    #[test]
+    fn split_children_packs_zero_share_children_into_last_slot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // weights=[10, 1, 1], budget=3 → child 0 wins the budget (2.5 → 3 via largest-remainder);
+        // children 1 and 2 round down to 0 and share child 0's last task slot.
+        assert_eq!(
+            split_children(&[des(10.0), des(1.0), des(1.0)], 3)?,
+            vec![
+                vec![(0, ctx(0, 3))],
+                vec![(0, ctx(1, 3))],
+                vec![(0, ctx(2, 3)), (1, ctx(0, 1)), (2, ctx(0, 1))],
+            ]
+        );
+        Ok(())
+    }
+
+    /// Hard cap (`Maximum(N)`) is honored: a capped child never receives more slots than its
+    /// cap, even if its proportional share would be larger. Excess budget is redistributed to
+    /// uncapped siblings; if every child is capped, the surplus slots stay empty.
+    #[test]
+    fn split_children_respects_maximum_caps() -> Result<(), Box<dyn std::error::Error>> {
+        // Two children both capped at 1. Budget 3 → can only hand out 2 (one per child),
+        // the third slot stays empty.
+        assert_eq!(
+            split_children(&[max(1), max(1)], 3)?,
+            vec![vec![(0, ctx(0, 1))], vec![(1, ctx(0, 1))], vec![]]
+        );
+
+        // One capped at 1, one uncapped with weight 1. Budget 3 → c0 stuck at 1, c1 absorbs
+        // the surplus and ends up running in 2 tasks.
+        assert_eq!(
+            split_children(&[max(1), des(1.0)], 3)?,
+            vec![
+                vec![(0, ctx(0, 1))],
+                vec![(1, ctx(0, 2))],
+                vec![(1, ctx(1, 2))],
+            ]
+        );
+
+        // Three children: c0 capped at 2, c1 and c2 uncapped with weight 1 each. Budget 6 →
+        // c0's proportional share would be 3 but it caps at 2; the saved slot goes to c1
+        // (lower-index tiebreak among the uncapped siblings).
+        assert_eq!(
+            split_children(&[max(2), des(1.0), des(1.0)], 6)?,
+            vec![
+                vec![(0, ctx(0, 2))],
+                vec![(0, ctx(1, 2))],
+                vec![(1, ctx(0, 2))],
+                vec![(1, ctx(1, 2))],
+                vec![(2, ctx(0, 2))],
+                vec![(2, ctx(1, 2))],
+            ]
+        );
+
+        // All children capped, but budget matches the cap sum exactly — no surplus, no empty
+        // slots.
+        assert_eq!(
+            split_children(&[max(2), max(1)], 3)?,
+            vec![
+                vec![(0, ctx(0, 2))],
+                vec![(0, ctx(1, 2))],
+                vec![(1, ctx(0, 1))],
+            ]
+        );
+        Ok(())
+    }
+
+    /// All-zero weights are valid: the budget is split evenly across children.
+    #[test]
+    fn split_children_all_zero_weights_splits_evenly() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            split_children(&[des(0.0), des(0.0), des(0.0)], 3)?,
+            vec![
+                vec![(0, ctx(0, 1))],
+                vec![(1, ctx(0, 1))],
+                vec![(2, ctx(0, 1))],
+            ]
+        );
+        Ok(())
+    }
+
+    /// Negative and non-finite weights are rejected upfront.
+    #[test]
+    fn split_children_rejects_negative_weight() {
+        let err = split_children(&[des(1.0), des(-1.0), des(1.0)], 3).unwrap_err();
+        assert!(
+            err.to_string().contains("negative"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn split_children_rejects_nan_weight() {
+        let err = split_children(&[des(f64::NAN), des(1.0)], 2).unwrap_err();
+        assert!(
+            err.to_string().contains("non-finite"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn split_children_rejects_infinite_weight() {
+        let err = split_children(&[des(1.0), des(f64::INFINITY)], 2).unwrap_err();
+        assert!(
+            err.to_string().contains("non-finite"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn split_children_rejects_zero_max() {
+        let err = split_children(
+            &[
+                des(1.0),
+                ChildWeight {
+                    weight: 1.0,
+                    max: Some(0),
+                },
+                des(1.0),
+            ],
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("max task count of 0"),
+            "unexpected error: {err}"
+        );
     }
 
     fn ctx(task_index: usize, task_count: usize) -> DistributedTaskContext {
@@ -551,39 +837,13 @@ mod tests {
         }
     }
 
-    fn empty_partitions(partitions: usize) -> Arc<dyn ExecutionPlan> {
-        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-        Arc::new(EmptyExec::new(schema).with_partitions(partitions))
+    /// Shorthand for `ChildWeight::desired(w)` — keeps the unit tests readable.
+    fn des(w: f64) -> ChildWeight {
+        ChildWeight::desired(w)
     }
 
-    #[test]
-    fn with_new_children_recomputes_partitioning() -> Result<(), Box<dyn std::error::Error>> {
-        let child0 = empty_partitions(2);
-        let child1 = empty_partitions(1);
-
-        let union = Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
-            vec![Arc::clone(&child0), Arc::clone(&child1)],
-            vec![2, 1],
-            3,
-        )?);
-        assert_eq!(
-            union.properties().output_partitioning().partition_count(),
-            2
-        );
-
-        // Rewrites can wrap a child in a partition-changing operator. The cached union
-        // properties must be part of the replacement. If not, the downstream planning can skip
-        // partitions that the new child produces.
-        let repartitioned_child0: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
-            child0,
-            Partitioning::RoundRobinBatch(8),
-        )?);
-        let rebuilt = union.with_new_children(vec![repartitioned_child0, child1])?;
-        assert_eq!(
-            rebuilt.properties().output_partitioning().partition_count(),
-            8
-        );
-
-        Ok(())
+    /// Shorthand for `ChildWeight::maximum(n)` — keeps the unit tests readable.
+    fn max(n: usize) -> ChildWeight {
+        ChildWeight::maximum(n)
     }
 }

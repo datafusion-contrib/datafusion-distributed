@@ -1,5 +1,5 @@
 use crate::TaskCountAnnotation::{Desired, Maximum};
-use crate::execution_plans::ChildrenIsolatorUnionExec;
+use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
 use crate::stage::LocalStage;
 use crate::{
     BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
@@ -429,12 +429,21 @@ fn propagate_task_count_until_network_boundaries(
         // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
         // determine which children to run and which to exclude depending on the task index in
         // which it's running.
+        //
+        // Each child's bottom-up task count becomes its relative weight (children that want
+        // more parallelism get a proportionally larger share of the stage's budget). A
+        // `Maximum(N)` annotation maps to a hard cap so the allocator never assigns the
+        // child more than `N` task slots; surplus budget is redistributed to uncapped
+        // siblings, or stays empty if every child is capped.
         let children = plan.children();
-        let c_i_union = ChildrenIsolatorUnionExec::from_children_and_task_counts(
-            children.iter().map(|v| Arc::clone(*v)),
+        let c_i_union = ChildrenIsolatorUnionExec::from_children_and_weights(
+            children.iter().map(|v| Arc::clone(v)),
             children
                 .iter()
-                .map(|v| Ok(ctx.task_count(v)?.as_usize()))
+                .map(|v| match ctx.task_count(v)? {
+                    Desired(n) => Ok(ChildWeight::desired(n as f64)),
+                    Maximum(n) => Ok(ChildWeight::maximum(n)),
+                })
                 .collect::<Result<Vec<_>>>()?,
             task_count.as_usize(),
         )?;
@@ -757,18 +766,18 @@ mod tests {
         let annotated = sql_to_annotated(query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
-          FilterExec: task_count=Maximum(1)
-            RepartitionExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
+          FilterExec: task_count=Maximum(2)
+            RepartitionExec: task_count=Maximum(2)
+              PartitionIsolatorExec: task_count=Maximum(2)
+                DataSourceExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
                 DataSourceExec: task_count=Maximum(1)
-          ProjectionExec: task_count=Maximum(2)
-            FilterExec: task_count=Maximum(2)
-              RepartitionExec: task_count=Maximum(2)
-                PartitionIsolatorExec: task_count=Maximum(2)
-                  DataSourceExec: task_count=Maximum(2)
+          ProjectionExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DataSourceExec: task_count=Maximum(1)
         ")
     }
 
@@ -972,20 +981,6 @@ mod tests {
         // context.
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(1)
-          HashJoinExec: task_count=Maximum(1)
-            CoalescePartitionsExec: task_count=Maximum(1)
-              NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(2)
             CoalescePartitionsExec: task_count=Maximum(2)
               NetworkBroadcastExec: task_count=Maximum(2)
@@ -994,6 +989,20 @@ mod tests {
                     DataSourceExec: task_count=Desired(3)
             PartitionIsolatorExec: task_count=Maximum(2)
               DataSourceExec: task_count=Maximum(2)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1)
+              NetworkBroadcastExec: task_count=Maximum(1)
+                BroadcastExec: task_count=Desired(3)
+                  PartitionIsolatorExec: task_count=Desired(3)
+                    DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Maximum(1)
+          HashJoinExec: task_count=Maximum(1)
+            CoalescePartitionsExec: task_count=Maximum(1)
+              NetworkBroadcastExec: task_count=Maximum(1)
+                BroadcastExec: task_count=Desired(3)
+                  PartitionIsolatorExec: task_count=Desired(3)
+                    DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Maximum(1)
         ");
     }
 

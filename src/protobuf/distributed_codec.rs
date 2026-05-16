@@ -1,7 +1,8 @@
 use super::get_distributed_user_codecs;
 use crate::common::{deserialize_uuid, serialize_uuid};
 use crate::execution_plans::{
-    BroadcastExec, ChildrenIsolatorUnionExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
+    NetworkCoalesceExec,
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
@@ -202,6 +203,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
             DistributedExecNode::ChildrenIsolatorUnion(ChildrenIsolatorUnionExecProto {
                 partition_count,
                 task_idx_map,
+                child_weights,
             }) => {
                 // Building a UnionExec just to get the properties out of it is not the most
                 // efficient thing to do. However, it's the easiest way of getting the properties
@@ -218,6 +220,13 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     properties: Arc::new(properties),
                     metrics: Default::default(),
                     children: inputs.to_vec(),
+                    child_weights: child_weights
+                        .iter()
+                        .map(|cw| ChildWeight {
+                            weight: cw.weight,
+                            max: cw.max.map(|m| m as usize),
+                        })
+                        .collect(),
                     task_idx_map: task_idx_map
                         .iter()
                         .map(|entry| {
@@ -350,6 +359,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                             .collect_vec(),
                     })
                     .collect_vec(),
+                child_weights: node
+                    .child_weights
+                    .iter()
+                    .map(|cw| ChildWeightProto {
+                        weight: cw.weight,
+                        max: cw.max.map(|m| m as u64),
+                    })
+                    .collect_vec(),
             };
 
             let wrapper = DistributedExecProto {
@@ -432,6 +449,16 @@ pub struct ChildrenIsolatorUnionExecProto {
     partition_count: u64,
     #[prost(message, repeated, tag = "2")]
     task_idx_map: Vec<TaskIdxMapEntryProto>,
+    #[prost(message, repeated, tag = "3")]
+    child_weights: Vec<ChildWeightProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChildWeightProto {
+    #[prost(double, tag = "1")]
+    weight: f64,
+    #[prost(uint64, optional, tag = "2")]
+    max: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -813,9 +840,9 @@ mod tests {
         )) as Arc<dyn ExecutionPlan>;
 
         let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(ChildrenIsolatorUnionExec::from_children_and_task_counts(
+            Arc::new(ChildrenIsolatorUnionExec::from_children_and_weights(
                 vec![left.clone(), right.clone()],
-                vec![2, 2],
+                vec![ChildWeight::desired(3.0), ChildWeight::maximum(1)],
                 4,
             )?);
 

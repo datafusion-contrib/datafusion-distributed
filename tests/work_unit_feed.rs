@@ -177,7 +177,7 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11]
-          │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(3)], [rows(1)]]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
@@ -189,15 +189,15 @@ mod tests {
         | left  | 0    | 0         | a      |
         | left  | 0    | 0         | b      |
         | left  | 0    | 1         | a      |
-        | left  | 0    | 2         | a      |
-        | left  | 0    | 2         | b      |
-        | left  | 0    | 2         | c      |
-        | left  | 0    | 3         | a      |
+        | left  | 1    | 0         | a      |
+        | left  | 1    | 0         | b      |
+        | left  | 1    | 0         | c      |
+        | left  | 1    | 1         | a      |
         | right | 0    | 0         | a      |
         | right | 0    | 1         | a      |
         | right | 0    | 1         | b      |
-        | right | 1    | 0         | a      |
-        | right | 1    | 1         | a      |
+        | right | 0    | 2         | a      |
+        | right | 0    | 3         | a      |
         +-------+------+-----------+--------+
         ",
         );
@@ -535,7 +535,7 @@ mod tests {
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5]
             │ RepartitionExec: partitioning=Hash([tag@0, letter@1], 6), input_partitions=4
             │   AggregateExec: mode=Partial, gby=[tag@0 as tag, letter@1 as letter], aggr=[count(Int64(1))]
-            │     DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+            │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
             │       RowGeneratorExec: tag=left, tasks=2, partition_ops=[[rows(3)], [rows(2)], [rows(1)], [rows(2)]]
             │       RowGeneratorExec: tag=right, tasks=2, partition_ops=[[rows(2)], [rows(1)], [rows(1)], [rows(3)]]
             └──────────────────────────────────────────────────
@@ -778,7 +778,7 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11]
-          │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
           │     RowGeneratorExec: tag=fast, tasks=2, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
           │   SortExec: expr=[tag@0 ASC NULLS LAST, task@1 ASC NULLS LAST, partition@2 ASC NULLS LAST, letter@3 ASC NULLS LAST], preserve_partitioning=[true]
@@ -789,12 +789,12 @@ mod tests {
         +------+------+-----------+--------+
         | fast | 0    | 0         | a      |
         | fast | 0    | 1         | a      |
-        | fast | 0    | 2         | a      |
-        | fast | 0    | 3         | a      |
+        | fast | 1    | 0         | a      |
+        | fast | 1    | 1         | a      |
         | slow | 0    | 0         | a      |
         | slow | 0    | 1         | a      |
-        | slow | 1    | 0         | a      |
-        | slow | 1    | 1         | a      |
+        | slow | 0    | 2         | a      |
+        | slow | 0    | 3         | a      |
         +------+------+-----------+--------+
         "
         );
@@ -861,8 +861,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nested_union_budget_exceeds_children_sum() {
-        let res = run_query(
+    async fn nested_union_budget_exceeds_children_sum() -> Result<(), Box<dyn std::error::Error>> {
+        let (plan, results) = run_query(
             r#"
             SET distributed.broadcast_joins = true;
             SELECT b.tag, a.tag
@@ -872,19 +872,50 @@ mod tests {
                 UNION ALL
                 SELECT * FROM test_work_unit('small_b', 1, 'rows(1)', 'rows(1)', 'rows(1)')
             ) a ON a.letter = b.letter
+            ORDER BY a.tag, b.tag
             "#,
         )
-        .await;
+        .await?;
 
-        let err = res.expect_err(
-            "expected the planner to reject the inconsistent CIU input (budget > children sum)",
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("ChildrenIsolatorUnionExec had a task count")
-                && msg.contains("greater than the sum of child task counts"),
-            "unexpected error message: {msg}"
-        );
+        assert_snapshot!(plan + &results, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0]
+        │ SortPreservingMergeExec: [tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST]
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
+          │ SortExec: expr=[tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST], preserve_partitioning=[true]
+          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@1, letter@1)], projection=[tag@0, tag@2]
+          │     CoalescePartitionsExec
+          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
+          │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
+          │       RowGeneratorExec: tag=small_a, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
+          │       RowGeneratorExec: tag=small_b, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
+            │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
+            │   RowGeneratorExec: tag=big, tasks=4, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
+            └──────────────────────────────────────────────────
+        +-----+---------+
+        | tag | tag     |
+        +-----+---------+
+        | big | small_a |
+        | big | small_a |
+        | big | small_a |
+        | big | small_a |
+        | big | small_a |
+        | big | small_a |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        | big | small_b |
+        +-----+---------+
+        ");
+        Ok(())
     }
 
     async fn run_query(sql: &str) -> Result<(String, String), DataFusionError> {
