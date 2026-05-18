@@ -24,7 +24,8 @@ mod tests {
     const FILE_RANGE: Range<usize> = 0..3;
 
     #[tokio::test]
-    #[ignore = "Query q0 (SELECT COUNT(*) FROM hits) still does not get distributed. The planner correctly chooses a single-task plan because of parquet statistics."]
+    #[ignore = "Query 0 did not get distributed.The planner correctly chooses a single-task plan because of parquet statistics."]
+
     async fn test_clickbench_0() -> Result<()> {
         test_clickbench_query("q0", PerTestConfig::default()).await
     }
@@ -55,7 +56,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Query q6 (SELECT MIN/MAX FROM hits) still does not get distributed. The planner correctly chooses a single-task plan because of parquet statistics."]
+    #[ignore = "Query 6 did not get distributed.The planner correctly chooses a single-task plan because of parquet statistics."]
     async fn test_clickbench_6() -> Result<()> {
         test_clickbench_query("q6", PerTestConfig::default()).await
     }
