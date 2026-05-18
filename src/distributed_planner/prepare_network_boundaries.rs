@@ -1,4 +1,7 @@
-use crate::distributed_planner::network_boundary::network_boundary_scale_input;
+use crate::distributed_planner::network_boundary::{
+    network_boundary_exchange_assignment, network_boundary_scale_input,
+    network_boundary_with_exchange_assignment,
+};
 use crate::execution_plans::ChildrenIsolatorUnionExec;
 use crate::stage::LocalStage;
 use crate::{NetworkBoundaryExt, Stage};
@@ -67,6 +70,14 @@ fn prepare(
     // 2) Scale up the head node of the input stage in order to account for the amount of partition
     //    and consumer count above it.
     let plan = network_boundary_scale_input(new_input, consumer_partitions, consumer_task_count)?;
+    let producer_partitions = plan.properties().partitioning.partition_count();
+    let assignment = network_boundary_exchange_assignment(
+        nb,
+        producer_task_count,
+        consumer_task_count,
+        consumer_partitions,
+        producer_partitions,
+    )?;
 
     // 3) Make sure the input stage can be uniquely identified with a stage index and query id.
     //    If there were already some `query_id` and `num` that's fine.
@@ -77,5 +88,6 @@ fn prepare(
         tasks: local_stage.tasks,
     }));
     *stage_id += 1;
-    nb
+    let nb = nb?;
+    network_boundary_with_exchange_assignment(nb, assignment)
 }

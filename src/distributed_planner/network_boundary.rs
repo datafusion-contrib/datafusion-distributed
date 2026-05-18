@@ -1,5 +1,7 @@
-use crate::{NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
-use datafusion::common::Result;
+use crate::{
+    ExchangeAssignment, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage,
+};
+use datafusion::common::{Result, internal_err};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
@@ -75,4 +77,51 @@ pub(crate) fn network_boundary_scale_input(
     }
 
     Ok(input)
+}
+
+/// Builds the routing assignment after input scaling has finalized producer partition counts.
+pub(crate) fn network_boundary_exchange_assignment(
+    nb: &dyn NetworkBoundary,
+    producer_task_count: usize,
+    consumer_task_count: usize,
+    consumer_partition_count: usize,
+    producer_partition_count: usize,
+) -> Result<Arc<ExchangeAssignment>> {
+    if nb.as_any().is::<NetworkShuffleExec>() {
+        ExchangeAssignment::try_shuffle(
+            producer_task_count,
+            consumer_task_count,
+            consumer_partition_count,
+        )
+    } else if nb.as_any().is::<NetworkCoalesceExec>() {
+        ExchangeAssignment::try_coalesce(
+            producer_task_count,
+            consumer_task_count,
+            producer_partition_count,
+        )
+    } else if nb.as_any().is::<NetworkBroadcastExec>() {
+        ExchangeAssignment::try_broadcast(
+            producer_task_count,
+            consumer_task_count,
+            consumer_partition_count,
+        )
+    } else {
+        internal_err!("unsupported network boundary {}", nb.name())
+    }
+}
+
+/// Stores the finalized routing assignment on the concrete network boundary node.
+pub(crate) fn network_boundary_with_exchange_assignment(
+    nb: Arc<dyn ExecutionPlan>,
+    assignment: Arc<ExchangeAssignment>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if let Some(node) = nb.as_any().downcast_ref::<NetworkShuffleExec>() {
+        Ok(Arc::new(node.with_exchange_assignment(assignment)))
+    } else if let Some(node) = nb.as_any().downcast_ref::<NetworkCoalesceExec>() {
+        Ok(Arc::new(node.with_exchange_assignment(assignment)))
+    } else if let Some(node) = nb.as_any().downcast_ref::<NetworkBroadcastExec>() {
+        Ok(Arc::new(node.with_exchange_assignment(assignment)))
+    } else {
+        internal_err!("unsupported network boundary {}", nb.name())
+    }
 }

@@ -6,7 +6,9 @@ use crate::execution_plans::{
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
+use crate::{
+    ExchangeAssignment, ExchangeAssignmentKind, NetworkShuffleExec, PartitionIsolatorExec,
+};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -97,6 +99,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema,
                 partitioning,
                 input_stage,
+                assignment,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -116,12 +119,14 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     Arc::new(schema),
                     parse_stage_proto(input_stage, inputs)?,
+                    parse_exchange_assignment_proto(assignment)?,
                 )))
             }
             DistributedExecNode::NetworkCoalesceTasks(NetworkCoalesceExecProto {
                 schema,
                 partitioning,
                 input_stage,
+                assignment,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -141,6 +146,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     Arc::new(schema),
                     parse_stage_proto(input_stage, inputs)?,
+                    parse_exchange_assignment_proto(assignment)?,
                 )))
             }
             DistributedExecNode::PartitionIsolator(PartitionIsolatorExecProto { n_tasks }) => {
@@ -162,6 +168,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema,
                 partitioning,
                 input_stage,
+                assignment,
             }) => {
                 let schema: Schema = schema
                     .as_ref()
@@ -181,6 +188,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     partitioning,
                     Arc::new(schema),
                     parse_stage_proto(input_stage, inputs)?,
+                    parse_exchange_assignment_proto(assignment)?,
                 )))
             }
             DistributedExecNode::Broadcast(BroadcastExecProto {
@@ -274,6 +282,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                assignment: encode_exchange_assignment_proto(node.assignment.as_deref())?,
             };
 
             let wrapper = DistributedExecProto {
@@ -290,6 +299,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                assignment: encode_exchange_assignment_proto(node.assignment.as_deref())?,
             };
 
             let wrapper = DistributedExecProto {
@@ -316,6 +326,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     &DefaultPhysicalProtoConverter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
+                assignment: encode_exchange_assignment_proto(node.assignment.as_deref())?,
             };
 
             let wrapper = DistributedExecProto {
@@ -413,6 +424,27 @@ pub struct PartitionIsolatorExecProto {
     pub n_tasks: u64,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExchangeAssignmentProto {
+    #[prost(enumeration = "ExchangeAssignmentKindProto", tag = "1")]
+    pub kind: i32,
+    #[prost(uint64, tag = "2")]
+    pub producer_task_count: u64,
+    #[prost(uint64, tag = "3")]
+    pub consumer_task_count: u64,
+    #[prost(uint64, tag = "4")]
+    pub partition_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExchangeAssignmentKindProto {
+    Unspecified = 0,
+    Shuffle = 1,
+    Coalesce = 2,
+    Broadcast = 3,
+}
+
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
 /// an intermediate format for serializing/deserializing [NetworkShuffleExec] nodes
 /// to send them over the wire.
@@ -424,6 +456,8 @@ pub struct NetworkShuffleExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, optional, tag = "4")]
+    assignment: Option<ExchangeAssignmentProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -454,6 +488,7 @@ fn new_network_hash_shuffle_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
     input_stage: Stage,
+    assignment: Option<Arc<ExchangeAssignment>>,
 ) -> NetworkShuffleExec {
     NetworkShuffleExec {
         properties: Arc::new(PlanProperties::new(
@@ -464,6 +499,7 @@ fn new_network_hash_shuffle_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        assignment,
     }
 }
 
@@ -478,12 +514,15 @@ pub struct NetworkCoalesceExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, optional, tag = "4")]
+    assignment: Option<ExchangeAssignmentProto>,
 }
 
 fn new_network_coalesce_tasks_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
     input_stage: Stage,
+    assignment: Option<Arc<ExchangeAssignment>>,
 ) -> NetworkCoalesceExec {
     NetworkCoalesceExec {
         properties: Arc::new(PlanProperties::new(
@@ -494,6 +533,7 @@ fn new_network_coalesce_tasks_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        assignment,
     }
 }
 
@@ -505,6 +545,8 @@ pub struct NetworkBroadcastExecProto {
     partitioning: Option<protobuf::Partitioning>,
     #[prost(message, optional, tag = "3")]
     input_stage: Option<StageProto>,
+    #[prost(message, optional, tag = "4")]
+    assignment: Option<ExchangeAssignmentProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -517,6 +559,7 @@ fn new_network_broadcast_exec(
     partitioning: Partitioning,
     schema: SchemaRef,
     input_stage: Stage,
+    assignment: Option<Arc<ExchangeAssignment>>,
 ) -> NetworkBroadcastExec {
     NetworkBroadcastExec {
         properties: Arc::new(PlanProperties::new(
@@ -527,7 +570,66 @@ fn new_network_broadcast_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        assignment,
     }
+}
+
+fn parse_exchange_assignment_proto(
+    proto: Option<ExchangeAssignmentProto>,
+) -> Result<Option<Arc<ExchangeAssignment>>> {
+    let Some(proto) = proto else {
+        return Ok(None);
+    };
+
+    let producer_task_count = proto.producer_task_count as usize;
+    let consumer_task_count = proto.consumer_task_count as usize;
+    let partition_count = proto.partition_count as usize;
+    let kind = ExchangeAssignmentKindProto::try_from(proto.kind)
+        .map_err(|_| proto_error(format!("invalid exchange assignment kind {}", proto.kind)))?;
+
+    let assignment = match kind {
+        ExchangeAssignmentKindProto::Unspecified => {
+            return Err(proto_error("exchange assignment kind is unspecified"));
+        }
+        ExchangeAssignmentKindProto::Shuffle => ExchangeAssignment::try_shuffle(
+            producer_task_count,
+            consumer_task_count,
+            partition_count,
+        )?,
+        ExchangeAssignmentKindProto::Coalesce => ExchangeAssignment::try_coalesce(
+            producer_task_count,
+            consumer_task_count,
+            partition_count,
+        )?,
+        ExchangeAssignmentKindProto::Broadcast => ExchangeAssignment::try_broadcast(
+            producer_task_count,
+            consumer_task_count,
+            partition_count,
+        )?,
+    };
+
+    Ok(Some(assignment))
+}
+
+fn encode_exchange_assignment_proto(
+    assignment: Option<&ExchangeAssignment>,
+) -> Result<Option<ExchangeAssignmentProto>> {
+    let Some(assignment) = assignment else {
+        return Ok(None);
+    };
+
+    let kind = match assignment.kind() {
+        ExchangeAssignmentKind::Shuffle => ExchangeAssignmentKindProto::Shuffle,
+        ExchangeAssignmentKind::Coalesce => ExchangeAssignmentKindProto::Coalesce,
+        ExchangeAssignmentKind::Broadcast => ExchangeAssignmentKindProto::Broadcast,
+    };
+
+    Ok(Some(ExchangeAssignmentProto {
+        kind: kind as i32,
+        producer_task_count: assignment.producer_task_count() as u64,
+        consumer_task_count: assignment.consumer_task_count() as u64,
+        partition_count: assignment.assignment_partition_count() as u64,
+    }))
 }
 
 #[cfg(test)]
@@ -577,14 +679,37 @@ mod tests {
     }
 
     #[test]
+    fn test_roundtrip_exchange_assignments() -> datafusion::common::Result<()> {
+        let assignments = vec![
+            ExchangeAssignment::try_shuffle(3, 2, 4)?,
+            ExchangeAssignment::try_coalesce(3, 2, 4)?,
+            ExchangeAssignment::try_broadcast(2, 3, 4)?,
+        ];
+
+        for assignment in assignments {
+            let proto = encode_exchange_assignment_proto(Some(assignment.as_ref()))?
+                .expect("assignment proto should be present");
+            let decoded =
+                parse_exchange_assignment_proto(Some(proto))?.expect("assignment should decode");
+            assert_eq!(assignment.as_ref(), decoded.as_ref());
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_roundtrip_single_flight() -> datafusion::common::Result<()> {
         let codec = DistributedCodec;
         let ctx = create_context();
 
         let schema = schema_i32("a");
         let part = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage()));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(new_network_hash_shuffle_exec(
+            part,
+            schema,
+            dummy_stage(),
+            None,
+        ));
 
         let mut buf = Vec::new();
         codec.try_encode(plan.clone(), &mut buf)?;
@@ -605,6 +730,7 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             schema,
             dummy_stage(),
+            None,
         ));
 
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 1));
@@ -628,11 +754,13 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         ));
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
@@ -657,6 +785,7 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             schema.clone(),
             dummy_stage(),
+            None,
         ));
 
         let sort_expr = PhysicalSortExpr {
@@ -689,6 +818,7 @@ mod tests {
             Partitioning::RoundRobinBatch(3),
             schema,
             dummy_stage(),
+            None,
         ));
 
         let mut buf = Vec::new();
@@ -711,6 +841,7 @@ mod tests {
             part,
             schema,
             dummy_stage_with_plan(),
+            None,
         ));
 
         let mut buf = Vec::new();
@@ -732,6 +863,7 @@ mod tests {
             Partitioning::RoundRobinBatch(3),
             schema,
             dummy_stage_with_plan(),
+            None,
         ));
 
         let mut buf = Vec::new();
@@ -753,6 +885,7 @@ mod tests {
             Partitioning::UnknownPartitioning(1),
             schema,
             dummy_stage(),
+            None,
         ));
 
         let plan: Arc<dyn ExecutionPlan> = Arc::new(PartitionIsolatorExec::new(flight.clone(), 1));
@@ -776,11 +909,13 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         ));
         let right = Arc::new(new_network_coalesce_tasks_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         ));
 
         let union = UnionExec::try_new(vec![left.clone(), right.clone()])?;
@@ -805,11 +940,13 @@ mod tests {
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         )) as Arc<dyn ExecutionPlan>;
         let right = Arc::new(new_network_hash_shuffle_exec(
             Partitioning::RoundRobinBatch(2),
             schema.clone(),
             dummy_stage(),
+            None,
         )) as Arc<dyn ExecutionPlan>;
 
         let plan: Arc<dyn ExecutionPlan> =

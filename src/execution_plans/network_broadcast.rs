@@ -2,9 +2,9 @@ use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{BroadcastExec, DistributedTaskContext};
+use crate::{BroadcastExec, DistributedTaskContext, ExchangeAssignment, SlotReadPlan};
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::common::{Result, exec_err, internal_datafusion_err, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -120,6 +120,7 @@ use uuid::Uuid;
 pub struct NetworkBroadcastExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
+    pub(crate) assignment: Option<Arc<ExchangeAssignment>>,
     pub(crate) worker_connections: WorkerConnectionPool,
 }
 
@@ -150,7 +151,20 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input_stage),
+            assignment: None,
         }
+    }
+
+    pub(crate) fn with_exchange_assignment(&self, assignment: Arc<ExchangeAssignment>) -> Self {
+        let mut this = self.clone();
+        this.assignment = Some(assignment);
+        this
+    }
+
+    fn exchange_assignment(&self) -> Result<&ExchangeAssignment> {
+        self.assignment.as_deref().ok_or_else(|| {
+            internal_datafusion_err!("NetworkBroadcastExec is missing exchange assignment")
+        })
     }
 
     /// Creates a new [NetworkBroadcastExec] fed by the provided [BroadcastExec]. The input plan
@@ -248,18 +262,37 @@ impl ExecutionPlan for NetworkBroadcastExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
-        let mut streams = Vec::with_capacity(self.input_stage.task_count());
+        let assignment = self.exchange_assignment()?;
+        let Some(SlotReadPlan::Fanout {
+            producer_tasks,
+            producer_partition,
+        }) = assignment.resolve_slot(task_context.task_index, partition)
+        else {
+            return exec_err!(
+                "NetworkBroadcastExec cannot resolve task {} partition {}",
+                task_context.task_index,
+                partition
+            );
+        };
+        let Some(partition_range) =
+            assignment.partition_range_for_consumer(task_context.task_index)
+        else {
+            return exec_err!(
+                "NetworkBroadcastExec cannot resolve partition range for task {}",
+                task_context.task_index
+            );
+        };
 
-        for input_task_index in 0..self.input_stage.task_count() {
+        let mut streams = Vec::with_capacity(producer_tasks.len());
+        for input_task_index in producer_tasks {
             let worker_connection = self.worker_connections.get_or_init_worker_connection(
                 remote_stage,
-                off..(off + self.properties.partitioning.partition_count()),
+                partition_range.clone(),
                 input_task_index,
                 &context,
             )?;
 
-            let stream = worker_connection.stream_partition(off + partition, |_meta| {})?;
+            let stream = worker_connection.stream_partition(producer_partition, |_meta| {})?;
             streams.push(stream);
         }
 
