@@ -802,65 +802,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "ChildrenIsolatorUnionExec had a task count 3, which is greater than the sum of child task counts 2"]
-    async fn nested_union_budget_exceeds_children_sum() -> Result<(), Box<dyn std::error::Error>> {
-        let (plan, results) = run_query(
-            r#"
-            SET distributed.broadcast_joins = true;
-            SELECT b.tag, a.tag
-            FROM test_work_unit('big', 4, 'rows(1)', 'rows(1)', 'rows(1)', 'rows(1)') b
-            INNER JOIN (
-                SELECT * FROM test_work_unit('small_a', 1, 'rows(1)', 'rows(1)', 'rows(1)')
-                UNION ALL
-                SELECT * FROM test_work_unit('small_b', 1, 'rows(1)', 'rows(1)', 'rows(1)')
-            ) a ON a.letter = b.letter
-            ORDER BY a.tag, b.tag
-            "#,
-        )
-        .await?;
-
-        assert_snapshot!(plan + &results, @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ SortPreservingMergeExec: [tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST]
-        │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
-        └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
-          │ SortExec: expr=[tag@1 ASC NULLS LAST, tag@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(letter@1, letter@1)], projection=[tag@0, tag@2]
-          │     CoalescePartitionsExec
-          │       [Stage 1] => NetworkBroadcastExec: partitions_per_consumer=1, stage_partitions=3, input_tasks=3
-          │     DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
-          │       RowGeneratorExec: tag=small_a, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
-          │       RowGeneratorExec: tag=small_b, tasks=1, partition_ops=[[rows(1)], [rows(1)], [rows(1)]]
-          └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
-            │ BroadcastExec: input_partitions=1, consumer_tasks=3, output_partitions=3
-            │   RowGeneratorExec: tag=big, tasks=4, partition_ops=[[rows(1)], [rows(1)], [rows(1)], [rows(1)]]
-            └──────────────────────────────────────────────────
-        +-----+---------+
-        | tag | tag     |
-        +-----+---------+
-        | big | small_a |
-        | big | small_a |
-        | big | small_a |
-        | big | small_a |
-        | big | small_a |
-        | big | small_a |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        | big | small_b |
-        +-----+---------+
-        ");
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn nested_union_budget_exceeds_children_sum() -> Result<(), Box<dyn std::error::Error>> {
         let (plan, results) = run_query(
             r#"
