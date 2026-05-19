@@ -396,8 +396,8 @@ impl Stream for ObservedStream {
 ///
 ///   weights: [w(10), w(1), w(1)], budget: 3  →  child 0's proportional share is 2.5
 ///       (rounds up to 3 via the largest-remainder pass); children 1 and 2 round down to 0
-///       and are packed into the last occupied slot instead of stealing one from child 0:
-///       [[(0, 0/3)], [(0, 1/3)], [(0, 2/3), (1, 0/1), (2, 0/1)]]
+///       and are distributed round-robin across occupied slots instead of stealing one from child 0:
+///       [[(0, 0/3), (1, 0/1)], [(0, 1/3), (2, 0/1)], [(0, 2/3)]]
 /// ```
 fn split_children(
     children: &[ChildWeight],
@@ -532,21 +532,25 @@ fn split_children(
         }
     }
 
-    // Pack zero-alloc children into the last occupied slot so their data still gets produced.
-    // A: c1,c2 → appended to slot 2: [(0,2/3),(1,0/1),(2,0/1)]
+    // Distribute zero-alloc children round-robin across occupied slots so their data still
+    // gets produced without overpacking a single slot.
+    // A: c1 → slot 0, c2 → slot 1: [(0,0/3),(1,0/1)], [(0,1/3),(2,0/1)], [(0,2/3)]
     // B: no zero-alloc children → result unchanged
-    if let Some(last_occupied) = task_idx.checked_sub(1) {
+    if task_idx > 0 {
+        let mut zero_alloc_i = 0usize;
         for (child_idx, &task_count) in child_task_counts.iter().enumerate() {
             if task_count != 0 {
                 continue;
             }
-            result[last_occupied].push((
+            let slot = zero_alloc_i % task_idx;
+            result[slot].push((
                 child_idx,
                 DistributedTaskContext {
                     task_index: 0,
                     task_count: 1,
                 },
             ));
+            zero_alloc_i += 1;
         }
     }
     Ok(result)
@@ -569,8 +573,8 @@ mod tests {
         assert_eq!(
             split_children(&[des(1.0), des(1.0), des(1.0)], 2)?,
             // Floor = [0,0,0]. The remainder pass gives one slot each to c0 and c1 (tiebreak
-            // by lower index); c2 rounds to zero and is packed into the last occupied slot.
-            vec![vec![(0, ctx(0, 1))], vec![(1, ctx(0, 1)), (2, ctx(0, 1))]]
+            // by lower index); c2 rounds to zero and is distributed round-robin: slot 0 % 2 = 0.
+            vec![vec![(0, ctx(0, 1)), (2, ctx(0, 1))], vec![(1, ctx(0, 1))]]
         );
         assert_eq!(
             split_children(&[des(1.0), des(1.0), des(1.0)], 1)?,
@@ -622,8 +626,8 @@ mod tests {
         assert_eq!(
             split_children(&[des(1.0), des(2.0), des(3.0)], 2)?,
             // Floor = [0, 0, 1] (only c2's share is ≥ 1). Remainder of 1 goes to c1 (highest
-            // fractional remainder). c0 rounds to zero and packs into the last occupied slot.
-            vec![vec![(1, ctx(0, 1))], vec![(2, ctx(0, 1)), (0, ctx(0, 1))]]
+            // fractional remainder). c0 rounds to zero and is distributed round-robin: slot 0 % 2 = 0.
+            vec![vec![(1, ctx(0, 1)), (0, ctx(0, 1))], vec![(2, ctx(0, 1))]]
         );
         assert_eq!(
             split_children(&[des(1.0), des(2.0), des(3.0)], 1)?,
@@ -683,13 +687,13 @@ mod tests {
     fn split_children_packs_zero_share_children_into_last_slot()
     -> Result<(), Box<dyn std::error::Error>> {
         // weights=[10, 1, 1], budget=3 → child 0 wins the budget (2.5 → 3 via largest-remainder);
-        // children 1 and 2 round down to 0 and share child 0's last task slot.
+        // children 1 and 2 round down to 0 and are distributed round-robin: c1 → slot 0, c2 → slot 1.
         assert_eq!(
             split_children(&[des(10.0), des(1.0), des(1.0)], 3)?,
             vec![
-                vec![(0, ctx(0, 3))],
-                vec![(0, ctx(1, 3))],
-                vec![(0, ctx(2, 3)), (1, ctx(0, 1)), (2, ctx(0, 1))],
+                vec![(0, ctx(0, 3)), (1, ctx(0, 1))],
+                vec![(0, ctx(1, 3)), (2, ctx(0, 1))],
+                vec![(0, ctx(2, 3))],
             ]
         );
         Ok(())
