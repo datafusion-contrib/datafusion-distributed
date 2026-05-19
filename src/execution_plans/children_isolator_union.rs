@@ -373,18 +373,6 @@ impl Stream for ObservedStream {
 /// Given a per-child [`ChildWeight`] slice and a `task_count_budget`, distribute the budget
 /// across children proportional to their weights, honoring any per-child caps.
 ///
-/// Behavior (a single proportional allocation handles every regime — `budget < n`, `budget
-/// == n`, and `budget > n`):
-///  - The budget is allocated proportionally with the Hare largest-remainder method (ties
-///    broken by lower child index first, so the output is deterministic).
-///  - A child with `max = Some(N)` never receives more than `N` task slots; any excess that
-///    would have gone to it is redistributed to uncapped siblings. When every child is at
-///    its cap, the leftover budget stays as empty trailing task slots.
-///  - A child whose proportional share rounds down to zero is *packed* into the last
-///    occupied task slot — sharing execution with whoever is already there — rather than
-///    stealing a slot from a heavy-weight sibling. This is also what makes the `budget < n`
-///    case work: most children end up at zero share and pile into the few occupied slots.
-///
 /// ## Examples (read alongside the unit tests for the full picture):
 ///
 /// ```text
