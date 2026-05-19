@@ -147,10 +147,10 @@ mod tests {
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=27, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=18, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p8] t1:[p9..p17] t2:[p18..p26]
-          │ DistributedUnionExec: t0:[c0] t1:[c1] t2:[c2, c3, c4]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p6..p11] t2:[p12..p17]
+          │ DistributedUnionExec: t0:[c0, c3] t1:[c1, c4] t2:[c2]
           │   SortExec: expr=[MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     FilterExec: MinTemp@0 > 10
           │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
