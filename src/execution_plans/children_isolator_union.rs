@@ -99,25 +99,15 @@ pub struct ChildrenIsolatorUnionExec {
     >,
 }
 
-/// Per-child allocation hint passed to
-/// [`ChildrenIsolatorUnionExec::from_children_and_weights`].
-///
-/// `weight` sets the child's *relative* share of the stage's task budget — only the ratios
-/// among the non-zero entries matter. Valid values are any finite, non-negative `f64`:
-/// `0.0` means "no proportional share" (the child still runs but gets packed into an
-/// existing slot rather than earning its own). Negative and non-finite (`NaN`, `±∞`)
-/// values are rejected with an error. If every weight is `0.0`, the distribution falls
-/// back to uniform so the planner never has to special-case "no signal".
-///
-/// `max` is an optional *absolute* cap: the allocator will never assign the child more than
-/// `max` task slots, even if its proportional share would be larger. Use it to surface
-/// annotations like `Maximum(N)` that hard-limit how much parallelism a child can take.
-/// Leaving `max` unset means "no cap" — the child can absorb surplus budget from other
-/// capped siblings.
+/// Per-child allocation hint passed to [`ChildrenIsolatorUnionExec::from_children_and_weights`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChildWeight {
-    pub weight: f64,
-    pub max: Option<usize>,
+    /// Weight relative to other children. The higher the weight vs other children, the more tasks
+    /// will be allocated to it.
+    pub(crate) weight: f64,
+    /// Maximum task count cap for this child. While allocating tasks for this child, it cannot
+    /// exceed the specified `max` no matter its `weight`
+    pub(crate) max: Option<usize>,
 }
 
 impl ChildWeight {
