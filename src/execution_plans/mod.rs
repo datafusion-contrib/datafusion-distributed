@@ -11,6 +11,7 @@ mod partition_isolator;
 pub mod benchmarks;
 
 pub use broadcast::BroadcastExec;
+pub(crate) use children_isolator_union::ChildWeight;
 pub use children_isolator_union::ChildrenIsolatorUnionExec;
 pub(crate) use metrics::MetricsWrapperExec;
 pub use network_broadcast::NetworkBroadcastExec;

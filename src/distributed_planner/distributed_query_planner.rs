@@ -563,15 +563,15 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p4..p7] t2:[p8..p11]
-          │ DistributedUnionExec: t0:[c0] t1:[c1(0/2)] t2:[c1(1/2)]
+          │ DistributedUnionExec: t0:[c0(0/2)] t1:[c0(1/2)] t2:[c1]
           │   FilterExec: MinTemp@0 > 10
-          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
+          │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
+          │       PartitionIsolatorExec: tasks=2 partitions=3
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
           │   ProjectionExec: expr=[MaxTemp@0 as MinTemp, RainToday@1 as RainToday]
           │     FilterExec: MaxTemp@0 < 30
-          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=2
-          │         PartitionIsolatorExec: tasks=2 partitions=3
-          │           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
+          │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
+          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=MaxTemp@1 < 30, pruning_predicate=MaxTemp_null_count@1 != row_count@2 AND MaxTemp_min@0 < 30, required_guarantees=[]
           └──────────────────────────────────────────────────
         ");
     }
@@ -636,7 +636,7 @@ mod tests {
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p8..p15] t2:[p16..p23]
-          │ DistributedUnionExec: t0:[c0, c1] t1:[c2, c3] t2:[c4]
+          │ DistributedUnionExec: t0:[c0, c3] t1:[c1, c4] t2:[c2]
           │   FilterExec: MinTemp@0 > 10
           │     RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
           │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 10, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 10, required_guarantees=[]
