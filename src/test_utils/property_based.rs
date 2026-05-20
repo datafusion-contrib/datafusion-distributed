@@ -55,7 +55,6 @@ pub fn compare_ordering(
 
     let actual_ordering = actual_physical_plan.properties().output_ordering();
     let expected_ordering = expected_physical_plan.properties().output_ordering();
-
     if actual_ordering != expected_ordering {
         return internal_err!(
             "ordering mismatch: expected ordering: {:?}, actual ordering: {:?}",
@@ -197,11 +196,17 @@ fn batch_rows_to_strings(batches: &[RecordBatch]) -> Vec<String> {
                 if array.is_null(row_idx) {
                     row_values.push("NULL".to_string());
                 } else if let Some(arr) = array.as_any().downcast_ref::<Float16Array>() {
-                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
+                    // 14 significant digits — leaves ~1-2 digits of headroom below f64 precision
+                    // to tolerate summation-order drift between single-node and distributed
+                    // aggregation. [15 digits still diverged at the last digit]
+                    // Example values that 15 digits could not reconcile:
+                    //  - Single-node: 2.533767602294735e18  → 2,533,767,602,294,735,000
+                    //  - Distributed: 2.5337676022947354e18 → 2,533,767,602,294,735,400
+                    row_values.push(format!("{:.13e}", arr.value(row_idx).to_f64()));
                 } else if let Some(arr) = array.as_any().downcast_ref::<Float32Array>() {
-                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
+                    row_values.push(format!("{:.13e}", arr.value(row_idx) as f64));
                 } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-                    row_values.push(format!("{:.1$}", arr.value(row_idx), 2));
+                    row_values.push(format!("{:.13e}", arr.value(row_idx)));
                 } else {
                     // Use Arrow's deterministic string representation
                     let value_str = array_value_to_string(array, row_idx)

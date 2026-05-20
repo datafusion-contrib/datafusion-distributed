@@ -66,6 +66,7 @@ system-metrics = ["sysinfo"]
 tpch = ["integration"]
 tpcds = ["integration"]
 clickbench = ["integration"]
+slow-tests = []
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]

@@ -888,10 +888,28 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "ordering mismatch: expected ordering: Some(LexOrdering { exprs: [PhysicalSortExpr { expr: ScalarFunctionExpr { fun: \"<FUNC>\", name: \"date_trunc\", args: [Literal { value: Utf8(\"minute\"), field: Field { name: \"lit\", data_type: Utf8 } }, Column { name: \"m\", index: 0 }], return_field: Field { name: \"date_trunc\", data_type: Timestamp(Second, None), nullable: true } }, options: SortOptions { descending: false, nulls_first: false } }], set: {ScalarFunctionExpr { fun: \"<FUNC>\", name: \"date_trunc\", args: [Literal { value: Utf8(\"minute\"), field: Field { name: \"lit\", data_type: Utf8 } }, Column { name: \"m\", index: 0 }], return_field: Field { name: \"date_trunc\", data_type: Timestamp(Second, None), nullable: true } }} }), actual ordering: Some(LexOrdering { exprs: [PhysicalSortExpr { expr: ScalarFunctionExpr { fun: \"<FUNC>\", name: \"date_trunc\", args: [Literal { value: Utf8(\"minute\"), field: Field { name: \"lit\", data_type: Utf8 } }, Column { name: \"m\", index: 0 }], return_field: Field { name: \"date_trunc\", data_type: Timestamp(Second, None), nullable: true } }, options: SortOptions { descending: false, nulls_first: false } }], set: {ScalarFunctionExpr { fun: \"<FUNC>\", name: \"date_trunc\", args: [Literal { value: Utf8(\"minute\"), field: Field { name: \"lit\", data_type: Utf8 } }, Column { name: \"m\", index: 0 }], return_field: Field { name: \"date_trunc\", data_type: Timestamp(Second, None), nullable: true } }} })"]
     async fn test_clickbench_42() -> Result<()> {
         let display = test_clickbench_query("q42").await?;
-        assert_snapshot!(display, @"");
+        assert_snapshot!(display, @r#"
+        ┌───── DistributedExec ── Tasks: t0:[p0]
+        │ GlobalLimitExec: skip=1000, fetch=10
+        │   SortPreservingMergeExec: [date_trunc(minute, m@0) ASC NULLS LAST], fetch=1010
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2]
+          │ SortExec: TopK(fetch=1010), expr=[date_trunc(minute, m@0) ASC NULLS LAST], preserve_partitioning=[true]
+          │   ProjectionExec: expr=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as m, count(Int64(1))@1 as pageviews]
+          │     AggregateExec: mode=FinalPartitioned, gby=[date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0 as date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))], aggr=[count(Int64(1))]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5]
+            │ RepartitionExec: partitioning=Hash([date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))@0], 6), input_partitions=2
+            │   AggregateExec: mode=Partial, gby=[date_trunc(minute, to_timestamp_seconds(EventTime@0)) as date_trunc(Utf8("minute"),to_timestamp_seconds(hits.EventTime))], aggr=[count(Int64(1))]
+            │     FilterExec: CounterID@2 = 62 AND CAST(EventDate@1 AS Utf8) >= 2013-07-14 AND CAST(EventDate@1 AS Utf8) <= 2013-07-15 AND IsRefresh@3 = 0 AND DontCountHits@4 = 0, projection=[EventTime@0]
+            │       PartitionIsolatorExec: tasks=3 partitions=5
+            │         DataSourceExec: file_groups={5 groups: [[/testdata/clickbench/plans_range0-3/hits/0.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/1.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>], [/testdata/clickbench/plans_range0-3/hits/2.parquet:<int>..<int>]]}, projection=[EventTime, EventDate, CounterID, IsRefresh, DontCountHits], file_type=parquet, predicate=CounterID@6 = 62 AND CAST(EventDate@5 AS Utf8) >= 2013-07-14 AND CAST(EventDate@5 AS Utf8) <= 2013-07-15 AND IsRefresh@15 = 0 AND DontCountHits@61 = 0, pruning_predicate=CounterID_null_count@2 != row_count@3 AND CounterID_min@0 <= 62 AND 62 <= CounterID_max@1 AND IsRefresh_null_count@6 != row_count@3 AND IsRefresh_min@4 <= 0 AND 0 <= IsRefresh_max@5 AND DontCountHits_null_count@9 != row_count@3 AND DontCountHits_min@7 <= 0 AND 0 <= DontCountHits_max@8, required_guarantees=[CounterID in (62), DontCountHits in (0), IsRefresh in (0)]
+            └──────────────────────────────────────────────────
+        "#);
         Ok(())
     }
 
