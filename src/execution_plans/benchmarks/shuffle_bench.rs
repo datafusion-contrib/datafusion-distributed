@@ -5,7 +5,9 @@ use crate::common::task_ctx_with_extension;
 use crate::stage::RemoteStage;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
-use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage};
+use crate::{
+    DistributedExt, DistributedTaskContext, ExchangeAssignment, NetworkShuffleExec, Stage,
+};
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;
 use datafusion::common::Result;
@@ -228,6 +230,11 @@ impl ShuffleFixture {
                     Boundedness::Bounded,
                 )),
                 input_stage: input_stage.clone(),
+                assignment: Some(ExchangeAssignment::try_shuffle(
+                    self.bench.producer_tasks,
+                    self.bench.consumer_tasks,
+                    self.bench.partitions,
+                )?),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
             };
             let task_ctx = Arc::new(task_ctx_with_extension(

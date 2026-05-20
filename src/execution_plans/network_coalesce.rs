@@ -1,11 +1,11 @@
-use crate::DistributedTaskContext;
 use crate::common::require_one_child;
 use crate::distributed_planner::NetworkBoundary;
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
+use crate::{DistributedTaskContext, ExchangeAssignment, SlotReadPlan};
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{exec_err, not_impl_err, plan_err};
+use datafusion::common::{exec_err, internal_datafusion_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -77,6 +77,7 @@ pub struct NetworkCoalesceExec {
     /// the properties we advertise for this execution plan
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
+    pub(crate) assignment: Option<Arc<ExchangeAssignment>>,
     pub(crate) worker_connections: WorkerConnectionPool,
 }
 
@@ -103,7 +104,23 @@ impl NetworkCoalesceExec {
             properties: props,
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input_stage),
+            assignment: None,
         }
+    }
+
+    pub(crate) fn with_exchange_assignment(&self, assignment: Arc<ExchangeAssignment>) -> Self {
+        let mut this = self.clone();
+        this.properties = scale_partitioning_props(&this.properties, |_| {
+            assignment.max_partition_count_per_consumer()
+        });
+        this.assignment = Some(assignment);
+        this
+    }
+
+    fn exchange_assignment(&self) -> Result<&ExchangeAssignment> {
+        self.assignment.as_deref().ok_or_else(|| {
+            internal_datafusion_err!("NetworkCoalesceExec is missing exchange assignment")
+        })
     }
 
     /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
@@ -224,59 +241,49 @@ impl ExecutionPlan for NetworkCoalesceExec {
             );
         }
 
-        let partitions_per_task = self
-            .properties()
-            .partitioning
-            .partition_count()
-            .checked_div(
-                self.input_stage
-                    .task_count()
-                    .div_ceil(task_context.task_count)
-                    .max(1),
-            )
-            .unwrap_or(0);
-        if partitions_per_task == 0 {
-            return exec_err!("NetworkCoalesceExec has 0 partitions per input task");
+        let assignment = self.exchange_assignment()?;
+        if task_context.task_count != assignment.consumer_task_count() {
+            return exec_err!(
+                "NetworkCoalesceExec task count {} does not match exchange assignment consumer task count {}",
+                task_context.task_count,
+                assignment.consumer_task_count()
+            );
         }
-
-        let input_task_count = self.input_stage.task_count();
-        let group = task_group(
-            input_task_count,
-            task_context.task_index,
-            task_context.task_count,
-        );
-
-        let input_task_offset = partition / partitions_per_task;
-        let target_partition = partition % partitions_per_task;
-
-        // Some consumer tasks are assigned fewer upstream tasks when
-        // `input_task_count % task_count != 0` (uneven grouping).
-        // We still size partitions based on the maximum group size, so partitions that
-        // would map to a missing upstream task slot are treated as padding and return
-        // an empty stream (no network call).
-        if input_task_offset >= group.len {
-            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
-        }
-
-        // This should never happen.
-        if input_task_offset >= group.max_len {
-            return internal_err!(
-                "NetworkCoalesceExec input_task_offset={} >= group.max_len={}",
-                input_task_offset,
-                group.max_len
+        if partition >= assignment.max_partition_count_per_consumer() {
+            return exec_err!(
+                "NetworkCoalesceExec partition {} >= assignment partition count {}",
+                partition,
+                assignment.max_partition_count_per_consumer()
             );
         }
 
-        let target_task = group.start_task + input_task_offset;
+        let Some(read_plan) = assignment.resolve_slot(task_context.task_index, partition) else {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(self.schema())));
+        };
+        let SlotReadPlan::Single {
+            producer_task,
+            producer_partition,
+        } = read_plan
+        else {
+            return internal_err!("NetworkCoalesceExec expected single-task exchange slot");
+        };
+        let Some(partition_range) =
+            assignment.partition_range_for_consumer(task_context.task_index)
+        else {
+            return exec_err!(
+                "NetworkCoalesceExec cannot resolve partition range for task {}",
+                task_context.task_index
+            );
+        };
 
         let worker_connection = self.worker_connections.get_or_init_worker_connection(
             remote_stage,
-            0..partitions_per_task,
-            target_task,
+            partition_range,
+            producer_task,
             &context,
         )?;
 
-        let stream = worker_connection.stream_partition(target_partition, |_meta| {})?;
+        let stream = worker_connection.stream_partition(producer_partition, |_meta| {})?;
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -286,47 +293,6 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TaskGroup {
-    /// The first input task index in this group.
-    start_task: usize,
-    /// The number of input tasks in this group.
-    len: usize,
-    /// The maximum possible group size across all groups.
-    ///
-    /// When groups are uneven (input_tasks % task_count != 0), some groups are shorter. We still
-    /// size the output partitioning based on this max and return empty streams for the extra
-    /// partitions in smaller groups.
-    max_len: usize,
-}
-
-/// Returns the contiguous group of input tasks assigned to DistributedTaskContext::task_index.
-fn task_group(input_task_count: usize, task_index: usize, task_count: usize) -> TaskGroup {
-    if task_count == 0 {
-        return TaskGroup {
-            start_task: 0,
-            len: 0,
-            max_len: 0,
-        };
-    }
-
-    // Split `input_task_count` into `task_count` contiguous groups.
-    // - base_tasks_per_group: floor(input_task_count / task_count)
-    // - groups_with_extra_task: first N groups that get one extra task (remainder)
-    let base_tasks_per_group = input_task_count / task_count;
-    let groups_with_extra_task = input_task_count % task_count;
-
-    let len = base_tasks_per_group + usize::from(task_index < groups_with_extra_task);
-    let start_task = (task_index * base_tasks_per_group) + task_index.min(groups_with_extra_task);
-    let max_len = base_tasks_per_group + usize::from(groups_with_extra_task > 0);
-
-    TaskGroup {
-        start_task,
-        len,
-        max_len,
     }
 }
 

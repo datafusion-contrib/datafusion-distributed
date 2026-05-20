@@ -1,5 +1,6 @@
 mod distributed_config;
 mod distributed_query_planner;
+mod exchange_assignment;
 mod inject_network_boundaries;
 mod insert_broadcast;
 mod network_boundary;
@@ -9,6 +10,7 @@ mod session_state_builder_ext;
 mod task_estimator;
 
 pub use distributed_config::DistributedConfig;
+pub(crate) use exchange_assignment::{ExchangeAssignment, ExchangeAssignmentKind, SlotReadPlan};
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub use session_state_builder_ext::SessionStateBuilderExt;
 pub use task_estimator::{TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext};
