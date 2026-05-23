@@ -25,15 +25,17 @@ use datafusion::common::{config_err, exec_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::{collect, displayable};
+use datafusion::physical_plan::collect;
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
     WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanRule,
     WorkUnitFileScanTaskEstimator,
 };
-use datafusion_distributed::{DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker};
+use datafusion_distributed::{
+    DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
+    display_plan_ascii, rewrite_distributed_plan_with_metrics,
+};
 use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
 use std::error::Error;
 use std::fs;
@@ -211,7 +213,7 @@ impl RunOpt {
             })?
             .with_distributed_children_isolator_unions(self.children_isolator_unions)?
             .with_distributed_broadcast_joins(self.broadcast_joins)?
-            .with_distributed_metrics_collection(self.collect_metrics)?
+            .with_distributed_metrics_collection(self.collect_metrics || self.debug)?
             .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .with_distributed_user_codec(WorkUnitFileScanCodec)
             .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
@@ -324,21 +326,8 @@ impl RunOpt {
         let plan = ctx.sql(sql).await?;
         let (state, plan) = plan.into_parts();
 
-        if self.debug {
-            println!("=== Logical plan ===\n{plan}\n");
-        }
-
         let plan = state.optimize(&plan)?;
-        if self.debug {
-            println!("=== Optimized logical plan ===\n{plan}\n");
-        }
         let physical_plan = state.create_physical_plan(&plan).await?;
-        if self.debug {
-            println!(
-                "=== Physical plan ===\n{}\n",
-                displayable(physical_plan.as_ref()).indent(true)
-            );
-        }
         let mut n_tasks = 0;
         physical_plan.clone().transform_down(|node| {
             if let Some(node) = node.as_network_boundary() {
@@ -348,9 +337,14 @@ impl RunOpt {
         })?;
         let result = collect(physical_plan.clone(), state.task_ctx()).await?;
         if self.debug {
+            let physical_plan = rewrite_distributed_plan_with_metrics(
+                physical_plan.clone(),
+                DistributedMetricsFormat::PerTask,
+            )
+            .await?;
             println!(
                 "=== Physical plan with metrics ===\n{}\n",
-                DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent(true)
+                display_plan_ascii(physical_plan.as_ref(), true)
             );
         }
         Ok((result, n_tasks))
