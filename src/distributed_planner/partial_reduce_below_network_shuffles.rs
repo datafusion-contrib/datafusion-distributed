@@ -29,7 +29,7 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
         let child = require_one_child(plan.children())?;
 
-        let Some(repartition) = child.as_any().downcast_ref::<RepartitionExec>() else {
+        let Some(repartition) = child.downcast_ref::<RepartitionExec>() else {
             return Ok(Transformed::no(plan));
         };
 
@@ -39,7 +39,7 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
         let grandchild = require_one_child(repartition.children())?;
 
-        let Some(agg) = grandchild.as_any().downcast_ref::<AggregateExec>() else {
+        let Some(agg) = grandchild.downcast_ref::<AggregateExec>() else {
             return Ok(Transformed::no(plan));
         };
 

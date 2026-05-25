@@ -242,8 +242,8 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
     ) -> Option<TaskEstimation> {
-        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
-        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let dse: &DataSourceExec = plan.downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
 
         let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
 
@@ -271,8 +271,8 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         if task_count == 1 {
             return None;
         }
-        let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
-        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
+        let dse: &DataSourceExec = plan.downcast_ref()?;
+        let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
 
         let mut file_scan_template = file_scan.clone();
         let input_group_count = file_scan_template.file_groups.len().max(1);

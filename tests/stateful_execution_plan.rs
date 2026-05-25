@@ -20,7 +20,6 @@ mod tests {
     use datafusion_proto::protobuf::proto_error;
     use futures::TryStreamExt;
     use prost::Message;
-    use std::any::Any;
     use std::fmt::Formatter;
     use std::sync::{Arc, RwLock};
     use tokio::task::JoinHandle;
@@ -127,10 +126,6 @@ mod tests {
             "StatefulPassThroughExec"
         }
 
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
         fn properties(&self) -> &Arc<PlanProperties> {
             &self.plan_properties
         }
@@ -206,7 +201,7 @@ mod tests {
             node: Arc<dyn ExecutionPlan>,
             buf: &mut Vec<u8>,
         ) -> datafusion::common::Result<()> {
-            let Some(_plan) = node.as_any().downcast_ref::<StatefulPassThroughExec>() else {
+            let Some(_plan) = node.downcast_ref::<StatefulPassThroughExec>() else {
                 return Err(proto_error(format!(
                     "Expected plan to be of type StatefulPassThroughExec, but was {}",
                     node.name()

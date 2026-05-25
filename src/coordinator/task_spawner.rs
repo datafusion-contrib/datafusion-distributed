@@ -138,12 +138,12 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 });
             };
 
-            if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+            if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
                 let ciu = ciu.to_task_specialized(d_ctx.task_index);
                 return Ok(Transformed::yes(Arc::new(ciu)));
             };
 
-            if let Some(dle) = plan.as_any().downcast_ref::<DistributedLeafExec>() {
+            if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
                 let specialized = dle.to_task_specialized(d_ctx.task_index);
                 return Ok(Transformed::yes(specialized));
             }

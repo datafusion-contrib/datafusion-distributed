@@ -109,7 +109,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
         .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
             dse.data_source()
-                .as_any()
                 .downcast_ref::<WorkUnitFileScanConfig>()
                 .map(|v| &v.feed)
         });

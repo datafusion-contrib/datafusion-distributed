@@ -47,7 +47,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
     plan: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let Some(distributed_exec) = plan.as_any().downcast_ref::<DistributedExec>() else {
+    let Some(distributed_exec) = plan.downcast_ref::<DistributedExec>() else {
         return Ok(plan);
     };
 
@@ -72,8 +72,16 @@ pub async fn rewrite_distributed_plan_with_metrics(
     let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
 
     let transformed = plan.transform_down(|plan| {
+        // After `rewrite_local_plan_with_metrics` above, every node (including network
+        // boundaries) is wrapped in a `MetricsWrapperExec`. Peek through the wrapper so we
+        // can still recognize a network boundary by downcasting the inner node.
+        let inner = plan
+            .downcast_ref::<MetricsWrapperExec>()
+            .map(|w| w.inner_arc())
+            .unwrap_or_else(|| Arc::clone(&plan));
+
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
-        if let Some(network_boundary) = plan.as_network_boundary() {
+        if let Some(network_boundary) = inner.as_network_boundary() {
             let Stage::Local(stage) = network_boundary.input_stage() else {
                 return plan_err!("Stage was not in Local state");
             };
@@ -577,7 +585,7 @@ mod tests {
             .create_physical_plan()
             .await
             .unwrap();
-        assert!(plan.as_any().is::<DistributedExec>());
+        assert!(plan.is::<DistributedExec>());
         assert!(
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await
@@ -590,7 +598,7 @@ mod tests {
         if let Some(metrics) = plan.metrics() {
             assert!(metrics.iter().count() > 0);
         } else {
-            assert!(plan.as_any().is::<DistributedExec>());
+            assert!(plan.is::<DistributedExec>());
         }
         for child in plan.children() {
             assert_metrics_present_in_plan(child);
@@ -608,7 +616,7 @@ mod tests {
             .await
             .unwrap();
         collect(plan.clone(), ctx.task_ctx()).await.unwrap();
-        assert!(plan.as_any().is::<DistributedExec>());
+        assert!(plan.is::<DistributedExec>());
         let rewritten_plan =
             rewrite_distributed_plan_with_metrics(plan, DistributedMetricsFormat::Aggregated)
                 .await
@@ -629,7 +637,7 @@ mod tests {
 
         let wrapped = MetricsWrapperExec::new(example_node, MetricsSet::new());
         assert_eq!(wrapped.name(), "EmptyExec");
-        assert!(wrapped.as_any().is::<EmptyExec>());
+        assert!(wrapped.inner().is::<EmptyExec>());
     }
 
     #[test]

@@ -14,7 +14,6 @@ use datafusion::physical_plan::{
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::BroadcastExec;
 use futures::{StreamExt, stream};
-use std::any::Any;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -126,10 +125,6 @@ impl ExecutionPlan for SyntheticExec {
         "SyntheticExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -163,8 +158,8 @@ impl ExecutionPlan for SyntheticExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-        Ok(Statistics::new_unknown(&self.schema))
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
+        Ok(Arc::new(Statistics::new_unknown(&self.schema)))
     }
 }
 

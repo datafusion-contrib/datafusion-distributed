@@ -15,7 +15,6 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
     internal_err,
 };
-use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -199,10 +198,6 @@ impl DisplayAs for NetworkCoalesceExec {
 impl ExecutionPlan for NetworkCoalesceExec {
     fn name(&self) -> &str {
         "NetworkCoalesceExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
