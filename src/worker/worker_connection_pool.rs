@@ -485,7 +485,12 @@ impl LocalWorkerConnection {
 
 impl WorkerConnection for LocalWorkerConnection {
     fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let relative_i = partition - self.partition_start;
+        let Some(relative_i) = partition.checked_sub(self.partition_start) else {
+            return internal_err!(
+                "LocalWorkerConnection received an invalid partition {partition}, the starting partition is {}",
+                self.partition_start
+            );
+        };
         let Some(slot) = self.local_streams.get(relative_i) else {
             return internal_err!(
                 "LocalWorkerConnection has no stream for partition {partition}. Was it already consumed?"
