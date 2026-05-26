@@ -65,6 +65,7 @@ impl Worker {
                     task_count: request.task_count as usize,
                 }))
                 .with_extension(Arc::new(LocalWorkerContext {
+                    task_data_entries: Arc::clone(&self.task_data_entries),
                     self_url: Url::parse(&request.target_worker_url)
                         .map_err(|e| DataFusionError::External(Box::new(e)))?,
                 }))
