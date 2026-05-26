@@ -591,8 +591,7 @@ mod tests {
                     NetworkShuffleExec: task_count=Desired(2)
                       RepartitionExec: task_count=Desired(3)
                         AggregateExec: task_count=Desired(3)
-                          PartitionIsolatorExec: task_count=Desired(3)
-                            DataSourceExec: task_count=Desired(3)
+                          DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -647,8 +646,7 @@ mod tests {
                       AggregateExec: task_count=Desired(3)
                         FilterExec: task_count=Desired(3)
                           RepartitionExec: task_count=Desired(3)
-                            PartitionIsolatorExec: task_count=Desired(3)
-                              DataSourceExec: task_count=Desired(3)
+                            DataSourceExec: task_count=Desired(3)
           ProjectionExec: task_count=Maximum(1)
             AggregateExec: task_count=Maximum(1)
               NetworkShuffleExec: task_count=Maximum(1)
@@ -656,8 +654,7 @@ mod tests {
                   AggregateExec: task_count=Desired(3)
                     FilterExec: task_count=Desired(3)
                       RepartitionExec: task_count=Desired(3)
-                        PartitionIsolatorExec: task_count=Desired(3)
-                          DataSourceExec: task_count=Desired(3)
+                        DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -688,8 +685,7 @@ mod tests {
           NetworkShuffleExec: task_count=Desired(2)
             RepartitionExec: task_count=Desired(3)
               AggregateExec: task_count=Desired(3)
-                PartitionIsolatorExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -705,13 +701,11 @@ mod tests {
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
             RepartitionExec: task_count=Maximum(2)
-              PartitionIsolatorExec: task_count=Maximum(2)
-                DataSourceExec: task_count=Maximum(2)
+              DataSourceExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(2)
             FilterExec: task_count=Maximum(2)
               RepartitionExec: task_count=Maximum(2)
-                PartitionIsolatorExec: task_count=Maximum(2)
-                  DataSourceExec: task_count=Maximum(2)
+                DataSourceExec: task_count=Maximum(2)
         ")
     }
 
@@ -726,8 +720,7 @@ mod tests {
         assert_snapshot!(annotated, @r"
         FilterExec: task_count=Desired(3)
           RepartitionExec: task_count=Desired(3)
-            PartitionIsolatorExec: task_count=Desired(3)
-              DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -744,8 +737,7 @@ mod tests {
             SortExec: task_count=Desired(3)
               NetworkShuffleExec: task_count=Desired(3)
                 RepartitionExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -765,8 +757,7 @@ mod tests {
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
             RepartitionExec: task_count=Maximum(2)
-              PartitionIsolatorExec: task_count=Maximum(2)
-                DataSourceExec: task_count=Maximum(2)
+              DataSourceExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
@@ -832,10 +823,8 @@ mod tests {
           CoalescePartitionsExec: task_count=Desired(3)
             NetworkBroadcastExec: task_count=Desired(3)
               BroadcastExec: task_count=Desired(3)
-                PartitionIsolatorExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-          PartitionIsolatorExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+          DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -864,10 +853,8 @@ mod tests {
           CoalescePartitionsExec: task_count=Desired(3)
             NetworkBroadcastExec: task_count=Desired(3)
               BroadcastExec: task_count=Desired(3)
-                PartitionIsolatorExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-          PartitionIsolatorExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
+          DataSourceExec: task_count=Desired(3)
         ");
     }
 
@@ -886,8 +873,7 @@ mod tests {
             NetworkBroadcastExec: task_count=Desired(3)
               BroadcastExec: task_count=Maximum(1)
                 DataSourceExec: task_count=Maximum(1)
-          PartitionIsolatorExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+          DataSourceExec: task_count=Desired(3)
         ");
     }
 
@@ -906,8 +892,7 @@ mod tests {
           CoalescePartitionsExec: task_count=Maximum(1)
             NetworkBroadcastExec: task_count=Maximum(1)
               BroadcastExec: task_count=Desired(3)
-                PartitionIsolatorExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+                DataSourceExec: task_count=Desired(3)
           DataSourceExec: task_count=Maximum(1)
         ");
     }
@@ -948,12 +933,9 @@ mod tests {
                   CoalescePartitionsExec: task_count=Desired(3)
                     NetworkBroadcastExec: task_count=Desired(3)
                       BroadcastExec: task_count=Desired(3)
-                        PartitionIsolatorExec: task_count=Desired(3)
-                          DataSourceExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
-          PartitionIsolatorExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+                        DataSourceExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
+          DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -982,23 +964,19 @@ mod tests {
             CoalescePartitionsExec: task_count=Maximum(2)
               NetworkBroadcastExec: task_count=Maximum(2)
                 BroadcastExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
-            PartitionIsolatorExec: task_count=Maximum(2)
-              DataSourceExec: task_count=Maximum(2)
+                  DataSourceExec: task_count=Desired(3)
+            DataSourceExec: task_count=Maximum(2)
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               NetworkBroadcastExec: task_count=Maximum(1)
                 BroadcastExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               NetworkBroadcastExec: task_count=Maximum(1)
                 BroadcastExec: task_count=Desired(3)
-                  PartitionIsolatorExec: task_count=Desired(3)
-                    DataSourceExec: task_count=Desired(3)
+                  DataSourceExec: task_count=Desired(3)
             DataSourceExec: task_count=Maximum(1)
         ");
     }
