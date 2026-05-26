@@ -1,14 +1,14 @@
-use crate::DistributedConfig;
-use crate::common::{map_last_stream, on_drop_stream};
+use crate::common::{TreeNodeExt, map_last_stream, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::worker::generated::worker::{FlightAppMetadata, PreOrderTaskMetrics};
 use crate::worker::worker_service::{TaskDataEntries, Worker};
+use crate::{DistributedConfig, DistributedTaskContext};
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err, internal_err};
 
 use crate::worker::generated::worker::ExecuteTaskRequest;
@@ -62,6 +62,7 @@ pub(crate) async fn execute_local_task(
     let plan = task_data.plan;
     let task_ctx = task_data.task_ctx;
     let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())?;
+    let d_ctx = DistributedTaskContext::from_ctx(&task_ctx).as_ref().clone();
 
     let send_metrics = d_cfg.collect_metrics;
     let partition_count = plan.properties().partitioning.partition_count();
@@ -90,6 +91,7 @@ pub(crate) async fn execute_local_task(
         let plan_for_drop = Arc::clone(&plan);
         let fully_finished = Arc::new(AtomicBool::new(false));
         let fully_finished_cloned = Arc::clone(&fully_finished);
+        let d_ctx_for_last = d_ctx.clone();
         let stream = map_last_stream(stream, move |msg, last_msg_in_stream| {
             if !last_msg_in_stream {
                 return msg;
@@ -109,7 +111,7 @@ pub(crate) async fn execute_local_task(
                 if send_metrics {
                     // Last message of the last partition. This is the moment to send
                     // the metrics back.
-                    send_metrics_via_channel(&metrics_tx, &plan);
+                    send_metrics_via_channel(&metrics_tx, &plan, d_ctx_for_last.clone());
                 }
             }
             fully_finished.store(true, Ordering::SeqCst);
@@ -120,6 +122,7 @@ pub(crate) async fn execute_local_task(
         let task_data_entries_for_drop = Arc::clone(task_data_entries);
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
         let key_for_drop = key.clone();
+        let d_ctx_for_drop = d_ctx.clone();
         let stream = on_drop_stream(stream, move || {
             if !fully_finished_cloned.load(Ordering::SeqCst) {
                 // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
@@ -134,7 +137,11 @@ pub(crate) async fn execute_local_task(
                         entries.invalidate(&k).await;
                     });
                     if send_metrics {
-                        send_metrics_via_channel(&metrics_tx, &plan_for_drop);
+                        send_metrics_via_channel(
+                            &metrics_tx,
+                            &plan_for_drop,
+                            d_ctx_for_drop.clone(),
+                        );
                     }
                 }
             }
@@ -245,9 +252,10 @@ fn build_flight_data_stream(
 fn send_metrics_via_channel(
     metrics_tx: &Arc<Mutex<Option<Sender<PreOrderTaskMetrics>>>>,
     plan: &Arc<dyn ExecutionPlan>,
+    dt_ctx: DistributedTaskContext,
 ) {
     let mut metrics = vec![];
-    let _ = plan.apply(|node| {
+    let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
         metrics.push(
             node.metrics()
                 .and_then(|m| df_metrics_set_to_proto(&m).ok())

@@ -75,8 +75,11 @@ use uuid::Uuid;
 ///   just delimited stage.
 /// - The `T` task count reconciled from phase 1 is assigned to every node in the stage during
 ///   this top-down walk.
-/// - Leaves go through [TaskEstimator::scale_up_leaf_node] (e.g. a `DataSourceExec` may be wrapped
-///   in a `PartitionIsolatorExec`) which is called using `T` as the `task_count` argument.
+/// - Leaves go through [TaskEstimator::scale_up_leaf_node] which is called using `T` as the
+///   `task_count` argument. The default file-scan estimator wraps the leaf in a
+///   [DistributedLeafExec] that holds one per-task variant for each of the `T` tasks; the
+///   wrapper is transparent to network boundaries (it reports the same partition count as the
+///   original) and is replaced by its per-task variant in the task spawner before serialisation.
 /// - If the walk meets a network boundary that was already injected by an earlier iteration of this
 ///   loop, it does **not** descend into it — that subtree belongs to a previously-formed stage and
 ///   has already been finalised.
@@ -94,14 +97,9 @@ use uuid::Uuid;
 ///                  │
 ///                  ▼
 ///   ┌─────────────────────────────┐
-///   │       DataSourceExec        │  ← scale-up via TaskEstimator
-///   └─────────────────────────────┘    e.g.:
-///                                       ┌────────────────────┐
-///                                       │ PartitionIsolator  │ ← T
-///                                       │   ┌─────────────┐  │
-///                                       │   │ DataSource  │  │ ← T
-///                                       │   └─────────────┘  │
-///                                       └────────────────────┘
+///   │    DistributedLeafExec      │  ← wraps DataSourceExec; this is replaced
+///   │      (DataSourceExec)       │    with the per-task variant before sending
+///   └─────────────────────────────┘    to workers
 /// ```
 ///
 /// ## Phase 3 — inject the boundary and seed the next stage's starting task count
@@ -379,9 +377,9 @@ async fn _inject_network_boundaries(
 ///
 /// Per-case behaviour:
 ///
-/// - **Leaves**: ask the [TaskEstimator] for an optional scaled-up replacement (e.g. wrapping a
-///   `DataSourceExec` in a `PartitionIsolatorExec`). Every node in the returned subtree —
-///   including any wrappers the estimator introduced — is recorded with `task_count`.
+/// - **Leaves**: ask the [TaskEstimator] for an optional scaled-up replacement (e.g. expanding a
+///   `DataSourceExec`'s file groups by `task_count`). Every node in the returned subtree is
+///   recorded with `task_count`.
 /// - **Network boundaries**: don't descend into the boundary's input plan (it lives in another
 ///   stage). Instead, rescale the boundary's input via [network_boundary_scale_input] using the
 ///   *consumer* partition and task counts of this side of the boundary, and stitch the rescaled
@@ -407,8 +405,7 @@ fn propagate_task_count_until_network_boundaries(
         match scaled_up {
             None => Ok(ctx.plan_with_task_count(Arc::clone(plan), task_count)),
             Some(scaled_up) => {
-                // The scaled up node might contain more than 1 node, for example, if a
-                // PartitionIsolatorExec was injected.
+                // The scaled up subtree may contain more than 1 node.
                 scaled_up.apply(|plan| {
                     ctx.set_task_count(plan, task_count);
                     Ok(TreeNodeRecursion::Continue)

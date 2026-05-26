@@ -1,7 +1,6 @@
 use crate::coordinator::DistributedExec;
 use crate::execution_plans::NetworkCoalesceExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
 use datafusion::common::{HashMap, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
@@ -157,7 +156,7 @@ impl DistributedTaskContext {
     }
 }
 
-use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
+use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;
@@ -565,7 +564,7 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
 fn display_plan(
     plan: &Arc<dyn ExecutionPlan>,
     task_i: usize,
-    n_tasks: usize,
+    _n_tasks: usize,
     stage_num: usize,
 ) -> Result<String> {
     // draw all plans
@@ -596,31 +595,14 @@ fn display_plan(
         usize,
     );
     let mut queue: VecDeque<PlanWithParent> = VecDeque::from([(plan, None, 0usize)]);
-    let mut isolator_partition_group = None;
     node_index = 0;
     while let Some((plan, maybe_parent, parent_idx)) = queue.pop_front() {
         node_index += 1;
-        if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
-            isolator_partition_group = Some(PartitionIsolatorExec::partition_group(
-                node.input.output_partitioning().partition_count(),
-                task_i,
-                n_tasks,
-            ));
-        }
         if let Some(parent) = maybe_parent {
             let output_partitions = plan.output_partitioning().partition_count();
 
             for i in 0..output_partitions {
-                let mut style = "";
-                if plan.as_any().is::<PartitionIsolatorExec>() {
-                    if i >= isolator_partition_group.as_ref().map_or(0, |v| v.len()) {
-                        style = "[style=dotted, label=empty]";
-                    }
-                } else if let Some(partition_group) = &isolator_partition_group
-                    && !partition_group.contains(&i)
-                {
-                    style = "[style=invis]";
-                }
+                let style = "";
 
                 writeln!(
                     f,
