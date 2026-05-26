@@ -2,6 +2,7 @@ use crate::distributed_planner::inject_network_boundaries::inject_network_bounda
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
+use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::tree_node::TreeNode;
@@ -76,6 +77,7 @@ impl QueryPlanner for DistributedQueryPlanner {
             if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
                 return Ok(plan);
             }
+            let plan = push_fetch_into_network_coalesce(plan)?;
             return Ok(Arc::new(
                 DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
             ));
@@ -99,6 +101,7 @@ impl QueryPlanner for DistributedQueryPlanner {
         }
 
         let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
+        let plan = push_fetch_into_network_coalesce(plan)?;
 
         Ok(Arc::new(
             DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
@@ -416,6 +419,35 @@ mod tests {
           │   PartitionIsolatorExec: tasks=3 partitions=3
           │     DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
           └──────────────────────────────────────────────────
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_limit_fetch_pushes_into_network_coalesce_input_stage() {
+        let query = r#"
+        SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday" LIMIT 10
+        "#;
+        let plan = sql_to_explain(query, |b| {
+            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
+        })
+        .await;
+        assert_snapshot!(plan, @r"
+        ┌───── DistributedExec ── Tasks: t0:[p0]
+        │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
+        │   CoalescePartitionsExec: fetch=10
+        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        └──────────────────────────────────────────────────
+          ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
+          │ LocalLimitExec: fetch=10
+          │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+          │     [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+          └──────────────────────────────────────────────────
+            ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7]
+            │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=1
+            │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+            │     PartitionIsolatorExec: tasks=3 partitions=3
+            │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+            └──────────────────────────────────────────────────
         ");
     }
 
