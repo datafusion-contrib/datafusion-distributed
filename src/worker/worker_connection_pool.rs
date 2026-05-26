@@ -31,7 +31,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
@@ -96,7 +96,6 @@ impl WorkerConnectionPool {
                 self.connections.len()
             );
         };
-        ctx.session_config().get_extension::<LocalWorkerContext>();
 
         let conn = worker_connection.get_or_init(|| {
             let Some(target_url) = input_stage.workers.get(target_task) else {
@@ -418,8 +417,8 @@ impl WorkerConnection for RemoteWorkerConnection {
 /// Equivalent to [RemoteWorkerConnection], but that pulls data from the local registry of tasks
 /// rather than doing it across a gRPC interface.
 pub(crate) struct LocalWorkerConnection {
-    lw_ctx: Arc<LocalWorkerContext>,
-    request_template: ExecuteTaskRequest,
+    partition_start: usize,
+    local_streams: Vec<Mutex<Option<BoxStream<'static, Result<RecordBatch>>>>>,
 }
 
 impl LocalWorkerConnection {
@@ -433,48 +432,70 @@ impl LocalWorkerConnection {
         MetricBuilder::new(metrics)
             .global_counter("local_connections_used")
             .add(1);
+
+        let task_key = TaskKey {
+            query_id: serialize_uuid(&input_stage.query_id),
+            stage_id: input_stage.num as u64,
+            task_number: target_task as u64,
+        };
+
+        let partition_start = target_partition_range.start;
+        let mut local_streams = Vec::with_capacity(target_partition_range.len());
+        for partition_i in target_partition_range {
+            let request = ExecuteTaskRequest {
+                task_key: Some(task_key.clone()),
+                target_partition_start: partition_i as u64,
+                target_partition_end: (partition_i + 1) as u64,
+            };
+
+            let task_data_entries = Arc::clone(&lw_ctx.task_data_entries);
+
+            // The relevant entry from `task_data_entries` needs to be eagerly retrieved, it cannot be
+            // left for until someone decides to start polling the returned `BoxStream`, otherwise,
+            // there's risk that the entry is evicted by Moka's TTL, and by the time the returned stream
+            // is polled, the entry might not be there.
+            //
+            // Note that this does not start polling the returned streams, it just instantiates them.
+            let streams_future = SpawnedTask::spawn(async move {
+                let (streams, _) = execute_local_task(&task_data_entries, request).await?;
+                Ok::<_, DataFusionError>(streams)
+            });
+
+            let stream = async move {
+                let mut streams = streams_future
+                    .await
+                    .map_err(|err| internal_datafusion_err!("{err}"))??;
+                if streams.len() != 1 {
+                    return internal_err!("Expected exactly 1 local stream");
+                }
+                Ok(streams.swap_remove(0))
+            }
+            .try_flatten_stream()
+            .boxed();
+
+            local_streams.push(Mutex::new(Some(stream)));
+        }
+
         Self {
-            lw_ctx,
-            request_template: ExecuteTaskRequest {
-                task_key: Some(TaskKey {
-                    query_id: serialize_uuid(&input_stage.query_id),
-                    stage_id: input_stage.num as u64,
-                    task_number: target_task as u64,
-                }),
-                target_partition_start: target_partition_range.start as u64,
-                target_partition_end: target_partition_range.end as u64,
-            },
+            partition_start,
+            local_streams,
         }
     }
 }
 
 impl WorkerConnection for LocalWorkerConnection {
     fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let mut request = self.request_template.clone();
-        request.target_partition_start = partition as u64;
-        request.target_partition_end = (partition + 1) as u64;
-        let task_data_entries = Arc::clone(&self.lw_ctx.task_data_entries);
-        // The relevant entry from `task_data_entries` needs to be eagerly retrieved, it cannot be
-        // left for until someone decides to start polling the returned `BoxStream`, otherwise,
-        // there's risk that the entry is evicted by Moka's TTL, and by the time the returned stream
-        // is polled, the entry might not be there.
-        //
-        // Note that this does not start polling the returned streams, it just instantiates them.
-        let streams_future = SpawnedTask::spawn(async move {
-            let (streams, _) = execute_local_task(&task_data_entries, request).await?;
-            Ok::<_, DataFusionError>(streams)
-        });
-        Ok(async move {
-            let mut streams = streams_future
-                .await
-                .map_err(|err| internal_datafusion_err!("{err}"))??;
-            if streams.len() != 1 {
-                return internal_err!("Expected exactly 1 local stream");
-            }
-            Ok(streams.swap_remove(0))
-        }
-        .try_flatten_stream()
-        .boxed())
+        let relative_i = partition - self.partition_start;
+        let Some(slot) = self.local_streams.get(relative_i) else {
+            return internal_err!(
+                "LocalWorkerConnection has no stream for partition {partition}. Was it already consumed?"
+            );
+        };
+        slot.lock().unwrap().take().ok_or_else(|| {
+            internal_datafusion_err!(
+                "LocalWorkerConnection stream for partition {partition} was already consumed"
+            )
+        })
     }
 }
 
