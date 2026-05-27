@@ -1,6 +1,5 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::Result;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -15,8 +14,8 @@ mod tests {
         TestWorkUnitFeedTaskEstimator,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
-        NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
+        NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
         rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
@@ -40,7 +39,7 @@ mod tests {
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
-        assert_metrics_equal::<DataSourceExec>(
+        assert_metrics_equal::<DistributedLeafExec>(
             ["output_rows", "output_bytes"],
             &s_physical,
             &d_physical,
@@ -89,7 +88,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..2 {
-            assert_metrics_equal::<DataSourceExec>(
+            assert_metrics_equal::<DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
@@ -128,7 +127,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..5 {
-            assert_metrics_equal::<DataSourceExec>(
+            assert_metrics_equal::<DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,

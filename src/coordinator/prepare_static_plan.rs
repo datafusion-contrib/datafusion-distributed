@@ -3,10 +3,9 @@ use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::task_spawner::{
     CoordinatorToWorkerMetrics, CoordinatorToWorkerTaskSpawner,
 };
-use crate::distributed_planner::get_distributed_task_estimator;
 use crate::stage::RemoteStage;
 use crate::{
-    DistributedCodec, NetworkBoundaryExt, Stage, TaskRoutingContext,
+    DistributedConfig, NetworkBoundaryExt, Stage, TaskEstimator, TaskRoutingContext,
     get_distributed_worker_resolver,
 };
 use datafusion::common::runtime::JoinSet;
@@ -35,7 +34,6 @@ pub(super) fn prepare_static_plan(
     ctx: &Arc<TaskContext>,
 ) -> Result<PreparedPlan> {
     let worker_resolver = get_distributed_worker_resolver(ctx.session_config())?;
-    let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
 
     let available_urls = worker_resolver.get_urls()?;
 
@@ -52,15 +50,11 @@ pub(super) fn prepare_static_plan(
             return exec_err!("Input stage from network boundary was not in Local state");
         };
 
-        let task_estimator = get_distributed_task_estimator(ctx.session_config())?;
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+        let task_estimator = &d_cfg.__private_task_estimator;
 
-        let mut spawner = CoordinatorToWorkerTaskSpawner::new(
-            stage,
-            &metrics,
-            task_metrics,
-            &codec,
-            &mut join_set,
-        )?;
+        let mut spawner =
+            CoordinatorToWorkerTaskSpawner::new(stage, &metrics, task_metrics, ctx, &mut join_set)?;
 
         let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
             task_ctx: Arc::clone(ctx),

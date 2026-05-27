@@ -21,8 +21,8 @@ use uuid::Uuid;
 ///
 /// This operator works with [BroadcastExec] which scales up partitions so each
 /// consumer task fetches a unique set of partition numbers. Each partition request
-/// is sent to all stage tasks because PartitionIsolatorExec maps the same logical
-/// partition to different actual data on each task.
+/// is sent to all stage tasks because each task's leaf node is specialized to serve
+/// a different slice of the data for the same logical partition number.
 ///
 /// Here are some examples of how [NetworkBroadcastExec] distributes data:
 ///

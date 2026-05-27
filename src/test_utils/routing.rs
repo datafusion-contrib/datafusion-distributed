@@ -22,8 +22,9 @@ use std::{any::Any, fmt::Formatter, sync::Arc};
 use tonic::async_trait;
 use url::Url;
 
+use crate::execution_plans::DistributedLeafExec;
 use crate::worker::LocalWorkerContext;
-use crate::{DistributedTaskContext, PartitionIsolatorExec, TaskEstimation, TaskEstimator};
+use crate::{DistributedTaskContext, TaskEstimation, TaskEstimator};
 
 // Table function that creates a `URLEmitterExec` for testing task routing.
 #[derive(Debug)]
@@ -108,6 +109,10 @@ pub struct URLEmitterExec {
     task_count: usize,
     tag: String,
     projection: Option<Vec<usize>>,
+    /// How many of the visible partitions actually produce data. Partitions at index
+    /// `>= effective_partitions` return an empty stream, letting tail tasks in an uneven
+    /// distribution produce fewer rows without changing the visible partition count.
+    effective_partitions: usize,
 }
 
 impl URLEmitterExec {
@@ -131,7 +136,23 @@ impl URLEmitterExec {
             task_count,
             tag,
             projection,
+            effective_partitions: partitions,
         }
+    }
+
+    fn with_partitions(mut self, visible: usize, effective: usize) -> Self {
+        let schema = match &self.projection {
+            Some(indices) => Arc::new(url_emitter_schema().project(indices).unwrap()),
+            None => url_emitter_schema(),
+        };
+        self.properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(visible),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        self.effective_partitions = effective;
+        self
     }
 }
 
@@ -173,18 +194,23 @@ impl ExecutionPlan for URLEmitterExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        let schema = match &self.projection {
+            Some(indices) => Arc::new(url_emitter_schema().project(indices).unwrap()),
+            None => url_emitter_schema(),
+        };
+        // Partitions beyond the effective range are padding; return empty.
+        if partition >= self.effective_partitions {
+            use datafusion::physical_plan::empty::EmptyExec;
+            return EmptyExec::new(schema).execute(0, context);
+        }
         let distributed_ctx = DistributedTaskContext::from_ctx(&context);
         let local_worker_ctx = context
             .session_config()
             .get_extension::<LocalWorkerContext>()
             .expect("URLEmitterExec requires LocalWorkerContext during distributed execution");
-        let schema = match &self.projection {
-            Some(indices) => Arc::new(url_emitter_schema().project(indices).unwrap()),
-            None => url_emitter_schema(),
-        };
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
             Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
             Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
@@ -244,9 +270,26 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan: Arc<dyn ExecutionPlan> =
-            Arc::new(PartitionIsolatorExec::new(Arc::clone(plan), task_count));
-        Some(plan)
+        let exec = plan.as_any().downcast_ref::<URLEmitterExec>()?;
+        let p = exec.properties.partitioning.partition_count();
+        // Expose ceil(p / task_count) partitions per task so the network boundary
+        // computes a consistent output partition count.
+        let visible = p.div_ceil(task_count).max(1);
+        let template = Arc::new(exec.clone().with_partitions(visible, visible));
+
+        // Distribute p partitions across task_count tasks using the floor/remainder algorithm:
+        // the first (p % task_count) tasks get ceil(p/task_count) effective partitions, the rest
+        // get floor — using the floor/remainder distribution algorithm.
+        let q = p / task_count;
+        let r = p % task_count;
+        let per_task: Vec<Arc<dyn ExecutionPlan>> = (0..task_count)
+            .map(|task_idx| {
+                let effective = q + if task_idx < r { 1 } else { 0 };
+                Arc::new(exec.clone().with_partitions(visible, effective)) as _
+            })
+            .collect();
+
+        Some(Arc::new(DistributedLeafExec::new(template as _, per_task)))
     }
 
     fn route_tasks(
@@ -271,6 +314,8 @@ struct URLEmitterExecProto {
     tag: String,
     #[prost(uint64, repeated, tag = "4")]
     projection: Vec<u64>,
+    #[prost(uint64, tag = "5")]
+    effective_partitions: u64,
 }
 
 #[derive(Debug)]
@@ -292,16 +337,22 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
         let proto = URLEmitterExecProto::decode(buf)
             .map_err(|e| proto_error(format!("Failed to decode URLEmitterExecProto: {e}")))?;
 
-        Ok(Arc::new(URLEmitterExec::new(
-            proto.partitions as usize,
-            proto.task_count as usize,
-            proto.tag,
-            if proto.projection.is_empty() {
-                None
-            } else {
-                Some(proto.projection.into_iter().map(|v| v as usize).collect())
-            },
-        )))
+        Ok(Arc::new(
+            URLEmitterExec::new(
+                proto.partitions as usize,
+                proto.task_count as usize,
+                proto.tag,
+                if proto.projection.is_empty() {
+                    None
+                } else {
+                    Some(proto.projection.into_iter().map(|v| v as usize).collect())
+                },
+            )
+            .with_partitions(
+                proto.partitions as usize,
+                proto.effective_partitions as usize,
+            ),
+        ))
     }
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
@@ -320,6 +371,7 @@ impl PhysicalExtensionCodec for URLEmitterExtensionCodec {
                 .into_iter()
                 .map(|v| v as u64)
                 .collect(),
+            effective_partitions: exec.effective_partitions as u64,
         };
 
         proto

@@ -27,8 +27,8 @@ pub use distributed_planner::{
     TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
 };
 pub use execution_plans::{
-    BroadcastExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec,
+    BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    NetworkShuffleExec,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
