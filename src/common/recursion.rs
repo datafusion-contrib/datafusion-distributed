@@ -14,8 +14,8 @@ pub(crate) trait TreeNodeExt {
     ///
     /// For example, the presence of [ChildrenIsolatorUnionExec] will make this function
     /// not recurse into nodes that would be ignored because of the contextual
-    /// [DistributedTaskContext], and while recursing into its children, the propagated
-    /// [DistributedTaskContext] will be mutated.
+    /// [DistributedTaskContext], and while recursing into its children, a different
+    /// [DistributedTaskContext] will be passed.
     ///
     /// The return [`TreeNodeRecursion`] controls the recursion and can cause an early return.
     ///
@@ -43,8 +43,9 @@ pub(crate) trait TreeNodeExt {
         Self: Sized;
 
     /// Recursively rewrite the tree using `f` in a bottom-up (post-order) fashion, propagating
-    /// the appropriate task count based on the presence of nodes that can isolate tasks, like
-    /// [ChildrenIsolatorUnionExec].
+    /// the appropriate task count based on the presence of nodes that can isolate tasks (e.g.,
+    /// [ChildrenIsolatorUnionExec]) and the presence of network boundaries that change the task
+    /// count.
     ///
     /// `f` is applied to the node's children first, and then to the node itself.
     fn transform_up_with_task_count<F: FnMut(Self, usize) -> Result<Transformed<Self>>>(
@@ -56,8 +57,9 @@ pub(crate) trait TreeNodeExt {
         Self: Sized;
 
     /// Recursively rewrite the tree using `f` in a top-down (pre-order) fashion, propagating
-    /// the appropriate task count based on the presence of nodes that can isolate tasks, like
-    /// [ChildrenIsolatorUnionExec].
+    /// the appropriate task count based on the presence of nodes that can isolate tasks (e.g.,
+    /// [ChildrenIsolatorUnionExec]) and the presence of network boundaries that change the task
+    /// count.
     ///
     /// `f` is applied to the node first, and then its children.
     #[allow(dead_code)] // Used in follow up work.
@@ -115,41 +117,39 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
         Self: Sized,
     {
         // None = skip this subtree (irrelevant CIU child for our task index).
-        let stack = RefCell::new(vec![Some(dt_ctx)]);
-        self.transform_down_up(
-            |node| {
-                let Some(dt_ctx) = stack.borrow_mut().pop().unwrap() else {
-                    return Ok(Transformed {
-                        data: node,
-                        transformed: false,
-                        tnr: TreeNodeRecursion::Jump,
-                    });
-                };
-                let transformed = f(node, dt_ctx.clone())?;
-                if transformed.tnr != TreeNodeRecursion::Continue
-                    || transformed.data.is_network_boundary()
-                {
-                    return Ok(Transformed {
-                        tnr: TreeNodeRecursion::Jump,
-                        ..transformed
-                    });
+        let mut stack = vec![Some(dt_ctx)];
+        self.transform_down(|node| {
+            let Some(dt_ctx) = stack.pop().unwrap() else {
+                return Ok(Transformed {
+                    data: node,
+                    transformed: false,
+                    tnr: TreeNodeRecursion::Jump,
+                });
+            };
+            let transformed = f(node, dt_ctx.clone())?;
+            if transformed.tnr == TreeNodeRecursion::Stop {
+                return Ok(transformed);
+            }
+            if transformed.tnr != TreeNodeRecursion::Continue
+                || transformed.data.is_network_boundary()
+            {
+                return Ok(Transformed {
+                    tnr: TreeNodeRecursion::Jump,
+                    ..transformed
+                });
+            }
+            let node = &transformed.data;
+            if let Some(ciu) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+                let mut child_ctxs = vec![None; ciu.children.len()];
+                for (child_idx, child_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
+                    child_ctxs[*child_idx] = Some(child_ctx.clone());
                 }
-                let node = &transformed.data;
-                if let Some(ciu) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
-                    let mut child_ctxs = vec![None; ciu.children.len()];
-                    for (child_idx, child_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
-                        child_ctxs[*child_idx] = Some(child_ctx.clone());
-                    }
-                    stack.borrow_mut().extend(child_ctxs.into_iter().rev());
-                } else {
-                    stack
-                        .borrow_mut()
-                        .extend(node.children().iter().map(|_| Some(dt_ctx.clone())).rev());
-                }
-                Ok(transformed)
-            },
-            |node| Ok(Transformed::no(node)),
-        )
+                stack.extend(child_ctxs.into_iter().rev());
+            } else {
+                stack.extend(node.children().iter().map(|_| Some(dt_ctx.clone())).rev());
+            }
+            Ok(transformed)
+        })
     }
 
     fn transform_up_with_task_count<F: FnMut(Self, usize) -> Result<Transformed<Self>>>(
@@ -214,14 +214,14 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NetworkCoalesceExec;
     use crate::execution_plans::ChildWeight;
+    use crate::stage::RemoteStage;
+    use crate::{NetworkCoalesceExec, Stage};
     use datafusion::arrow::datatypes::Schema;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::union::UnionExec;
     use insta::assert_snapshot;
-
     // ── apply_with_dt_ctx ────────────────────────────────────────────────────────
 
     #[test]
@@ -485,6 +485,22 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn tc_up_remote_nb_has_no_subtree() {
+        let plan = union(vec![
+            single(network_boundary(leaf(), 2)),
+            single(remote_network_boundary()),
+        ]);
+        assert_snapshot!(trace_tc_up(plan, 5), @r"
+        Leaf [tc=2]
+        Network [tc=5]
+        Single [tc=5]
+        Network [tc=5]
+        Single [tc=5]
+        Union [tc=5]
+        ");
+    }
+
     // ── transform_down_with_task_count ────────────────────────────────────────
 
     #[test]
@@ -532,6 +548,22 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn tc_down_remote_nb_has_no_subtree() {
+        let plan = union(vec![
+            single(network_boundary(leaf(), 2)),
+            single(remote_network_boundary()),
+        ]);
+        assert_snapshot!(trace_tc_down(plan, 5), @r"
+        Union [tc=5]
+        Single [tc=5]
+        Network [tc=5]
+        Leaf [tc=2]
+        Single [tc=5]
+        Network [tc=5]
+        ");
+    }
+
     // ── helpers: plan builders ────────────────────────────────────────────────
 
     fn leaf() -> Arc<dyn ExecutionPlan> {
@@ -551,6 +583,18 @@ mod tests {
         producer_tasks: usize,
     ) -> Arc<dyn ExecutionPlan> {
         Arc::new(NetworkCoalesceExec::try_new(input, producer_tasks, 1).unwrap())
+    }
+
+    fn remote_network_boundary() -> Arc<dyn ExecutionPlan> {
+        network_boundary(leaf(), 1)
+            .as_network_boundary()
+            .unwrap()
+            .with_input_stage(Stage::Remote(RemoteStage {
+                query_id: uuid::Uuid::nil(),
+                num: 0,
+                workers: vec![],
+            }))
+            .unwrap()
     }
 
     fn ciu(
