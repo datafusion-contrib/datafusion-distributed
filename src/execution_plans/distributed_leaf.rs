@@ -11,6 +11,56 @@ use std::sync::Arc;
 /// belonging to each task is stored in a `Vec` of N positions.
 ///
 /// While sending this plan over the wire to a remote worker, only the appropriate variant is sent.
+///
+/// This [ExecutionPlan] implementation is typically returned by
+/// [crate::TaskEstimator::scale_up_leaf_node], which will be called for scaling up a node for
+/// distribution. The process typically looks like this:
+///
+/// 1. The distributed planner calls [crate::TaskEstimator::scale_up_leaf_node] providing a leaf
+///    node and the amount of tasks in which it should be distributed:
+///
+/// ```text
+/// ┌──────────────┐
+/// │DataSourceExec│ + 3 tasks
+/// └──────────────┘
+/// ```
+///
+/// 2. The [crate::TaskEstimator] implementation, either user provided or a default one, returns
+///    a [DistributedLeafExec] adhering to this task count:
+///
+/// ```text
+/// ┌────────────────────────────────────────────────┐
+/// │              DistributedLeafExec               │
+/// │                                                │
+/// │┌──────────────┐┌──────────────┐┌──────────────┐│
+/// ││DataSourceExec││DataSourceExec││DataSourceExec││
+/// ││  for task 0  ││  for task 1  ││  for task 2  ││
+/// │└──────────────┘└──────────────┘└──────────────┘│
+/// └────────────────────────────────────────────────┘
+/// ```
+///
+/// 3. The [crate::DistributedExec] node, upon being executed, will send the different variants of
+///    the leaf node to the respective workers, instead of sending the full [DistributedLeafExec]:
+///
+/// ```text
+/// ┌──────────────────┐┌──────────────────┐┌──────────────────┐
+/// │     Worker 0     ││     Worker 1     ││     Worker 2     │
+/// │                  ││                  ││                  │
+/// │       ...        ││       ...        ││       ...        │
+/// │                  ││                  ││                  │
+/// │ ┌──────────────┐ ││ ┌──────────────┐ ││ ┌──────────────┐ │
+/// │ │   SomeExec   │ ││ │   SomeExec   │ ││ │   SomeExec   │ │
+/// │ │              │ ││ │              │ ││ │              │ │
+/// │ └──────────────┘ ││ └──────────────┘ ││ └──────────────┘ │
+/// │ ┌──────────────┐ ││ ┌──────────────┐ ││ ┌──────────────┐ │
+/// │ │DataSourceExec│ ││ │DataSourceExec│ ││ │DataSourceExec│ │
+/// │ │  for task 0  │ ││ │  for task 1  │ ││ │  for task 2  │ │
+/// │ └──────────────┘ ││ └──────────────┘ ││ └──────────────┘ │
+/// └──────────────────┘└──────────────────┘└──────────────────┘
+/// ```
+///
+/// This way, the different workers get to execute different versions of the same plan, each
+/// handling its own range of non-overlapping data.
 #[derive(Debug)]
 pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
