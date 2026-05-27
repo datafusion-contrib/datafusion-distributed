@@ -423,6 +423,81 @@ mod tests {
         assert_eq!(sizes, vec![1, 1, 1]);
     }
 
+    /// End-to-end check that `scale_up_leaf_node` actually rebalances files **across**
+    /// input group boundaries. With 3 input groups of 5 files each and `task_count = 3`,
+    /// the global round-robin packing interleaves files from different input groups into
+    /// the same output group — something the prior per-group `split_files` approach
+    /// could never do, since it kept each input group's files clustered together.
+    #[test]
+    fn test_scale_up_leaf_node_rebalances_across_input_groups() {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::datasource::listing::PartitionedFile;
+        use datafusion::datasource::physical_plan::{
+            FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
+        };
+        use datafusion::execution::object_store::ObjectStoreUrl;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let source: Arc<dyn FileSource> = Arc::new(ParquetSource::new(Arc::clone(&schema)));
+        let url = ObjectStoreUrl::parse("file:///").unwrap();
+        let mut builder = FileScanConfigBuilder::new(url, source);
+        for g in 0..3 {
+            let files: Vec<PartitionedFile> = (0..5)
+                .map(|i| PartitionedFile::new(format!("g{}/f{}.parquet", g, i), 1024))
+                .collect();
+            builder = builder.with_file_group(FileGroup::new(files));
+        }
+        let scan = builder.build();
+        let plan: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(scan);
+
+        let cfg = ConfigOptions::default();
+        let scaled = FileScanConfigTaskEstimator
+            .scale_up_leaf_node(&plan, 3, &cfg)
+            .expect("scale_up should produce a plan");
+
+        let isolator = scaled
+            .as_any()
+            .downcast_ref::<PartitionIsolatorExec>()
+            .expect("expected PartitionIsolatorExec wrapper");
+        let inner = isolator
+            .children()
+            .first()
+            .map(|c| Arc::clone(*c))
+            .unwrap();
+        let dse: &DataSourceExec = inner.as_any().downcast_ref().unwrap();
+        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref().unwrap();
+
+        let groups: Vec<Vec<String>> = file_scan
+            .file_groups
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(|f| f.object_meta.location.to_string())
+                    .collect()
+            })
+            .collect();
+
+        // 15 files round-robin into 3 * 3 = 9 output groups -> sizes [2,2,2,2,2,2,1,1,1].
+        assert_eq!(groups.len(), 9, "expected 9 output groups, got {:?}", groups);
+        let total: usize = groups.iter().map(Vec::len).sum();
+        assert_eq!(total, 15);
+
+        // Each of the first 5 output groups must contain files from at least two
+        // distinct input groups -- this is the cross-group rebalancing that the prior
+        // per-group `split_files` algorithm could not produce.
+        let prefix = |path: &str| path.split('/').next().unwrap_or("").to_string();
+        for (idx, files) in groups.iter().enumerate().take(5) {
+            let distinct_inputs: std::collections::BTreeSet<String> =
+                files.iter().map(|p| prefix(p)).collect();
+            assert!(
+                distinct_inputs.len() >= 2,
+                "output group {} must mix files from multiple input groups; got {:?}",
+                idx,
+                files
+            );
+        }
+    }
+
     impl CombinedTaskEstimator {
         fn push(&mut self, value: impl TaskEstimator + Send + Sync + 'static) {
             self.user_provided.push(Arc::new(value));
