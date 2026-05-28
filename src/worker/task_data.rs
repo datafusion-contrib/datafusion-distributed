@@ -51,7 +51,9 @@ pub(super) struct TaskDataMetrics {
 impl TaskDataMetrics {
     pub(super) fn new(query_start_time_ns: u64) -> Self {
         let plan_added_at = MaxLatencyMetric::default();
-        plan_added_at.add_duration(Duration::from_nanos(now_ns() - query_start_time_ns));
+        plan_added_at.add_duration(Duration::from_nanos(
+            now_ns().saturating_sub(query_start_time_ns),
+        ));
         Self {
             query_start_time_ns,
             plan_added_at,
@@ -62,14 +64,16 @@ impl TaskDataMetrics {
 
     pub(super) fn mark_execution_started_once(&self) {
         if self.plan_executed_at.value() == 0 {
-            self.plan_executed_at
-                .add_duration(Duration::from_nanos(now_ns() - self.query_start_time_ns))
+            self.plan_executed_at.add_duration(Duration::from_nanos(
+                now_ns().saturating_sub(self.query_start_time_ns),
+            ))
         }
     }
 
     pub(super) fn mark_execution_finished(&self) {
-        self.plan_finished_at
-            .add_duration(Duration::from_nanos(now_ns() - self.query_start_time_ns))
+        self.plan_finished_at.add_duration(Duration::from_nanos(
+            now_ns().saturating_sub(self.query_start_time_ns),
+        ))
     }
 
     pub(super) fn to_proto_metrics_set(&self) -> pb::MetricsSet {
