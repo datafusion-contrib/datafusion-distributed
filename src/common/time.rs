@@ -5,5 +5,5 @@ pub(crate) fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or(0)
+        .expect("SystemTime before UNIX EPOCH!")
 }

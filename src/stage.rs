@@ -337,10 +337,7 @@ fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> M
         task_number: 0,
     };
     let mut all_metrics = MetricsSet::new();
-    while let Some(task_metrics) = metrics_store.get(&task_key) {
-        let Some(metrics_set) = task_metrics.task_metrics else {
-            continue;
-        };
+    while let Some(metrics_set) = metrics_store.get(&task_key).and_then(|v| v.task_metrics) {
         for mut metric in metrics_set.metrics {
             metric.labels.push(pb::Label {
                 name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
