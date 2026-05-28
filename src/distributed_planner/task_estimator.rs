@@ -234,7 +234,7 @@ pub(crate) fn set_distributed_task_estimator(
 /// [DistributedConfig].`files_per_task` field and assigns as many tasks as needed so that
 /// no task handles more than the configured files.
 #[derive(Debug)]
-struct FileScanConfigTaskEstimator;
+pub(crate) struct FileScanConfigTaskEstimator;
 
 impl TaskEstimator for FileScanConfigTaskEstimator {
     fn task_estimation(
