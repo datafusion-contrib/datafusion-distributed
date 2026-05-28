@@ -1,8 +1,8 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::common::Result;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+    use datafusion::common::{Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
@@ -191,6 +191,27 @@ mod tests {
         assert!(value > 0);
         let value = node_metrics::<NetworkShuffleExec>(&d_physical, "network_latency_count", 1);
         assert!(value > 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stage_level_metric_collection() -> Result<(), Box<dyn std::error::Error>> {
+        let format = DistributedMetricsFormat::PerTask;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+
+        let display = display_plan_ascii(d_physical.as_ref(), true);
+        assert_not_contains!(&display, "metrics=[]");
+        assert_contains!(&display, "plan_added_at");
+        assert_contains!(&display, "plan_executed_at");
+        assert_contains!(&display, "plan_finished_at");
 
         Ok(())
     }

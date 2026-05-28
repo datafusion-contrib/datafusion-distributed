@@ -7,6 +7,7 @@ use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, WorkerToCoordinatorMsg, worker_to_coordinator_msg,
 };
+use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     DistributedCodec, DistributedConfig, DistributedExt, DistributedTaskContext, TaskData, Worker,
     WorkerQueryContext,
@@ -108,6 +109,7 @@ impl Worker {
                     true => Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
                     false => Arc::new(std::sync::Mutex::new(None)),
                 },
+                task_data_metrics: Arc::new(TaskDataMetrics::new(request.query_start_time_ns)),
             })
         };
 

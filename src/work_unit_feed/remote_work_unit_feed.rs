@@ -1,4 +1,4 @@
-use crate::common::{now_nanos, serialize_uuid};
+use crate::common::{now_ns, serialize_uuid};
 use crate::worker::generated::worker as pb;
 use crate::{BytesMetricExt, LatencyMetricExt, WorkUnit};
 use datafusion::common::{HashMap, Result, exec_err};
@@ -58,7 +58,7 @@ pub(crate) fn build_work_unit_msg(
                 id: serialize_uuid(id),
                 partition: partition as u64,
                 body: work_unit.encode_to_bytes(),
-                created_timestamp_unix_nanos: now_nanos(),
+                created_timestamp_unix_nanos: now_ns(),
                 sent_timestamp_unix_nanos: 0,
                 received_timestamp_unix_nanos: 0,
                 processed_timestamp_unix_nanos: 0,
@@ -74,7 +74,7 @@ pub(crate) fn set_work_unit_send_time(
         inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnit(work_unit)),
     } = &mut msg
     {
-        work_unit.sent_timestamp_unix_nanos = now_nanos();
+        work_unit.sent_timestamp_unix_nanos = now_ns();
     }
     msg
 }
@@ -86,7 +86,7 @@ pub(crate) fn set_work_unit_received_time(
         inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnit(work_unit)),
     } = &mut msg
     {
-        work_unit.received_timestamp_unix_nanos = now_nanos();
+        work_unit.received_timestamp_unix_nanos = now_ns();
     }
     msg
 }
@@ -154,7 +154,7 @@ impl RemoteFeedProvider {
                 let result = T::decode(work_unit.body.as_slice())
                     .map_err(|err| proto_error(format!("{err}")));
                 timer.done();
-                work_unit.processed_timestamp_unix_nanos = now_nanos();
+                work_unit.processed_timestamp_unix_nanos = now_ns();
 
                 let pb::WorkUnit {
                     created_timestamp_unix_nanos: base,

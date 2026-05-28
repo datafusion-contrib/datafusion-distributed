@@ -1,4 +1,4 @@
-use crate::common::{TreeNodeExt, serialize_uuid, task_ctx_with_extension};
+use crate::common::{TreeNodeExt, now_ns, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -46,6 +46,7 @@ use uuid::Uuid;
 pub(super) struct CoordinatorToWorkerMetrics {
     pub(super) plan_bytes_sent: Count,
     pub(super) plan_send_latency: Arc<LatencyMetric>,
+    pub(super) instantiation_time: u64,
 }
 
 impl CoordinatorToWorkerMetrics {
@@ -61,6 +62,7 @@ impl CoordinatorToWorkerMetrics {
                 |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
                 metrics,
             )),
+            instantiation_time: now_ns(),
         }
     }
 }
@@ -167,6 +169,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 task_key: Some(task_key.clone()),
                 work_unit_feed_declarations,
                 target_worker_url: url.to_string(),
+                query_start_time_ns: self.metrics.instantiation_time,
             })),
         };
 
@@ -239,7 +242,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                 match inner {
                     pb::worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
                         if let Some(task_metrics) = &task_metrics {
-                            task_metrics.insert(task_key.clone(), pre_order_metrics.metrics);
+                            task_metrics.insert(task_key.clone(), pre_order_metrics);
                         }
                     }
                 }
