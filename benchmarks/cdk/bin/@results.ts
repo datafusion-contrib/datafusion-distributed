@@ -11,6 +11,7 @@ export interface QueryIter {
     plan: string;
     rowCount: number;
     elapsed: number; // Duration in milliseconds
+    tasks: number;
     error?: string;
 }
 
@@ -226,7 +227,8 @@ export class BenchResult {
                     rowCount: z.number(),
                     elapsed: z.number(),
                     error: z.string().optional(),
-                    plan: z.string()
+                    plan: z.string(),
+                    tasks: z.number().default(0),
                 }).array(),
             })
             const data = fs.readFileSync(filePath, 'utf-8');

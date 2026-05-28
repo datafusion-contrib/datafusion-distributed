@@ -6,6 +6,7 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
@@ -14,9 +15,10 @@ use datafusion_distributed::test_utils::work_unit_file_scan::{
     WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanTaskEstimator,
 };
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, Worker,
-    WorkerQueryContext, WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
-    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
+    SessionStateBuilderExt, Worker, WorkerQueryContext, WorkerResolver, display_plan_ascii,
+    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -45,6 +47,7 @@ struct QueryResult {
     plan: String,
     count: usize,
     elapsed_ms: f64,
+    tasks: usize,
 }
 
 #[derive(Serialize)]
@@ -209,6 +212,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let plan = display_plan_ascii(physical.as_ref(), true);
                         drop(task);
 
+                        let mut task_count = 0;
+                        physical
+                            .apply(|plan| {
+                                let Some(nb) = plan.as_network_boundary() else {
+                                    return Ok(TreeNodeRecursion::Continue);
+                                };
+                                task_count += nb.input_stage().task_count();
+                                Ok(TreeNodeRecursion::Continue)
+                            })
+                            .expect(".apply failed");
+
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_secs_f64() * 1000.0;
                         info!("Finished executing query:\n{sql}\n\n{plan}");
@@ -219,6 +233,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             count,
                             plan,
                             elapsed_ms: ms,
+                            tasks: task_count,
                         }))
                     }
                     .inspect_err(|(_, msg)| {
