@@ -54,15 +54,11 @@ pub struct FileScanWorkUnitProvider {
     /// `None` slots are sent as empty work units so the worker emits an empty
     /// stream for that partition.
     file_groups: Vec<FileGroup>,
-    metrics: ExecutionPlanMetricsSet,
 }
 
 impl FileScanWorkUnitProvider {
     pub fn new(file_groups: Vec<FileGroup>) -> Self {
-        Self {
-            file_groups,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }
+        Self { file_groups }
     }
 }
 
@@ -208,10 +204,7 @@ impl DataSource for WorkUnitFileScanConfig {
     }
 
     fn metrics(&self) -> ExecutionPlanMetricsSet {
-        self.feed
-            .inner()
-            .map(|p| p.metrics.clone())
-            .unwrap_or_default()
+        self.feed.metrics()
     }
 
     fn try_swapping_with_projection(

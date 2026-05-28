@@ -98,6 +98,18 @@ pub struct WorkUnit {
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
     #[prost(bytes = "vec", tag = "3")]
     pub body: ::prost::alloc::vec::Vec<u8>,
+    /// Unix timestamp in nanoseconds at which this message was created.
+    #[prost(uint64, tag = "4")]
+    pub created_timestamp_unix_nanos: u64,
+    /// Unix timestamp in nanoseconds at which this message was sent.
+    #[prost(uint64, tag = "5")]
+    pub sent_timestamp_unix_nanos: u64,
+    /// Unix timestamp in nanoseconds at which this message was received.
+    #[prost(uint64, tag = "6")]
+    pub received_timestamp_unix_nanos: u64,
+    /// Unix timestamp in nanoseconds at which this message was processed.
+    #[prost(uint64, tag = "7")]
+    pub processed_timestamp_unix_nanos: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteTaskRequest {

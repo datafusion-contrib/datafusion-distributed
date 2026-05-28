@@ -1,4 +1,4 @@
-use crate::common::{TreeNodeExt, map_last_stream, on_drop_stream};
+use crate::common::{TreeNodeExt, map_last_stream, now_nanos, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::worker::generated::worker::{FlightAppMetadata, PreOrderTaskMetrics};
@@ -26,7 +26,7 @@ use prost::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::oneshot::Sender;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
@@ -187,10 +187,7 @@ pub(crate) async fn execute_remote_task(
             // the original per-partition streams in later steps.
             let flight_data = FlightAppMetadata {
                 partition,
-                created_timestamp_unix_nanos: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_nanos() as u64)
-                    .unwrap_or(0),
+                created_timestamp_unix_nanos: now_nanos(),
             };
             msg.map(|v| v.with_app_metadata(flight_data.encode_to_vec()))
         });

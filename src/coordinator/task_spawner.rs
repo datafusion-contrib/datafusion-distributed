@@ -5,6 +5,7 @@ use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::tonic_status_to_datafusion_error;
 use crate::stage::LocalStage;
+use crate::work_unit_feed::{build_work_unit_msg, set_work_unit_send_time};
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
@@ -182,8 +183,9 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
         let request = Request::from_parts(
             MetadataMap::from_headers(headers),
             Extensions::default(),
-            futures::stream::once(async { msg })
-                .chain(UnboundedReceiverStream::new(coordinator_to_worker_rx)),
+            futures::stream::once(async { msg }).chain(
+                UnboundedReceiverStream::new(coordinator_to_worker_rx).map(set_work_unit_send_time),
+            ),
         );
 
         let metrics = self.metrics.clone();
@@ -291,13 +293,7 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
                     // so they must be encoded in order to send them over the wire.
                     while let Some(data_or_err) = work_unit_feed.next().await {
                         if tx
-                            .send(pb::CoordinatorToWorkerMsg {
-                                inner: Some(Inner::WorkUnit(pb::WorkUnit {
-                                    id: serialize_uuid(&id),
-                                    partition: partition as u64,
-                                    body: data_or_err?.encode_to_bytes(),
-                                })),
-                            })
+                            .send(build_work_unit_msg(&id, partition, data_or_err?))
                             .is_err()
                         {
                             break; // channel closed.

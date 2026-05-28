@@ -79,6 +79,14 @@ message WorkUnit {
   uint64 partition = 2;
   // Arbitrary user-defined data (e.g., a file address) necessary during execution.
   bytes body = 3;
+  // Unix timestamp in nanoseconds at which this message was created in the coordinator.
+  uint64 created_timestamp_unix_nanos = 4;
+  // Unix timestamp in nanoseconds at which this message was sent by the coordinator.
+  uint64 sent_timestamp_unix_nanos = 5;
+  // Unix timestamp in nanoseconds at which this message was received by a worker.
+  uint64 received_timestamp_unix_nanos = 6;
+  // Unix timestamp in nanoseconds at which this message started being processed.
+  uint64 processed_timestamp_unix_nanos = 7;
 }
 
 message ExecuteTaskRequest {
