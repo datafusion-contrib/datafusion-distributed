@@ -1,4 +1,4 @@
-use crate::common::{TreeNodeExt, map_last_stream, now_ns, on_drop_stream};
+use crate::common::{TreeNodeExt, now_ns, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::worker::generated::worker::{FlightAppMetadata, TaskMetrics};
@@ -26,7 +26,7 @@ use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::oneshot::Sender;
 use tokio_stream::StreamExt;
@@ -84,76 +84,27 @@ pub(crate) async fn execute_local_task(
         let stream = plan.execute(partition as usize, Arc::clone(&task_ctx))?;
         let stream_schema = plan.schema();
 
-        let task_data_entries_for_map = Arc::clone(task_data_entries);
+        let plan = Arc::clone(&plan);
+
+        let task_data_entries = Arc::clone(task_data_entries);
         let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
-
-        let key_clone = key.clone();
-        let plan = Arc::clone(&plan);
-        let plan_cloned = Arc::clone(&plan);
-        let fully_finished = Arc::new(AtomicBool::new(false));
-        let fully_finished_cloned = Arc::clone(&fully_finished);
-        let d_ctx_cloned = d_ctx.clone();
         let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
-        let stream = map_last_stream(stream, move |msg, last_msg_in_stream| {
-            if !last_msg_in_stream {
-                return msg;
-            }
-
-            // this is the last message in the stream.
-
-            // If it's the last message from the last partition, clean up the entry from
-            // the cache and send the collected metrics back via the coordinator channel.
+        let key = key.clone();
+        let d_ctx = d_ctx.clone();
+        let stream = on_drop_stream(stream, move || {
+            // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
+            // Send metrics via the coordinator channel so they are not lost.
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                let entries = Arc::clone(&task_data_entries_for_map);
-                let k = key_clone.clone();
+                // Fire-and-forget background tokio task to handle async
+                // invalidate() within synchronous on_drop_stream.
                 #[allow(clippy::disallowed_methods)]
                 tokio::spawn(async move {
-                    entries.invalidate(&k).await;
+                    task_data_entries.invalidate(&key).await;
                 });
                 task_data_metrics.mark_execution_finished();
                 if send_metrics {
-                    // Last message of the last partition. This is the moment to send
-                    // the metrics back.
-                    send_metrics_via_channel(
-                        &metrics_tx,
-                        &plan,
-                        d_ctx_cloned.clone(),
-                        &task_data_metrics,
-                    );
-                }
-            }
-            fully_finished.store(true, Ordering::SeqCst);
-            msg
-        });
-
-        let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
-        let task_data_entries = Arc::clone(task_data_entries);
-        let metrics_tx = Arc::clone(&task_data.metrics_tx);
-        let key_cloned = key.clone();
-        let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
-        let d_ctx_cloned = d_ctx.clone();
-        let stream = on_drop_stream(stream, move || {
-            if !fully_finished_cloned.load(Ordering::SeqCst) {
-                // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
-                // Send metrics via the coordinator channel so they are not lost.
-                if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                    let entries = Arc::clone(&task_data_entries);
-                    let k = key_cloned.clone();
-                    // Fire-and-forget background tokio task to handle async
-                    // invalidate() within synchronous on_drop_stream.
-                    #[allow(clippy::disallowed_methods)]
-                    tokio::spawn(async move {
-                        entries.invalidate(&k).await;
-                    });
-                    if send_metrics {
-                        send_metrics_via_channel(
-                            &metrics_tx,
-                            &plan_cloned,
-                            d_ctx_cloned,
-                            &task_data_metrics,
-                        );
-                    }
+                    send_metrics_via_channel(&metrics_tx, &plan, d_ctx, &task_data_metrics);
                 }
             }
         });
