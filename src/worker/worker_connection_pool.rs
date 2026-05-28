@@ -348,7 +348,12 @@ impl RemoteWorkerConnection {
                 }
 
                 if o_tx.send(Ok((flight_data, flight_metadata))).is_err() {
-                    return; // channel closed
+                    // The receiver for this partition was dropped (e.g. a hash join partition
+                    // completed early without consuming its probe side). Don't exit: other
+                    // partitions multiplexed over the same gRPC stream still need their data.
+                    // Undo the memory reservation that was grown for this dropped batch.
+                    memory_reservation.shrink(size);
+                    continue;
                 };
             }
         }.with_elapsed_compute(elapsed_compute));
