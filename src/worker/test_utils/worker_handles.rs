@@ -1,5 +1,6 @@
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::worker::generated::worker::TaskKey;
+use crate::worker::task_data::TaskDataMetrics;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -61,6 +62,7 @@ impl MemoryWorkerHandle {
             }));
 
         let server_worker = worker.clone();
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             Server::builder()
                 .add_service(server_worker.into_worker_server())
@@ -138,6 +140,7 @@ impl TcpWorkerHandle {
             .map_err(|err| datafusion::common::DataFusionError::External(Box::new(err)))?
             .port();
         let server_worker = worker.clone();
+        #[allow(clippy::disallowed_methods)]
         let task = tokio::spawn(async move {
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             let _ = Server::builder()
@@ -215,6 +218,7 @@ pub async fn register_plan_on_worker(
             plan,
             num_partitions_remaining: Arc::new(AtomicUsize::new(partition_count)),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
+            task_data_metrics: Arc::new(TaskDataMetrics::new(0)),
         }))
         .expect("failed to write to task data");
 }

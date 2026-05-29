@@ -1,4 +1,4 @@
-use crate::common::require_one_child;
+use crate::common::{OnceLockResult, require_one_child};
 use crossbeam_queue::SegQueue;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
@@ -73,7 +73,7 @@ pub struct BroadcastExec {
     input: Arc<dyn ExecutionPlan>,
     consumer_task_count: usize,
     properties: Arc<PlanProperties>,
-    queues: Vec<OnceLock<Result<StreamAndTask, Arc<DataFusionError>>>>,
+    queues: Vec<OnceLockResult<StreamAndTask>>,
 }
 
 type StreamAndTask = (SegQueue<SendableRecordBatchStream>, Arc<SpawnedTask<()>>);
@@ -446,6 +446,7 @@ mod tests {
         let mut stream1 = broadcast.execute(0, task_ctx.clone())?;
         assert_eq!(execute_counts[0].load(Ordering::SeqCst), 1);
 
+        #[allow(clippy::disallowed_methods)]
         let handle = tokio::spawn(async move { stream1.next().await });
 
         // Cancel this consumer (simulates a cancellation like a TopK)

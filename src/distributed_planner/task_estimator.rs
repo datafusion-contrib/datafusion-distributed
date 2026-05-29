@@ -1,21 +1,23 @@
+use crate::DistributedConfig;
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::{DistributedConfig, PartitionIsolatorExec};
+use crate::execution_plans::DistributedLeafExec;
+use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::error::{DataFusionError, Result};
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
+use datafusion::error::Result;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 use url::Url;
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TaskCountAnnotation {
     /// The desired number of distributed tasks for this node. The final task count for the
     /// annotated node might not be exactly this number, it is more like a hint, so depending
@@ -35,15 +37,24 @@ impl From<TaskCountAnnotation> for usize {
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
         match self {
-            Self::Desired(desired) => *desired,
-            Self::Maximum(maximum) => *maximum,
+            Desired(desired) => *desired,
+            Maximum(maximum) => *maximum,
         }
     }
 
     pub(crate) fn limit(self, limit: usize) -> Self {
         match self {
-            Self::Desired(desired) => Self::Desired(desired.min(limit)),
-            Self::Maximum(maximum) => Self::Maximum(maximum.min(limit)),
+            Desired(desired) => Desired(desired.min(limit)),
+            Maximum(maximum) => Maximum(maximum.min(limit)),
+        }
+    }
+
+    pub(crate) fn merge(self, other: TaskCountAnnotation) -> Self {
+        match (self, other) {
+            (Desired(a), Desired(b)) => Desired(std::cmp::max(a, b)),
+            (Desired(_), Maximum(b)) => Maximum(b),
+            (Maximum(a), Desired(_)) => Maximum(a),
+            (Maximum(a), Maximum(b)) => Maximum(std::cmp::min(a, b)),
         }
     }
 }
@@ -218,24 +229,12 @@ pub(crate) fn set_distributed_task_estimator(
     }
 }
 
-pub(crate) fn get_distributed_task_estimator(
-    cfg: &SessionConfig,
-) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
-    let opts = cfg.options();
-    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return exec_err!("TaskEstimator not present in the session config");
-    };
-    let task_estimator: Arc<dyn TaskEstimator> =
-        Arc::new(distributed_cfg.__private_task_estimator.clone());
-    Ok(Arc::clone(&task_estimator))
-}
-
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
 /// [FileScanConfig]s data sources (e.g., Parquet or CSV files). it will read the
 /// [DistributedConfig].`files_per_task` field and assigns as many tasks as needed so that
 /// no task handles more than the configured files.
 #[derive(Debug)]
-struct FileScanConfigTaskEstimator;
+pub(crate) struct FileScanConfigTaskEstimator;
 
 impl TaskEstimator for FileScanConfigTaskEstimator {
     fn task_estimation(
@@ -270,26 +269,40 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         _cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
         if task_count == 1 {
-            return Some(Arc::clone(plan));
+            return None;
         }
-        // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
-        // repartitioning it. This will result in a DataSourceExec with potentially a lot of
-        // partitions, but as we are going to wrap it with PartitionIsolatorExec, that's fine.
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
         let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
 
-        let mut new_file_scan = file_scan.clone();
-        let input_group_count = file_scan.file_groups.len().max(1);
-        let all_partitioned_files = file_scan
+        let mut file_scan_template = file_scan.clone();
+        let input_group_count = file_scan_template.file_groups.len().max(1);
+        let all_partitioned_files = file_scan_template
             .file_groups
             .iter()
             .flat_map(|file_group| file_group.iter().cloned())
             .collect::<Vec<_>>();
-        let file_groups =
+        file_scan_template.file_groups.clear();
+        let rebalanced =
             rebalance_round_robin(all_partitioned_files, input_group_count * task_count);
-        new_file_scan.file_groups = file_groups.into_iter().map(Into::into).collect();
-        let plan = DataSourceExec::from_data_source(new_file_scan);
-        Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
+        let mut file_groups: VecDeque<FileGroup> =
+            rebalanced.into_iter().map(Into::into).collect();
+        let expected_partitions = plan.output_partitioning().partition_count();
+
+        let dle = DistributedLeafExec::new(
+            Arc::clone(plan),
+            (0..task_count).map(|_| {
+                let mut new_file_scan = file_scan_template.clone();
+                while new_file_scan.file_groups.len() < expected_partitions {
+                    match file_groups.pop_front() {
+                        None => new_file_scan.file_groups.push(FileGroup::new(vec![])),
+                        Some(fg) => new_file_scan.file_groups.push(fg),
+                    }
+                }
+                DataSourceExec::from_data_source(new_file_scan) as _
+            }),
+        );
+
+        Some(Arc::new(dle))
     }
 }
 
@@ -455,47 +468,56 @@ mod tests {
             .scale_up_leaf_node(&plan, 3, &cfg)
             .expect("scale_up should produce a plan");
 
-        let isolator = scaled
+        let dle = scaled
             .as_any()
-            .downcast_ref::<PartitionIsolatorExec>()
-            .expect("expected PartitionIsolatorExec wrapper");
-        let inner = isolator
-            .children()
-            .first()
-            .map(|c| Arc::clone(*c))
-            .unwrap();
-        let dse: &DataSourceExec = inner.as_any().downcast_ref().unwrap();
-        let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref().unwrap();
+            .downcast_ref::<DistributedLeafExec>()
+            .expect("expected DistributedLeafExec wrapper");
 
-        let groups: Vec<Vec<String>> = file_scan
-            .file_groups
-            .iter()
-            .map(|g| {
-                g.iter()
-                    .map(|f| f.object_meta.location.to_string())
-                    .collect()
-            })
-            .collect();
+        // Walk each per-task variant and collect every file group's file paths.
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        for variant in &dle.variants {
+            let dse: &DataSourceExec = variant.as_any().downcast_ref().unwrap();
+            let file_scan: &FileScanConfig =
+                dse.data_source().as_any().downcast_ref().unwrap();
+            for fg in &file_scan.file_groups {
+                groups.push(
+                    fg.iter()
+                        .map(|f| f.object_meta.location.to_string())
+                        .collect(),
+                );
+            }
+        }
 
-        // 15 files round-robin into 3 * 3 = 9 output groups -> sizes [2,2,2,2,2,2,1,1,1].
+        // 15 files round-robin into 3 input groups * 3 task_count = 9 output groups,
+        // dealt across 3 task variants of 3 partitions each.
+        assert_eq!(dle.variants.len(), 3, "expected 3 task variants");
         assert_eq!(groups.len(), 9, "expected 9 output groups, got {:?}", groups);
         let total: usize = groups.iter().map(Vec::len).sum();
         assert_eq!(total, 15);
 
-        // Each of the first 5 output groups must contain files from at least two
-        // distinct input groups -- this is the cross-group rebalancing that the prior
-        // per-group `split_files` algorithm could not produce.
+        // At least six of the nine output groups must contain files from multiple
+        // distinct input groups. The prior per-group `split_files` algorithm kept
+        // each task's partitions confined to a single input group, so this assertion
+        // would fail under the old behavior.
         let prefix = |path: &str| path.split('/').next().unwrap_or("").to_string();
-        for (idx, files) in groups.iter().enumerate().take(5) {
-            let distinct_inputs: std::collections::BTreeSet<String> =
-                files.iter().map(|p| prefix(p)).collect();
-            assert!(
-                distinct_inputs.len() >= 2,
-                "output group {} must mix files from multiple input groups; got {:?}",
-                idx,
+        let cross_group_count = groups
+            .iter()
+            .filter(|files| {
                 files
-            );
-        }
+                    .iter()
+                    .map(|p| prefix(p))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    >= 2
+            })
+            .count();
+        assert!(
+            cross_group_count >= 6,
+            "expected >=6 output groups mixing files from multiple input groups; \
+             got {} (groups: {:?})",
+            cross_group_count,
+            groups
+        );
     }
 
     impl CombinedTaskEstimator {

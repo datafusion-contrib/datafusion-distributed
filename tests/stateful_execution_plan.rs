@@ -64,17 +64,16 @@ mod tests {
         let plan_str = display_plan_ascii(plan.as_ref(), false);
 
         assert_snapshot!(plan_str,
-            @"
+            @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
-        │   [Stage 1] => NetworkCoalesceExec: output_partitions=3, input_tasks=3
+        │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0] t1:[p1] t2:[p2]
+          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
           │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
           │   FilterExec: MinTemp@0 > 20
-          │     PartitionIsolatorExec: tasks=3 partitions=3
-          │       StatefulPassThroughExec
-          │         DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 20, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 20, required_guarantees=[]
+          │     StatefulPassThroughExec
+          │       DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet, predicate=MinTemp@0 > 20, pruning_predicate=MinTemp_null_count@1 != row_count@2 AND MinTemp_max@0 > 20, required_guarantees=[]
           └──────────────────────────────────────────────────
         ",
         );
@@ -156,6 +155,7 @@ mod tests {
             // Spawn a background task to demonstrate stateful behavior
             let mut stream = self.child.execute(partition, context)?;
 
+            #[allow(clippy::disallowed_methods)]
             let handle = tokio::spawn(async move {
                 // Simulate some background work
                 while let Some(batch) = stream.next().await {

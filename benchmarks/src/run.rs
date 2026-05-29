@@ -22,17 +22,23 @@ use datafusion::common::instant::Instant;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{config_err, exec_err, not_impl_err};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
+use datafusion_distributed::test_utils::work_unit_file_scan::{
+    WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanRule,
+    WorkUnitFileScanTaskEstimator,
+};
 use datafusion_distributed::{DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Worker};
 use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
@@ -115,6 +121,12 @@ pub struct RunOpt {
     /// Activate debug mode to see more details
     #[structopt(short, long)]
     debug: bool,
+
+    /// Replace each `FileScanConfig` data source with a `WorkUnitFileScanConfig`
+    /// that streams its `FileGroup`s through the work-unit feed pipeline. Used
+    /// to measure the latency overhead introduced by that path.
+    #[structopt(long = "work-unit-file-scan")]
+    work_unit_file_scan: bool,
 }
 
 fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusionError> {
@@ -157,9 +169,20 @@ impl RunOpt {
                 let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
                 println!("Listening on {}...", listener.local_addr().unwrap());
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+                // Workers need to be able to decode the WorkUnitFileScan plan
+                // node when the feature is on. The codec is registered via a
+                // session builder so it is installed on every worker session.
+                let worker = Worker::from_session_builder(
+                    |ctx: datafusion_distributed::WorkerQueryContext| async move {
+                        Ok(ctx
+                            .builder
+                            .with_distributed_user_codec(WorkUnitFileScanCodec)
+                            .build())
+                    },
+                );
                 Ok::<_, Box<dyn Error + Send + Sync>>(
                     Server::builder()
-                        .add_service(Worker::default().into_worker_server())
+                        .add_service(worker.into_worker_server())
                         .serve_with_incoming(incoming)
                         .await?,
                 )
@@ -171,7 +194,7 @@ impl RunOpt {
     }
 
     async fn run_local(self) -> Result<()> {
-        let state = SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(self.config()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
@@ -192,7 +215,20 @@ impl RunOpt {
             .with_distributed_broadcast_joins(self.broadcast_joins)?
             .with_distributed_metrics_collection(self.collect_metrics)?
             .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
-            .build();
+            .with_distributed_user_codec(WorkUnitFileScanCodec)
+            .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
+            .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
+                dse.data_source()
+                    .as_any()
+                    .downcast_ref::<WorkUnitFileScanConfig>()
+                    .map(|v| &v.feed)
+            });
+
+        if self.work_unit_file_scan {
+            builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
+        }
+
+        let state = builder.build();
         let ctx = SessionContext::new_with_state(state);
         register_tables(&ctx, &self.get_path()?).await?;
 
@@ -304,7 +340,7 @@ impl RunOpt {
         let mut n_tasks = 0;
         physical_plan.clone().transform_down(|node| {
             if let Some(node) = node.as_network_boundary() {
-                n_tasks += node.input_stage().tasks.len()
+                n_tasks += node.input_stage().task_count()
             }
             Ok(Transformed::no(node))
         })?;

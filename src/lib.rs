@@ -14,19 +14,21 @@ mod networking;
 mod observability;
 mod protobuf;
 pub use protobuf::DistributedCodec;
+mod coordinator;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
 mod work_unit_feed;
 
 pub use arrow_ipc::CompressionType;
+pub use coordinator::DistributedExec;
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
     TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
 };
 pub use execution_plans::{
-    BroadcastExec, DistributedExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
-    PartitionIsolatorExec,
+    BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
+    NetworkShuffleExec,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
@@ -39,8 +41,7 @@ pub use networking::{
     create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
 pub use stage::{
-    DistributedTaskContext, ExecutionTask, Stage, display_plan_ascii, display_plan_graphviz,
-    explain_analyze,
+    DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
 };
 pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,

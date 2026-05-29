@@ -50,10 +50,9 @@ mod tests {
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5]
-            │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 6), input_partitions=1
+            │ RepartitionExec: partitioning=Hash([test_udf(weather.RainToday)@0], 6), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[test_udf(RainToday@0) as test_udf(weather.RainToday)], aggr=[count(Int64(1))]
-            │     PartitionIsolatorExec: tasks=3 partitions=3
-            │       DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+            │     DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
             └──────────────────────────────────────────────────
         ",
         );

@@ -24,7 +24,7 @@ A good setup is to run 8 workers throttled at 2 physical threads per worker. Thi
 accurate benchmarking environment for a distributed system locally.
 
 ```bash
-WORKERS=8 ./benchmarks/run.sh --threads 2 --path benchmarks/data/tpch_sf10
+WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch_sf10
 ```
 
 Subsequent runs will compare results against the previous one, so a useful trick to measure the impact of a PR

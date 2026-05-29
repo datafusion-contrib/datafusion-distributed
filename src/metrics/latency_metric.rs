@@ -128,7 +128,11 @@ impl MinLatencyMetric {
 
     pub fn add_duration(&self, duration: Duration) {
         let more_nanos = duration.as_nanos() as usize;
-        self.nanos.fetch_min(more_nanos.max(1), Relaxed);
+        self.add_nanos(more_nanos);
+    }
+
+    pub fn add_nanos(&self, nanos: usize) {
+        self.nanos.fetch_min(nanos.max(1), Relaxed);
     }
 }
 
@@ -191,7 +195,11 @@ impl MaxLatencyMetric {
 
     pub fn add_duration(&self, duration: Duration) {
         let more_nanos = duration.as_nanos() as usize;
-        self.nanos.fetch_max(more_nanos.max(1), Relaxed);
+        self.add_nanos(more_nanos);
+    }
+
+    pub fn add_nanos(&self, nanos: usize) {
+        self.nanos.fetch_max(nanos.max(1), Relaxed);
     }
 }
 
@@ -261,7 +269,11 @@ impl AvgLatencyMetric {
 
     pub fn add_duration(&self, duration: Duration) {
         let more_nanos = duration.as_nanos() as usize;
-        self.nanos_sum.fetch_add(more_nanos.max(1), Relaxed);
+        self.add_nanos(more_nanos);
+    }
+
+    pub fn add_nanos(&self, nanos: usize) {
+        self.nanos_sum.fetch_add(nanos.max(1), Relaxed);
         self.count.fetch_add(1, Relaxed);
     }
 }
@@ -326,6 +338,10 @@ impl FirstLatencyMetric {
 
     pub fn add_duration(&self, duration: Duration) {
         let nanos = duration.as_nanos() as usize;
+        self.add_nanos(nanos);
+    }
+
+    pub fn add_nanos(&self, nanos: usize) {
         // compare_exchange: only set if still at the sentinel value (0).
         let _ = self
             .nanos
@@ -424,8 +440,12 @@ macro_rules! percentile_latency_metric {
             }
 
             pub fn add_duration(&self, duration: Duration) {
-                let nanos = (duration.as_nanos() as usize).max(1) as f64;
-                self.inner.lock().unwrap().add(nanos);
+                let nanos = (duration.as_nanos() as usize).max(1);
+                self.add_nanos(nanos);
+            }
+
+            pub fn add_nanos(&self, nanos: usize) {
+                self.inner.lock().unwrap().add(nanos as f64);
             }
         }
 

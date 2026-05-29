@@ -1,9 +1,8 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::catalog::memory::DataSourceExec;
-    use datafusion::common::Result;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+    use datafusion::common::{Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
@@ -15,8 +14,8 @@ mod tests {
         TestWorkUnitFeedTaskEstimator,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExt, DistributedMetricsFormat, NetworkCoalesceExec,
-        NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
+        NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
         rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
@@ -40,7 +39,7 @@ mod tests {
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
-        assert_metrics_equal::<DataSourceExec>(
+        assert_metrics_equal::<DistributedLeafExec>(
             ["output_rows", "output_bytes"],
             &s_physical,
             &d_physical,
@@ -89,7 +88,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..2 {
-            assert_metrics_equal::<DataSourceExec>(
+            assert_metrics_equal::<DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
@@ -128,7 +127,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..5 {
-            assert_metrics_equal::<DataSourceExec>(
+            assert_metrics_equal::<DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
@@ -197,6 +196,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_stage_level_metric_collection() -> Result<(), Box<dyn std::error::Error>> {
+        let format = DistributedMetricsFormat::PerTask;
+        let (d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, mut d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        d_physical = rewrite_with_metrics(d_physical.clone(), format).await;
+
+        let display = display_plan_ascii(d_physical.as_ref(), true);
+        assert_not_contains!(&display, "metrics=[]");
+        assert_contains!(&display, "plan_added_at");
+        assert_contains!(&display, "plan_executed_at");
+        assert_contains!(&display, "plan_finished_at");
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_metric_collection_display_all_have_metrics()
     -> Result<(), Box<dyn std::error::Error>> {
         let format = DistributedMetricsFormat::PerTask;
@@ -240,7 +260,7 @@ mod tests {
         // Two tasks × two partitions × comma-separated row counts. Total work units sent:
         // 2 (t0/p0) + 1 (t0/p1) + 1 (t1/p0) + 2 (t1/p1) = 6.
         let df = ctx
-            .sql("SELECT * FROM test_work_unit('t', 2, '3,4', '1', '1', '2,5')")
+            .sql("SELECT * FROM test_work_unit('t', 2, 'rows(3),rows(4)', 'rows(1)', 'rows(1)', 'rows(2),rows(5)')")
             .await?;
         let plan = df.create_physical_plan().await?;
         execute_stream(plan.clone(), ctx.task_ctx())?

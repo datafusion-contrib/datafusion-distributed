@@ -49,30 +49,34 @@ where
 }
 
 /// Generates all TPC-H tables as parquet files in the specified data directory.
-pub fn generate_tpch_data(data_dir: &Path, sf: f64, parts: i32) {
-    fs::create_dir_all(data_dir).expect("Failed to create data directory");
+pub fn generate_tpch_data(
+    data_dir: &Path,
+    sf: f64,
+    parts: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(data_dir)?;
 
-    macro_rules! must_generate_tpch_table {
-        ($generator:ident, $arrow:ident, $name:literal) => {
-            let data_dir = data_dir.join($name);
-            fs::create_dir_all(data_dir.clone()).expect("Failed to create data directory");
-            (1..=parts).for_each(|part| {
+    macro_rules! generate_tpch_table {
+        ($generator:ident, $arrow:ident, $name:literal) => {{
+            let table_dir = data_dir.join($name);
+            fs::create_dir_all(&table_dir)?;
+            for part in 1..=(parts as i32) {
                 generate_table(
-                    $arrow::new($generator::new(sf, part, parts)).with_batch_size(1000),
+                    $arrow::new($generator::new(sf, part, parts as i32)).with_batch_size(1000),
                     &format!("{part}"),
-                    &data_dir,
-                )
-                .expect(concat!("Failed to generate ", $name, " table"));
-            });
-        };
+                    &table_dir,
+                )?;
+            }
+        }};
     }
 
-    must_generate_tpch_table!(RegionGenerator, RegionArrow, "region");
-    must_generate_tpch_table!(NationGenerator, NationArrow, "nation");
-    must_generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer");
-    must_generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier");
-    must_generate_tpch_table!(PartGenerator, PartArrow, "part");
-    must_generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
-    must_generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
-    must_generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
+    generate_tpch_table!(RegionGenerator, RegionArrow, "region");
+    generate_tpch_table!(NationGenerator, NationArrow, "nation");
+    generate_tpch_table!(CustomerGenerator, CustomerArrow, "customer");
+    generate_tpch_table!(SupplierGenerator, SupplierArrow, "supplier");
+    generate_tpch_table!(PartGenerator, PartArrow, "part");
+    generate_tpch_table!(PartSuppGenerator, PartSuppArrow, "partsupp");
+    generate_tpch_table!(OrderGenerator, OrderArrow, "orders");
+    generate_tpch_table!(LineItemGenerator, LineItemArrow, "lineitem");
+    Ok(())
 }

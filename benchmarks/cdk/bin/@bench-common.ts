@@ -67,6 +67,7 @@ export interface ExecuteQueryResult {
     rowCount: number,
     plan: string
     elapsed: number
+    tasks: number
 }
 
 export interface BenchmarkRunner {
@@ -160,7 +161,8 @@ export async function runBenchmark(
                     elapsed: 0,
                     rowCount: 0,
                     error: e.toString(),
-                    plan: ""
+                    plan: "",
+                    tasks: 0
                 })
                 console.error(`Query ${id} failed: ${e.toString()}`)
                 continue
@@ -176,7 +178,8 @@ export async function runBenchmark(
                     elapsed: 0,
                     rowCount: 0,
                     error: e.toString(),
-                    plan: ""
+                    plan: "",
+                    tasks: 0
                 })
                 console.error(`Query ${id} failed: ${e.toString()}`)
                 break
@@ -188,7 +191,8 @@ export async function runBenchmark(
             result.iterations.push({
                 elapsed: response.elapsed,
                 rowCount: response.rowCount,
-                plan: response.plan
+                plan: response.plan,
+                tasks: response.tasks,
             })
 
             console.log(

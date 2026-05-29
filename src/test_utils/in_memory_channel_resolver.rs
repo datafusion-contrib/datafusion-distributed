@@ -51,6 +51,7 @@ impl InMemoryChannelResolver {
             Ok(builder.with_distributed_channel_resolver(this).build())
         }));
 
+        #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             Server::builder()
                 .add_service(endpoint.into_worker_server())

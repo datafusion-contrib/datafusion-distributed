@@ -127,7 +127,8 @@ impl TableProvider for NumbersTableProvider {
 }
 
 /// Custom execution plan that generates numbers from start to end.
-/// When distributed, each task generates a subset of numbers based on its task_index.
+/// When distributed, `scale_up_leaf_node` populates `ranges_per_task` with one entry per task
+/// and `execute()` uses `DistributedTaskContext.task_index` to select this task's range.
 #[derive(Debug, Clone)]
 struct NumbersExec {
     ranges_per_task: Vec<Range<i64>>,

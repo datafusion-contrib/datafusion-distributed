@@ -1,10 +1,10 @@
-use crate::execution_plans::{DistributedExec, NetworkCoalesceExec};
+use crate::coordinator::{DistributedExec, MetricsStore};
+use crate::execution_plans::NetworkCoalesceExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use crate::{NetworkShuffleExec, PartitionIsolatorExec};
-use datafusion::common::plan_err;
 use datafusion::common::{HashMap, config_err};
+use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
-use datafusion::execution::TaskContext;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
@@ -68,24 +68,75 @@ use uuid::Uuid;
 /// Stage can complete on its own; it's likely holding a leaf node in the overall physical plan and
 /// producing data from a [`DataSourceExec`].
 #[derive(Debug, Clone)]
-pub struct Stage {
-    /// Our query_id
-    pub(crate) query_id: Uuid,
-    /// Our stage number
-    pub(crate) num: usize,
-    /// The physical execution plan that this stage will execute. It will only be present if
-    /// accessing to it through the coordinating stage.
-    pub(crate) plan: Option<Arc<dyn ExecutionPlan>>,
-    /// Our tasks which tell us how finely grained to execute the partitions in
-    /// the plan
-    pub tasks: Vec<ExecutionTask>,
+pub enum Stage {
+    Local(LocalStage),
+    Remote(RemoteStage),
 }
 
 #[derive(Debug, Clone)]
-pub struct ExecutionTask {
-    /// The url of the worker that will execute this task.  A None value is interpreted as
-    /// unassigned.
-    pub(crate) url: Option<Url>,
+pub struct LocalStage {
+    /// Our query_id
+    pub query_id: Uuid,
+    /// Our stage number
+    pub num: usize,
+    /// The physical execution plan that this stage will execute. It will only be present if
+    /// accessing to it through the coordinating stage.
+    pub plan: Arc<dyn ExecutionPlan>,
+    /// The number of tasks the stage has.
+    pub tasks: usize,
+}
+
+impl LocalStage {
+    pub fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        if self.tasks > 1 {
+            return exec_err!("Cannot execute a local stage with more than 1 task");
+        }
+        self.plan.execute(partition, context)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteStage {
+    /// Our query_id
+    pub query_id: Uuid,
+    /// Our stage number
+    pub num: usize,
+    /// The worker URLs to which queries should be issued.
+    pub workers: Vec<Url>,
+}
+
+impl Stage {
+    pub fn query_id(&self) -> Uuid {
+        match &self {
+            Self::Local(v) => v.query_id,
+            Self::Remote(v) => v.query_id,
+        }
+    }
+
+    pub fn num(&self) -> usize {
+        match &self {
+            Self::Local(v) => v.num,
+            Self::Remote(v) => v.num,
+        }
+    }
+
+    pub fn task_count(&self) -> usize {
+        match &self {
+            Self::Local(v) => v.tasks,
+            Self::Remote(v) => v.workers.len(),
+        }
+    }
+
+    pub fn local_plan(&self) -> Option<&Arc<dyn ExecutionPlan>> {
+        match &self {
+            Self::Local(v) => Some(&v.plan),
+            Self::Remote(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,25 +156,10 @@ impl DistributedTaskContext {
     }
 }
 
-impl Stage {
-    /// Creates a new `Stage` with the given plan and inputs. `ExecutionTasks` will be created for
-    /// each of the `n_tasks` specified tasks.
-    pub(crate) fn new(
-        query_id: Uuid,
-        num: usize,
-        plan: Arc<dyn ExecutionPlan>,
-        n_tasks: usize,
-    ) -> Self {
-        Self {
-            query_id,
-            num,
-            plan: Some(plan),
-            tasks: vec![ExecutionTask { url: None }; n_tasks],
-        }
-    }
-}
-
-use crate::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
+use crate::common::serialize_uuid;
+use crate::metrics::proto::metric_proto_to_df;
+use crate::worker::generated::worker as pb;
+use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::Partitioning;
@@ -165,7 +201,7 @@ const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
     if let Some(plan) = plan.as_any().downcast_ref::<DistributedExec>() {
         let mut f = String::new();
-        display_ascii(Either::Left(plan), 0, show_metrics, &mut f).unwrap();
+        display_ascii(plan, Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
     } else {
         match show_metrics {
@@ -178,6 +214,7 @@ pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> Strin
 }
 
 fn display_ascii(
+    root: &DistributedExec,
     stage: Either<&DistributedExec, &Stage>,
     depth: usize,
     show_metrics: bool,
@@ -186,7 +223,7 @@ fn display_ascii(
     let plan = match stage {
         Either::Left(distributed_exec) => distributed_exec.children().first().unwrap(),
         Either::Right(stage) => {
-            let Some(plan) = &stage.plan else {
+            let Some(plan) = stage.local_plan() else {
                 return write!(f, "StageExec: encoded input plan");
             };
             plan
@@ -194,32 +231,40 @@ fn display_ascii(
     };
     match stage {
         Either::Left(dist_exec) => {
-            writeln!(
+            write!(
                 f,
-                "{}{}{} DistributedExec {} {}{}",
+                "{}{}{} DistributedExec {} {}",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
                 HORIZONTAL.repeat(2),
                 format_tasks_for_stage(1, plan),
-                if show_metrics {
-                    format_metrics_by_task(&dist_exec.metrics().unwrap_or_default())
-                } else {
-                    "".into()
-                }
             )?;
+            if show_metrics && let Some(metrics) = dist_exec.metrics() {
+                write!(f, " ")?;
+                writeln!(f, "{}", format_metrics_by_task(&metrics))?;
+            } else {
+                writeln!(f)?;
+            }
         }
         Either::Right(stage) => {
-            writeln!(
+            write!(
                 f,
                 "{}{}{} Stage {} {} {}",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
-                stage.num,
+                stage.num(),
                 HORIZONTAL.repeat(2),
-                format_tasks_for_stage(stage.tasks.len(), plan)
+                format_tasks_for_stage(stage.task_count(), plan)
             )?;
+            if show_metrics && let Some(metrics_store) = &root.metrics_store {
+                let metrics = gather_stage_header_metrics(stage, metrics_store);
+                write!(f, " ")?;
+                writeln!(f, "{}", format_metrics_by_task(&metrics))?;
+            } else {
+                writeln!(f)?;
+            }
         }
     }
 
@@ -239,7 +284,7 @@ fn display_ascii(
         HORIZONTAL.repeat(50)
     )?;
     for input_stage in find_input_stages(plan.as_ref()) {
-        display_ascii(Either::Right(input_stage), depth + 1, show_metrics, f)?;
+        display_ascii(root, Either::Right(input_stage), depth + 1, show_metrics, f)?;
     }
     Ok(())
 }
@@ -281,6 +326,30 @@ fn display_inner_ascii(
         display_inner_ascii(child, indent + 2, show_metrics, f)?;
     }
     Ok(())
+}
+
+/// Gathers the metrics global to a stage. These metrics are not specific to any plan node, and
+/// are instead global to a whole stage.
+fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> MetricsSet {
+    let mut task_key = pb::TaskKey {
+        query_id: serialize_uuid(&stage.query_id()),
+        stage_id: stage.num() as u64,
+        task_number: 0,
+    };
+    let mut all_metrics = MetricsSet::new();
+    while let Some(metrics_set) = metrics_store.get(&task_key).and_then(|v| v.task_metrics) {
+        for mut metric in metrics_set.metrics {
+            metric.labels.push(pb::Label {
+                name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
+                value: task_key.task_number.to_string(),
+            });
+            if let Ok(metric) = metric_proto_to_df(metric) {
+                all_metrics.push(metric)
+            };
+        }
+        task_key.task_number += 1;
+    }
+    all_metrics
 }
 
 /// Aggregates metrics by (name, task_id), preserving the [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL]
@@ -432,35 +501,41 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         let mut max_num = 0;
         let mut all_stages = find_all_stages(&plan)
             .into_iter()
-            .inspect(|v| max_num = max_num.max(v.num))
+            .inspect(|v| max_num = max_num.max(v.num()))
             .collect::<Vec<_>>();
-        let head_stage = Stage {
+        let head_stage = Stage::Local(LocalStage {
             query_id: Default::default(),
             num: max_num + 1,
-            plan: Some(plan.clone()),
-            tasks: vec![ExecutionTask { url: None }],
-        };
+            plan: plan.clone(),
+            tasks: 1,
+        });
         all_stages.insert(0, &head_stage);
 
         // draw all tasks first
         for stage in &all_stages {
-            for i in 0..stage.tasks.iter().len() {
+            for i in 0..stage.task_count() {
                 let p = display_single_task(stage, i)?;
                 writeln!(f, "{p}")?;
             }
         }
         // now draw edges between the tasks
         for stage in &all_stages {
-            let Some(plan) = &stage.plan else { continue };
+            let Some(plan) = stage.local_plan() else {
+                continue;
+            };
             for input_stage in find_input_stages(plan.as_ref()) {
-                for task_i in 0..stage.tasks.len() {
-                    for input_task_i in 0..input_stage.tasks.len() {
+                for task_i in 0..stage.task_count() {
+                    for input_task_i in 0..input_stage.task_count() {
                         let edges =
                             display_inter_task_edges(stage, task_i, input_stage, input_task_i)?;
                         writeln!(
                             f,
                             "// edges from child stage {} task {} to stage {} task {}\n {}",
-                            input_stage.num, input_task_i, stage.num, task_i, edges
+                            input_stage.num(),
+                            input_task_i,
+                            stage.num(),
+                            task_i,
+                            edges
                         )?;
                     }
                 }
@@ -479,7 +554,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
 }
 
 fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
-    let Some(plan) = &stage.plan else {
+    let Some(plan) = stage.local_plan() else {
         return config_err!("plan not present");
     };
     let partition_group =
@@ -502,11 +577,11 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
     node[shape=none]
 
 ",
-        stage.num,
+        stage.num(),
         task_i,
-        stage.num,
+        stage.num(),
         task_i,
-        stage.num,
+        stage.num(),
         task_i,
         format_pg(&partition_group)
     )?;
@@ -514,7 +589,7 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
     writeln!(
         f,
         "{}",
-        display_plan(plan, task_i, stage.tasks.len(), stage.num)?
+        display_plan(plan, task_i, stage.task_count(), stage.num())?
     )?;
     writeln!(f, "  }}")?;
     writeln!(f, "  }}")?;
@@ -525,7 +600,7 @@ fn display_single_task(stage: &Stage, task_i: usize) -> Result<String> {
 fn display_plan(
     plan: &Arc<dyn ExecutionPlan>,
     task_i: usize,
-    n_tasks: usize,
+    _n_tasks: usize,
     stage_num: usize,
 ) -> Result<String> {
     // draw all plans
@@ -556,31 +631,14 @@ fn display_plan(
         usize,
     );
     let mut queue: VecDeque<PlanWithParent> = VecDeque::from([(plan, None, 0usize)]);
-    let mut isolator_partition_group = None;
     node_index = 0;
     while let Some((plan, maybe_parent, parent_idx)) = queue.pop_front() {
         node_index += 1;
-        if let Some(node) = plan.as_any().downcast_ref::<PartitionIsolatorExec>() {
-            isolator_partition_group = Some(PartitionIsolatorExec::partition_group(
-                node.input.output_partitioning().partition_count(),
-                task_i,
-                n_tasks,
-            ));
-        }
         if let Some(parent) = maybe_parent {
             let output_partitions = plan.output_partitioning().partition_count();
 
             for i in 0..output_partitions {
-                let mut style = "";
-                if plan.as_any().is::<PartitionIsolatorExec>() {
-                    if i >= isolator_partition_group.as_ref().map_or(0, |v| v.len()) {
-                        style = "[style=dotted, label=empty]";
-                    }
-                } else if let Some(partition_group) = &isolator_partition_group
-                    && !partition_group.contains(&i)
-                {
-                    style = "[style=invis]";
-                }
+                let style = "";
 
                 writeln!(
                     f,
@@ -735,10 +793,10 @@ fn display_inter_task_edges(
     input_stage: &Stage,
     input_task_i: usize,
 ) -> Result<String> {
-    let Some(plan) = &stage.plan else {
+    let Some(plan) = stage.local_plan() else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
-    let Some(input_plan) = &input_stage.plan else {
+    let Some(input_plan) = input_stage.local_plan() else {
         return plan_err!("The inner plan of a stage was encoded.");
     };
     let mut f = String::new();
@@ -748,7 +806,7 @@ fn display_inter_task_edges(
     while let Some(plan) = queue.pop_front() {
         index += 1;
         if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
-            if node.input_stage().num != input_stage.num {
+            if node.input_stage().num() != input_stage.num() {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
@@ -758,12 +816,12 @@ fn display_inter_task_edges(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
                     input_plan.name(),
-                    input_stage.num,
+                    input_stage.num(),
                     input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p + (task_i * output_partitions),
                     plan.name(),
-                    stage.num,
+                    stage.num(),
                     task_i,
                     index,
                     p,
@@ -772,23 +830,23 @@ fn display_inter_task_edges(
             }
             continue;
         } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
-            if node.input_stage().num != input_stage.num {
+            if node.input_stage().num() != input_stage.num() {
                 continue;
             }
             // draw the edges to this node pulling data up from its child
             let output_partitions = plan.output_partitioning().partition_count();
-            let input_partitions_per_task = output_partitions / input_stage.tasks.len();
+            let input_partitions_per_task = output_partitions / input_stage.task_count();
             for p in 0..input_partitions_per_task {
                 writeln!(
                     f,
                     "  {}_{}_{}_{}:t{}:n -> {}_{}_{}_{}:b{}:s [color={}]",
                     input_plan.name(),
-                    input_stage.num,
+                    input_stage.num(),
                     input_task_i,
                     1, // the repartition exec is always the first node in the plan
                     p,
                     plan.name(),
-                    stage.num,
+                    stage.num(),
                     task_i,
                     index,
                     p + (input_task_i * input_partitions_per_task),

@@ -14,7 +14,7 @@ mod tests {
 
     const PARTITIONS: usize = 6;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
-    const TPCH_DATA_PARTS: i32 = 16;
+    const TPCH_DATA_PARTS: usize = 16;
 
     #[tokio::test]
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
@@ -190,14 +190,14 @@ mod tests {
     // OnceCell to ensure TPCH tables are generated only once for tests
     static INIT_TEST_TPCH_TABLES: OnceCell<()> = OnceCell::const_new();
 
-    // ensure_tpch_data initializes the TPCH data on disk.
-    pub async fn ensure_tpch_data(sf: f64, parts: i32) -> std::path::PathBuf {
+    pub async fn ensure_tpch_data(sf: f64, parts: usize) -> std::path::PathBuf {
         let data_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("testdata/tpch/correctness_sf{sf}"));
         INIT_TEST_TPCH_TABLES
             .get_or_init(|| async {
                 if !fs::exists(&data_dir).unwrap() {
-                    tpch::generate_tpch_data(&data_dir, sf, parts);
+                    tpch::generate_tpch_data(&data_dir, sf, parts)
+                        .expect("Failed to generate TPC-H data");
                 }
             })
             .await;

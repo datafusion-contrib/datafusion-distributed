@@ -28,7 +28,7 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
 
-    use crate::execution_plans::DistributedExec;
+    use crate::coordinator::DistributedExec;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
@@ -175,16 +175,21 @@ mod tests {
 
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
-            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
+            let actual_metrics = dist_exec
+                .metrics_store
+                .as_ref()
+                .unwrap()
+                .get(&expected_task_key)
+                .unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
             // just verify that a metrics set exists for each node. The count assertion above
             // ensures all nodes are included in the metrics collection.
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.as_ref().unwrap();
+            let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
-                actual_metrics.len(),
+                actual_metrics.pre_order_plan_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
             );
@@ -290,7 +295,9 @@ mod tests {
 
         for expected_task_key in &expected_task_keys {
             let actual_metrics = dist_exec
-                .task_metrics
+                .metrics_store
+                .as_ref()
+                .unwrap()
                 .get(expected_task_key)
                 .unwrap_or_else(|| {
                     panic!(
@@ -300,58 +307,11 @@ mod tests {
                     )
                 });
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.as_ref().unwrap();
+            let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
-                actual_metrics.len(),
+                actual_metrics.pre_order_plan_metrics.len(),
                 count_plan_nodes_up_to_network_boundary(stage_plan),
                 "Mismatch between collected metrics and actual nodes for {expected_task_key:?}"
-            );
-        }
-    }
-
-    /// Test that verifies PartitionIsolatorExec nodes are preserved during metrics collection.
-    /// This tests the corner case where PartitionIsolatorExec nodes (which have no metrics)
-    /// must still be included in the metrics collection to maintain correct node-to-metric mapping.
-    #[tokio::test]
-    async fn test_metrics_collection_with_partition_isolator() {
-        let ctx = make_test_ctx().await;
-        ctx.sql("SET distributed.children_isolator_unions=true;")
-            .await
-            .unwrap();
-
-        // Use weather dataset (already available)
-        register_parquet_tables(&ctx).await.unwrap();
-
-        // UNION query that creates PartitionIsolatorExec nodes
-        let query = r#"
-            SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
-            UNION ALL
-            SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
-        "#;
-
-        let df = ctx.sql(query).await.unwrap();
-        let plan = df.create_physical_plan().await.unwrap();
-        execute_plan(plan.clone(), &ctx).await;
-
-        let dist_exec = plan
-            .as_any()
-            .downcast_ref::<DistributedExec>()
-            .expect("expected DistributedExec");
-
-        let (stages, expected_task_keys) = get_stages_and_task_keys(dist_exec);
-
-        // Verify all nodes (including PartitionIsolatorExec) are preserved in metrics collection
-        for expected_task_key in expected_task_keys {
-            let actual_metrics = dist_exec.task_metrics.get(&expected_task_key).unwrap();
-            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
-            let stage_plan = stage.plan.as_ref().unwrap();
-
-            // Verify metrics count matches - this ensures all nodes are included in metrics collection
-            // regardless of whether they have metrics or not (some nodes may have empty metrics sets)
-            assert_eq!(
-                actual_metrics.len(),
-                count_plan_nodes_up_to_network_boundary(stage_plan),
-                "Metrics count must match plan nodes for stage {expected_task_key:?}"
             );
         }
     }

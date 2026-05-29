@@ -1,6 +1,7 @@
 use crate::WorkUnit;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::stream::BoxStream;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -81,6 +82,11 @@ pub trait WorkUnitFeedProvider: Send + Sync + Debug {
         partition: usize,
         ctx: Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<Self::WorkUnit>>>;
+
+    /// DataFusion metrics collected at runtime while streaming [WorkUnit]s through [Self::feed].
+    fn metrics(&self) -> ExecutionPlanMetricsSet {
+        ExecutionPlanMetricsSet::new()
+    }
 }
 
 /// Provides contextual information about where a [WorkUnitFeedProvider] is being executed. When

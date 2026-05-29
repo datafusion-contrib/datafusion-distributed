@@ -34,10 +34,7 @@ pub fn main() -> Result<()> {
     match Options::from_args() {
         Options::Run(opt) => opt.run(),
         Options::Compare(opt) => opt.run(),
-        Options::PrepareTpch(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { opt.run().await })
-        }
+        Options::PrepareTpch(opt) => opt.run(),
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })
