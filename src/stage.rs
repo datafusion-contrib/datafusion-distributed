@@ -139,7 +139,7 @@ impl Stage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DistributedTaskContext {
     pub task_index: usize,
     pub task_count: usize,

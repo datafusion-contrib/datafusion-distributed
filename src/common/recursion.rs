@@ -85,21 +85,19 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             ctx: DistributedTaskContext,
             f: &mut F,
         ) -> Result<TreeNodeRecursion> {
-            f(plan, ctx.clone())?.visit_children(|| {
+            f(plan, ctx)?.visit_children(|| {
                 if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
                     // Just recurse to children that will actually get executed by this
                     // ChildrenIsolatorUnionExec.
                     ciu.task_idx_map[ctx.task_index].iter().apply_until_stop(
-                        |(child_i, child_ctx)| {
-                            recurse(&ciu.children[*child_i], child_ctx.clone(), f)
-                        },
+                        |(child_i, child_ctx)| recurse(&ciu.children[*child_i], *child_ctx, f),
                     )
                 } else if plan.is_network_boundary() {
                     Ok(TreeNodeRecursion::Continue)
                 } else {
                     plan.children()
                         .into_iter()
-                        .apply_until_stop(|child| recurse(child, ctx.clone(), f))
+                        .apply_until_stop(|child| recurse(child, ctx, f))
                 }
             })
         }
@@ -126,7 +124,7 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
                     tnr: TreeNodeRecursion::Jump,
                 });
             };
-            let transformed = f(node, dt_ctx.clone())?;
+            let transformed = f(node, dt_ctx)?;
             if transformed.tnr == TreeNodeRecursion::Stop {
                 return Ok(transformed);
             }
@@ -142,11 +140,11 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             if let Some(ciu) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
                 let mut child_ctxs = vec![None; ciu.children.len()];
                 for (child_idx, child_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
-                    child_ctxs[*child_idx] = Some(child_ctx.clone());
+                    child_ctxs[*child_idx] = Some(*child_ctx);
                 }
                 stack.extend(child_ctxs.into_iter().rev());
             } else {
-                stack.extend(node.children().iter().map(|_| Some(dt_ctx.clone())).rev());
+                stack.extend(node.children().iter().map(|_| Some(dt_ctx)).rev());
             }
             Ok(transformed)
         })
