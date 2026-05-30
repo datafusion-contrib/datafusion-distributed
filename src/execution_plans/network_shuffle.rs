@@ -125,11 +125,11 @@ impl NetworkShuffleExec {
         Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
     }
 
-    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
+    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
         Self {
-            properties: input_stage.plan.properties().clone(),
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            properties: input_properties,
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -143,15 +143,19 @@ impl NetworkShuffleExec {
             return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
         }
 
-        Ok(Self::from_stage(LocalStage {
-            // At this point, query_id and num are just placeholders that will be filled by
-            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-            // these two parameters.
-            query_id: Uuid::nil(),
-            num: 0,
-            plan: input,
-            tasks: producer_tasks,
-        }))
+        let input_properties = Arc::clone(input.properties());
+        Ok(Self::from_stage(
+            Stage::Local(LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
+            }),
+            input_properties,
+        ))
     }
 }
 

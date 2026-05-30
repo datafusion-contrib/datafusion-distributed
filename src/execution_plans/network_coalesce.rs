@@ -91,18 +91,21 @@ impl NetworkCoalesceExec {
         Ok(Transformed::no(plan))
     }
 
-    pub(crate) fn from_stage(input_stage: LocalStage, consumer_tasks: usize) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        consumer_tasks: usize,
+    ) -> Self {
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
-        let max_input_task_count = input_stage.tasks.div_ceil(consumer_tasks).max(1);
-        let props =
-            scale_partitioning_props(input_stage.plan.properties(), |p| p * max_input_task_count);
+        let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
+        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count);
 
         Self {
             properties: props,
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -128,8 +131,10 @@ impl NetworkCoalesceExec {
         if consumer_tasks == 0 {
             return plan_err!("The `consumer_tasks` input of a NetworkCoalesceExec must not be 0");
         }
+
+        let input_properties = Arc::clone(input.properties());
         Ok(Self::from_stage(
-            LocalStage {
+            Stage::Local(LocalStage {
                 // At this point, query_id and num are just placeholders that will be filled by
                 // prepare_network_boundaries.rs. Users are not expected to provide valid values for
                 // these two parameters.
@@ -137,7 +142,8 @@ impl NetworkCoalesceExec {
                 num: 0,
                 plan: input,
                 tasks: producer_tasks,
-            },
+            }),
+            input_properties,
             consumer_tasks,
         ))
     }

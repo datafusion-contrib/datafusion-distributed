@@ -138,17 +138,17 @@ impl NetworkBroadcastExec {
         ))))
     }
 
-    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
-        let input_partition_count = input_stage.plan.properties().partitioning.partition_count();
+    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let input_partition_count = input_properties.partitioning.partition_count();
         let properties = Arc::new(
-            PlanProperties::clone(input_stage.plan.properties())
+            PlanProperties::clone(&input_properties)
                 .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
         );
 
         Self {
             properties,
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -159,15 +159,19 @@ impl NetworkBroadcastExec {
             return plan_err!("The input of a NetworkBroadcastExec can only be a BroadcastExec");
         }
 
-        Ok(Self::from_stage(LocalStage {
-            // At this point, query_id and num are just placeholders that will be filled by
-            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-            // these two parameters.
-            query_id: Uuid::nil(),
-            num: 0,
-            plan: input,
-            tasks: producer_tasks,
-        }))
+        let input_properties = Arc::clone(input.properties());
+        Ok(Self::from_stage(
+            Stage::Local(LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
+            }),
+            input_properties,
+        ))
     }
 }
 
