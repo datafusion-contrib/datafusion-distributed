@@ -273,7 +273,7 @@ impl TransportFixture {
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::UnknownPartitioning(self.bench.partitions),
+                    Partitioning::RoundRobinBatch(self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),

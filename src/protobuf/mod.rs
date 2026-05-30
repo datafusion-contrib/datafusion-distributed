@@ -1,5 +1,6 @@
 mod distributed_codec;
 mod errors;
+mod producer_head;
 mod user_codec;
 
 pub use distributed_codec::DistributedCodec;

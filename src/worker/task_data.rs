@@ -1,11 +1,13 @@
 use crate::MaxLatencyMetric;
-use crate::common::now_ns;
+use crate::common::{OnceLockResult, now_ns};
+use crate::distributed_planner::{ProducerHead, insert_producer_head};
 use crate::worker::generated::worker as pb;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::CustomMetricValue;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -15,8 +17,8 @@ use tokio::sync::oneshot;
 pub struct TaskData {
     /// Task context suitable for execute different partitions from the same task.
     pub(super) task_ctx: Arc<TaskContext>,
-    /// Plan to be executed.
-    pub(crate) plan: Arc<dyn ExecutionPlan>,
+    pub(crate) base_plan: Arc<dyn ExecutionPlan>,
+    pub(crate) final_plan: Arc<OnceLockResult<Arc<dyn ExecutionPlan>>>,
     /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
     /// only tasks in the partition group). This is decremented for each request to the endpoint
     /// for this task. Once this count is zero, the task is likely complete. The task may not be
@@ -109,12 +111,40 @@ impl TaskDataMetrics {
 impl TaskData {
     /// Returns the number of partitions remaining to be processed.
     pub(crate) fn num_partitions_remaining(&self) -> usize {
-        self.num_partitions_remaining
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.num_partitions_remaining.load(Ordering::SeqCst)
     }
 
     /// Returns the total number of partitions in this task.
     pub(crate) fn total_partitions(&self) -> usize {
-        self.plan.properties().partitioning.partition_count()
+        match self.final_plan.get() {
+            Some(Ok(plan)) => plan.output_partitioning().partition_count(),
+            _ => self
+                .base_plan
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+        }
+    }
+
+    pub(crate) fn plan(
+        &self,
+        producer_head: pb::execute_task_request::ProducerHead,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let result = self.final_plan.get_or_init(|| {
+            let producer_head =
+                ProducerHead::from_proto(producer_head, &self.base_plan.schema(), &self.task_ctx)?;
+
+            let plan = insert_producer_head(Arc::clone(&self.base_plan), producer_head)?;
+
+            self.num_partitions_remaining.store(
+                plan.output_partitioning().partition_count(),
+                Ordering::SeqCst,
+            );
+            Ok(plan)
+        });
+        match result {
+            Ok(plan) => Ok(Arc::clone(plan)),
+            Err(err) => Err(DataFusionError::Shared(Arc::clone(err))),
+        }
     }
 }

@@ -1,10 +1,9 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
-use crate::distributed_planner::NetworkBoundary;
+use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use datafusion::common::tree_node::Transformed;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -81,16 +80,6 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
-    /// Does nothing, but it's here for explicitly stating that this network boundary does not
-    /// need to mutate the input plan in other to account for more consumer tasks.
-    pub(crate) fn scale_input(
-        plan: Arc<dyn ExecutionPlan>,
-        _consumer_partitions: usize,
-        _consumer_task_count: usize,
-    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        Ok(Transformed::no(plan))
-    }
-
     pub(crate) fn from_stage(
         input_stage: Stage,
         input_properties: Arc<PlanProperties>,
@@ -186,6 +175,10 @@ impl NetworkBoundary for NetworkCoalesceExec {
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
+    }
+
+    fn producer_head(&self, _consumer_task_count: usize) -> ProducerHead {
+        ProducerHead::None
     }
 }
 
@@ -299,6 +292,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             remote_stage,
             0..partitions_per_task,
             target_task,
+            self.producer_head(task_context.task_count),
             &context,
         )?;
 

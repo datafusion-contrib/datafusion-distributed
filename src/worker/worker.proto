@@ -103,6 +103,35 @@ message ExecuteTaskRequest {
   uint64 target_partition_start = 2;
   // The end of the partition range of the specified task that is going to be executed.
   uint64 target_partition_end = 3;
+
+  // The head node the requested task should have. Depending on the network boundary executing
+  // the task, the head node should be prepared differently, for example:
+  // - A RepartitionExecHead implies a RepartitionExec at the head of the task.
+  // - A BroadcastExecHead implies a BroadcastExec at the head of the task.
+  // - A NoneHead does not need any specific head.
+  oneof producer_head {
+    // The boundary executing the task is a NetworkCoalesceExec.
+    NoneHead none = 6;
+    // The boundary executing the task is a NetworkBroadcastExec.
+    BroadcastExecHead broadcast = 7;
+    // The boundary executing the task is a NetworkShuffleExec.
+    RepartitionExecHead repartition = 8;
+  }
+}
+
+// Head needed by a NetworkCoalesceExec.
+message NoneHead {}
+
+// Head needed by a NetworkBroadcastExec.
+message BroadcastExecHead {
+  // The amount of output partitions
+  uint64 output_partitions = 1;
+}
+
+// Head needed by a NetworkShuffleExec.
+message RepartitionExecHead {
+  // `Partitioning` message from datafusion.proto
+  bytes partitioning = 1;
 }
 
 // A key that uniquely identifies a task in a query.

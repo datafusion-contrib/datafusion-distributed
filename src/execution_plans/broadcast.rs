@@ -104,6 +104,10 @@ impl BroadcastExec {
     pub fn consumer_task_count(&self) -> usize {
         self.consumer_task_count
     }
+
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
 }
 
 impl DisplayAs for BroadcastExec {

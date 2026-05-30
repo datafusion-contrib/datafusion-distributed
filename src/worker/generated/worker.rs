@@ -131,6 +131,52 @@ pub struct ExecuteTaskRequest {
     /// The end of the partition range of the specified task that is going to be executed.
     #[prost(uint64, tag = "3")]
     pub target_partition_end: u64,
+    /// The head node the requested task should have. Depending on the network boundary executing
+    /// the task, the head node should be prepared differently, for example:
+    ///
+    /// * A RepartitionExecHead implies a RepartitionExec at the head of the task.
+    /// * A BroadcastExecHead implies a BroadcastExec at the head of the task.
+    /// * A NoneHead does not need any specific head.
+    #[prost(oneof = "execute_task_request::ProducerHead", tags = "6, 7, 8")]
+    pub producer_head: ::core::option::Option<execute_task_request::ProducerHead>,
+}
+/// Nested message and enum types in `ExecuteTaskRequest`.
+pub mod execute_task_request {
+    /// The head node the requested task should have. Depending on the network boundary executing
+    /// the task, the head node should be prepared differently, for example:
+    ///
+    /// * A RepartitionExecHead implies a RepartitionExec at the head of the task.
+    /// * A BroadcastExecHead implies a BroadcastExec at the head of the task.
+    /// * A NoneHead does not need any specific head.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ProducerHead {
+        /// The boundary executing the task is a NetworkCoalesceExec.
+        #[prost(message, tag = "6")]
+        None(super::NoneHead),
+        /// The boundary executing the task is a NetworkBroadcastExec.
+        #[prost(message, tag = "7")]
+        Broadcast(super::BroadcastExecHead),
+        /// The boundary executing the task is a NetworkShuffleExec.
+        #[prost(message, tag = "8")]
+        Repartition(super::RepartitionExecHead),
+    }
+}
+/// Head needed by a NetworkCoalesceExec.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NoneHead {}
+/// Head needed by a NetworkBroadcastExec.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BroadcastExecHead {
+    /// The amount of output partitions
+    #[prost(uint64, tag = "1")]
+    pub output_partitions: u64,
+}
+/// Head needed by a NetworkShuffleExec.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RepartitionExecHead {
+    /// `Partitioning` message from datafusion.proto
+    #[prost(bytes = "vec", tag = "1")]
+    pub partitioning: ::prost::alloc::vec::Vec<u8>,
 }
 /// A key that uniquely identifies a task in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
