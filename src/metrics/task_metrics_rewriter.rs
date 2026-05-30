@@ -18,7 +18,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::internal_err;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use std::sync::Arc;
-use std::vec;
 
 /// Format to use when displaying metrics for a distributed plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,37 +50,25 @@ pub async fn rewrite_distributed_plan_with_metrics(
         return Ok(plan);
     };
 
-    // Check that the plan was executed before waiting — if not, prepared_plan() returns an
-    // error immediately rather than waiting forever for metrics that will never arrive.
-    let prepared = distributed_exec.prepared_plan()?;
-
     distributed_exec.wait_for_metrics().await;
 
     let Some(metrics_collection) = distributed_exec.metrics_store.clone() else {
         return Ok(plan);
     };
 
-    let task_metrics = collect_plan_metrics(&prepared)?;
+    let head_stage = distributed_exec.head_stage()?;
+    let task_metrics = collect_plan_metrics(&head_stage)?;
 
     // Rewrite the DistributedExec's child plan with metrics.
     let dist_exec_plan_with_metrics = rewrite_local_plan_with_metrics(
         format.to_rewrite_ctx(0), // Task id is 0 for the DistributedExec plan
-        plan.children()[0].clone(),
+        distributed_exec.plan_for_viz()?,
         task_metrics,
     )?;
-    let plan = plan.with_new_children(vec![dist_exec_plan_with_metrics])?;
 
-    let transformed = plan.transform_down(|plan| {
-        // After `rewrite_local_plan_with_metrics` above, every node (including network
-        // boundaries) is wrapped in a `MetricsWrapperExec`. Peek through the wrapper so we
-        // can still recognize a network boundary by downcasting the inner node.
-        let inner = plan
-            .downcast_ref::<MetricsWrapperExec>()
-            .map(|w| w.inner_arc())
-            .unwrap_or_else(|| Arc::clone(&plan));
-
+    let transformed = dist_exec_plan_with_metrics.transform_down(|plan| {
         // Transform all stages using NetworkShuffleExec and NetworkCoalesceExec as barriers.
-        if let Some(network_boundary) = inner.as_network_boundary() {
+        if let Some(network_boundary) = plan.as_network_boundary() {
             let Stage::Local(stage) = network_boundary.input_stage() else {
                 return plan_err!("Stage was not in Local state");
             };
@@ -102,7 +89,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
         Ok(Transformed::no(plan))
     })?;
-    Ok(transformed.data)
+    plan.with_new_children(vec![transformed.data])
 }
 
 /// Extra information for rewriting local plans.

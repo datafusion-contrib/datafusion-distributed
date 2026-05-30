@@ -25,10 +25,6 @@ impl MetricsWrapperExec {
     pub(crate) fn inner(&self) -> &Arc<dyn ExecutionPlan> {
         &self.inner
     }
-
-    pub(crate) fn inner_arc(&self) -> Arc<dyn ExecutionPlan> {
-        Arc::clone(&self.inner)
-    }
 }
 
 /// MetricsWrapperExec is invisible during display.

@@ -5,12 +5,13 @@ mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
-    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
+    use datafusion_distributed::{DefaultSessionBuilder, DistributedExt, Worker};
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use futures::TryStreamExt;
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
+    use test_case::test_case;
     use tokio::sync::OnceCell;
     use tokio::time::timeout;
 
@@ -19,19 +20,17 @@ mod tests {
     const TPCH_DATA_PARTS: usize = 16;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 1.0;
 
-    #[tokio::test]
-    async fn no_pending_tasks_if_query_completes() -> Result<()> {
-        let (d_ctx, _guard, workers) =
+    #[test_case(false; "metrics_disabled")]
+    #[test_case(true; "metrics_enabled")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_pending_tasks_if_dynamic_query_completes(collect_metrics: bool) -> Result<()> {
+        let (mut d_ctx, _guard, workers) =
             start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_metrics_collection(collect_metrics)?;
+
         run_tpch_query(d_ctx, "q1").await?;
 
-        for (i, worker) in workers.iter().enumerate() {
-            let tasks_running = worker.tasks_running().await;
-            assert_eq!(
-                tasks_running, 0,
-                "Expected Worker {i} to have 0 tasks running, but got {tasks_running}"
-            )
-        }
+        assert_no_tasks_running_eventually(&workers).await;
 
         Ok(())
     }
@@ -43,25 +42,31 @@ mod tests {
 
         let _ = timeout(Duration::from_millis(100), run_tpch_query(d_ctx, "q1")).await;
 
+        assert_no_tasks_running_eventually(&workers).await;
+
+        Ok(())
+    }
+
+    /// Polls until every worker reports 0 running tasks, or fails after 5s. Task entries are
+    /// torn down asynchronously once the coordinator->worker channel disconnects (shortly after
+    /// the query's output stream is dropped), so cleanup is not observable synchronously the
+    /// instant the query future resolves — hence the poll rather than an immediate assert.
+    async fn assert_no_tasks_running_eventually(workers: &[Worker]) {
         let start = Instant::now();
-        let mut tasks_running = 0;
-        while start.elapsed() < Duration::from_secs(5) {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            tasks_running = 0;
-            for worker in &workers {
+        loop {
+            let mut tasks_running = 0;
+            for worker in workers {
                 tasks_running += worker.tasks_running().await;
             }
             if tasks_running == 0 {
-                return Ok(());
+                return;
             }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "Expected 0 tasks running across workers, but still had {tasks_running} after 5s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-
-        assert_eq!(
-            tasks_running, 0,
-            "Expected to have 0 tasks running, but got {tasks_running}"
-        );
-
-        Ok(())
     }
 
     async fn run_tpch_query(d_ctx: SessionContext, query_id: &str) -> Result<()> {
