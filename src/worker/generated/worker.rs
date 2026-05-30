@@ -107,16 +107,16 @@ pub struct WorkUnit {
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
     #[prost(bytes = "vec", tag = "3")]
     pub body: ::prost::alloc::vec::Vec<u8>,
-    /// Unix timestamp in nanoseconds at which this message was created.
+    /// Unix timestamp in nanoseconds at which this message was created in the coordinator.
     #[prost(uint64, tag = "4")]
     pub created_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was sent.
+    /// Unix timestamp in nanoseconds at which this message was sent by the coordinator.
     #[prost(uint64, tag = "5")]
     pub sent_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was received.
+    /// Unix timestamp in nanoseconds at which this message was received by a worker.
     #[prost(uint64, tag = "6")]
     pub received_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was processed.
+    /// Unix timestamp in nanoseconds at which this message started being processed.
     #[prost(uint64, tag = "7")]
     pub processed_timestamp_unix_nanos: u64,
 }
@@ -171,7 +171,7 @@ pub struct Metric {
     pub partition: ::core::option::Option<u64>,
     #[prost(
         oneof = "metric::Value",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
     )]
     pub value: ::core::option::Option<metric::Value>,
 }
@@ -227,6 +227,8 @@ pub mod metric {
         CustomP95Latency(super::PercentileLatency),
         #[prost(message, tag = "33")]
         CustomP99Latency(super::PercentileLatency),
+        #[prost(message, tag = "34")]
+        CustomMaxGauge(super::MaxGauge),
     }
 }
 /// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
@@ -368,6 +370,13 @@ pub struct PercentileLatency {
     pub name: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub sketch_bytes: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MaxGauge {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
 }
 /// Generated client implementations.
 pub mod worker_service_client {
