@@ -284,8 +284,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         file_scan_template.file_groups.clear();
         let rebalanced =
             rebalance_round_robin(all_partitioned_files, input_group_count * task_count);
-        let mut file_groups: VecDeque<FileGroup> =
-            rebalanced.into_iter().map(Into::into).collect();
+        let mut file_groups: VecDeque<FileGroup> = rebalanced.into_iter().map(Into::into).collect();
         let expected_partitions = plan.output_partitioning().partition_count();
 
         let dle = DistributedLeafExec::new(
@@ -477,8 +476,7 @@ mod tests {
         let mut groups: Vec<Vec<String>> = Vec::new();
         for variant in &dle.variants {
             let dse: &DataSourceExec = variant.as_any().downcast_ref().unwrap();
-            let file_scan: &FileScanConfig =
-                dse.data_source().as_any().downcast_ref().unwrap();
+            let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref().unwrap();
             for fg in &file_scan.file_groups {
                 groups.push(
                     fg.iter()
@@ -491,7 +489,12 @@ mod tests {
         // 15 files round-robin into 3 input groups * 3 task_count = 9 output groups,
         // dealt across 3 task variants of 3 partitions each.
         assert_eq!(dle.variants.len(), 3, "expected 3 task variants");
-        assert_eq!(groups.len(), 9, "expected 9 output groups, got {:?}", groups);
+        assert_eq!(
+            groups.len(),
+            9,
+            "expected 9 output groups, got {:?}",
+            groups
+        );
         let total: usize = groups.iter().map(Vec::len).sum();
         assert_eq!(total, 15);
 
