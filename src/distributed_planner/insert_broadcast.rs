@@ -181,8 +181,9 @@ pub(super) fn insert_broadcast_execs(
 mod tests {
     use super::*;
     use crate::assert_snapshot;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::plans::{
-        TestPlanOptions, base_session_builder, context_with_query, sql_to_physical_plan,
+        TestPlan, TestPlanBuilder
     };
     use datafusion::physical_plan::displayable;
 
@@ -193,8 +194,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan = sql_to_physical_plan(query, 4, 4).await;
-        assert_snapshot!(physical_plan, @r"
+        let physical_plan = TestPlanBuilder::new()
+            .with_target_partitions(4)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .build()
+            .await
+            .physical_plan(&query.to_string())
+            .await;
+        assert_snapshot!(TestPlan::plan_to_string(physical_plan), @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
@@ -217,8 +224,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan = sql_to_physical_plan(query, 1, 4).await;
-        assert_snapshot!(physical_plan, @r"
+        let physical_plan = TestPlanBuilder::new()
+            .with_target_partitions(4)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .build()
+            .await
+            .physical_plan(&query.to_string())
+            .await;
+        assert_snapshot!(TestPlan::plan_to_string(physical_plan), @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
@@ -270,19 +283,22 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
-        let options = TestPlanOptions {
-            target_partitions,
-            num_workers: 4,
-            broadcast_enabled,
+        let d_cfg = DistributedConfig {
+            broadcast_joins: broadcast_enabled,
+            ..Default::default()
         };
-        let builder = base_session_builder(
-            options.target_partitions,
-            options.num_workers,
-            options.broadcast_enabled,
-        );
-        let (ctx, query) = context_with_query(builder, query).await;
-        let df = ctx.sql(&query).await.unwrap();
-        let plan = df.create_physical_plan().await.unwrap();
+        let test_plan = TestPlanBuilder::new()
+            .with_target_partitions(target_partitions)
+            .with_information_schema(true)
+            .with_broadcast(true)
+            .with_default_features()
+            .with_distributed_config(d_cfg)
+            .build()
+            .await;
+        let ctx = test_plan.get_ctx();
+        let plan = test_plan
+            .physical_plan(&query.to_string())
+            .await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
             .expect("failed to insert broadcasts");
         format!("{}", displayable(plan.as_ref()).indent(true))

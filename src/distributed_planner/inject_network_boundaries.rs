@@ -535,8 +535,7 @@ mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::test_utils::plans::{
-        BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
-        sql_to_physical_plan,
+        BuildSideOneTaskEstimator, TestPlanOptions, TestPlanBuilder
     };
     use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
@@ -851,7 +850,13 @@ mod tests {
         "#;
 
         // Check physical plan before insertion, shouldn't have CoalescePartitionsExec
-        let physical_plan = sql_to_physical_plan(query, 1, 4).await;
+        let physical_plan = TestPlanBuilder::new()
+            .with_target_partitions(1)
+            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .build()
+            .await
+            .physical_plan(&query.to_string())
+            .await;
         assert_snapshot!(physical_plan, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
@@ -1122,15 +1127,17 @@ mod tests {
         options: TestPlanOptions,
         configure: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
     ) -> String {
-        let builder = base_session_builder(
-            options.target_partitions,
-            options.num_workers,
-            options.broadcast_enabled,
-        );
-        let builder = configure(builder);
-        let (ctx, query) = context_with_query(builder, query).await;
-        let df = ctx.sql(&query).await.unwrap();
-        let mut plan = df.create_physical_plan().await.unwrap();
+        let d_cfg = DistributedConfig {
+            broadcast_joins: options.broadcast_enabled,
+            ..Default::default()
+        };
+        let test_plan = TestPlanBuilder::new()
+            .with_target_partitions(4)
+            .with_distributed_config(d_cfg)
+            .build()
+            .await;
+        let ctx = test_plan.get_ctx();
+        let mut plan = test_plan.physical_plan(&query.to_string()).await;
 
         let session_config = ctx.copied_config();
         plan = insert_broadcast_execs(plan, session_config.options())

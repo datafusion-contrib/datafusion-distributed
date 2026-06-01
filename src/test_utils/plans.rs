@@ -7,14 +7,13 @@ use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
+use crate::{DistributedConfig, SessionStateBuilderExt, TaskEstimation, TaskEstimator};
+#[cfg(test)]
+use bincode::config;
 #[cfg(test)]
 use datafusion::config::ConfigOptions;
 use datafusion::{
-    common::{HashMap, HashSet},
-    execution::{SessionStateBuilder, context::SessionContext},
-    physical_plan::{ExecutionPlan, displayable},
-    prelude::SessionConfig,
+    common::{HashMap, HashSet}, datasource::physical_plan, execution::{SessionStateBuilder, context::SessionContext}, physical_plan::{ExecutionPlan, displayable}, prelude::SessionConfig
 };
 #[cfg(test)]
 use itertools::Itertools;
@@ -87,52 +86,182 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     result
 }
 
-/// Creates a physical plan from SQL without applying broadcast insertion or distribution.
-/// Used for snapshotting the baseline physical plan in tests.
-pub async fn sql_to_physical_plan(
-    query: &str,
-    target_partitions: usize,
-    num_workers: usize,
-) -> String {
-    let config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_information_schema(true);
-
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config)
-        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-        .build();
-
-    let ctx = SessionContext::new_with_state(state);
-    register_parquet_tables(&ctx).await.unwrap();
-
-    let df = ctx.sql(query).await.unwrap();
-    let physical_plan = df.create_physical_plan().await.unwrap();
-
-    format!("{}", displayable(physical_plan.as_ref()).indent(true))
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestPlan {
+    ctx: SessionContext
 }
 
 #[cfg(test)]
-pub(crate) fn base_session_builder(
-    target_partitions: usize,
-    num_workers: usize,
-    broadcast_enabled: bool,
-) -> SessionStateBuilder {
-    let mut config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_information_schema(true);
+impl TestPlan {
+    pub async fn physical_plan(&self, query: &String) -> Arc<dyn ExecutionPlan> {
+        let mut queries = query.split(';').collect_vec();
+        let last_query = queries.pop().unwrap();
+        for query in queries {
+            self.ctx.sql(query).await.unwrap();
+        }
+        let df = self.ctx.sql(last_query).await.unwrap();
+        df.create_physical_plan().await.unwrap()
+    } 
 
-    let d_cfg = DistributedConfig {
-        broadcast_joins: broadcast_enabled,
-        ..Default::default()
-    };
-    config.set_distributed_option_extension(d_cfg);
+    pub fn plan_to_string(plan: Arc<dyn ExecutionPlan>) -> String {
+        displayable(plan.as_ref())
+            .indent(true)
+            .to_string()
+    }
 
-    SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config)
-        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+    pub fn get_ctx(&self) -> &SessionContext {
+        &self.ctx
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct OldTestPlanBuilder {
+    target_partitions: Option<usize>,
+    broadcast: Option<bool>,
+    information_schema: Option<bool>,
+    distributed_worker_resolver: Option<InMemoryWorkerResolver>,
+    default_features: Option<bool>,
+    distributed_config: Option<DistributedConfig>,
+    distributed_planner: bool
+}
+
+#[cfg(test)]
+pub(crate) struct TestPlanBuilder {
+    config_builder: SessionConfig,
+    state_builder: SessionStateBuilder
+}
+
+#[cfg(test)]
+impl TestPlanBuilder {
+    pub fn new() -> Self {
+        Self {
+            config_builder: SessionConfig::new(),
+            state_builder: SessionStateBuilder::new()
+        } 
+    }
+
+    pub fn with_broadcast_enabled(self, enabled: bool) -> Self {
+        self.add_config(|mut b| {
+            b.set_distributed_option_extension(
+                DistributedConfig {
+                    broadcast_joins: enabled,
+                    ..Default::default()
+                }
+            );
+            b
+        })
+    }
+
+    pub fn add_config(
+        mut self,
+        f: impl FnOnce(SessionConfig) -> SessionConfig,
+    ) -> Self {
+        self.config_builder = f(self.config_builder);
+        self
+    }
+    
+    pub fn add_state(
+        mut self,
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder, 
+    ) -> Self {
+        self.state_builder = f(self.state_builder);
+        self
+    }
+
+    pub async fn build(self) -> TestPlan {
+        let state = self.state_builder
+            .with_config(self.config_builder)
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+        TestPlan { ctx }
+    }
+}
+
+#[cfg(test)]
+impl OldTestPlanBuilder {
+    pub fn new() -> Self {
+        Self { 
+            target_partitions: None, 
+            broadcast: None,
+            information_schema: None,
+            distributed_worker_resolver: None,
+            default_features: None,
+            distributed_config: None,
+            distributed_planner: false,
+        }
+    }
+
+    /// set # of target partitions
+    pub fn with_target_partitions(mut self, partitions: usize) -> Self {
+        self.target_partitions = Some(partitions);
+        self
+    }
+
+    pub fn with_information_schema(mut self, enabled: bool) -> Self {
+        self.information_schema = Some(enabled);
+        self
+    }
+
+    pub fn with_broadcast(mut self, enabled: bool) -> Self {
+        self.broadcast = Some(enabled);
+        self
+    }
+
+    pub fn with_distributed_worker_resolver(mut self, resolver: InMemoryWorkerResolver) -> Self {
+        self.distributed_worker_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_default_features(mut self) -> Self {
+        self.default_features = Some(true);
+        self
+    }
+
+    pub fn with_distributed_config(mut self, config: DistributedConfig) -> Self {
+        self.distributed_config = Some(config);
+        self
+    }
+
+    pub fn with_distributed_planner(mut self) -> Self {
+        self.distributed_planner = true;
+        self
+    }
+
+    pub async fn build(self) -> TestPlan {
+        let mut config = SessionConfig::new();
+        // adding to config
+        if let Some(n) = self.target_partitions {
+            config = config.with_target_partitions(n);
+        } else {
+            config = config.with_target_partitions(4)
+        }
+        if let Some(enabled) = self.information_schema {
+            config = config.with_information_schema(enabled)
+        }
+        if let Some(d_cfg) = self.distributed_config {
+            config.set_distributed_option_extension(d_cfg);
+        }
+        // adding to state
+        let mut state = SessionStateBuilder::new()
+            .with_config(config); 
+        if let Some(_) = self.default_features {
+            state = state.with_default_features();
+        }
+        if let Some(resolver) = self.distributed_worker_resolver {
+            state = state.with_distributed_worker_resolver(resolver)
+        } else {
+            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+        }
+        if self.distributed_planner {
+            state = state.with_distributed_planner()
+        }
+
+        let ctx = SessionContext::new_with_state(state.build());
+        register_parquet_tables(&ctx).await.unwrap();
+        TestPlan { ctx }
+    }
 }
 
 #[cfg(test)]
@@ -152,24 +281,6 @@ impl Default for TestPlanOptions {
             broadcast_enabled: false,
         }
     }
-}
-
-#[cfg(test)]
-pub(crate) async fn context_with_query(
-    builder: SessionStateBuilder,
-    query: &str,
-) -> (SessionContext, String) {
-    let state = builder.build();
-    let ctx = SessionContext::new_with_state(state);
-    let mut queries = query.split(';').collect_vec();
-    let last_query = queries.pop().unwrap();
-
-    for query in queries {
-        ctx.sql(query).await.unwrap();
-    }
-
-    register_parquet_tables(&ctx).await.unwrap();
-    (ctx, last_query.to_string())
 }
 
 #[cfg(test)]
