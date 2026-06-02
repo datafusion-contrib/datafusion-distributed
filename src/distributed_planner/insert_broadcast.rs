@@ -180,7 +180,7 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_snapshot;
+    use crate::{assert_snapshot, DistributedExt};
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::plans::{
         TestPlan, TestPlanBuilder
@@ -195,8 +195,8 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan = TestPlanBuilder::new()
-            .with_target_partitions(4)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .add_config(|b| b.with_target_partitions(4))
+            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -225,8 +225,8 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan = TestPlanBuilder::new()
-            .with_target_partitions(4)
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
+            .add_config(|b| b.with_target_partitions(4))
+            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -283,16 +283,11 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
-        let d_cfg = DistributedConfig {
-            broadcast_joins: broadcast_enabled,
-            ..Default::default()
-        };
         let test_plan = TestPlanBuilder::new()
-            .with_target_partitions(target_partitions)
-            .with_information_schema(true)
-            .with_broadcast(true)
-            .with_default_features()
-            .with_distributed_config(d_cfg)
+            .add_config(|b| b.with_target_partitions(target_partitions))
+            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+            .add_state(|b| b.with_default_features())
+            .with_broadcast_enabled(broadcast_enabled)
             .build()
             .await;
         let ctx = test_plan.get_ctx();

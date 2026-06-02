@@ -109,11 +109,11 @@ impl QueryPlanner for DistributedQueryPlanner {
 #[cfg(test)]
 mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::distributed_planner::session_state_builder_ext::SessionStateBuilderExt;
     use crate::test_utils::plans::{
         BuildSideOneTaskEstimator, TestPlanBuilder
     };
-    use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
+    use crate::{assert_snapshot, display_plan_ascii};
+    use crate::{DistributedExt, SessionStateBuilderExt};
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -164,6 +164,7 @@ mod tests {
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
             .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())

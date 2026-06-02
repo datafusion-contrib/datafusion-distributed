@@ -2,12 +2,11 @@ use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
 use crate::common::serialize_uuid;
 use crate::coordinator::DistributedExec;
-use crate::distributed_ext::DistributedExt;
 use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, SessionStateBuilderExt, TaskEstimation, TaskEstimator};
+use crate::{DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator};
 #[cfg(test)]
 use bincode::config;
 #[cfg(test)]
@@ -116,17 +115,6 @@ impl TestPlan {
 }
 
 #[cfg(test)]
-pub(crate) struct OldTestPlanBuilder {
-    target_partitions: Option<usize>,
-    broadcast: Option<bool>,
-    information_schema: Option<bool>,
-    distributed_worker_resolver: Option<InMemoryWorkerResolver>,
-    default_features: Option<bool>,
-    distributed_config: Option<DistributedConfig>,
-    distributed_planner: bool
-}
-
-#[cfg(test)]
 pub(crate) struct TestPlanBuilder {
     config_builder: SessionConfig,
     state_builder: SessionStateBuilder
@@ -176,110 +164,6 @@ impl TestPlanBuilder {
         let ctx = SessionContext::new_with_state(state);
         register_parquet_tables(&ctx).await.unwrap();
         TestPlan { ctx }
-    }
-}
-
-#[cfg(test)]
-impl OldTestPlanBuilder {
-    pub fn new() -> Self {
-        Self { 
-            target_partitions: None, 
-            broadcast: None,
-            information_schema: None,
-            distributed_worker_resolver: None,
-            default_features: None,
-            distributed_config: None,
-            distributed_planner: false,
-        }
-    }
-
-    /// set # of target partitions
-    pub fn with_target_partitions(mut self, partitions: usize) -> Self {
-        self.target_partitions = Some(partitions);
-        self
-    }
-
-    pub fn with_information_schema(mut self, enabled: bool) -> Self {
-        self.information_schema = Some(enabled);
-        self
-    }
-
-    pub fn with_broadcast(mut self, enabled: bool) -> Self {
-        self.broadcast = Some(enabled);
-        self
-    }
-
-    pub fn with_distributed_worker_resolver(mut self, resolver: InMemoryWorkerResolver) -> Self {
-        self.distributed_worker_resolver = Some(resolver);
-        self
-    }
-
-    pub fn with_default_features(mut self) -> Self {
-        self.default_features = Some(true);
-        self
-    }
-
-    pub fn with_distributed_config(mut self, config: DistributedConfig) -> Self {
-        self.distributed_config = Some(config);
-        self
-    }
-
-    pub fn with_distributed_planner(mut self) -> Self {
-        self.distributed_planner = true;
-        self
-    }
-
-    pub async fn build(self) -> TestPlan {
-        let mut config = SessionConfig::new();
-        // adding to config
-        if let Some(n) = self.target_partitions {
-            config = config.with_target_partitions(n);
-        } else {
-            config = config.with_target_partitions(4)
-        }
-        if let Some(enabled) = self.information_schema {
-            config = config.with_information_schema(enabled)
-        }
-        if let Some(d_cfg) = self.distributed_config {
-            config.set_distributed_option_extension(d_cfg);
-        }
-        // adding to state
-        let mut state = SessionStateBuilder::new()
-            .with_config(config); 
-        if let Some(_) = self.default_features {
-            state = state.with_default_features();
-        }
-        if let Some(resolver) = self.distributed_worker_resolver {
-            state = state.with_distributed_worker_resolver(resolver)
-        } else {
-            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4))
-        }
-        if self.distributed_planner {
-            state = state.with_distributed_planner()
-        }
-
-        let ctx = SessionContext::new_with_state(state.build());
-        register_parquet_tables(&ctx).await.unwrap();
-        TestPlan { ctx }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct TestPlanOptions {
-    pub(crate) target_partitions: usize,
-    pub(crate) num_workers: usize,
-    pub(crate) broadcast_enabled: bool,
-}
-
-#[cfg(test)]
-impl Default for TestPlanOptions {
-    fn default() -> Self {
-        Self {
-            target_partitions: 4,
-            num_workers: 4,
-            broadcast_enabled: false,
-        }
     }
 }
 
