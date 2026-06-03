@@ -17,7 +17,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 use url::Url;
 use uuid::Uuid;
@@ -229,6 +229,7 @@ impl ShuffleFixture {
                 )),
                 input_stage: input_stage.clone(),
                 worker_connections: WorkerConnectionPool::new(self.bench.producer_tasks),
+                join_set: Arc::new(Mutex::new(Default::default())),
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,

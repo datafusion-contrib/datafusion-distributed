@@ -16,7 +16,7 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 use url::Url;
 use uuid::Uuid;
@@ -281,6 +281,7 @@ impl TransportFixture {
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
+                join_set: Arc::new(Mutex::new(Default::default())),
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,

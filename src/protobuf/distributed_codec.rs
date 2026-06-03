@@ -28,7 +28,7 @@ use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
 use itertools::Itertools;
 use prost::Message;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use url::Url;
 
 /// DataFusion [PhysicalExtensionCodec] implementation that allows serializing and
@@ -459,6 +459,7 @@ fn new_network_hash_shuffle_exec(
         )),
         worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
         input_stage,
+        join_set: Arc::new(Mutex::new(Default::default())),
     }
 }
 

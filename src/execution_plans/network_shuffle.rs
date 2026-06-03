@@ -3,6 +3,7 @@ use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
@@ -12,9 +13,12 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use futures::{Stream, StreamExt};
 use std::any::Any;
 use std::fmt::Formatter;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use uuid::Uuid;
 
 /// [ExecutionPlan] implementation that shuffles data across the network in a distributed context.
@@ -103,6 +107,7 @@ pub struct NetworkShuffleExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) join_set: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl NetworkShuffleExec {
@@ -131,6 +136,7 @@ impl NetworkShuffleExec {
             properties: input_stage.plan.properties().clone(),
             worker_connections: WorkerConnectionPool::new(0),
             input_stage: Stage::Local(input_stage),
+            join_set: Arc::new(Mutex::new(Default::default())),
         }
     }
 
@@ -241,13 +247,69 @@ impl ExecutionPlan for NetworkShuffleExec {
             streams.push(stream);
         }
 
+        // Wrap in `drain_on_drop` so that if a downstream operator abandons this
+        // partition without consuming it (e.g. a `HashJoinExec` that short-circuits
+        // its probe side because the build side is empty — DataFusion #21068), the
+        // partition is still drained from the upstream (shared) `RepartitionExec`.
+        // Otherwise, that undrained partition latches RepartitionExec's distributor
+        // gate and deadlocks every sibling consumer of the same shuffle.
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::select_all(streams),
+            drain_on_drop(
+                futures::stream::select_all(streams),
+                Arc::clone(&self.join_set),
+            ),
         )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+}
+
+pub(crate) struct DrainOnDrop<T: Stream + Unpin + Send + 'static> {
+    inner: Option<T>,
+    join_set: Arc<Mutex<JoinSet<()>>>,
+}
+
+/// See [`DrainOnDrop`].
+pub(crate) fn drain_on_drop<T: Stream + Unpin + Send + 'static>(
+    inner: T,
+    join_set: Arc<Mutex<JoinSet<()>>>,
+) -> DrainOnDrop<T> {
+    DrainOnDrop {
+        inner: Some(inner),
+        join_set,
+    }
+}
+
+impl<T: Stream + Unpin + Send + 'static> Stream for DrainOnDrop<T> {
+    type Item = T::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Some(inner) = self.inner.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let poll = inner.poll_next_unpin(cx);
+        if matches!(poll, Poll::Ready(None)) {
+            self.inner = None;
+        }
+        poll
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.as_ref().map_or((0, Some(0)), |s| s.size_hint())
+    }
+}
+
+impl<T: Stream + Unpin + Send + 'static> Drop for DrainOnDrop<T> {
+    fn drop(&mut self) {
+        // If fully consumed already, then nothing upstream is left to wedge.
+        if let Some(mut inner) = self.inner.take() {
+            self.join_set
+                .lock()
+                .unwrap()
+                .spawn(async move { while inner.next().await.is_some() {} });
+        };
     }
 }
