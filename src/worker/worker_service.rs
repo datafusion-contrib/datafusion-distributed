@@ -22,6 +22,8 @@ use std::time::Duration;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
+const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
+
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
 pub(super) struct WorkerHooks {
@@ -35,9 +37,9 @@ pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<Result
 #[derive(Clone)]
 pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
-    /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
-    /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
-    /// access to task results across multiple partition requests.
+    /// TTL-based cache for task execution data. Entries are automatically evicted after
+    /// TASK_CACHE_TTI seconds. This prevents memory leaks from abandoned or incomplete queries
+    /// while allowing concurrent access to task results across multiple partition requests.
     pub(super) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
@@ -47,9 +49,7 @@ pub struct Worker {
 
 impl Default for Worker {
     fn default() -> Self {
-        let cache = Cache::builder()
-            .time_to_idle(Duration::from_secs(60))
-            .build();
+        let cache = Cache::builder().time_to_idle(TASK_CACHE_TTI).build();
         Self {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
