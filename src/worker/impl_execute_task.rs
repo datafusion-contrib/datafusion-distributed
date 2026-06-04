@@ -64,7 +64,7 @@ pub(crate) async fn execute_local_task(
     let plan = task_data.plan;
     let task_ctx = task_data.task_ctx;
     let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())?;
-    let d_ctx = DistributedTaskContext::from_ctx(&task_ctx).as_ref().clone();
+    let d_ctx = *DistributedTaskContext::from_ctx(&task_ctx).as_ref();
 
     let send_metrics = d_cfg.collect_metrics;
     let partition_count = plan.properties().partitioning.partition_count();
@@ -91,7 +91,6 @@ pub(crate) async fn execute_local_task(
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
         let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
         let key = key.clone();
-        let d_ctx = d_ctx.clone();
         let stream = on_drop_stream(stream, move || {
             // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
             // Send metrics via the coordinator channel so they are not lost.
