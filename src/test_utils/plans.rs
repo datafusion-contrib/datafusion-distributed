@@ -6,7 +6,7 @@ use crate::coordinator::DistributedExec;
 use crate::stage::Stage;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, DistributedExt, TaskEstimation, TaskEstimator};
+use crate::{DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator, display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver};
 use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
@@ -14,7 +14,7 @@ use datafusion::{
 #[cfg(test)]
 use datafusion::{
     config::ConfigOptions,
-    execution::{context::SessionContext, session_state::SessionStateBuilder},
+    execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
     physical_plan::displayable,
     prelude::SessionConfig,
 };
@@ -97,21 +97,26 @@ pub(crate) struct TestPlan {
 
 #[cfg(test)]
 impl TestPlan {
-    pub async fn physical_plan(&self, query: &String) -> Arc<dyn ExecutionPlan> {
-        //dbg!(&self.ctx.state().config_options().execution);
+    pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
         let mut queries = query.split(';').collect_vec();
         let last_query = queries.pop().unwrap();
         for query in queries {
             self.ctx.sql(query).await.unwrap();
         }
+        // registration must run here bc some `SET datafusion.execution.target_partitions=2` query
+        // dont take effect on parquet after registration
         register_parquet_tables(&self.ctx).await.unwrap();
         let df = self.ctx.sql(last_query).await.unwrap();
-        //dbg!(&self.ctx.state().config_options().execution);
         df.create_physical_plan().await.unwrap()
     }
 
-    pub fn plan_to_string(plan: Arc<dyn ExecutionPlan>) -> String {
+    pub async fn physical_plan_as_string(&self, query: &str) -> String {
+        let plan = self.physical_plan(query).await;
         displayable(plan.as_ref()).indent(true).to_string()
+    }
+
+    pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
+        display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
 
     pub fn get_ctx(&self) -> &SessionContext {
@@ -120,56 +125,150 @@ impl TestPlan {
 }
 
 #[cfg(test)]
-pub(crate) struct TestPlanBuilder {
-    config_closures: Vec<Box<dyn FnOnce(SessionConfig) -> SessionConfig + 'static>>,
-    state_closures: Vec<Box<dyn FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static>>,
+pub(crate) struct TmpTestPlanBuilder {
+    target_partitions: Option<usize>,
+    num_workers: Option<usize>,
+    distributed: bool,
+    distributed_cardinality_effect_task_scale_factor: Option<f64>,
+    distributed_files_per_task: Option<usize>,
+    information_schema: Option<bool>,
+    broadcast_joins: bool,
+    distributed_task_estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
+    distributed_partial_reduce: Option<bool>,
 }
 
 #[cfg(test)]
-impl TestPlanBuilder {
+impl TmpTestPlanBuilder {
     pub fn new() -> Self {
-        Self {
-            config_closures: Vec::new(),
-            state_closures: Vec::new(),
-        }
+        Self { 
+            target_partitions: None,
+            num_workers: None,
+            distributed: false,
+            distributed_cardinality_effect_task_scale_factor: None,
+            distributed_files_per_task: None,
+            information_schema: None,
+            broadcast_joins: false,
+            distributed_task_estimator: None,
+            distributed_partial_reduce: None
+        } 
     }
 
-    pub fn add_config(mut self, f: impl FnOnce(SessionConfig) -> SessionConfig + 'static) -> Self {
-        self.config_closures.push(Box::new(f));
+    pub fn target_partitions(mut self, target_partitions: usize) -> Self {
+        self.target_partitions = Some(target_partitions);
         self
     }
 
-    pub fn add_state(
-        mut self,
-        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static,
+    pub fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = Some(num_workers);
+        self
+    }
+
+    pub fn distributed(mut self) -> Self {
+        self.distributed = true;
+        self
+    }
+
+    pub fn distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Self {
+        self.distributed_cardinality_effect_task_scale_factor = Some(factor);
+        self
+    }
+
+    pub fn distributed_files_per_task(mut self, files_per_task: usize) -> Self {
+        self.distributed_files_per_task = Some(files_per_task);
+        self
+    }
+
+    pub fn information_schema(mut self, enabled: bool) -> Self {
+        self.information_schema = Some(enabled);
+        self
+    }
+
+    pub fn broadcast_joins(mut self, enabled: bool) -> Self {
+        self.broadcast_joins = enabled;
+        self
+    }
+
+    pub fn distributed_task_estimator(
+        mut self, 
+        task_estimator: impl TaskEstimator + Send + Sync + 'static,
     ) -> Self {
-        self.state_closures.push(Box::new(f));
+        self.distributed_task_estimator = Some(Arc::new(task_estimator));
         self
     }
 
-    pub fn with_broadcast_enabled(mut self, enabled: bool) -> Self {
-        let state_closure = move |mut b: SessionStateBuilder| {
-            b.set_distributed_option_extension(DistributedConfig {
-                broadcast_joins: enabled,
-                ..Default::default()
-            });
-            b
-        };
-        self.state_closures.push(Box::new(state_closure));
+    pub fn distributed_partial_reduce(mut self, enabled: bool) -> Self {
+        self.distributed_partial_reduce = Some(enabled);
         self
     }
 
-    pub async fn build(self) -> TestPlan {
+    fn build_config(&self) -> SessionConfig {
+        // distributed config
+        let mut d_cfg = DistributedConfig::default();
+        d_cfg.broadcast_joins = self.broadcast_joins;
+        // config block
         let mut config = SessionConfig::new();
-        for config_closure in self.config_closures {
-            config = config_closure(config);
+        config.set_distributed_option_extension(d_cfg);
+        if let Some(n) = self.target_partitions {
+            config = config.with_target_partitions(n);
         }
-        let mut state = SessionStateBuilder::new().with_config(config);
-        for state_closure in self.state_closures {
-            state = state_closure(state);
+        if let Some(n) = self.distributed_files_per_task {
+            config = config.with_distributed_files_per_task(n)
+                .expect("`distributed_files_per_task` expects a distributed config");
         }
-        let ctx = SessionContext::new_with_state(state.build());
-        TestPlan { ctx }
+        if let Some(enabled) = self.information_schema {
+            config = config.with_information_schema(enabled);
+        }
+        config
+    }
+
+    fn build_state(&self, config: SessionConfig) -> SessionState {
+        let mut state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config);
+        if let Some(n) = self.num_workers {
+            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(n));
+        }
+        if self.distributed {
+            state = state.with_distributed_planner();
+        }
+        if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
+            state = state.with_distributed_cardinality_effect_task_scale_factor(f)
+                .expect("Error setting `distributed_cardinality_effect_task_scale_factor` in `build`");
+        }
+        if let Some(t) = self.distributed_task_estimator.clone() {
+            state = state.with_distributed_task_estimator(t);
+        }
+        if let Some(enabled) = self.distributed_partial_reduce {
+            state = state.with_distributed_partial_reduce(enabled)
+                .unwrap()
+        }
+        state.build()
+    }
+
+    pub fn build(&self) -> TestPlan {
+        let config = self.build_config();
+        let state = self.build_state(config);
+        TestPlan { 
+            ctx: SessionContext::new_with_state(state)
+        }
+    }
+
+}
+
+#[cfg(test)]
+impl Default for TmpTestPlanBuilder {
+    fn default() -> Self {
+        Self { 
+            target_partitions: Some(4),
+            num_workers: Some(3),
+            distributed: false,
+            distributed_cardinality_effect_task_scale_factor: None,
+            distributed_files_per_task: None,
+            information_schema: Some(false),
+            broadcast_joins: false,
+            distributed_task_estimator: None,
+            distributed_partial_reduce: None
+        }
     }
 }
 

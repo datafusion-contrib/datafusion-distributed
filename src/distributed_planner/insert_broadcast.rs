@@ -180,9 +180,8 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{TestPlan, TestPlanBuilder};
-    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot};
+    use crate::test_utils::plans::TmpTestPlanBuilder;
+    use crate::assert_snapshot;
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
@@ -192,14 +191,12 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+        let physical_plan_string = TmpTestPlanBuilder::default()
+            .num_workers(4)
             .build()
-            .await
-            .physical_plan(&query.to_string())
+            .physical_plan_as_string(query)
             .await;
-        assert_snapshot!(TestPlan::plan_to_string(physical_plan), @r"
+        assert_snapshot!(physical_plan_string, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
@@ -222,15 +219,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(1))
-            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
-            .add_state(|b| b.with_distributed_planner())
+        let physical_plan_string = TmpTestPlanBuilder::new()
+            .target_partitions(1)
+            .num_workers(4)
+            .distributed()
             .build()
-            .await
-            .physical_plan(&query.to_string())
+            .physical_plan_as_string(&query.to_string())
             .await;
-        assert_snapshot!(TestPlan::plan_to_string(physical_plan), @r"
+        assert_snapshot!(physical_plan_string, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
@@ -282,13 +278,10 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
-        let test_plan = TestPlanBuilder::new()
-            .add_config(move |b| b.with_target_partitions(target_partitions))
-            .with_broadcast_enabled(broadcast_enabled)
-            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
-            .add_state(|b| b.with_default_features())
-            .build()
-            .await;
+        let test_plan = TmpTestPlanBuilder::new()
+            .target_partitions(target_partitions)
+            .broadcast_joins(broadcast_enabled)
+            .build();
         let ctx = test_plan.get_ctx();
         let plan = test_plan.physical_plan(&query.to_string()).await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())

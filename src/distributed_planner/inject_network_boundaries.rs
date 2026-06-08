@@ -531,9 +531,8 @@ fn calculate_scale_factor(plan: &Arc<dyn ExecutionPlan>, ctx: &Context) -> f64 {
 mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder};
-    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TmpTestPlanBuilder, TestPlan};
+    use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     /* schema for the "weather" table
@@ -834,14 +833,13 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
 
-        let physical_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(1))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+        let physical_plan_string = TmpTestPlanBuilder::new()
+            .target_partitions(1)
+            .num_workers(4)
             .build()
-            .await
-            .physical_plan(&query.to_string())
+            .physical_plan_as_string(query)
             .await;
-        assert_snapshot!(TestPlan::plan_to_string(physical_plan), @r"
+        assert_snapshot!(physical_plan_string, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
@@ -1063,18 +1061,15 @@ mod tests {
         broadcast_enabled: bool,
         estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
     ) -> String {
-        let mut test_plan_builder = TestPlanBuilder::new()
-            .add_config(move |b| b.with_target_partitions(target_partitions))
-            .with_broadcast_enabled(broadcast_enabled)
-            .add_state(|b| b.with_default_features())
-            .add_state(move |b| {
-                b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-            });
+        let mut test_plan_builder = TmpTestPlanBuilder::new()
+            .target_partitions(target_partitions)
+            .num_workers(num_workers)
+            .broadcast_joins(broadcast_enabled);
         if let Some(estimator) = estimator {
             test_plan_builder =
-                test_plan_builder.add_state(|b| b.with_distributed_task_estimator(estimator));
+                test_plan_builder.distributed_task_estimator(estimator);
         }
-        let test_plan = test_plan_builder.build().await;
+        let test_plan = test_plan_builder.build();
         annotate_test_plan(test_plan, query).await
     }
 

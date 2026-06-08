@@ -102,10 +102,8 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
 #[cfg(test)]
 mod tests {
-    use crate::distributed_planner::session_state_builder_ext::SessionStateBuilderExt;
-    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::TestPlanBuilder;
-    use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
+    use crate::test_utils::plans::TmpTestPlanBuilder;
+    use crate::assert_snapshot;
     use datafusion::common::assert_not_contains;
 
     #[tokio::test]
@@ -153,20 +151,11 @@ mod tests {
     }
 
     async fn sql_to_physical_plan_ascii(query: &str, distributed_partial_reduce: bool) -> String {
-        let physical_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(4))
-            .add_state(|b| b.with_distributed_planner())
-            .add_state(|b| b.with_default_features())
-            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
-            .add_state(|b| b.with_distributed_planner())
-            .add_state(move |b| {
-                b.with_distributed_partial_reduce(distributed_partial_reduce)
-                    .unwrap()
-            })
+        TmpTestPlanBuilder::default()
+            .distributed()
+            .distributed_partial_reduce(distributed_partial_reduce)
             .build()
+            .physical_plan_as_ascii(query, false)
             .await
-            .physical_plan(&query.to_string())
-            .await;
-        display_plan_ascii(physical_plan.as_ref(), false)
     }
 }
