@@ -6,7 +6,10 @@ use crate::coordinator::DistributedExec;
 use crate::stage::Stage;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator, display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver};
+use crate::{
+    DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
+    display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
+};
 use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
@@ -140,7 +143,7 @@ pub(crate) struct TestPlanBuilder {
 #[cfg(test)]
 impl TestPlanBuilder {
     pub fn new() -> Self {
-        Self { 
+        Self {
             target_partitions: None,
             num_workers: None,
             distributed_planner: false,
@@ -149,8 +152,8 @@ impl TestPlanBuilder {
             information_schema: None,
             broadcast_joins: false,
             distributed_task_estimator: None,
-            distributed_partial_reduce: None
-        } 
+            distributed_partial_reduce: None,
+        }
     }
 
     pub fn target_partitions(mut self, target_partitions: usize) -> Self {
@@ -189,7 +192,7 @@ impl TestPlanBuilder {
     }
 
     pub fn distributed_task_estimator(
-        mut self, 
+        mut self,
         task_estimator: impl TaskEstimator + Send + Sync + 'static,
     ) -> Self {
         self.distributed_task_estimator = Some(Arc::new(task_estimator));
@@ -212,7 +215,8 @@ impl TestPlanBuilder {
             config = config.with_target_partitions(n);
         }
         if let Some(n) = self.distributed_files_per_task {
-            config = config.with_distributed_files_per_task(n)
+            config = config
+                .with_distributed_files_per_task(n)
                 .expect("`distributed_files_per_task` expects a distributed config");
         }
         if let Some(enabled) = self.information_schema {
@@ -232,15 +236,17 @@ impl TestPlanBuilder {
             state = state.with_distributed_planner();
         }
         if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
-            state = state.with_distributed_cardinality_effect_task_scale_factor(f)
-                .expect("Error setting `distributed_cardinality_effect_task_scale_factor` in `build`");
+            state = state
+                .with_distributed_cardinality_effect_task_scale_factor(f)
+                .expect(
+                    "Error setting `distributed_cardinality_effect_task_scale_factor` in `build`",
+                );
         }
         if let Some(t) = self.distributed_task_estimator.clone() {
             state = state.with_distributed_task_estimator(t);
         }
         if let Some(enabled) = self.distributed_partial_reduce {
-            state = state.with_distributed_partial_reduce(enabled)
-                .unwrap()
+            state = state.with_distributed_partial_reduce(enabled).unwrap()
         }
         state.build()
     }
@@ -248,17 +254,16 @@ impl TestPlanBuilder {
     pub fn build(&self) -> TestPlan {
         let config = self.build_config();
         let state = self.build_state(config);
-        TestPlan { 
-            ctx: SessionContext::new_with_state(state)
+        TestPlan {
+            ctx: SessionContext::new_with_state(state),
         }
     }
-
 }
 
 #[cfg(test)]
 impl Default for TestPlanBuilder {
     fn default() -> Self {
-        Self { 
+        Self {
             target_partitions: Some(4),
             num_workers: Some(3),
             distributed_planner: false,
@@ -267,7 +272,7 @@ impl Default for TestPlanBuilder {
             information_schema: Some(false),
             broadcast_joins: false,
             distributed_task_estimator: None,
-            distributed_partial_reduce: None
+            distributed_partial_reduce: None,
         }
     }
 }

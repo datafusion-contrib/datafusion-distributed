@@ -111,8 +111,8 @@ impl QueryPlanner for DistributedQueryPlanner {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     use crate::assert_snapshot;
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]

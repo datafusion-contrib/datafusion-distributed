@@ -102,8 +102,8 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::plans::TestPlanBuilder;
     use crate::assert_snapshot;
+    use crate::test_utils::plans::TestPlanBuilder;
     use datafusion::common::assert_not_contains;
 
     #[tokio::test]

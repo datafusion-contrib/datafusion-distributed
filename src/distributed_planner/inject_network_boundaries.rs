@@ -531,7 +531,7 @@ fn calculate_scale_factor(plan: &Arc<dyn ExecutionPlan>, ctx: &Context) -> f64 {
 mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder, TestPlan};
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder};
     use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -1066,8 +1066,7 @@ mod tests {
             .num_workers(num_workers)
             .broadcast_joins(broadcast_enabled);
         if let Some(estimator) = estimator {
-            test_plan_builder =
-                test_plan_builder.distributed_task_estimator(estimator);
+            test_plan_builder = test_plan_builder.distributed_task_estimator(estimator);
         }
         let test_plan = test_plan_builder.build();
         annotate_test_plan(test_plan, query).await

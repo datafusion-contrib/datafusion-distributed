@@ -180,8 +180,8 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::plans::TestPlanBuilder;
     use crate::assert_snapshot;
+    use crate::test_utils::plans::TestPlanBuilder;
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
