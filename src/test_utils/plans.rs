@@ -6,13 +6,19 @@ use crate::stage::Stage;
 use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator};
+use crate::{
+    DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
+};
 #[cfg(test)]
 use bincode::config;
 #[cfg(test)]
 use datafusion::config::{ConfigOptions, ExecutionOptions};
 use datafusion::{
-    common::{HashMap, HashSet}, datasource::physical_plan, execution::{SessionStateBuilder, context::SessionContext}, physical_plan::{ExecutionPlan, displayable}, prelude::SessionConfig
+    common::{HashMap, HashSet},
+    datasource::physical_plan,
+    execution::{SessionStateBuilder, context::SessionContext},
+    physical_plan::{ExecutionPlan, displayable},
+    prelude::SessionConfig,
 };
 #[cfg(test)]
 use itertools::Itertools;
@@ -88,7 +94,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct TestPlan {
-    ctx: SessionContext
+    ctx: SessionContext,
 }
 
 #[cfg(test)]
@@ -104,12 +110,10 @@ impl TestPlan {
         let df = self.ctx.sql(last_query).await.unwrap();
         //dbg!(&self.ctx.state().config_options().execution);
         df.create_physical_plan().await.unwrap()
-    } 
+    }
 
     pub fn plan_to_string(plan: Arc<dyn ExecutionPlan>) -> String {
-        displayable(plan.as_ref())
-            .indent(true)
-            .to_string()
+        displayable(plan.as_ref()).indent(true).to_string()
     }
 
     pub fn get_ctx(&self) -> &SessionContext {
@@ -120,7 +124,7 @@ impl TestPlan {
 #[cfg(test)]
 pub(crate) struct TestPlanBuilder {
     config_closures: Vec<Box<dyn FnOnce(SessionConfig) -> SessionConfig + 'static>>,
-    state_closures: Vec<Box<dyn FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static>>
+    state_closures: Vec<Box<dyn FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static>>,
 }
 
 #[cfg(test)]
@@ -128,21 +132,18 @@ impl TestPlanBuilder {
     pub fn new() -> Self {
         Self {
             config_closures: Vec::new(),
-            state_closures: Vec::new()
-        } 
+            state_closures: Vec::new(),
+        }
     }
 
-    pub fn add_config(
-        mut self,
-        f: impl FnOnce(SessionConfig) -> SessionConfig + 'static,
-    ) -> Self {
+    pub fn add_config(mut self, f: impl FnOnce(SessionConfig) -> SessionConfig + 'static) -> Self {
         self.config_closures.push(Box::new(f));
         self
     }
-    
+
     pub fn add_state(
         mut self,
-        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static, 
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static,
     ) -> Self {
         self.state_closures.push(Box::new(f));
         self
@@ -150,12 +151,10 @@ impl TestPlanBuilder {
 
     pub fn with_broadcast_enabled(mut self, enabled: bool) -> Self {
         let state_closure = move |mut b: SessionStateBuilder| {
-            b.set_distributed_option_extension(
-                DistributedConfig {
-                    broadcast_joins: enabled,
-                    ..Default::default()
-                }
-            );
+            b.set_distributed_option_extension(DistributedConfig {
+                broadcast_joins: enabled,
+                ..Default::default()
+            });
             b
         };
         self.state_closures.push(Box::new(state_closure));
@@ -167,10 +166,9 @@ impl TestPlanBuilder {
         for config_closure in self.config_closures {
             config = config_closure(config);
         }
-        let mut state = SessionStateBuilder::new()
-            .with_config(config);
+        let mut state = SessionStateBuilder::new().with_config(config);
         for state_closure in self.state_closures {
-            state = state_closure(state); 
+            state = state_closure(state);
         }
         let ctx = SessionContext::new_with_state(state.build());
         TestPlan { ctx }

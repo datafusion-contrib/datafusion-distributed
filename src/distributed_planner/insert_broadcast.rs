@@ -180,11 +180,9 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot};
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{
-        TestPlan, TestPlanBuilder
-    };
+    use crate::test_utils::plans::{TestPlan, TestPlanBuilder};
+    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot};
     use datafusion::physical_plan::displayable;
 
     #[tokio::test]
@@ -292,9 +290,7 @@ mod tests {
             .build()
             .await;
         let ctx = test_plan.get_ctx();
-        let plan = test_plan
-            .physical_plan(&query.to_string())
-            .await;
+        let plan = test_plan.physical_plan(&query.to_string()).await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
             .expect("failed to insert broadcasts");
         format!("{}", displayable(plan.as_ref()).indent(true))
