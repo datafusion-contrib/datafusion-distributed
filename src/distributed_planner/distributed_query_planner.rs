@@ -109,7 +109,7 @@ impl QueryPlanner for DistributedQueryPlanner {
 #[cfg(test)]
 mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder};
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     use crate::{DistributedExt, SessionStateBuilderExt};
     use crate::{assert_snapshot, display_plan_ascii};
     /* schema for the "weather" table

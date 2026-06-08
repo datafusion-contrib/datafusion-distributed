@@ -536,9 +536,7 @@ mod tests {
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder};
-    use crate::{
-        DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator, assert_snapshot,
-    };
+    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     /* schema for the "weather" table

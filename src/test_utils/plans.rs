@@ -1,23 +1,21 @@
+#[cfg(test)]
 use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
 use crate::common::serialize_uuid;
 use crate::coordinator::DistributedExec;
 use crate::stage::Stage;
-use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-};
-#[cfg(test)]
-use bincode::config;
-#[cfg(test)]
-use datafusion::config::{ConfigOptions, ExecutionOptions};
+use crate::{DistributedConfig, DistributedExt, TaskEstimation, TaskEstimator};
 use datafusion::{
     common::{HashMap, HashSet},
-    datasource::physical_plan,
-    execution::{SessionStateBuilder, context::SessionContext},
-    physical_plan::{ExecutionPlan, displayable},
+    physical_plan::ExecutionPlan,
+};
+#[cfg(test)]
+use datafusion::{
+    config::ConfigOptions,
+    execution::{context::SessionContext, session_state::SessionStateBuilder},
+    physical_plan::displayable,
     prelude::SessionConfig,
 };
 #[cfg(test)]
