@@ -128,7 +128,7 @@ impl TestPlan {
 pub(crate) struct TestPlanBuilder {
     target_partitions: Option<usize>,
     num_workers: Option<usize>,
-    distributed: bool,
+    distributed_planner: bool,
     distributed_cardinality_effect_task_scale_factor: Option<f64>,
     distributed_files_per_task: Option<usize>,
     information_schema: Option<bool>,
@@ -143,7 +143,7 @@ impl TestPlanBuilder {
         Self { 
             target_partitions: None,
             num_workers: None,
-            distributed: false,
+            distributed_planner: false,
             distributed_cardinality_effect_task_scale_factor: None,
             distributed_files_per_task: None,
             information_schema: None,
@@ -163,8 +163,8 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn distributed(mut self) -> Self {
-        self.distributed = true;
+    pub fn distributed_planner(mut self) -> Self {
+        self.distributed_planner = true;
         self
     }
 
@@ -228,7 +228,7 @@ impl TestPlanBuilder {
         if let Some(n) = self.num_workers {
             state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(n));
         }
-        if self.distributed {
+        if self.distributed_planner {
             state = state.with_distributed_planner();
         }
         if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
@@ -261,7 +261,7 @@ impl Default for TestPlanBuilder {
         Self { 
             target_partitions: Some(4),
             num_workers: Some(3),
-            distributed: false,
+            distributed_planner: false,
             distributed_cardinality_effect_task_scale_factor: None,
             distributed_files_per_task: None,
             information_schema: Some(false),

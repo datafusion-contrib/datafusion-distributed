@@ -157,7 +157,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -188,7 +188,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(2)
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -241,7 +241,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_cardinality_effect_task_scale_factor(3.0)
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -268,7 +268,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .distributed_files_per_task(3)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -291,7 +291,7 @@ mod tests {
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -358,7 +358,7 @@ mod tests {
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -400,7 +400,7 @@ mod tests {
         SELECT * FROM weather ORDER BY "MinTemp" DESC
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -422,7 +422,7 @@ mod tests {
         SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday" LIMIT 10
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -451,7 +451,7 @@ mod tests {
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -479,7 +479,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .information_schema(true)
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -501,7 +501,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(2)
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -527,7 +527,7 @@ mod tests {
         SELECT 1 FROM flights_1m
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -554,7 +554,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(6)
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -585,7 +585,7 @@ mod tests {
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -618,7 +618,7 @@ mod tests {
         SELECT "Temp9am", "RainToday" FROM weather WHERE "Temp9am" > 15.0
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -659,7 +659,7 @@ mod tests {
         SELECT "Rainfall", "RainToday" FROM weather WHERE "Rainfall" > 5.0
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -701,7 +701,7 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .broadcast_joins(true)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -733,7 +733,7 @@ mod tests {
         INNER JOIN weather c ON b."RainToday" = c."RainToday"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .broadcast_joins(true)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -782,7 +782,7 @@ mod tests {
         ");
 
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .broadcast_joins(true)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -822,7 +822,7 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .broadcast_joins(true)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -870,7 +870,7 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed()
+            .distributed_planner()
             .broadcast_joins(true)
             .distributed_task_estimator(BuildSideOneTaskEstimator)
             .build()
