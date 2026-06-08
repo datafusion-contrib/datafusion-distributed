@@ -11,7 +11,7 @@ async function main() {
 
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
-        .option('-i, --iterations <number>', 'Number of iterations', '3')
+        .option('-i, --iterations <number>', 'Number of iterations', '5')
         .option('--files-per-task <number>', 'Files per task', '8')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')

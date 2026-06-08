@@ -200,7 +200,7 @@ export async function runBenchmark(
             );
         }
 
-        console.log(`Query ${id} avg time: ${result.avg()} ms`);
+        console.log(`Query ${id} p50 time: ${result.p50()} ms`);
 
         benchmarkRun.results.push(result)
     }

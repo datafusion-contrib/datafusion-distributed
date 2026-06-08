@@ -113,6 +113,7 @@ impl BenchmarkRun {
             };
             query.compare(prev_query)
         }
+        print_comparison_total(&previous.results, &self.results);
 
         Ok(())
     }
@@ -133,12 +134,36 @@ fn get_current_branch() -> String {
 }
 
 impl BenchResult {
-    pub fn avg(&self) -> u128 {
-        self.iterations
+    /// Median (p50) of the successful iteration latencies in milliseconds. The median is robust to
+    /// warmup/GC/noise outliers and, unlike a mean or a sum, does not grow with the iteration
+    /// count, so runs done with different `-i` values stay comparable.
+    pub fn p50(&self) -> u128 {
+        let mut xs: Vec<u128> = self
+            .iterations
             .iter()
+            .filter(|v| v.error.is_none())
             .map(|v| v.elapsed.as_millis())
-            .sum::<u128>()
-            / self.iterations.len() as u128
+            .collect();
+        if xs.is_empty() {
+            return 0;
+        }
+        xs.sort_unstable();
+        let mid = xs.len() / 2;
+        if xs.len() % 2 == 1 {
+            xs[mid]
+        } else {
+            (xs[mid - 1] + xs[mid]) / 2
+        }
+    }
+
+    /// Representative single-run time used to aggregate a suite TOTAL. Returns `None` when any
+    /// iteration errored, so the query is dropped from the total. Being a per-query p50 (not a sum
+    /// of all iterations), the resulting TOTAL is independent of the iteration count.
+    pub fn representative_time(&self) -> Option<u128> {
+        if self.iterations.iter().any(|v| v.error.is_some()) {
+            return None;
+        }
+        Some(self.p50())
     }
 
     pub fn store(&self) -> Result<()> {
@@ -232,20 +257,51 @@ impl BenchResult {
             (None, None) => {}
         }
 
-        let avg_prev = prev_query.avg();
-        let avg = self.avg();
-        let (f, tag, emoji) = if avg < avg_prev {
-            let f = avg_prev as f64 / avg as f64;
+        let p50_prev = prev_query.p50();
+        let p50 = self.p50();
+        let (f, tag, emoji) = if p50 < p50_prev {
+            let f = p50_prev as f64 / p50 as f64;
             (f, "faster", if f > 1.2 { "✅" } else { "✔" })
         } else {
-            let f = avg as f64 / avg_prev as f64;
+            let f = p50 as f64 / p50_prev as f64;
             (f, "slower", if f > 1.2 { "❌" } else { "✖" })
         };
         println!(
-            "{:>8}: prev={avg_prev:>4} ms, new={avg:>4} ms, diff={f:.2} {tag} {emoji}",
+            "{:>8}: prev={p50_prev:>4} ms, new={p50:>4} ms, diff={f:.2} {tag} {emoji}",
             self.id
         );
     }
+}
+
+/// Prints an iteration-count-independent suite TOTAL: the sum of per-query p50s over the queries
+/// present in both runs that errored in neither. Mirrors the per-query comparison format so the
+/// two harnesses (local and remote) read the same way.
+pub fn print_comparison_total(base: &[BenchResult], new: &[BenchResult]) {
+    let mut total_prev: u128 = 0;
+    let mut total_new: u128 = 0;
+    for query in new {
+        let Some(prev) = base.iter().find(|v| v.id == query.id) else {
+            continue;
+        };
+        if let (Some(p), Some(n)) = (prev.representative_time(), query.representative_time()) {
+            total_prev += p;
+            total_new += n;
+        }
+    }
+    if total_prev == 0 && total_new == 0 {
+        return;
+    }
+    let (f, tag, emoji) = if total_new < total_prev {
+        let f = total_prev as f64 / total_new as f64;
+        (f, "faster", if f > 1.2 { "✅" } else { "✔" })
+    } else {
+        let f = total_new as f64 / total_prev.max(1) as f64;
+        (f, "slower", if f > 1.2 { "❌" } else { "✖" })
+    };
+    println!(
+        "{:>8}: prev={total_prev} ms, new={total_new} ms, diff={f:.2} {tag} {emoji}",
+        "TOTAL"
+    );
 }
 
 fn serialize_bench_results<S: Serializer>(

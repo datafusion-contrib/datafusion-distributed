@@ -1,6 +1,6 @@
-import { Command } from "commander";
-import { z } from 'zod';
-import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
+import {Command} from "commander";
+import {z} from 'zod';
+import {BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward the ballista HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9002,localPortNumber=9002"
@@ -10,7 +10,7 @@ async function main() {
 
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
-        .option('-i, --iterations <number>', 'Number of iterations', '3')
+        .option('-i, --iterations <number>', 'Number of iterations', '5')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -61,7 +61,7 @@ class BallistaRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms };
+        return {rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms, tasks: 0};
     }
 
     private async query(sql: string): Promise<QueryResponse> {
