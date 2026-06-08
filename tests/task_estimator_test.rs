@@ -232,13 +232,12 @@ mod tests {
         assert_snapshot!(plan + &results,
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[task_count@0 as task_count, left_index@1 as left_index, left_tag@2 as left_tag, worker_left@3 as worker_left, right_index@4 as right_index, right_tag@5 as right_tag, worker_right@6 as worker_right]
-        │   SortPreservingMergeExec: [task_index@7 ASC NULLS LAST]
-        │     [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
+        │ SortPreservingMergeExec: [left_index@1 ASC NULLS LAST]
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] t4:[p0..p2]
           │ SortExec: expr=[left_index@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right, task_index@1 as task_index]
+          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=5
@@ -288,13 +287,12 @@ mod tests {
         assert_snapshot!(plan + &results,
             @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[task_count@0 as task_count, left_index@1 as left_index, left_tag@2 as left_tag, worker_left@3 as worker_left, right_index@4 as right_index, right_tag@5 as right_tag, worker_right@6 as worker_right]
-        │   SortPreservingMergeExec: [task_index@7 ASC NULLS LAST]
-        │     [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
+        │ SortPreservingMergeExec: [left_index@1 ASC NULLS LAST]
+        │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2] t4:[p0..p2]
           │ SortExec: expr=[left_index@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right, task_index@1 as task_index]
+          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=5

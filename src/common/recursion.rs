@@ -86,7 +86,7 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             f: &mut F,
         ) -> Result<TreeNodeRecursion> {
             f(plan, ctx)?.visit_children(|| {
-                if let Some(ciu) = plan.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+                if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
                     // Just recurse to children that will actually get executed by this
                     // ChildrenIsolatorUnionExec.
                     ciu.task_idx_map[ctx.task_index].iter().apply_until_stop(
@@ -137,7 +137,7 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
                 });
             }
             let node = &transformed.data;
-            if let Some(ciu) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
+            if let Some(ciu) = node.downcast_ref::<ChildrenIsolatorUnionExec>() {
                 let mut child_ctxs = vec![None; ciu.children.len()];
                 for (child_idx, child_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
                     child_ctxs[*child_idx] = Some(*child_ctx);
@@ -159,14 +159,14 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
         self.transform_down_up(
             |node| {
                 let cur = *stack.borrow().last().unwrap();
-                let child_tcs =
-                    if let Some(ciu) = node.as_any().downcast_ref::<ChildrenIsolatorUnionExec>() {
-                        ciu.child_task_counts()
-                    } else if let Some(nb) = node.as_network_boundary() {
-                        vec![nb.input_stage().task_count(); node.children().len()]
-                    } else {
-                        vec![cur; node.children().len()]
-                    };
+                let child_tcs = if let Some(ciu) = node.downcast_ref::<ChildrenIsolatorUnionExec>()
+                {
+                    ciu.child_task_counts()
+                } else if let Some(nb) = node.as_network_boundary() {
+                    vec![nb.input_stage().task_count(); node.children().len()]
+                } else {
+                    vec![cur; node.children().len()]
+                };
                 stack.borrow_mut().extend(child_tcs.into_iter().rev());
                 Ok(Transformed::no(node))
             },
@@ -190,10 +190,8 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
                 if transformed.tnr != TreeNodeRecursion::Continue {
                     return Ok(transformed);
                 }
-                let child_tcs = if let Some(ciu) = transformed
-                    .data
-                    .as_any()
-                    .downcast_ref::<ChildrenIsolatorUnionExec>()
+                let child_tcs = if let Some(ciu) =
+                    transformed.data.downcast_ref::<ChildrenIsolatorUnionExec>()
                 {
                     ciu.child_task_counts()
                 } else if let Some(nb) = transformed.data.as_network_boundary() {
@@ -621,15 +619,15 @@ mod tests {
     // ── helpers: trace renderers ──────────────────────────────────────────────
 
     fn plan_label(p: &Arc<dyn ExecutionPlan>) -> &'static str {
-        if p.as_any().is::<EmptyExec>() {
+        if p.is::<EmptyExec>() {
             "Leaf"
-        } else if p.as_any().is::<CoalescePartitionsExec>() {
+        } else if p.is::<CoalescePartitionsExec>() {
             "Single"
-        } else if p.as_any().is::<UnionExec>() {
+        } else if p.is::<UnionExec>() {
             "Union"
-        } else if p.as_any().is::<ChildrenIsolatorUnionExec>() {
+        } else if p.is::<ChildrenIsolatorUnionExec>() {
             "CIU"
-        } else if p.as_any().is::<NetworkCoalesceExec>() {
+        } else if p.is::<NetworkCoalesceExec>() {
             "Network"
         } else {
             "?"

@@ -63,7 +63,7 @@ impl QueryPlanner for DistributedQueryPlanner {
             }
         };
 
-        if original_plan.as_any().is::<DistributedExec>() {
+        if original_plan.is::<DistributedExec>() {
             return Ok(original_plan);
         }
 
@@ -168,13 +168,12 @@ mod tests {
         .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
@@ -197,13 +196,12 @@ mod tests {
         .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=2
           └──────────────────────────────────────────────────
@@ -225,14 +223,13 @@ mod tests {
         })
         .await;
         assert_snapshot!(plan, @r"
-        ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-          SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-            SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-              ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
-                AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-                  RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
-                    AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-                      DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+        SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+          SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+            ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+              AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+                  AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                    DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
         ");
     }
 
@@ -249,12 +246,11 @@ mod tests {
         .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-        │       ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
-        │         AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-        │           [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+        │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+        │   SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+        │     ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+        │       AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+        │         [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p3] t1:[p0..p3] t2:[p0..p3]
           │ RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
@@ -276,14 +272,13 @@ mod tests {
         })
         .await;
         assert_snapshot!(plan, @r"
-        ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-          SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-            SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-              ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
-                AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-                  RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
-                    AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-                      DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
+        SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+          SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+            ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+              AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+                  AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+                    DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
         ");
     }
 
@@ -298,13 +293,12 @@ mod tests {
         .await;
         assert_snapshot!(plan, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
-        │ ProjectionExec: expr=[count(*)@0 as count(*), RainToday@1 as RainToday]
-        │   SortPreservingMergeExec: [count(Int64(1))@2 ASC NULLS LAST]
-        │     [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+        │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+        │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday, count(Int64(1))@1 as count(Int64(1))]
+          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
           └──────────────────────────────────────────────────
@@ -329,7 +323,7 @@ mod tests {
         HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
     }
 
@@ -389,7 +383,7 @@ mod tests {
           │   AggregateExec: mode=Partial, gby=[RainTomorrow@1 as RainTomorrow], aggr=[avg(weather.MaxTemp)]
           │     FilterExec: RainToday@1 = no, projection=[MaxTemp@0, RainTomorrow@2]
           │       RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=3
-          │         DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@19 = no, pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
+          │         DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday, RainTomorrow], file_type=parquet, predicate=RainToday@19 = no AND DynamicFilter [ empty ], pruning_predicate=RainToday_null_count@2 != row_count@3 AND RainToday_min@0 <= no AND no <= RainToday_max@1, required_guarantees=[RainToday in (no)]
           └──────────────────────────────────────────────────
         ");
     }
@@ -410,7 +404,7 @@ mod tests {
         └──────────────────────────────────────────────────
           ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
           │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
-          │   DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet
+          │   DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[MinTemp@0 DESC], reverse_row_groups=true
           └──────────────────────────────────────────────────
         ");
     }
@@ -479,10 +473,9 @@ mod tests {
         })
         .await;
         assert_snapshot!(plan, @r"
-        ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
-          FilterExec: table_name@2 = weather
-            RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
-              StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
+        FilterExec: table_name@2 = weather, projection=[table_catalog@0, table_schema@1, table_name@2, column_name@3, data_type@5, is_nullable@4]
+          RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+            StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
         ");
     }
 

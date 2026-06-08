@@ -259,18 +259,23 @@ impl RemoteWorkerConnection {
         // fan them out to the appropriate `per_partition_rx` based on the "partition" declared
         // in each individual record batch flight metadata.
         let task = SpawnedTask::spawn(async move {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return,
-                _ = first_poll_notify_for_task.notified() => {}
-            }
-
             let mut client = match channel_resolver.get_worker_client_for_url(&url).await {
                 Ok(v) => v,
-                Err(err) => {
-                    return fanout(&per_partition_tx, datafusion_error_to_tonic_status(&err));
-                }
+                Err(err) => return fanout(&per_partition_tx, datafusion_error_to_tonic_status(&err))
             };
+
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // If all SendableRecordBatchStreams canceled before any poll, we need to
+                    // anyway trigger the task execution and cancel it immediately so that the
+                    // cancellation is propagated also in the remote worker. Otherwise, it might
+                    // hang forever waiting for someone to execute it.
+                    let _ = client.execute_task(request).await;
+                    return
+                },
+                _ = first_poll_notify_for_task.notified() => {}
+            }
 
             let mut interleaved_stream = match client.execute_task(request).await {
                 Ok(v) => v.into_inner(),

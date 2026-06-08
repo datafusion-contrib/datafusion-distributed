@@ -11,6 +11,7 @@ pub(crate) fn task_ctx_with_extension<T: Send + Sync + 'static>(
         ctx.session_id(),
         ctx.session_config().clone().with_extension(Arc::new(ext)),
         ctx.scalar_functions().clone(),
+        ctx.higher_order_functions().clone(),
         ctx.aggregate_functions().clone(),
         ctx.window_functions().clone(),
         ctx.runtime_env(),

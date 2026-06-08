@@ -10,7 +10,6 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
 };
 use futures::{Stream, StreamExt};
-use std::any::Any;
 use std::fmt::Formatter;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -123,10 +122,6 @@ impl DisplayAs for BroadcastExec {
 impl ExecutionPlan for BroadcastExec {
     fn name(&self) -> &str {
         "BroadcastExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

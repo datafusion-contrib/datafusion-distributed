@@ -3,7 +3,6 @@ use datafusion::common::{Result, Statistics, exec_err, not_impl_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -109,10 +108,6 @@ impl ExecutionPlan for DistributedLeafExec {
         datafusion::catalog::memory::DataSourceExec::static_name()
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         self.original.properties()
     }
@@ -153,7 +148,7 @@ impl ExecutionPlan for DistributedLeafExec {
         self.original.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.original.partition_statistics(partition)
     }
 }

@@ -121,7 +121,7 @@ pub(super) fn insert_broadcast_execs(
     }
 
     plan.transform_down(|node| {
-        let Some(hash_join) = node.as_any().downcast_ref::<HashJoinExec>() else {
+        let Some(hash_join) = node.downcast_ref::<HashJoinExec>() else {
             return Ok(Transformed::no(node));
         };
         if hash_join.partition_mode() != &PartitionMode::CollectLeft {
@@ -150,14 +150,12 @@ pub(super) fn insert_broadcast_execs(
 
         // If build child is CoalescePartitionsExec get its input
         // Otherwise, use the build child directly (DataSourceExec)
-        let broadcast_input = if let Some(coalesce) = build_child
-            .as_any()
-            .downcast_ref::<CoalescePartitionsExec>()
-        {
-            Arc::clone(coalesce.input())
-        } else {
-            Arc::clone(build_child)
-        };
+        let broadcast_input =
+            if let Some(coalesce) = build_child.downcast_ref::<CoalescePartitionsExec>() {
+                Arc::clone(coalesce.input())
+            } else {
+                Arc::clone(build_child)
+            };
 
         // Insert BroadcastExec. consumer_task_count=1 is a placeholder and
         // will be corrected during optimizer rule.
@@ -245,7 +243,7 @@ mod tests {
         HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
     }
 

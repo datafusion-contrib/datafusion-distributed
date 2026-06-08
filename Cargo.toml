@@ -2,8 +2,8 @@
 members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { version = "53.0.0", default-features = false }
-datafusion-proto = { version = "53.0.0" }
+datafusion = { version = "54.0.0", default-features = false }
+datafusion-proto = { version = "54.0.0" }
 
 [package]
 name = "datafusion-distributed"
