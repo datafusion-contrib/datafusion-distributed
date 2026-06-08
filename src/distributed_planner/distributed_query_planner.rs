@@ -109,8 +109,8 @@ impl QueryPlanner for DistributedQueryPlanner {
 #[cfg(test)]
 mod tests {
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{
-        BuildSideOneTaskEstimator, TestPlanBuilder
+use crate::test_utils::plans::{
+        BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder
     };
     use crate::{assert_snapshot, display_plan_ascii};
     use crate::{DistributedExt, SessionStateBuilderExt};
@@ -163,7 +163,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .add_state(|b| b.with_distributed_planner())
             .build()
             .await
@@ -198,7 +199,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2)))
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -233,6 +236,7 @@ mod tests {
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
             .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(0)))
+            .add_state(|b| b.with_default_features())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -257,8 +261,10 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
-            .add_config(|b| b.with_distributed_cardinality_effect_task_scale_factor(3.0).unwrap())
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_cardinality_effect_task_scale_factor(3.0).unwrap())
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -291,6 +297,7 @@ mod tests {
             .add_config(|b| b.with_target_partitions(4))
             .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .add_config(|b| b.with_distributed_files_per_task(3).unwrap())
+            .add_state(|b| b.with_default_features())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -315,7 +322,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -390,7 +399,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -437,7 +448,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -463,7 +475,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -494,7 +507,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_config(|b| b.with_information_schema(true))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -518,7 +533,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -547,7 +563,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -576,7 +593,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(6)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(6)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -612,7 +630,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -649,7 +668,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -693,7 +713,8 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -738,8 +759,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .with_broadcast_enabled(true)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -775,8 +797,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .with_broadcast_enabled(true)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -819,7 +842,7 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -834,9 +857,9 @@ mod tests {
 
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
-            .add_state(|b| b.with_distributed_planner())
             .with_broadcast_enabled(true)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -880,8 +903,9 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
             .with_broadcast_enabled(true)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -934,8 +958,10 @@ mod tests {
         "#;
         let physical_plan = TestPlanBuilder::new()
             .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
-            .add_config(|b| b.with_distributed_task_estimator(BuildSideOneTaskEstimator))
+            .with_broadcast_enabled(true)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_task_estimator(BuildSideOneTaskEstimator))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())

@@ -180,7 +180,7 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{assert_snapshot, DistributedExt};
+    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot};
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::plans::{
         TestPlan, TestPlanBuilder
@@ -225,8 +225,9 @@ mod tests {
         ON a."RainToday" = b."RainToday"
         "#;
         let physical_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(4))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+            .add_config(|b| b.with_target_partitions(1))
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+            .add_state(|b| b.with_distributed_planner())
             .build()
             .await
             .physical_plan(&query.to_string())
@@ -284,10 +285,10 @@ mod tests {
         target_partitions: usize,
     ) -> String {
         let test_plan = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(target_partitions))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
-            .add_state(|b| b.with_default_features())
+            .add_config(move |b| b.with_target_partitions(target_partitions))
             .with_broadcast_enabled(broadcast_enabled)
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(4)))
+            .add_state(|b| b.with_default_features())
             .build()
             .await;
         let ctx = test_plan.get_ctx();

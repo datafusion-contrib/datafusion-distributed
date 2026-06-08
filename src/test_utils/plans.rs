@@ -10,7 +10,7 @@ use crate::{DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstim
 #[cfg(test)]
 use bincode::config;
 #[cfg(test)]
-use datafusion::config::ConfigOptions;
+use datafusion::config::{ConfigOptions, ExecutionOptions};
 use datafusion::{
     common::{HashMap, HashSet}, datasource::physical_plan, execution::{SessionStateBuilder, context::SessionContext}, physical_plan::{ExecutionPlan, displayable}, prelude::SessionConfig
 };
@@ -94,12 +94,15 @@ pub(crate) struct TestPlan {
 #[cfg(test)]
 impl TestPlan {
     pub async fn physical_plan(&self, query: &String) -> Arc<dyn ExecutionPlan> {
+        //dbg!(&self.ctx.state().config_options().execution);
         let mut queries = query.split(';').collect_vec();
         let last_query = queries.pop().unwrap();
         for query in queries {
             self.ctx.sql(query).await.unwrap();
         }
+        register_parquet_tables(&self.ctx).await.unwrap();
         let df = self.ctx.sql(last_query).await.unwrap();
+        //dbg!(&self.ctx.state().config_options().execution);
         df.create_physical_plan().await.unwrap()
     } 
 
@@ -116,21 +119,37 @@ impl TestPlan {
 
 #[cfg(test)]
 pub(crate) struct TestPlanBuilder {
-    config_builder: SessionConfig,
-    state_builder: SessionStateBuilder
+    config_closures: Vec<Box<dyn FnOnce(SessionConfig) -> SessionConfig + 'static>>,
+    state_closures: Vec<Box<dyn FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static>>
 }
 
 #[cfg(test)]
 impl TestPlanBuilder {
     pub fn new() -> Self {
         Self {
-            config_builder: SessionConfig::new(),
-            state_builder: SessionStateBuilder::new()
+            config_closures: Vec::new(),
+            state_closures: Vec::new()
         } 
     }
 
-    pub fn with_broadcast_enabled(self, enabled: bool) -> Self {
-        self.add_config(|mut b| {
+    pub fn add_config(
+        mut self,
+        f: impl FnOnce(SessionConfig) -> SessionConfig + 'static,
+    ) -> Self {
+        self.config_closures.push(Box::new(f));
+        self
+    }
+    
+    pub fn add_state(
+        mut self,
+        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder + 'static, 
+    ) -> Self {
+        self.state_closures.push(Box::new(f));
+        self
+    }
+
+    pub fn with_broadcast_enabled(mut self, enabled: bool) -> Self {
+        let state_closure = move |mut b: SessionStateBuilder| {
             b.set_distributed_option_extension(
                 DistributedConfig {
                     broadcast_joins: enabled,
@@ -138,31 +157,22 @@ impl TestPlanBuilder {
                 }
             );
             b
-        })
-    }
-
-    pub fn add_config(
-        mut self,
-        f: impl FnOnce(SessionConfig) -> SessionConfig,
-    ) -> Self {
-        self.config_builder = f(self.config_builder);
-        self
-    }
-    
-    pub fn add_state(
-        mut self,
-        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder, 
-    ) -> Self {
-        self.state_builder = f(self.state_builder);
+        };
+        self.state_closures.push(Box::new(state_closure));
         self
     }
 
     pub async fn build(self) -> TestPlan {
-        let state = self.state_builder
-            .with_config(self.config_builder)
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
+        let mut config = SessionConfig::new();
+        for config_closure in self.config_closures {
+            config = config_closure(config);
+        }
+        let mut state = SessionStateBuilder::new()
+            .with_config(config);
+        for state_closure in self.state_closures {
+            state = state_closure(state); 
+        }
+        let ctx = SessionContext::new_with_state(state.build());
         TestPlan { ctx }
     }
 }

@@ -538,7 +538,7 @@ mod tests {
     use crate::test_utils::plans::{
         BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder 
     };
-    use crate::{DistributedExt, TaskEstimation, TaskEstimator, assert_snapshot};
+    use crate::{DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     /* schema for the "weather" table
@@ -1022,7 +1022,7 @@ mod tests {
             query,
             4,
             4,
-            true,
+            false,
             None
         ).await;
         // With broadcast disabled, no broadcast annotation should appear
@@ -1194,12 +1194,13 @@ mod tests {
         estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>
     ) -> String {
         let mut test_plan_builder = TestPlanBuilder::new()
-            .add_config(|b| b.with_target_partitions(target_partitions))
-            .add_config(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers)))
-            .with_broadcast_enabled(broadcast_enabled);
+            .add_config(move |b| b.with_target_partitions(target_partitions))
+            .with_broadcast_enabled(broadcast_enabled)
+            .add_state(|b| b.with_default_features())
+            .add_state(move |b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers)));
         if let Some(estimator) = estimator {
             test_plan_builder = test_plan_builder
-                .add_config(|b| b.with_distributed_task_estimator(estimator));
+                .add_state(|b| b.with_distributed_task_estimator(estimator));
         }
         let test_plan = test_plan_builder
             .build()
