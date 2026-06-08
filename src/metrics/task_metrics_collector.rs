@@ -28,7 +28,8 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use futures::StreamExt;
 
-    use crate::coordinator::DistributedExec;
+    use crate::TaskKey;
+    use crate::coordinator::{DistributedExec, MetricsStore};
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
@@ -38,6 +39,7 @@ mod tests {
     };
     use crate::test_utils::session_context::register_temp_parquet_table;
     use crate::{DistributedExt, SessionStateBuilderExt};
+    use datafusion::common::HashSet;
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
     use datafusion::{
@@ -45,6 +47,7 @@ mod tests {
         physical_plan::display::DisplayableExecutionPlan,
     };
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// Creates a session context and registers two tables:
     /// - table1 (id: int, name: string)
@@ -150,6 +153,27 @@ mod tests {
         }
     }
 
+    /// Per-task metrics are delivered asynchronously over the `WorkerToCoordinator` side channel
+    /// after `execute_plan` returns. Wait until every expected task key is present before asserting,
+    /// instead of racing that background delivery (see #487).
+    async fn wait_for_task_metrics(
+        metrics_store: &MetricsStore,
+        expected_task_keys: &HashSet<TaskKey>,
+    ) {
+        let mut rx = metrics_store.rx.clone();
+        let wait = rx.wait_for(|map| expected_task_keys.iter().all(|key| map.contains_key(key)));
+        if tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .is_err()
+        {
+            let missing: Vec<&TaskKey> = expected_task_keys
+                .iter()
+                .filter(|key| metrics_store.get(key).is_none())
+                .collect();
+            panic!("timed out waiting for task metrics; missing keys: {missing:?}");
+        }
+    }
+
     /// Asserts that we can collect metrics from a distributed plan generated from the
     /// SQL query. It ensures that metrics are collected for all stages and are propagated
     /// through network boundaries.
@@ -172,14 +196,12 @@ mod tests {
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
 
+        let metrics_store = dist_exec.metrics_store.as_ref().unwrap();
+        wait_for_task_metrics(metrics_store, &expected_task_keys).await;
+
         // Ensure that there's metrics for each node for each task for each stage.
         for expected_task_key in expected_task_keys {
-            let actual_metrics = dist_exec
-                .metrics_store
-                .as_ref()
-                .unwrap()
-                .get(&expected_task_key)
-                .unwrap();
+            let actual_metrics = metrics_store.get(&expected_task_key).unwrap();
 
             // Verify that metrics were collected for all nodes. Some nodes may legitimately have
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
@@ -294,22 +316,18 @@ mod tests {
         execute_plan(plan.clone(), &ctx).await;
 
         // Metrics are delivered via the WorkerToCoordinator side channel in a background task.
-        // Yield briefly to let it complete before asserting.
-        tokio::task::yield_now().await;
+        // Wait for that delivery to complete before asserting, rather than racing it.
+        let metrics_store = dist_exec.metrics_store.as_ref().unwrap();
+        wait_for_task_metrics(metrics_store, &expected_task_keys).await;
 
         for expected_task_key in &expected_task_keys {
-            let actual_metrics = dist_exec
-                .metrics_store
-                .as_ref()
-                .unwrap()
-                .get(expected_task_key)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Missing metrics for task key {expected_task_key:?}. \
+            let actual_metrics = metrics_store.get(expected_task_key).unwrap_or_else(|| {
+                panic!(
+                    "Missing metrics for task key {expected_task_key:?}. \
                          The LIMIT caused the stream to be dropped before the worker \
                          sent metrics via the coordinator channel."
-                    )
-                });
+                )
+            });
             let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
