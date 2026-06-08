@@ -9,3 +9,4 @@ pub mod property_based;
 pub mod routing;
 pub mod session_context;
 pub mod test_work_unit_feed;
+pub mod work_unit_file_scan;

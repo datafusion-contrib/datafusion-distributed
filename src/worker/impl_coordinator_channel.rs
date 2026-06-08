@@ -1,5 +1,5 @@
 use crate::common::deserialize_uuid;
-use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
+use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::LocalWorkerContext;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
@@ -7,6 +7,7 @@ use crate::worker::generated::worker::worker_service_server::WorkerService;
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, WorkerToCoordinatorMsg, worker_to_coordinator_msg,
 };
+use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     DistributedCodec, DistributedConfig, DistributedExt, DistributedTaskContext, TaskData, Worker,
     WorkerQueryContext,
@@ -16,7 +17,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::oneshot;
@@ -65,6 +66,7 @@ impl Worker {
                     task_count: request.task_count as usize,
                 }))
                 .with_extension(Arc::new(LocalWorkerContext {
+                    task_data_entries: Arc::clone(&self.task_data_entries),
                     self_url: Url::parse(&request.target_worker_url)
                         .map_err(|e| DataFusionError::External(Box::new(e)))?,
                 }))
@@ -107,6 +109,7 @@ impl Worker {
                     true => Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
                     false => Arc::new(std::sync::Mutex::new(None)),
                 },
+                task_data_metrics: Arc::new(TaskDataMetrics::new(request.query_start_time_ns)),
             })
         };
 
@@ -120,6 +123,7 @@ impl Worker {
         let work_unit_senders = remote_work_unit_feed_registry.senders;
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
+            let mut body = body.map_ok(set_work_unit_received_time);
             while let Some(Ok(msg)) = body.next().await {
                 let Some(Inner::WorkUnit(msg)) = msg.inner else {
                     continue;
@@ -130,7 +134,7 @@ impl Worker {
                 let Some(tx) = work_unit_senders.get(&(id, msg.partition as usize)) else {
                     continue;
                 };
-                if tx.send(Ok(msg.body)).is_err() {
+                if tx.send(Ok(msg)).is_err() {
                     break; // channel closed
                 }
             }

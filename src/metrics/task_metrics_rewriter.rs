@@ -1,4 +1,5 @@
-use crate::common::serialize_uuid;
+use crate::DistributedTaskContext;
+use crate::common::{TreeNodeExt, serialize_uuid};
 use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::MetricsWrapperExec;
@@ -7,6 +8,7 @@ use crate::metrics::collect_plan_metrics;
 use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::generated::worker::TaskKey;
+use datafusion::common::HashMap;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::tree_node::TreeNode;
@@ -55,7 +57,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
 
     distributed_exec.wait_for_metrics().await;
 
-    let Some(metrics_collection) = distributed_exec.task_metrics.clone() else {
+    let Some(metrics_collection) = distributed_exec.metrics_store.clone() else {
         return Ok(plan);
     };
 
@@ -213,62 +215,75 @@ pub fn stage_metrics_rewriter(
     metrics_collection: Arc<MetricsStore>,
     format: DistributedMetricsFormat,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let mut node_idx = 0;
+    // Phase 1 — accumulate per-task metrics into a map keyed by node identity.
+    //
+    // For each task, the plan is traversed with `apply_with_dt_ctx`, which visits nodes in pre-order
+    // traversal, ignoring branches that do not belong to the recursed DistributedTaskContext
+    // (e.g., because of the presence of ChildrenIsolatorUnionExec).
+    //
+    // The raw allocation address of each `Arc<dyn ExecutionPlan>` as the node key.
+    // The planning plan is not modified between traversals, so these addresses are stable.
+    let mut node_metrics_map: HashMap<usize, MetricsSet> = HashMap::new();
 
-    Arc::clone(&stage.plan).transform_down(|plan| {
-        // Collect metrics for this node. It should contain metrics from each task.
-        let mut stage_metrics = MetricsSet::new();
+    for task_id in 0..stage.tasks {
+        let d_ctx = DistributedTaskContext {
+            task_index: task_id,
+            task_count: stage.tasks,
+        };
+        let task_key = TaskKey {
+            query_id: serialize_uuid(&stage.query_id),
+            stage_id: stage.num as u64,
+            task_number: task_id as u64,
+        };
+        let Some(task_metrics) = metrics_collection.get(&task_key) else {
+            return internal_err!(
+                "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
+                task_id,
+                stage.num
+            );
+        };
 
-        for task_id in 0..stage.tasks {
-            let task_key = TaskKey {
-                query_id: serialize_uuid(&stage.query_id),
-                stage_id: stage.num as u64,
-                task_number: task_id as u64,
-            };
-            match metrics_collection.get(&task_key) {
-                Some(task_metrics) => {
-                    if node_idx >= task_metrics.len() {
-                        return internal_err!(
-                            "not enough metrics provided to rewrite task: {} metrics provided",
-                            task_metrics.len()
-                        );
-                    }
-                    let node_metrics_protos = task_metrics[node_idx].clone();
-                    let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
-
-                    let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
-                    node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
-
-                    for metric in node_metrics.iter().map(Arc::clone) {
-                        stage_metrics.push(metric);
-                    }
-                }
-                None => {
-                    return internal_err!(
-                        "not enough metrics provided to rewrite task: missing metrics for task {} in stage {}",
-                        task_id,
-                        stage.num
-                    );
-                }
+        let mut per_task_counter = 0usize;
+        stage.plan.apply_with_dt_ctx(d_ctx, |node, _ctx| {
+            if per_task_counter >= task_metrics.pre_order_plan_metrics.len() {
+                return internal_err!(
+                    "not enough metrics provided to rewrite task: {} metrics provided",
+                    task_metrics.pre_order_plan_metrics.len()
+                );
             }
-        }
 
-        node_idx += 1;
+            let node_metrics_protos = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
+            let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
+            let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
+            node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
 
-        let wrapped_plan_node: Arc<dyn ExecutionPlan> = Arc::new(MetricsWrapperExec::new(
-            plan.clone(),
-            stage_metrics,
-        ));
-        Ok(Transformed::new(
-            wrapped_plan_node,
-            true,
-            if plan.is_network_boundary() {
-                TreeNodeRecursion::Jump
-            } else {
-                TreeNodeRecursion::Continue
+            let id = Arc::as_ptr(node) as *const () as usize;
+            let entry = node_metrics_map.entry(id).or_default();
+            for metric in node_metrics.iter().map(Arc::clone) {
+                entry.push(metric);
             }
-        ))
-    }).map(|v| v.data)
+
+            per_task_counter += 1;
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+    }
+
+    // Phase 2 — rewrite: wrap every node with its accumulated metrics.
+    // Nodes that were inactive for all tasks (never visited in phase 1) get empty metrics.
+    Arc::clone(&stage.plan)
+        .transform_down(|plan| {
+            let id = Arc::as_ptr(&plan) as *const () as usize;
+            let metrics = node_metrics_map.remove(&id).unwrap_or_default();
+            Ok(Transformed::new(
+                Arc::new(MetricsWrapperExec::new(plan.clone(), metrics)),
+                true,
+                match plan.is_network_boundary() {
+                    true => TreeNodeRecursion::Jump,
+                    false => TreeNodeRecursion::Continue,
+                },
+            ))
+        })
+        .map(|v| v.data)
 }
 
 #[cfg(test)]
@@ -457,7 +472,11 @@ mod tests {
                     )
                 })
                 .collect::<Vec<pb::MetricsSet>>();
-            (task_key, metrics)
+            let task_metrics = pb::TaskMetrics {
+                task_metrics: None,
+                pre_order_plan_metrics: metrics,
+            };
+            (task_key, task_metrics)
         }));
         let metrics_collection = Arc::new(metrics_collection);
 
@@ -489,7 +508,8 @@ mod tests {
                         stage_id: stage.num as u64,
                         task_number: task_id as u64,
                     })
-                    .unwrap()[node_id]
+                    .unwrap()
+                    .pre_order_plan_metrics[node_id]
                     .clone();
 
                 let mut actual_metrics_set = MetricsSet::new();

@@ -9,6 +9,7 @@ use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
+use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
@@ -140,6 +141,30 @@ impl NetworkCoalesceExec {
             },
             consumer_tasks,
         ))
+    }
+
+    pub(crate) fn with_fetch_on_input_stage(&self, fetch: usize) -> Result<Arc<dyn ExecutionPlan>> {
+        let Stage::Local(local) = &self.input_stage else {
+            return Ok(Arc::new(self.clone()));
+        };
+
+        let input_with_fetch = if local.plan.fetch().is_some_and(|existing| existing <= fetch) {
+            Arc::clone(&local.plan)
+        } else {
+            local
+                .plan
+                .with_fetch(Some(fetch))
+                .unwrap_or_else(|| Arc::new(LocalLimitExec::new(Arc::clone(&local.plan), fetch)))
+        };
+
+        let mut self_clone = self.clone();
+        self_clone.input_stage = Stage::Local(LocalStage {
+            query_id: local.query_id,
+            num: local.num,
+            plan: input_with_fetch,
+            tasks: local.tasks,
+        });
+        Ok(Arc::new(self_clone))
     }
 }
 
@@ -276,7 +301,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             &context,
         )?;
 
-        let stream = worker_connection.stream_partition(target_partition, |_meta| {})?;
+        let stream = worker_connection.execute(target_partition)?;
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),

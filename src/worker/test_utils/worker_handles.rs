@@ -1,5 +1,6 @@
 use crate::config_extension_ext::set_distributed_option_extension;
 use crate::worker::generated::worker::TaskKey;
+use crate::worker::task_data::TaskDataMetrics;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -217,6 +218,7 @@ pub async fn register_plan_on_worker(
             plan,
             num_partitions_remaining: Arc::new(AtomicUsize::new(partition_count)),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
+            task_data_metrics: Arc::new(TaskDataMetrics::new(0)),
         }))
         .expect("failed to write to task data");
 }

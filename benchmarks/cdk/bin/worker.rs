@@ -2,17 +2,23 @@ use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_ec2::Client as Ec2Client;
 use axum::{Json, Router, extract::Query, http::StatusCode, routing::get};
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
+use datafusion_distributed::test_utils::work_unit_file_scan::{
+    WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanTaskEstimator,
+};
 use datafusion_distributed::{
-    ChannelResolver, DistributedExt, DistributedMetricsFormat, SessionStateBuilderExt, Worker,
-    WorkerResolver, display_plan_ascii, get_distributed_channel_resolver,
-    get_distributed_worker_resolver, rewrite_distributed_plan_with_metrics,
+    ChannelResolver, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
+    SessionStateBuilderExt, Worker, WorkerQueryContext, WorkerResolver, display_plan_ascii,
+    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    rewrite_distributed_plan_with_metrics,
 };
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
@@ -41,6 +47,7 @@ struct QueryResult {
     plan: String,
     count: usize,
     elapsed_ms: f64,
+    tasks: usize,
 }
 
 #[derive(Serialize)]
@@ -90,17 +97,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
-    let state = SessionStateBuilder::new()
+    let state_builder = SessionStateBuilder::new()
         .with_default_features()
         .with_runtime_env(Arc::clone(&runtime_env))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_distributed_planner()
         .with_distributed_broadcast_joins(cmd.broadcast_joins)?
-        .build();
+        // Uncomment for enabling WorkUnitFileScans.
+        // .with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
+        .with_distributed_user_codec(WorkUnitFileScanCodec)
+        .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
+        .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
+            dse.data_source()
+                .as_any()
+                .downcast_ref::<WorkUnitFileScanConfig>()
+                .map(|v| &v.feed)
+        });
+    let state = state_builder.build();
     let ctx = SessionContext::from(state);
     let ctx_clone = ctx.clone();
 
-    let worker = Worker::default().with_runtime_env(runtime_env);
+    let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
+        Ok(ctx
+            .builder
+            .with_distributed_user_codec(WorkUnitFileScanCodec)
+            .build())
+    })
+    .with_runtime_env(runtime_env);
+
     let http_server = axum::serve(
         listener,
         Router::new()
@@ -188,6 +212,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let plan = display_plan_ascii(physical.as_ref(), true);
                         drop(task);
 
+                        let mut task_count = 0;
+                        physical
+                            .apply(|plan| {
+                                let Some(nb) = plan.as_network_boundary() else {
+                                    return Ok(TreeNodeRecursion::Continue);
+                                };
+                                task_count += nb.input_stage().task_count();
+                                Ok(TreeNodeRecursion::Continue)
+                            })
+                            .expect(".apply failed");
+
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_secs_f64() * 1000.0;
                         info!("Finished executing query:\n{sql}\n\n{plan}");
@@ -198,6 +233,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             count,
                             plan,
                             elapsed_ms: ms,
+                            tasks: task_count,
                         }))
                     }
                     .inspect_err(|(_, msg)| {

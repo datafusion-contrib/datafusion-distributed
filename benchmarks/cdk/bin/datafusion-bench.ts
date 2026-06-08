@@ -81,6 +81,7 @@ const QueryResponse = z.object({
     count: z.number(),
     plan: z.string(),
     elapsed_ms: z.number(),
+    tasks: z.number()
 })
 type QueryResponse = z.infer<typeof QueryResponse>
 
@@ -133,7 +134,7 @@ class DataFusionRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms };
+        return { rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms, tasks: response.tasks };
     }
 
     private async query(sql: string): Promise<QueryResponse> {

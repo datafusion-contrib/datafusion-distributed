@@ -5,6 +5,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{internal_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
@@ -193,6 +194,33 @@ impl ChildrenIsolatorUnionExec {
             }
         }
         counts
+    }
+
+    /// Trims out all the children that are going to be ignored based on the provided
+    /// task index. These children are replaced by [EmptyExec] as placeholders.
+    pub(crate) fn to_task_specialized(&self, task_i: usize) -> Self {
+        let mut children_to_keep = vec![];
+        for (child_i, _) in &self.task_idx_map[task_i] {
+            children_to_keep.push(*child_i);
+        }
+        let new_children = self
+            .children
+            .iter()
+            .enumerate()
+            .map(
+                |(child_i, plan)| match children_to_keep.contains(&child_i) {
+                    true => Arc::clone(plan),
+                    false => Arc::new(EmptyExec::new(plan.schema())),
+                },
+            )
+            .collect_vec();
+        Self {
+            children: new_children,
+            properties: self.properties.clone(),
+            metrics: self.metrics.clone(),
+            child_weights: self.child_weights.clone(),
+            task_idx_map: self.task_idx_map.clone(),
+        }
     }
 }
 

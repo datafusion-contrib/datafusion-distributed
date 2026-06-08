@@ -8,9 +8,9 @@ Key terminology:
 
 - `Stage`: a portion of the plan separated by a network boundary from other parts of the plan. A plan contains
   one or more stages, each separated by network boundaries.
-- `Task`: a unit of work in a stage that executes the inner plan in parallel to other tasks within the stage. Each task
-  in a stage executes a structurally identical plan in different worker, passing a `task_index` as a contextual value
-  for making choices about what data should be returned.
+- `Task`: a unit of work in a stage that executes a plan in parallel to other tasks within the stage. Each task
+  in a stage runs on a different worker with its own plan variant — pre-specialized at planning time for the subset
+  of data it is responsible for.
 - `Network Boundary`: a node in the plan that streams data from a network interface rather than directly from its
   children nodes.
 - `Worker`: a physical machine listening to serialized execution plans over an Arrow Flight interface. A task is
@@ -60,11 +60,14 @@ previous stages.
 An extension present during the `ExecutionPlan::execute()` that contains information about the current task in
 which the plan is being executed.
 
-As a user, you will need to interact with this type in your custom leaf nodes, as depending on which task index
-you are in, you might want to return a different set of data.
+For built-in file-based plans (`DataSourceExec`), data partitioning is handled automatically at planning time via
+`DistributedLeafExec`: each task receives a pre-built plan variant with its own isolated file groups, so no
+runtime dispatch is needed.
 
-For example, if you are on the task with index 0 of a 3-task stage, you might want to return only the first 1/3 of the
-data. If you are on the task with index 2, you might want to return the last 1/3 of the data, and so on.
+For custom leaf nodes that need to dispatch work themselves, `DistributedTaskContext` exposes `task_index` and
+`task_count` so execution logic can select the appropriate data subset. For example, task 0 of 3 might return
+the first third of rows, task 2 the last third, and so on. See the `TaskEstimator` documentation for guidance on
+which approach to use.
 
 ## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/channel_resolver.rs)
 

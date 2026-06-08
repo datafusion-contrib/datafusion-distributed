@@ -3,10 +3,12 @@ use crate::worker::generated::worker::worker_service_server::{WorkerService, Wor
 use crate::worker::generated::worker::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
 };
+use crate::worker::impl_execute_task::execute_remote_task;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::worker::task_data::TaskData;
 use crate::{
-    DefaultSessionBuilder, ObservabilityServiceImpl, ObservabilityServiceServer, WorkerResolver,
+    DefaultSessionBuilder, GetWorkerInfoRequest, GetWorkerInfoResponse, ObservabilityServiceImpl,
+    ObservabilityServiceServer, WorkerResolver,
 };
 use arrow_flight::FlightData;
 use async_trait::async_trait;
@@ -20,7 +22,7 @@ use std::time::Duration;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse};
+const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
 
 #[allow(clippy::type_complexity)]
 #[derive(Clone, Default)]
@@ -29,15 +31,16 @@ pub(super) struct WorkerHooks {
         Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
 }
 
-type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
 
 #[derive(Clone)]
 pub struct Worker {
     pub(super) runtime: Arc<RuntimeEnv>,
-    /// TTL-based cache for task execution data. Entries are automatically evicted after 60 seconds.
-    /// This prevents memory leaks from abandoned or incomplete queries while allowing concurrent
-    /// access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>>,
+    /// TTL-based cache for task execution data. Entries are automatically evicted after
+    /// TASK_CACHE_TTI seconds. This prevents memory leaks from abandoned or incomplete queries
+    /// while allowing concurrent access to task results across multiple partition requests.
+    pub(super) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
     pub(super) max_message_size: Option<usize>,
@@ -46,9 +49,7 @@ pub struct Worker {
 
 impl Default for Worker {
     fn default() -> Self {
-        let cache = Cache::builder()
-            .time_to_idle(Duration::from_secs(60))
-            .build();
+        let cache = Cache::builder().time_to_idle(TASK_CACHE_TTI).build();
         Self {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
@@ -191,7 +192,7 @@ impl WorkerService for Worker {
         &self,
         request: Request<ExecuteTaskRequest>,
     ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
-        self.impl_execute_task(request).await
+        execute_remote_task(&self.task_data_entries, request).await
     }
 
     async fn get_worker_info(

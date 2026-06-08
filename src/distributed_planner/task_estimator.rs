@@ -1,15 +1,16 @@
+use crate::DistributedConfig;
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::{DistributedConfig, PartitionIsolatorExec};
+use crate::execution_plans::DistributedLeafExec;
 use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::exec_err;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::error::{DataFusionError, Result};
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
+use datafusion::error::Result;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 use url::Url;
@@ -228,24 +229,12 @@ pub(crate) fn set_distributed_task_estimator(
     }
 }
 
-pub(crate) fn get_distributed_task_estimator(
-    cfg: &SessionConfig,
-) -> Result<Arc<dyn TaskEstimator>, DataFusionError> {
-    let opts = cfg.options();
-    let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
-        return exec_err!("TaskEstimator not present in the session config");
-    };
-    let task_estimator: Arc<dyn TaskEstimator> =
-        Arc::new(distributed_cfg.__private_task_estimator.clone());
-    Ok(Arc::clone(&task_estimator))
-}
-
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
 /// [FileScanConfig]s data sources (e.g., Parquet or CSV files). it will read the
 /// [DistributedConfig].`files_per_task` field and assigns as many tasks as needed so that
 /// no task handles more than the configured files.
 #[derive(Debug)]
-struct FileScanConfigTaskEstimator;
+pub(crate) struct FileScanConfigTaskEstimator;
 
 impl TaskEstimator for FileScanConfigTaskEstimator {
     fn task_estimation(
@@ -280,24 +269,51 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         _cfg: &ConfigOptions,
     ) -> Option<Arc<dyn ExecutionPlan>> {
         if task_count == 1 {
-            return Some(Arc::clone(plan));
+            return None;
         }
-        // Based on the task count, attempt to scale up the partitions in the DataSourceExec by
-        // repartitioning it. This will result in a DataSourceExec with potentially a lot of
-        // partitions, but as we are going to wrap it with PartitionIsolatorExec, that's fine.
         let dse: &DataSourceExec = plan.as_any().downcast_ref()?;
         let file_scan: &FileScanConfig = dse.data_source().as_any().downcast_ref()?;
 
-        let mut new_file_scan = file_scan.clone();
-        new_file_scan.file_groups.clear();
-        for file_group in file_scan.file_groups.clone() {
-            new_file_scan
-                .file_groups
-                .extend(file_group.split_files(task_count));
-        }
-        let plan = DataSourceExec::from_data_source(new_file_scan);
-        Some(Arc::new(PartitionIsolatorExec::new(plan, task_count)))
+        let mut file_scan_template = file_scan.clone();
+        let input_group_count = file_scan_template.file_groups.len().max(1);
+        let all_partitioned_files = file_scan_template
+            .file_groups
+            .iter()
+            .flat_map(|file_group| file_group.iter().cloned())
+            .collect::<Vec<_>>();
+        file_scan_template.file_groups.clear();
+        let rebalanced =
+            rebalance_round_robin(all_partitioned_files, input_group_count * task_count);
+        let mut file_groups: VecDeque<FileGroup> = rebalanced.into_iter().map(Into::into).collect();
+        let expected_partitions = plan.output_partitioning().partition_count();
+
+        let dle = DistributedLeafExec::new(
+            Arc::clone(plan),
+            (0..task_count).map(|_| {
+                let mut new_file_scan = file_scan_template.clone();
+                while new_file_scan.file_groups.len() < expected_partitions {
+                    match file_groups.pop_front() {
+                        None => new_file_scan.file_groups.push(FileGroup::new(vec![])),
+                        Some(fg) => new_file_scan.file_groups.push(fg),
+                    }
+                }
+                DataSourceExec::from_data_source(new_file_scan) as _
+            }),
+        );
+
+        Some(Arc::new(dle))
     }
+}
+
+fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {
+    let target_groups = target_groups.min(items.len());
+    let mut groups = (0..target_groups)
+        .map(|_| Vec::new())
+        .collect::<Vec<Vec<T>>>();
+    for (idx, item) in items.into_iter().enumerate() {
+        groups[idx % target_groups].push(item);
+    }
+    groups
 }
 
 /// Tries multiple user-provided [TaskEstimator]s until one returns an estimation. If none
@@ -401,6 +417,22 @@ mod tests {
         let node = make_data_source_exec().await?;
         assert_eq!(combined.task_count(node, |cfg| cfg), 3);
         Ok(())
+    }
+
+    #[test]
+    fn test_rebalance_round_robin_fixes_group_boundary_skew() {
+        let items = (0..8).collect::<Vec<_>>();
+        let groups = rebalance_round_robin(items, 5);
+        let sizes = groups.iter().map(Vec::len).collect::<Vec<_>>();
+        assert_eq!(sizes, vec![2, 2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn test_rebalance_round_robin_caps_partitions_to_file_count() {
+        let items = vec![10, 20, 30];
+        let groups = rebalance_round_robin(items, 5);
+        let sizes = groups.iter().map(Vec::len).collect::<Vec<_>>();
+        assert_eq!(sizes, vec![1, 1, 1]);
     }
 
     impl CombinedTaskEstimator {
