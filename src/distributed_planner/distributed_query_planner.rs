@@ -470,11 +470,17 @@ mod tests {
         let query = r#"
         SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday" LIMIT 10
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan = TestPlanBuilder::new()
+            .add_config(|b| b.with_target_partitions(4))
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
+            .build()
+            .await
+            .physical_plan(&query.to_string())
+            .await;
+        let physical_plan_ascii = display_plan_ascii(physical_plan.as_ref(), false);
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
         │   CoalescePartitionsExec: fetch=10

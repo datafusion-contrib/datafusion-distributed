@@ -104,18 +104,15 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 mod tests {
     use crate::distributed_planner::session_state_builder_ext::SessionStateBuilderExt;
     use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::parquet::register_parquet_tables;
+    use crate::test_utils::plans::TestPlanBuilder;
     use crate::{DistributedExt, assert_snapshot, display_plan_ascii};
     use datafusion::common::assert_not_contains;
-    use datafusion::execution::SessionStateBuilder;
-    use datafusion::prelude::{SessionConfig, SessionContext};
 
     #[tokio::test]
     async fn grouped_aggregation() {
-        let explain =
-            sql_to_explain(r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#)
-                .await;
-        assert_snapshot!(explain, @r"
+        let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
+        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -136,47 +133,40 @@ mod tests {
 
     #[tokio::test]
     async fn non_aggregation() {
-        let explain = sql_to_explain(r#"SELECT * FROM weather LIMIT 10"#).await;
-        assert_not_contains!(explain, "PartialReduce");
+        let query = r#"SELECT * FROM weather LIMIT 10"#;
+        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 
     #[tokio::test]
     async fn global_aggregation() {
-        let explain = sql_to_explain(r#"SELECT COUNT(*) FROM weather"#).await;
-        assert_not_contains!(explain, "PartialReduce");
+        let query = r#"SELECT COUNT(*) FROM weather"#;
+        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 
     #[tokio::test]
     async fn partial_reduce_disabled_by_default() {
-        let explain = sql_to_explain_default(
-            r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#,
-        )
-        .await;
-        assert_not_contains!(explain, "PartialReduce");
+        let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
+        let physical_plan_ascii = sql_to_physical_plan_ascii(query, false).await;
+        assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 
-    async fn sql_to_explain(query: &str) -> String {
-        sql_to_explain_impl(query, true).await
-    }
-
-    async fn sql_to_explain_default(query: &str) -> String {
-        sql_to_explain_impl(query, false).await
-    }
-
-    async fn sql_to_explain_impl(query: &str, partial_reduce: bool) -> String {
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(SessionConfig::new().with_target_partitions(4))
-            .with_distributed_planner()
-            .with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-            .with_distributed_partial_reduce(partial_reduce)
-            .unwrap()
-            .build();
-
-        let ctx = SessionContext::new_with_state(state);
-        register_parquet_tables(&ctx).await.unwrap();
-        let df = ctx.sql(query).await.unwrap();
-        let physical_plan = df.create_physical_plan().await.unwrap();
+    async fn sql_to_physical_plan_ascii(query: &str, distributed_partial_reduce: bool) -> String {
+        let physical_plan = TestPlanBuilder::new()
+            .add_config(|b| b.with_target_partitions(4))
+            .add_state(|b| b.with_distributed_planner())
+            .add_state(|b| b.with_default_features())
+            .add_state(|b| b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3)))
+            .add_state(|b| b.with_distributed_planner())
+            .add_state(move |b| {
+                b.with_distributed_partial_reduce(distributed_partial_reduce)
+                    .unwrap()
+            })
+            .build()
+            .await
+            .physical_plan(&query.to_string())
+            .await;
         display_plan_ascii(physical_plan.as_ref(), false)
     }
 }
