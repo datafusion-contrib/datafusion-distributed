@@ -66,6 +66,10 @@ extensions_options! {
         /// budget will still be admitted (otherwise we would livelock), so the actual peak per
         /// connection is `worker_connection_buffer_budget_bytes + max_message_size`.
         pub worker_connection_buffer_budget_bytes: usize, default = 64 * 1024 * 1024
+        /// Distributed DataFusion relies on row count estimation in order to infer how many workers
+        /// should be used in serving the query. Some plans might not implement any kind of row count
+        /// estimation, and this parameter sets the default estimated row count for those plans.
+        pub default_estimated_row_count: Option<usize>, default = Some(0)
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
