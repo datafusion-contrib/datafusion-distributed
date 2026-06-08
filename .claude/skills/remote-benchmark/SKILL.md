@@ -1,7 +1,7 @@
 ---
 name: remote-benchmark
 description: deploys the code to a remote EC2 cluster with the commands available in the package.json, port-forwards
- a machine port, and runs benchmarks against it.
+  a machine port, and runs benchmarks against it.
 ---
 
 This project uses a remote benchmarks EC2 cluster constructed with AWS CDK located at `benchmarks/cdk`.
@@ -9,13 +9,16 @@ This project uses a remote benchmarks EC2 cluster constructed with AWS CDK locat
 There's a package.json file in `benchmarks/cdk/package.json` with relevant commands about benchmarking.
 
 Authentication for this skill should be handled in this order of preference:
+
 1. AWS SSO profile commands
-2. Command prefix wrapper from `./claude/settings.local.json` key `aws-commands-prefix` (for example `aws-vault exec <profile> --`)
+2. Command prefix wrapper from `./claude/settings.local.json` key `aws-commands-prefix` (for example
+   `aws-vault exec <profile> --`)
 3. Explicit environment credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`)
 
 For method 2, define an `awscmd` shell function in your session that applies the chosen prefix.
 
 Setup references:
+
 - AWS CLI + IAM Identity Center (SSO): https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html
 - AWS CLI profile/config files: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
 - AWS CLI environment variables: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
@@ -131,7 +134,8 @@ You can start full TPCH benchmarks with:
 npm run datafusion-bench -- --dataset tpch_sf10
 ```
 
-You can learn how this command works by running:
+You can learn how this command works by running `npm run datafusion-bench -- --help`. The full set of
+flags (keep this in sync with `benchmarks/cdk/bin/datafusion-bench.ts`):
 
 ```shell
 $ npm run datafusion-bench -- --help
@@ -139,26 +143,42 @@ $ npm run datafusion-bench -- --help
 Usage: datafusion-bench [options]
 
 Options:
-  --dataset <string>                   Dataset to run queries on
-  -i, --iterations <number>            Number of iterations (default: "3")
-  --files-per-task <number>            Files per task (default: "8")
-  --cardinality-task-sf <number>       Cardinality task scale factor (default: "1")
-  --batch-size <number>                Standard Batch coalescing size (number of rows) (default: "32768")
-  --shuffle-batch-size <number>        Shuffle batch coalescing size (number of rows) (default: "32768")
-  --children-isolator-unions <number>  Use children isolator unions (default: "true")
-  --broadcast-joins <boolean>          Use broadcast joins (default: "false")
-  --collect-metrics <boolean>          Propagates metric collection (default: "true")
-  --compression <string>               Compression algo to use within workers (lz4, zstd, none) (default: "lz4")
-  --queries <string>                   Specific queries to run
-  --debug <boolean>                    Print the generated plans to stdout
-  --warmup <boolean>                   Perform a warmup query before the benchmarks (default: "true")
-  -h, --help                           display help for command
+  --dataset <string>                         Dataset to run queries on
+  -i, --iterations <number>                  Number of iterations (default: "5")
+  --files-per-task <number>                  Files per task (default: "8")
+  --cardinality-task-sf <number>             Cardinality task scale factor (default: "1")
+  --batch-size <number>                      Standard Batch coalescing size (number of rows) (default: "32768")
+  --shuffle-batch-size <number>              Override RepartitionExec batch size on worker stages (0 = no override) (default: "0")
+  --children-isolator-unions <number>        Use children isolator unions (default: "true")
+  --broadcast-joins <boolean>                Use broadcast joins (default: "true")
+  --partial-reduce <boolean>                 Enable PartialReduce optimization (reduces shuffle size for high-cardinality aggregations) (default: "false")
+  --collect-metrics <boolean>                Propagates metric collection (default: "true")
+  --compression <string>                     Compression algo to use within workers (lz4, zstd, none) (default: "lz4")
+  --max-tasks-per-stage <number>             Max tasks per stage (default: "0")
+  --repartition-file-min-size <number>       repartition_file_min_size DF option (default: "10485760")
+  --target-partitions <number>               target_partitions DF option (default: "8")
+  --dynamic <boolean>                        Use the dynamic task count assigner (default: "false")
+  --bytes-per-partition-per-second <number>  Target throughput in bytes per partition per second for the dynamic task count allocator (default: "16777216")
+  --queries <string>                         Specific queries to run
+  --debug <boolean>                          Print the generated plans to stdout
+  --warmup <boolean>                         Perform a warmup query before the benchmarks (default: "true")
+  -h, --help                                 display help for command
 ```
 
 The --dataset command is mandatory, and its value can be any of the folder names in `benchmarks/data`, for example:
 clickbench_0-100, tpcds_sf1, tpch_sf1, tpch_sf10 or tpch_sf100.
 
+IMPORTANT — match the flags to what you are benchmarking. Several features are gated behind flags that
+default to OFF, and forgetting them silently produces identical plans (so a comparison measures only
+noise). When in doubt, confirm the feature actually changed the plan (e.g. `--debug true`, or diff the `plan`
+field in the result JSONs) before trusting latency deltas.
+
+Metrics: each query reports its **p50** (median) latency across `--iterations` runs, and the suite
+TOTAL is the sum of per-query p50s — both are independent of the iteration count, so a run done with
+`-i 3` is comparable to one done with `-i 5`.
+
 Also, the --queries argument can be used for executing just a partial subset of queries, for example:
+
 ```shell
 --queries q1,q2,q3
 ```
@@ -167,8 +187,8 @@ When benchmarking a very specific feature, it's convenient to choose wisely a re
 
 The user provided the following arguments: $ARGUMENTS
 
-parse those and make sure you parse them correctly, for example `tpch_sf100 q1,q2,q4` means 
-`--dataset tpch_sf100 --queries q1,q2,q4`. Note that the user might also give natural language instructions in the 
+parse those and make sure you parse them correctly, for example `tpch_sf100 q1,q2,q4` means
+`--dataset tpch_sf100 --queries q1,q2,q4`. Note that the user might also give natural language instructions in the
 arguments, be smart while parsing those.
 
 ### analyzing results
@@ -183,5 +203,7 @@ You can inspect the results and the plan by reading the JSONs. Tip: use jq for p
 
 As the results of previous branches are already stored in disk, they usually can be analyzed without re-running them
 again, that can be done by either:
+
 - Just looking at the latencies and plans in the output folders.
-- Running `npm run compare -- --dataset tpch_sfX datafusion-distributed-<base branch> datafusion-distributed-<compare branch>`
+- Running
+  `npm run compare -- --dataset tpch_sfX datafusion-distributed-<base branch> datafusion-distributed-<compare branch>`

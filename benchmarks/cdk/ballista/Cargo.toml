@@ -19,11 +19,11 @@ name = "ballista-executor"
 path = "src/ballista_executor.rs"
 
 [dependencies]
-ballista = "51.0.0"
-ballista-core = "51.0.0"
-ballista-executor = "51.0.0"
-ballista-scheduler = "51.0.0"
-object_store = { version = "0.12", features = ["aws"] }
+ballista = "53.0.0"
+ballista-core = "53.0.0"
+ballista-executor = "53.0.0"
+ballista-scheduler = "53.0.0"
+object_store = { version = "0.13", features = ["aws"] }
 tokio = { version = "1", features = ["full"] }
 url = "2"
 clap = { version = "4", features = ["derive"] }

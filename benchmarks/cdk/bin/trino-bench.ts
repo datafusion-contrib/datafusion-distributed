@@ -1,5 +1,5 @@
-import { Command } from "commander";
-import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
+import {Command} from "commander";
+import {BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward Trino coordinator with
 // aws ssm start-session --target {instance-0-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=8080,localPortNumber=8080"
@@ -9,7 +9,7 @@ async function main() {
 
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
-        .option('-i, --iterations <number>', 'Number of iterations', '3')
+        .option('-i, --iterations <number>', 'Number of iterations', '5')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -127,7 +127,7 @@ class TrinoRunner implements BenchmarkRunner {
             }
         }
 
-        return { rowCount, plan, elapsed };
+        return {rowCount, plan, elapsed, tasks: 0};
     }
 
     async createTables(tables: TableSpec[]): Promise<void> {
@@ -146,8 +146,8 @@ class TrinoRunner implements BenchmarkRunner {
             await this.executeSingleStatement(`
                 DROP TABLE IF EXISTS hive."${table.schema}"."${table.name}"`);
 
-            await this.executeSingleStatement(` 
-                CREATE TABLE hive."${table.schema}"."${table.name}" ${getSchema(table)} 
+            await this.executeSingleStatement(`
+                CREATE TABLE hive."${table.schema}"."${table.name}" ${getSchema(table)}
                 WITH (external_location = '${table.s3Path}', format = 'PARQUET')`);
         }
     }

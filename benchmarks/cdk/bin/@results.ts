@@ -85,8 +85,8 @@ export class BenchmarkRun {
             if (!prevQuery) {
                 continue;
             }
-            const timePrev = prevQuery.totalTime()
-            const timeNew = query.totalTime()
+            const timePrev = prevQuery.representativeTime()
+            const timeNew = query.representativeTime()
             if (timePrev && timeNew) {
                 totalTimePrev += timePrev
                 totalTimeNew += timeNew
@@ -133,22 +133,31 @@ export class BenchResult {
         this.iterations = [];
     }
 
-    avg(): number {
-        if (this.iterations.length === 0) {
+    // Median (p50) of the successful iteration latencies in ms. The median is robust to
+    // warmup/GC/noise outliers, and — unlike a mean or a sum — it does not grow with the number
+    // of iterations, so runs done with different `-i` values stay comparable.
+    p50(): number {
+        const xs = this.iterations
+            .filter(iter => !iter.error)
+            .map(iter => iter.elapsed)
+            .sort((a, b) => a - b);
+        if (xs.length === 0) {
             return 0;
         }
-
-        const sum = this.iterations.reduce((acc, iter) => acc + iter.elapsed, 0);
-        return Math.floor(sum / this.iterations.length);
+        const mid = Math.floor(xs.length / 2);
+        const median = xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+        return Math.round(median);
     }
 
-    totalTime(): undefined | number {
-        let totalTime = 0;
-        for (const iter of this.iterations) {
-            if (iter.error) return undefined
-            totalTime += iter.elapsed
+    // Representative single-run time used to aggregate a suite TOTAL. Returns undefined when any
+    // iteration errored, so the query is dropped from the total. Because it is a per-query p50
+    // (not a sum of all iterations), the TOTAL is independent of the iteration count: a run with
+    // `-i 3` and a run with `-i 5` produce comparable totals.
+    representativeTime(): undefined | number {
+        if (this.iterations.some(iter => iter.error)) {
+            return undefined;
         }
-        return totalTime
+        return this.p50();
     }
 
     compare(prevQuery: BenchResult): void {
@@ -168,25 +177,25 @@ export class BenchResult {
             return;
         }
 
-        const avgPrev = prevQuery.avg();
-        const avg = this.avg();
+        const p50Prev = prevQuery.p50();
+        const p50 = this.p50();
 
         let f: number;
         let tag: string;
         let emoji: string;
 
-        if (avg < avgPrev) {
-            f = avgPrev / avg;
+        if (p50 < p50Prev) {
+            f = p50Prev / p50;
             tag = "faster";
             emoji = f > 1.2 ? "✅" : "✔";
         } else {
-            f = avg / avgPrev;
+            f = p50 / p50Prev;
             tag = "slower";
             emoji = f > 1.2 ? "❌" : "✖";
         }
 
         console.log(
-            `${this.id.padStart(8)}: prev=${avgPrev.toString().padStart(4)} ms, new=${avg.toString().padStart(4)} ms, diff=${f.toFixed(2)} ${tag} ${emoji}`
+            `${this.id.padStart(8)}: prev=${p50Prev.toString().padStart(4)} ms, new=${p50.toString().padStart(4)} ms, diff=${f.toFixed(2)} ${tag} ${emoji}`
         );
     }
 
