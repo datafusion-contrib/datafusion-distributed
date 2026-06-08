@@ -180,7 +180,7 @@ pub(super) fn insert_broadcast_execs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::plans::TmpTestPlanBuilder;
+    use crate::test_utils::plans::TestPlanBuilder;
     use crate::assert_snapshot;
     use datafusion::physical_plan::displayable;
 
@@ -191,7 +191,7 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan_string = TmpTestPlanBuilder::default()
+        let physical_plan_string = TestPlanBuilder::default()
             .num_workers(4)
             .build()
             .physical_plan_as_string(query)
@@ -219,7 +219,7 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let physical_plan_string = TmpTestPlanBuilder::new()
+        let physical_plan_string = TestPlanBuilder::new()
             .target_partitions(1)
             .num_workers(4)
             .distributed()
@@ -278,7 +278,7 @@ mod tests {
         broadcast_enabled: bool,
         target_partitions: usize,
     ) -> String {
-        let test_plan = TmpTestPlanBuilder::new()
+        let test_plan = TestPlanBuilder::new()
             .target_partitions(target_partitions)
             .broadcast_joins(broadcast_enabled)
             .build();

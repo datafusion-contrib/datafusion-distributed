@@ -102,7 +102,7 @@ pub(crate) fn partial_reduce_below_network_shuffles(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::plans::TmpTestPlanBuilder;
+    use crate::test_utils::plans::TestPlanBuilder;
     use crate::assert_snapshot;
     use datafusion::common::assert_not_contains;
 
@@ -151,7 +151,7 @@ mod tests {
     }
 
     async fn sql_to_physical_plan_ascii(query: &str, distributed_partial_reduce: bool) -> String {
-        TmpTestPlanBuilder::default()
+        TestPlanBuilder::default()
             .distributed()
             .distributed_partial_reduce(distributed_partial_reduce)
             .build()

@@ -125,7 +125,7 @@ impl TestPlan {
 }
 
 #[cfg(test)]
-pub(crate) struct TmpTestPlanBuilder {
+pub(crate) struct TestPlanBuilder {
     target_partitions: Option<usize>,
     num_workers: Option<usize>,
     distributed: bool,
@@ -138,7 +138,7 @@ pub(crate) struct TmpTestPlanBuilder {
 }
 
 #[cfg(test)]
-impl TmpTestPlanBuilder {
+impl TestPlanBuilder {
     pub fn new() -> Self {
         Self { 
             target_partitions: None,
@@ -256,7 +256,7 @@ impl TmpTestPlanBuilder {
 }
 
 #[cfg(test)]
-impl Default for TmpTestPlanBuilder {
+impl Default for TestPlanBuilder {
     fn default() -> Self {
         Self { 
             target_partitions: Some(4),
