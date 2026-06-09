@@ -92,6 +92,7 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     result
 }
 
+/// Create a plan from a context and queries
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct TestPlan {
@@ -100,6 +101,8 @@ pub(crate) struct TestPlan {
 
 #[cfg(test)]
 impl TestPlan {
+    /// get the physical plan of a query. note queries can be separated by `;`, the
+    /// last query's plan will be returned
     pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
         let mut queries = query.split(';').collect_vec();
         let last_query = queries.pop().unwrap();
@@ -113,11 +116,15 @@ impl TestPlan {
         df.create_physical_plan().await.unwrap()
     }
 
+    /// get the physical plan of a query as a string. note queries can be separated by `;`, the
+    /// last query's plan will be returned
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
         displayable(plan.as_ref()).indent(true).to_string()
     }
 
+    /// get the physical plan of a query as an ascii string. note queries can be separated by `;`, the
+    /// last query's plan will be returned
     pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
         display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
@@ -127,6 +134,13 @@ impl TestPlan {
     }
 }
 
+/// Ergonomic builder for constructing a [TestPlan] in unit tests.
+///
+/// Wraps [SessionConfig] and [SessionStateBuilder] behind named knobs so tests can
+/// declare *what* they want (workers, broadcast, a task estimator) without managing
+/// the order distributed settings must be applied in. [`TestPlanBuilder::build`]
+/// resolves that order: config, then default features, then the distributed planner
+/// and any [DistributedConfig] modifiers.
 #[cfg(test)]
 pub(crate) struct TestPlanBuilder {
     target_partitions: Option<usize>,
