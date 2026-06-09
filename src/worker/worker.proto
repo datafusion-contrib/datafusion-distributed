@@ -17,10 +17,10 @@ message CoordinatorToWorkerMsg {
     // Sends a subplan to a worker so that a future ExecuteTask call can actually execute it.
     // The plan is identified by a TaskKey.
     SetPlanRequest set_plan_request = 1;
-    // A single message from a work unit feed belonging to one partition from one node from the plan set in
+    // A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
     // set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
     // be executed within a partition, for example, a stream of file addresses that should be read.
-    WorkUnit work_unit = 2;
+    WorkUnitBatch work_unit_batch = 2;
   }
 }
 
@@ -77,6 +77,11 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
+}
+
+message WorkUnitBatch {
+  // A batch of WorkUnits.
+  repeated WorkUnit batch = 1;
 }
 
 message WorkUnit {

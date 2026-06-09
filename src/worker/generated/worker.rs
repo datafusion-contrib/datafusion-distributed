@@ -12,11 +12,11 @@ pub mod coordinator_to_worker_msg {
         /// The plan is identified by a TaskKey.
         #[prost(message, tag = "1")]
         SetPlanRequest(super::SetPlanRequest),
-        /// A single message from a work unit feed belonging to one partition from one node from the plan set in
+        /// A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
         /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
         /// be executed within a partition, for example, a stream of file addresses that should be read.
         #[prost(message, tag = "2")]
-        WorkUnit(super::WorkUnit),
+        WorkUnitBatch(super::WorkUnitBatch),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -96,6 +96,12 @@ pub mod set_plan_request {
         pub partitions: u64,
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkUnitBatch {
+    /// A batch of WorkUnits.
+    #[prost(message, repeated, tag = "1")]
+    pub batch: ::prost::alloc::vec::Vec<WorkUnit>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkUnit {
     /// Identifier of the node to which this work unit feed belongs to.
@@ -107,16 +113,16 @@ pub struct WorkUnit {
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
     #[prost(bytes = "vec", tag = "3")]
     pub body: ::prost::alloc::vec::Vec<u8>,
-    /// Unix timestamp in nanoseconds at which this message was created.
+    /// Unix timestamp in nanoseconds at which this message was created in the coordinator.
     #[prost(uint64, tag = "4")]
     pub created_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was sent.
+    /// Unix timestamp in nanoseconds at which this message was sent by the coordinator.
     #[prost(uint64, tag = "5")]
     pub sent_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was received.
+    /// Unix timestamp in nanoseconds at which this message was received by a worker.
     #[prost(uint64, tag = "6")]
     pub received_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was processed.
+    /// Unix timestamp in nanoseconds at which this message started being processed.
     #[prost(uint64, tag = "7")]
     pub processed_timestamp_unix_nanos: u64,
 }
