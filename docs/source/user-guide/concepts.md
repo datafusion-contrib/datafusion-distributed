@@ -15,10 +15,54 @@ Key terminology:
   children nodes.
 - `Worker`: a physical machine listening to serialized execution plans over an Arrow Flight interface. A task is
   executed by exactly one worker, but one worker executes many tasks concurrently.
+- `Leaf stage`: a bottom stage of the plan — one that reads source data (e.g. a `DataSourceExec`).
+- `Head stage`: the top stage, executed on a single task by the coordinator. Its output is what the client sees.
 
 ![concepts.png](../_static/images/concepts.png)
 
 You'll see these concepts mentioned extensively across the documentation and the code itself.
+
+# Coming from DataFusion?
+
+A distributed plan *is* a normal DataFusion physical plan with a few extra `ExecutionPlan` nodes inserted at
+stage boundaries. If you already know DataFusion, this table is most of what you need:
+
+| Vanilla DataFusion                                   | Distributed DataFusion                                                                      |
+|------------------------------------------------------|---------------------------------------------------------------------------------------------|
+| Partition (a thread on one machine)                  | Task (a machine), each running its own partitions                                           |
+| `RepartitionExec(Hash(..))`                          | [`NetworkShuffleExec`](how-a-distributed-plan-is-built.md) (repartitions across tasks)      |
+| `CoalescePartitionsExec` / `SortPreservingMergeExec` | [`NetworkCoalesceExec`](how-a-distributed-plan-is-built.md) (gathers tasks, no repartition) |
+| `BroadcastExec` \*                                   | `NetworkBroadcastExec`                                                                      |
+
+\* `BroadcastExec` is a normal **single-node** operator (not a network boundary), even though it ships with this
+project. It fills a gap in upstream DataFusion: broadcast repartitioning — copying every input partition to every
+output partition — which `RepartitionExec` cannot express. `NetworkBroadcastExec` is what distributes it across
+tasks.
+
+The network boundary nodes execute their child on a remote worker over gRPC instead of in-process; everything
+else is the DataFusion you already know.
+
+# What you need (and what's optional)
+
+To run distributed queries you need exactly three things:
+
+1. `with_distributed_planner()` on the coordinator's `SessionStateBuilder` — registers the `QueryPlanner` that
+   distributes the plan.
+2. A [`WorkerResolver`](worker-resolver.md) — tells the planner where the workers are.
+3. One or more [`Worker`](worker.md) gRPC servers running at those URLs.
+
+Everything else is optional and only needed for specific cases:
+
+- A [`ChannelResolver`](channel-resolver.md) — a sensible default already exists.
+- A [`TaskEstimator`](task-estimator.md) — only for **custom** leaf `ExecutionPlan`s; file-based `DataSourceExec`
+  is distributed out of the box.
+- [Work unit feeds](work-unit-feeds.md) — when a leaf's work is discovered at runtime.
+- [Manually injected network boundaries](custom-distributed-plans.md) — for custom stage topologies.
+- [Metrics collection](metrics.md) — on by default.
+
+> Any **custom** `ExecutionPlan` that crosses a network boundary must have its `PhysicalExtensionCodec`
+> registered on **both** the coordinator and every `Worker` (see [Spawn a Worker](worker.md)), since the node is
+> serialized on one side and deserialized on the other.
 
 # Public API
 

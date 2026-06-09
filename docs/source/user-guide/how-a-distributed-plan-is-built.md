@@ -2,18 +2,70 @@
 
 This page walks through how the distributed DataFusion planner transforms a query into a distributed execution plan.
 
-Everything starts with a simple single-node plan, for example:
+The transformation runs as a DataFusion `QueryPlanner` (registered by `with_distributed_planner()`) **after**
+normal physical planning. It takes the single-node physical plan, finds the points where data would cross a
+thread boundary in vanilla DataFusion, and inserts a network boundary node there instead — splitting the plan
+into *stages* that run on different *tasks* (machines).
 
-```shell
-ProjectionExec: expr=[...]
-  AggregateExec: mode=FinalPartitioned, gby=[...], aggr=[...]
-    CoalesceBatchesExec: target_batch_size=8192
-      RepartitionExec: partitioning=Hash([...], 12), input_partitions=12
-        AggregateExec: mode=Partial, gby=[...], aggr=[...]
-          DataSourceExec: files=[data1, data2, data3, data4]
+## The same plan, before and after
+
+Take `SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)` over a 3-file table on a
+3-worker cluster. Here is the ordinary single-node physical plan (file paths trimmed to `[...]`):
+
+```text
+SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+  SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+      AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+        RepartitionExec: partitioning=Hash([RainToday@0], 4), input_partitions=3
+          AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+            DataSourceExec: file_groups={3 groups: [...]}, projection=[RainToday], file_type=parquet
 ```
 
-To better understand what happens with the plan in the distribution process, we will represent it graphically:
+And the distributed plan for the same query, rendered with `display_plan_ascii`:
+
+```text
+┌───── DistributedExec ── Tasks: t0:[p0]
+│ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
+│   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+└──────────────────────────────────────────────────
+  ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
+  │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
+  │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+  │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+  │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+  └──────────────────────────────────────────────────
+    ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7]
+    │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
+    │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
+    │     DistributedLeafExec: DataSourceExec: file_groups={3 groups: [...]}, projection=[RainToday], file_type=parquet
+    └──────────────────────────────────────────────────
+```
+
+Same operators, same order. The planner only:
+
+- inserted a **`NetworkShuffleExec`** above the hash `RepartitionExec` (the shuffle now fans data across tasks),
+- inserted a **`NetworkCoalesceExec`** at the top to gather all tasks into the single head task,
+- wrapped the leaf in a **`DistributedLeafExec`** so each task scans its own slice of the files, and
+- grew the shuffle's partition count (4 → 8) because it now feeds multiple tasks.
+
+### Reading the output
+
+- `┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7]` — a stage running on **3 tasks** (`t0`, `t1`,
+  `t2`), each on a different worker, each executing partitions `p0..p7`. Tasks are machines; partitions are the
+  threads within a task.
+- `[Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3` — a **network boundary**: this node
+  streams the output of Stage 1 over Arrow Flight instead of from a child node. `input_tasks` is how many tasks
+  produced the data; `output_partitions` is how many partitions it exposes to its parent.
+- `DistributedExec` — the root and the only node the client executes. It hosts the **head stage**, which always
+  runs on a single task (the coordinator).
+- `DistributedLeafExec` — a transparent wrapper around the original leaf; `DistributedExec` swaps in the right
+  per-task variant before sending the stage to a worker.
+
+## Step by step
+
+The rest of this page walks the same transformation visually, on a four-file aggregation. To better understand
+what happens with the plan in the distribution process, we will represent it graphically:
 
 ![img.png](../_static/images/img.png)
 

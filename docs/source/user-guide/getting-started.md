@@ -58,6 +58,7 @@ let localhost_worker_resolver = LocalhostWorkerResolver {
 }
 
 let state = SessionStateBuilder::new()
+    .with_default_features()
     .with_distributed_worker_resolver(localhost_worker_resolver)
     .with_distributed_planner()
     .build();
@@ -67,7 +68,23 @@ let ctx = SessionContext::from(state);
 
 This will leave a DataFusion `SessionContext` ready for executing distributed queries.
 
+> NOTE: `with_distributed_planner()` wraps whatever query planner is already set, so call it **after** any
+> `with_query_planner(..)` and after registering your own physical optimizer rules — the distributed planner
+> runs last, on top of the fully-built physical plan.
+
 > NOTE: This example is not production-ready and is meant to showcase the basic concepts of the library.
+
+## Troubleshooting
+
+Common errors when first bringing up a cluster, and what they usually mean:
+
+| Symptom                                                                                   | Likely cause                                                                                                                                        |
+|-------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `WorkerResolver not present in the session config`                                        | Forgot `with_distributed_worker_resolver(..)` on the coordinator.                                                                                   |
+| A decode/deserialization error for one of your nodes at execution time                    | A custom `ExecutionPlan`'s `PhysicalExtensionCodec` isn't registered on **both** the coordinator and the workers (see [Spawn a Worker](worker.md)). |
+| `Physical input schema should be the same as the one converted from logical input schema` | A custom `TableProvider`/leaf ignores the `projection` passed to `scan()` — honor it (return only the projected columns).                           |
+| `Missing WorkUnit feed for id ...; Was the WorkUnitFeed registered?`                      | Forgot `with_distributed_work_unit_feed(..)`, or registered it on the wrong session (see [Work Unit Feeds](work-unit-feeds.md)).                    |
+| The query runs but isn't distributed (no `DistributedExec` in the plan)                   | `get_urls()` returned no workers, or a custom leaf has no [`TaskEstimator`](task-estimator.md) (custom leaves default to a single task).            |
 
 ## Next steps
 
@@ -81,6 +98,10 @@ Depending on your needs, your setup can get more complicated, for example:
 To learn how to do all that, it's recommended to:
 
 - [Continue reading this guide](worker.md)
+- Learn how to distribute your own execution plans with a [TaskEstimator](task-estimator.md), or stream
+  runtime-discovered work to them with [Work Unit Feeds](work-unit-feeds.md)
+- [Build custom distributed plans](custom-distributed-plans.md) by injecting network boundaries yourself
+- [Collect runtime metrics](metrics.md) (EXPLAIN ANALYZE) for distributed queries
 - [Look at examples in the project](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/examples)
 - [Look at the integration tests for finer grained examples](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/tests)
 
