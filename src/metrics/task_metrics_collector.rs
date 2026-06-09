@@ -250,7 +250,6 @@ mod tests {
     /// single node execution:
     /// "column types must match schema types, expected Dictionary(UInt16, Utf8) but found Utf8 at column index 0"
     #[tokio::test]
-    #[ignore]
     async fn test_metrics_collection_e2e_4() {
         run_metrics_collection_e2e_test("SELECT distinct company from table2").await;
     }
