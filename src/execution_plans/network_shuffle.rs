@@ -12,7 +12,6 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use std::any::Any;
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -111,7 +110,7 @@ impl NetworkShuffleExec {
         consumer_partitions: usize,
         consumer_task_count: usize,
     ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        let Some(repartition_exec) = plan.as_any().downcast_ref::<RepartitionExec>() else {
+        let Some(repartition_exec) = plan.downcast_ref::<RepartitionExec>() else {
             return Ok(Transformed::no(plan));
         };
 
@@ -137,7 +136,7 @@ impl NetworkShuffleExec {
     /// Creates a new [NetworkShuffleExec] fed by the provided [RepartitionExec]. The input plan
     /// will be executed in a remote worker in `producer_tasks` number of tasks.
     pub fn try_new(input: Arc<dyn ExecutionPlan>, producer_tasks: usize) -> Result<Self> {
-        let Some(r_exec) = input.as_any().downcast_ref::<RepartitionExec>() else {
+        let Some(r_exec) = input.downcast_ref::<RepartitionExec>() else {
             return plan_err!("The input of a NetworkShuffleExec can only be a RepartitionExec");
         };
         if !matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
@@ -184,10 +183,6 @@ impl DisplayAs for NetworkShuffleExec {
 impl ExecutionPlan for NetworkShuffleExec {
     fn name(&self) -> &str {
         "NetworkShuffleExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

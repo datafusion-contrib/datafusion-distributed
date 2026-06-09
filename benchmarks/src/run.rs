@@ -105,8 +105,12 @@ pub struct RunOpt {
     #[structopt(long, default_value = "0")]
     max_tasks_per_stage: usize,
 
+    /// Activate dynamic task count
+    #[structopt(long)]
+    dynamic: bool,
+
     /// Number of iterations of each test run
-    #[structopt(short = "i", long = "iterations", default_value = "3")]
+    #[structopt(short = "i", long = "iterations", default_value = "5")]
     iterations: usize,
 
     /// Number of partitions to process in parallel. Defaults to number of available cores.
@@ -205,6 +209,7 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_dynamic_task_count(self.dynamic)?
             .with_distributed_compression(match self.compression.as_str() {
                 "zstd" => Some(CompressionType::ZSTD),
                 "lz4" => Some(CompressionType::LZ4_FRAME),
@@ -219,7 +224,6 @@ impl RunOpt {
             .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
             .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
                 dse.data_source()
-                    .as_any()
                     .downcast_ref::<WorkUnitFileScanConfig>()
                     .map(|v| &v.feed)
             });
@@ -309,7 +313,7 @@ impl RunOpt {
                 }
             }
         }
-        println!("Query {id} avg time: {:.2} ms", bench_query.avg());
+        println!("Query {id} p50 time: {} ms", bench_query.p50());
 
         Ok(bench_query)
     }

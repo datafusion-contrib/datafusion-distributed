@@ -1,6 +1,6 @@
-import { Command } from "commander";
-import { z } from 'zod';
-import { BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec } from "./@bench-common";
+import {Command} from "commander";
+import {z} from 'zod';
+import {BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec} from "./@bench-common";
 
 // Remember to port-forward the Spark HTTP server with
 // aws ssm start-session --target {host-id} --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"
@@ -10,7 +10,7 @@ async function main() {
 
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
-        .option('-i, --iterations <number>', 'Number of iterations', '3')
+        .option('-i, --iterations <number>', 'Number of iterations', '5')
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -59,6 +59,9 @@ class SparkRunner implements BenchmarkRunner {
         if (sql.includes("create view")) {
             // Query 15
             let [createView, query, dropView] = sql.split(";")
+            // revenue0 must be temporary: it references temp view lineitem, and Spark
+            // rejects creating a persistent view that references a temporary one.
+            createView = createView.replace(/create\s+(?:or\s+replace\s+)?view\s+/gi, 'CREATE OR REPLACE TEMPORARY VIEW ')
             await this.query(createView);
             response = await this.query(query)
             await this.query(dropView);
@@ -66,7 +69,7 @@ class SparkRunner implements BenchmarkRunner {
             response = await this.query(sql)
         }
 
-        return { rowCount: response.count, plan: "", elapsed: response.elapsed_ms }; // plans not yet supported in Spark.
+        return {rowCount: response.count, plan: "", elapsed: response.elapsed_ms, tasks: 0}; // plans not yet supported in Spark.
     }
 
     private async query(sql: string): Promise<QueryResponse> {

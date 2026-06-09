@@ -726,7 +726,7 @@ impl DistributedExt for SessionConfig {
         F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static,
     {
         set_distributed_work_unit_feed(self, move |plan: &Arc<dyn ExecutionPlan>| {
-            plan.as_any().downcast_ref::<T>().and_then(&getter)
+            plan.downcast_ref::<T>().and_then(&getter)
         })
     }
 

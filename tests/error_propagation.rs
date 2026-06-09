@@ -17,7 +17,6 @@ mod tests {
     use datafusion_proto::protobuf::proto_error;
     use futures::{TryStreamExt, stream};
     use prost::Message;
-    use std::any::Any;
     use std::error::Error;
     use std::fmt::Formatter;
     use std::sync::Arc;
@@ -101,10 +100,6 @@ mod tests {
             "ErrorThrowingExec"
         }
 
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
         fn properties(&self) -> &Arc<PlanProperties> {
             &self.plan_properties
         }
@@ -173,7 +168,7 @@ mod tests {
             node: Arc<dyn ExecutionPlan>,
             buf: &mut Vec<u8>,
         ) -> datafusion::common::Result<()> {
-            let Some(plan) = node.as_any().downcast_ref::<ErrorThrowingExec>() else {
+            let Some(plan) = node.downcast_ref::<ErrorThrowingExec>() else {
                 return Err(proto_error(format!(
                     "Expected plan to be of type ErrorThrowingExec, but was {}",
                     node.name()

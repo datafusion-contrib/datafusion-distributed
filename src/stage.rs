@@ -182,7 +182,7 @@ pub async fn explain_analyze(
     executed: Arc<dyn ExecutionPlan>,
     format: DistributedMetricsFormat,
 ) -> Result<String, DataFusionError> {
-    match executed.as_any().downcast_ref::<DistributedExec>() {
+    match executed.downcast_ref::<DistributedExec>() {
         None => Ok(DisplayableExecutionPlan::with_metrics(executed.as_ref())
             .indent(true)
             .to_string()),
@@ -199,7 +199,7 @@ const LDCORNER: &str = "└"; // Left bottom corner
 const VERTICAL: &str = "│"; // Vertical line
 const HORIZONTAL: &str = "─"; // Horizontal line
 pub fn display_plan_ascii(plan: &dyn ExecutionPlan, show_metrics: bool) -> String {
-    if let Some(plan) = plan.as_any().downcast_ref::<DistributedExec>() {
+    if let Some(plan) = plan.downcast_ref::<DistributedExec>() {
         let mut f = String::new();
         display_ascii(plan, Either::Left(plan), 0, show_metrics, &mut f).unwrap();
         f
@@ -497,7 +497,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
 "
     )?;
 
-    if plan.as_any().is::<DistributedExec>() {
+    if plan.is::<DistributedExec>() {
         let mut max_num = 0;
         let mut all_stages = find_all_stages(&plan)
             .into_iter()
@@ -805,7 +805,7 @@ fn display_inter_task_edges(
     let mut index = 0;
     while let Some(plan) = queue.pop_front() {
         index += 1;
-        if let Some(node) = plan.as_any().downcast_ref::<NetworkShuffleExec>() {
+        if let Some(node) = plan.downcast_ref::<NetworkShuffleExec>() {
             if node.input_stage().num() != input_stage.num() {
                 continue;
             }
@@ -829,7 +829,7 @@ fn display_inter_task_edges(
                 )?;
             }
             continue;
-        } else if let Some(node) = plan.as_any().downcast_ref::<NetworkCoalesceExec>() {
+        } else if let Some(node) = plan.downcast_ref::<NetworkCoalesceExec>() {
             if node.input_stage().num() != input_stage.num() {
                 continue;
             }

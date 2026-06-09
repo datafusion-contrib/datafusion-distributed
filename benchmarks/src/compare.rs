@@ -1,4 +1,4 @@
-use crate::results::BenchResult;
+use crate::results::{BenchResult, print_comparison_total};
 use datafusion::common::{Result, internal_err};
 use structopt::StructOpt;
 
@@ -29,12 +29,13 @@ impl CompareOpt {
         );
         let base = BenchResult::load_many(&self.dataset, base);
         let new = BenchResult::load_many(&self.dataset, new);
-        for query in new {
+        for query in new.iter() {
             let Some(prev) = base.iter().find(|v| v.id == query.id) else {
                 continue;
             };
             query.compare(prev)
         }
+        print_comparison_total(&base, &new);
         Ok(())
     }
 }

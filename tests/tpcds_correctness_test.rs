@@ -578,7 +578,7 @@ mod tests {
         let (s_plan, s_results) = run(&s_ctx, &query_sql).await;
         let (d_plan, d_results) = run(&d_ctx, &query_sql).await;
 
-        if !d_plan.as_any().is::<DistributedExec>() {
+        if !d_plan.is::<DistributedExec>() {
             return plan_err!("Query {query_id} did not get distributed");
         }
         let display = display_plan_ascii(d_plan.as_ref(), false);

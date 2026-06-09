@@ -26,10 +26,9 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ProjectionExec: expr=[table_catalog@0 as table_catalog, table_schema@1 as table_schema, table_name@2 as table_name, column_name@3 as column_name, data_type@5 as data_type, is_nullable@4 as is_nullable]
-          FilterExec: table_name@2 = weather
-            RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
-              StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
+        FilterExec: table_name@2 = weather, projection=[table_catalog@0, table_schema@1, table_name@2, column_name@3, data_type@5, is_nullable@4]
+          RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=1
+            StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
         ",
         );
 

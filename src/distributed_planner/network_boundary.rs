@@ -29,11 +29,11 @@ pub trait NetworkBoundaryExt {
 
 impl NetworkBoundaryExt for dyn ExecutionPlan {
     fn as_network_boundary(&self) -> Option<&dyn NetworkBoundary> {
-        if let Some(node) = self.as_any().downcast_ref::<NetworkShuffleExec>() {
+        if let Some(node) = self.downcast_ref::<NetworkShuffleExec>() {
             Some(node)
-        } else if let Some(node) = self.as_any().downcast_ref::<NetworkCoalesceExec>() {
+        } else if let Some(node) = self.downcast_ref::<NetworkCoalesceExec>() {
             Some(node)
-        } else if let Some(node) = self.as_any().downcast_ref::<NetworkBroadcastExec>() {
+        } else if let Some(node) = self.downcast_ref::<NetworkBroadcastExec>() {
             Some(node)
         } else {
             None

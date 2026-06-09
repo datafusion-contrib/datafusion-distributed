@@ -250,7 +250,7 @@ async fn _inject_network_boundaries(
     let mut task_count = estimator
         .task_estimation(&plan, ctx.cfg)
         .map_or(Desired(1), |v| v.task_count);
-    if ctx.d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
+    if ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
         // with a bunch of children, the user might want to increase parallelism and increase the
         // task count for the stage running that.
@@ -259,7 +259,7 @@ async fn _inject_network_boundaries(
             count += ctx.task_count(processed_child)?.as_usize();
         }
         task_count = Desired(count);
-    } else if let Some(node) = plan.as_any().downcast_ref::<HashJoinExec>()
+    } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
         && !broadcast_joins_enabled
     {
@@ -281,7 +281,7 @@ async fn _inject_network_boundaries(
     task_count = task_count.limit(ctx.max_tasks()?);
 
     // Upon reaching a hash repartition, we need to introduce a shuffle right above it.
-    if let Some(r_exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
+    if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>() {
         if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
@@ -306,11 +306,11 @@ async fn _inject_network_boundaries(
         && !plan.children().is_empty()
         // If the parent is trying to coalesce all partitions into one, we need to introduce
         // a network coalesce right below it (or in other words, above the current node)
-        && (parent.as_any().is::<CoalescePartitionsExec>()
-        || parent.as_any().is::<SortPreservingMergeExec>())
+        && (parent.is::<CoalescePartitionsExec>()
+        || parent.is::<SortPreservingMergeExec>())
     {
         // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
-        return if plan.as_any().is::<BroadcastExec>() {
+        return if plan.is::<BroadcastExec>() {
             // The subtree below this point belongs to one stage. Propagate the chosen task
             // count down so every node in that stage has it recorded.
             let plan = propagate_task_count_until_network_boundaries(&plan, task_count, ctx)?;
@@ -420,7 +420,7 @@ fn propagate_task_count_until_network_boundaries(
         Ok(ctx.plan_with_task_count(Arc::clone(plan), task_count))
 
     // Handle ChildrenIsolatorUnionExec.
-    } else if ctx.d_cfg.children_isolator_unions && plan.as_any().is::<UnionExec>() {
+    } else if ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
         // Propagating through ChildrenIsolatorUnionExec is not that easy, each child will
         // be executed in its own task, and therefore, they will act as if they were in executing
         // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
@@ -577,16 +577,15 @@ mod tests {
         "#;
         let annotated = sql_to_annotated_plan(query, 4, 4, false, None).await;
         assert_snapshot!(annotated, @r"
-        ProjectionExec: task_count=Maximum(1)
-          SortPreservingMergeExec: task_count=Maximum(1)
-            NetworkCoalesceExec: task_count=Maximum(1)
-              SortExec: task_count=Desired(2)
-                ProjectionExec: task_count=Desired(2)
-                  AggregateExec: task_count=Desired(2)
-                    NetworkShuffleExec: task_count=Desired(2)
-                      RepartitionExec: task_count=Desired(3)
-                        AggregateExec: task_count=Desired(3)
-                          DataSourceExec: task_count=Desired(3)
+        SortPreservingMergeExec: task_count=Maximum(1)
+          NetworkCoalesceExec: task_count=Maximum(1)
+            SortExec: task_count=Desired(2)
+              ProjectionExec: task_count=Desired(2)
+                AggregateExec: task_count=Desired(2)
+                  NetworkShuffleExec: task_count=Desired(2)
+                    RepartitionExec: task_count=Desired(3)
+                      AggregateExec: task_count=Desired(3)
+                        DataSourceExec: task_count=Desired(3)
         ")
     }
 
@@ -998,7 +997,7 @@ mod tests {
             f: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
         ) -> Self {
             let f = Arc::new(move |plan: &dyn ExecutionPlan| -> Option<TaskEstimation> {
-                if let Some(plan) = plan.as_any().downcast_ref::<T>() {
+                if let Some(plan) = plan.downcast_ref::<T>() {
                     f(plan)
                 } else {
                     None
@@ -1036,8 +1035,8 @@ mod tests {
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
         ) -> Option<TaskEstimation> {
-            let coalesce = plan.as_any().downcast_ref::<CoalescePartitionsExec>()?;
-            if coalesce.input().as_any().is::<BroadcastExec>() {
+            let coalesce = plan.downcast_ref::<CoalescePartitionsExec>()?;
+            if coalesce.input().is::<BroadcastExec>() {
                 Some(TaskEstimation::maximum(1))
             } else {
                 None

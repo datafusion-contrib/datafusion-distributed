@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
 pub async fn wait_for_all_metrics(plan: &Arc<dyn ExecutionPlan>) {
-    if let Some(dist_exec) = plan.as_any().downcast_ref::<DistributedExec>() {
+    if let Some(dist_exec) = plan.downcast_ref::<DistributedExec>() {
         dist_exec.wait_for_metrics().await;
     }
 }

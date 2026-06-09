@@ -16,6 +16,12 @@ pub trait SessionStateBuilderExt {
 
 impl SessionStateBuilderExt for SessionStateBuilder {
     fn with_distributed_planner(mut self) -> Self {
+        self.config()
+            .get_or_insert_default()
+            .options_mut()
+            .optimizer
+            .enable_physical_uncorrelated_scalar_subquery = false;
+
         let prev = std::mem::take(self.query_planner());
         self.with_query_planner(Arc::new(DistributedQueryPlanner { prev }))
     }

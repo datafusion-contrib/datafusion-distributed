@@ -8,7 +8,6 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchStreamAdapter};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{Stream, stream};
-use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -144,10 +143,6 @@ impl ExecutionPlan for MockExec {
         Self::static_name()
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -268,9 +263,9 @@ impl ExecutionPlan for MockExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> datafusion::common::Result<Statistics> {
+    ) -> datafusion::common::Result<Arc<Statistics>> {
         if partition.is_some() {
-            return Ok(Statistics::new_unknown(&self.schema));
+            return Ok(Arc::new(Statistics::new_unknown(&self.schema)));
         }
         let data: datafusion::common::Result<Vec<Vec<RecordBatch>>> = self
             .data
@@ -288,7 +283,11 @@ impl ExecutionPlan for MockExec {
 
         let data = data?;
 
-        Ok(compute_record_batch_statistics(&data, &self.schema, None))
+        Ok(Arc::new(compute_record_batch_statistics(
+            &data,
+            &self.schema,
+            None,
+        )))
     }
 }
 
