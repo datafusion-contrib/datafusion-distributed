@@ -6,23 +6,26 @@ use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::{
+    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
+};
 
 use crate::BroadcastExec;
 
 use super::DistributedConfig;
 
-/// This is a top-down traversal of a [ExecutionPlan] that inserts [BroadcastExec] opeerators where
+/// This is a top-down traversal of a [ExecutionPlan] that inserts [BroadcastExec] operators where
 /// appropriate.
 ///
 /// # What is it doing?
-/// The pass searches for CollectLeft [HashJoinExec]s that are either "Right" or Inner join type.
-/// Then does one of two things:
+/// The pass searches for joins whose left input can be broadcast without duplicating output rows:
+/// CollectLeft [HashJoinExec]s, [NestedLoopJoinExec]s, and [CrossJoinExec]s. Then it does one of
+/// two things:
 ///     1. If the build child is a [CoalescePartitionsExec] -> Insert a [BroadcastExec] directly
 ///        below it.
-///     2. Otherwise (means its already single partitioned going into the join) -> Insert a
-///        [BroadcastExec] -> [CoalescePartitionsExec] below the [HashJoinExec] but above its
-///        orginal build child.
+///     2. Otherwise (means it is already single partitioned going into the join) -> Insert a
+///        [BroadcastExec] -> [CoalescePartitionsExec] below the join but above its
+///        original build child.
 /// ```text
 ///                  ┌──────────────────────┐                                                    ┌──────────────────────┐
 ///                  │   CoalesceBatches    │                                                    │   CoalesceBatches    │
@@ -121,25 +124,7 @@ pub(super) fn insert_broadcast_execs(
     }
 
     plan.transform_down(|node| {
-        let Some(hash_join) = node.downcast_ref::<HashJoinExec>() else {
-            return Ok(Transformed::no(node));
-        };
-        if hash_join.partition_mode() != &PartitionMode::CollectLeft {
-            return Ok(Transformed::no(node));
-        }
-
-        // Only broadcast when output is driven by the probe side.
-        // Joins that can emit build-side rows (left/left-semi/left-anti/left-mark/full) would
-        // duplicate output if the build is broadcast, thus are excluded.
-        let join_type = hash_join.join_type();
-        if !matches!(
-            join_type,
-            JoinType::Inner
-                | JoinType::Right
-                | JoinType::RightSemi
-                | JoinType::RightAnti
-                | JoinType::RightMark
-        ) {
+        if !can_broadcast_left_input(node.as_ref()) {
             return Ok(Transformed::no(node));
         }
 
@@ -148,23 +133,15 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        // If build child is CoalescePartitionsExec get its input
-        // Otherwise, use the build child directly (DataSourceExec)
-        let broadcast_input =
-            if let Some(coalesce) = build_child.downcast_ref::<CoalescePartitionsExec>() {
-                Arc::clone(coalesce.input())
-            } else {
-                Arc::clone(build_child)
-            };
+        let broadcast_input = build_child
+            .downcast_ref::<CoalescePartitionsExec>()
+            .map_or_else(
+                || Arc::clone(build_child),
+                |coalesce| Arc::clone(coalesce.input()),
+            );
 
-        // Insert BroadcastExec. consumer_task_count=1 is a placeholder and
-        // will be corrected during optimizer rule.
-        let broadcast = Arc::new(BroadcastExec::new(
-            broadcast_input,
-            1, // placeholder
-        ));
-
-        // Always wrap with CoalescePartitionsExec
+        // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
+        let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(broadcast_input, 1));
         let new_build_child: Arc<dyn ExecutionPlan> =
             Arc::new(CoalescePartitionsExec::new(broadcast));
 
@@ -173,6 +150,30 @@ pub(super) fn insert_broadcast_execs(
         Ok(Transformed::yes(node.with_new_children(new_children)?))
     })
     .map(|transformed| transformed.data)
+}
+
+fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
+        return hash_join.partition_mode() == &PartitionMode::CollectLeft
+            && is_left_broadcast_safe(hash_join.join_type());
+    }
+
+    if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>() {
+        return is_left_broadcast_safe(nested_loop_join.join_type());
+    }
+
+    plan.downcast_ref::<CrossJoinExec>().is_some()
+}
+
+fn is_left_broadcast_safe(join_type: &JoinType) -> bool {
+    matches!(
+        join_type,
+        JoinType::Inner
+            | JoinType::Right
+            | JoinType::RightSemi
+            | JoinType::RightAnti
+            | JoinType::RightMark
+    )
 }
 
 #[cfg(test)]
@@ -260,6 +261,53 @@ mod tests {
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_insert_broadcast_cross_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a CROSS JOIN weather b
+        "#;
+        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        assert_snapshot!(plan, @"
+        CrossJoinExec
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_insert_broadcast_nested_loop_inner_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a JOIN weather b ON a."MinTemp" > b."MaxTemp"
+        "#;
+        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        assert_snapshot!(plan, @"
+        NestedLoopJoinExec: join_type=Inner, filter=MinTemp@0 > MaxTemp@1
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=3, consumer_tasks=1, output_partitions=3
+              DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_no_broadcast_nested_loop_left_join() {
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a LEFT JOIN weather b ON a."MinTemp" > b."MaxTemp"
+        "#;
+        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        assert_snapshot!(plan, @"
+        NestedLoopJoinExec: join_type=Left, filter=MinTemp@0 > MaxTemp@1
+          CoalescePartitionsExec
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
         ");
     }
 
