@@ -206,8 +206,10 @@ impl TestPlanBuilder {
 
     fn build_config(&self) -> SessionConfig {
         // distributed config
-        let mut d_cfg = DistributedConfig::default();
-        d_cfg.broadcast_joins = self.broadcast_joins;
+        let d_cfg = DistributedConfig {
+            broadcast_joins: self.broadcast_joins,
+            ..Default::default()
+        };
         // config block
         let mut config = SessionConfig::new();
         config.set_distributed_option_extension(d_cfg);

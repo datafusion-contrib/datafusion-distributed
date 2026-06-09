@@ -222,7 +222,7 @@ mod tests {
             .num_workers(4)
             .distributed_planner()
             .build()
-            .physical_plan_as_string(&query.to_string())
+            .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
@@ -281,7 +281,7 @@ mod tests {
             .broadcast_joins(broadcast_enabled)
             .build();
         let ctx = test_plan.get_ctx();
-        let plan = test_plan.physical_plan(&query.to_string()).await;
+        let plan = test_plan.physical_plan(query).await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
             .expect("failed to insert broadcasts");
         format!("{}", displayable(plan.as_ref()).indent(true))

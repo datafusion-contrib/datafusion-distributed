@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     async fn annotate_test_plan(test_plan: TestPlan, query: &str) -> String {
-        let plan = test_plan.physical_plan(&query.to_string()).await;
+        let plan = test_plan.physical_plan(query).await;
         let session_config = test_plan.get_ctx().copied_config();
 
         let plan_w_broadcast = insert_broadcast_execs(plan, session_config.options())
