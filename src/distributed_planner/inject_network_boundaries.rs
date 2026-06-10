@@ -569,6 +569,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -585,6 +586,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -611,6 +613,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -652,6 +655,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -690,6 +694,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -711,6 +716,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -735,6 +741,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -762,6 +769,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -783,6 +791,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -810,6 +819,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_files_per_task(1)
@@ -844,6 +854,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_task_estimator(task_estimator)
@@ -873,6 +884,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_task_estimator(task_estimator)
@@ -901,6 +913,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .build()
@@ -942,6 +955,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(1)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .build()
@@ -968,6 +982,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(3)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_task_estimator(BuildSideOneTaskEstimator)
@@ -994,6 +1009,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(3)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_task_estimator(BroadcastBuildCoalesceMaxEstimator)
@@ -1020,6 +1036,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
             .build()
@@ -1046,6 +1063,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .build()
@@ -1084,6 +1102,7 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_children_isolator_unions(true)
