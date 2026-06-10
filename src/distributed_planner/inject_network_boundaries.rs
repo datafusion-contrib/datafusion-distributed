@@ -792,8 +792,6 @@ mod tests {
     #[tokio::test]
     async fn test_children_isolator_union() {
         let query = r#"
-        SET distributed.children_isolator_unions = true;
-        SET distributed.files_per_task = 1;
         SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
         UNION ALL
         SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
@@ -805,6 +803,7 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
+            .distributed_files_per_task(1)
             .build();
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
@@ -1051,7 +1050,6 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_union_children_isolator_annotation() {
         let query = r#"
-        SET distributed.children_isolator_unions = true;
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
@@ -1069,6 +1067,7 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(true)
+            .distributed_children_isolator_unions(true)
             .build();
         let annotated = annotate_test_plan(test_plan, query).await;
         // With ChildrenIsolatorUnionExec, each broadcast task_count should be limited to their

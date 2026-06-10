@@ -477,12 +477,12 @@ mod tests {
     #[tokio::test]
     async fn test_limited_by_worker() {
         let query = r#"
-        SET datafusion.execution.target_partitions=2;
         SELECT 1 FROM weather
         UNION ALL
         SELECT 1 FROM flights_1m
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .target_partitions(2)
             .num_workers(2)
             .build()
             .physical_plan_as_ascii(query, false)
@@ -503,12 +503,12 @@ mod tests {
     #[tokio::test]
     async fn test_limited_by_config() {
         let query = r#"
-        SET distributed.max_tasks_per_stage=2;
         SELECT 1 FROM weather
         UNION ALL
         SELECT 1 FROM flights_1m
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_max_tasks_per_stage(2)
             .build()
             .physical_plan_as_ascii(query, false)
             .await;
@@ -528,7 +528,6 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_2_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
@@ -559,7 +558,6 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_2_tables_limited_workers() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
@@ -589,7 +587,6 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_3_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
@@ -625,7 +622,6 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_5_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
@@ -782,7 +778,6 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_union_children_isolator_plan() {
         let query = r#"
-        SET distributed.children_isolator_unions = true;
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"

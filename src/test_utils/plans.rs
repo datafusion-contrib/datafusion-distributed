@@ -152,6 +152,8 @@ pub(crate) struct TestPlanBuilder {
     broadcast_joins: bool,
     distributed_task_estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
     distributed_partial_reduce: Option<bool>,
+    distributed_children_isolator_unions: Option<bool>,
+    distributed_max_tasks_per_stage: Option<usize>,
 }
 
 #[cfg(test)]
@@ -167,6 +169,8 @@ impl TestPlanBuilder {
             broadcast_joins: false,
             distributed_task_estimator: None,
             distributed_partial_reduce: None,
+            distributed_children_isolator_unions: None,
+            distributed_max_tasks_per_stage: None
         }
     }
 
@@ -218,22 +222,42 @@ impl TestPlanBuilder {
         self
     }
 
+    pub fn distributed_children_isolator_unions(mut self, enabled: bool) -> Self {
+        self.distributed_children_isolator_unions = Some(enabled);
+        self
+    }
+
+    pub fn distributed_max_tasks_per_stage(mut self, n: usize) -> Self {
+        self.distributed_max_tasks_per_stage = Some(n);
+        self
+    }
+
     fn build_config(&self) -> SessionConfig {
-        // distributed config
-        let d_cfg = DistributedConfig {
-            broadcast_joins: self.broadcast_joins,
+        let mut d_cfg = DistributedConfig {
+            broadcast_joins: self.broadcast_joins,   
             ..Default::default()
         };
-        // config block
+        // Option fields: Some overrides, None inherits the DistributedConfig default
+        if let Some(x) = self.distributed_children_isolator_unions {
+            d_cfg.children_isolator_unions = x;
+        }
+        if let Some(x) = self.distributed_partial_reduce {
+            d_cfg.partial_reduce = x;
+        }
+        if let Some(n) = self.distributed_files_per_task {
+            d_cfg.files_per_task = n;
+        }
+        if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
+            d_cfg.cardinality_task_count_factor = f;   // note: the real field name
+        }
+        if let Some(n) = self.distributed_max_tasks_per_stage {
+            d_cfg.max_tasks_per_stage = n
+        }
+
         let mut config = SessionConfig::new();
         config.set_distributed_option_extension(d_cfg);
         if let Some(n) = self.target_partitions {
             config = config.with_target_partitions(n);
-        }
-        if let Some(n) = self.distributed_files_per_task {
-            config = config
-                .with_distributed_files_per_task(n)
-                .expect("`distributed_files_per_task` expects a distributed config");
         }
         if let Some(enabled) = self.information_schema {
             config = config.with_information_schema(enabled);
@@ -251,18 +275,8 @@ impl TestPlanBuilder {
         if self.distributed_planner {
             state = state.with_distributed_planner();
         }
-        if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
-            state = state
-                .with_distributed_cardinality_effect_task_scale_factor(f)
-                .expect(
-                    "Error setting `distributed_cardinality_effect_task_scale_factor` in `build`",
-                );
-        }
         if let Some(t) = self.distributed_task_estimator.clone() {
             state = state.with_distributed_task_estimator(t);
-        }
-        if let Some(enabled) = self.distributed_partial_reduce {
-            state = state.with_distributed_partial_reduce(enabled).unwrap()
         }
         state.build()
     }
@@ -289,6 +303,8 @@ impl Default for TestPlanBuilder {
             broadcast_joins: false,
             distributed_task_estimator: None,
             distributed_partial_reduce: None,
+            distributed_children_isolator_unions: None,
+            distributed_max_tasks_per_stage: None,
         }
     }
 }
