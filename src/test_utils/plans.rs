@@ -157,7 +157,7 @@ impl TestPlanBuilder {
             distributed_task_estimator: None,
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
-            distributed_max_tasks_per_stage: None
+            distributed_max_tasks_per_stage: None,
         }
     }
 
@@ -221,7 +221,7 @@ impl TestPlanBuilder {
 
     fn build_config(&self) -> SessionConfig {
         let mut d_cfg = DistributedConfig {
-            broadcast_joins: self.broadcast_joins,   
+            broadcast_joins: self.broadcast_joins,
             ..Default::default()
         };
         // Option fields: Some overrides, None inherits the DistributedConfig default
@@ -235,7 +235,7 @@ impl TestPlanBuilder {
             d_cfg.files_per_task = n;
         }
         if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
-            d_cfg.cardinality_task_count_factor = f;   // note: the real field name
+            d_cfg.cardinality_task_count_factor = f; // note: the real field name
         }
         if let Some(n) = self.distributed_max_tasks_per_stage {
             d_cfg.max_tasks_per_stage = n
