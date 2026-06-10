@@ -109,7 +109,11 @@ mod tests {
     #[tokio::test]
     async fn grouped_aggregation() {
         let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
-        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_partial_reduce(true)
+            .build()
+            .physical_plan_as_ascii(query, false)
+            .await;
         assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
@@ -132,29 +136,33 @@ mod tests {
     #[tokio::test]
     async fn non_aggregation() {
         let query = r#"SELECT * FROM weather LIMIT 10"#;
-        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_partial_reduce(true)
+            .build()
+            .physical_plan_as_ascii(query, false)
+            .await;
         assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 
     #[tokio::test]
     async fn global_aggregation() {
         let query = r#"SELECT COUNT(*) FROM weather"#;
-        let physical_plan_ascii = sql_to_physical_plan_ascii(query, true).await;
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_partial_reduce(true)
+            .build()
+            .physical_plan_as_ascii(query, false)
+            .await;
         assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 
     #[tokio::test]
     async fn partial_reduce_disabled_by_default() {
         let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
-        let physical_plan_ascii = sql_to_physical_plan_ascii(query, false).await;
-        assert_not_contains!(physical_plan_ascii, "PartialReduce");
-    }
-
-    async fn sql_to_physical_plan_ascii(query: &str, distributed_partial_reduce: bool) -> String {
-        TestPlanBuilder::default()
-            .distributed_partial_reduce(distributed_partial_reduce)
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_partial_reduce(false)
             .build()
             .physical_plan_as_ascii(query, false)
-            .await
+            .await;
+        assert_not_contains!(physical_plan_ascii, "PartialReduce");
     }
 }
