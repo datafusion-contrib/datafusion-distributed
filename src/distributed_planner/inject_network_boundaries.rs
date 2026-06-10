@@ -1062,6 +1062,7 @@ mod tests {
     ) -> String {
         let mut test_plan_builder = TestPlanBuilder::new()
             .target_partitions(target_partitions)
+            .distributed_planner(false)
             .num_workers(num_workers)
             .broadcast_joins(broadcast_enabled);
         if let Some(estimator) = estimator {

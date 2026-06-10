@@ -220,7 +220,6 @@ mod tests {
         let physical_plan_string = TestPlanBuilder::new()
             .target_partitions(1)
             .num_workers(4)
-            .distributed_planner()
             .build()
             .physical_plan_as_string(query)
             .await;

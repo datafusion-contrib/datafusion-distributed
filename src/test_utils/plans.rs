@@ -180,8 +180,8 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn distributed_planner(mut self) -> Self {
-        self.distributed_planner = true;
+    pub fn distributed_planner(mut self, enabled: bool) -> Self {
+        self.distributed_planner = enabled;
         self
     }
 
@@ -282,7 +282,7 @@ impl Default for TestPlanBuilder {
         Self {
             target_partitions: Some(4),
             num_workers: Some(3),
-            distributed_planner: false,
+            distributed_planner: true,
             distributed_cardinality_effect_task_scale_factor: None,
             distributed_files_per_task: None,
             information_schema: Some(false),

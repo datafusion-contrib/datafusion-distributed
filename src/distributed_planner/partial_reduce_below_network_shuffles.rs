@@ -152,7 +152,6 @@ mod tests {
 
     async fn sql_to_physical_plan_ascii(query: &str, distributed_partial_reduce: bool) -> String {
         TestPlanBuilder::default()
-            .distributed_planner()
             .distributed_partial_reduce(distributed_partial_reduce)
             .build()
             .physical_plan_as_ascii(query, false)
