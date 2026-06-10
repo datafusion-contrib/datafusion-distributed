@@ -146,6 +146,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
@@ -158,6 +159,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -187,6 +189,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(2)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -216,6 +219,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(0)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -237,6 +241,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_cardinality_effect_task_scale_factor(3.0)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -263,6 +268,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_files_per_task(3)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -283,6 +289,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -311,6 +318,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -348,6 +356,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -389,6 +398,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -410,6 +420,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -438,6 +449,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -465,6 +477,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .information_schema(true)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -485,6 +498,7 @@ mod tests {
             .target_partitions(2)
             .num_workers(2)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -510,6 +524,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_max_tasks_per_stage(2)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -535,6 +550,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .num_workers(6)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -564,6 +580,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -595,6 +612,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -634,6 +652,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -676,6 +695,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .broadcast_joins(true)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -707,6 +727,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .broadcast_joins(true)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -743,6 +764,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -755,6 +777,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .broadcast_joins(true)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -793,6 +816,7 @@ mod tests {
         let physical_plan_ascii = TestPlanBuilder::default()
             .broadcast_joins(true)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -841,6 +865,7 @@ mod tests {
             .broadcast_joins(true)
             .distributed_task_estimator(BuildSideOneTaskEstimator)
             .build()
+            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"

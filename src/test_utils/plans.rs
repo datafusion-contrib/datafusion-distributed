@@ -21,8 +21,6 @@ use datafusion::{
     physical_plan::displayable,
     prelude::SessionConfig,
 };
-#[cfg(test)]
-use itertools::Itertools;
 use std::sync::Arc;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
@@ -101,30 +99,19 @@ pub(crate) struct TestPlan {
 
 #[cfg(test)]
 impl TestPlan {
-    /// get the physical plan of a query. note queries can be separated by `;`, the
-    /// last query's plan will be returned
+    /// get the physical plan of a query
     pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
-        let mut queries = query.split(';').collect_vec();
-        let last_query = queries.pop().unwrap();
-        for query in queries {
-            self.ctx.sql(query).await.unwrap();
-        }
-        // registration must run here bc some `SET datafusion.execution.target_partitions=2` query
-        // dont take effect on parquet after registration
-        register_parquet_tables(&self.ctx).await.unwrap();
-        let df = self.ctx.sql(last_query).await.unwrap();
+        let df = self.ctx.sql(query).await.unwrap();
         df.create_physical_plan().await.unwrap()
     }
 
-    /// get the physical plan of a query as a string. note queries can be separated by `;`, the
-    /// last query's plan will be returned
+    /// get the physical plan of a query as a string
     pub async fn physical_plan_as_string(&self, query: &str) -> String {
         let plan = self.physical_plan(query).await;
         displayable(plan.as_ref()).indent(true).to_string()
     }
 
-    /// get the physical plan of a query as an ascii string. note queries can be separated by `;`, the
-    /// last query's plan will be returned
+    /// get the physical plan of a query as an ascii string
     pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
         display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
@@ -281,12 +268,12 @@ impl TestPlanBuilder {
         state.build()
     }
 
-    pub fn build(&self) -> TestPlan {
+    pub async fn build(&self) -> TestPlan {
         let config = self.build_config();
         let state = self.build_state(config);
-        TestPlan {
-            ctx: SessionContext::new_with_state(state),
-        }
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+        TestPlan { ctx }
     }
 }
 

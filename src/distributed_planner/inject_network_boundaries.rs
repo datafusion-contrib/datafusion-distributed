@@ -571,7 +571,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @"DataSourceExec: task_count=Desired(3)")
     }
@@ -586,7 +587,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         SortPreservingMergeExec: task_count=Maximum(1)
@@ -611,7 +613,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
@@ -651,7 +654,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
@@ -688,7 +692,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
@@ -708,7 +713,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Desired(2)
@@ -731,7 +737,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
@@ -757,7 +764,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         FilterExec: task_count=Desired(3)
@@ -777,7 +785,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         ProjectionExec: task_count=Desired(3)
@@ -804,7 +813,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_files_per_task(1)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
@@ -837,7 +847,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_task_estimator(task_estimator)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Desired(1)
@@ -865,7 +876,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false)
             .distributed_task_estimator(task_estimator)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(2)
@@ -891,7 +903,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(true)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
@@ -915,6 +928,7 @@ mod tests {
             .target_partitions(1)
             .num_workers(4)
             .build()
+            .await
             .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"
@@ -930,7 +944,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(true)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
@@ -956,7 +971,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_task_estimator(BuildSideOneTaskEstimator)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
@@ -981,7 +997,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_task_estimator(BroadcastBuildCoalesceMaxEstimator)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
@@ -1005,7 +1022,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         // With broadcast disabled, no broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
@@ -1030,7 +1048,8 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(true)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
@@ -1068,7 +1087,8 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true)
             .distributed_children_isolator_unions(true)
-            .build();
+            .build()
+            .await;
         let annotated = annotate_test_plan(test_plan, query).await;
         // With ChildrenIsolatorUnionExec, each broadcast task_count should be limited to their
         // context.

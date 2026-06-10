@@ -192,6 +192,7 @@ mod tests {
         let physical_plan_string = TestPlanBuilder::default()
             .num_workers(4)
             .build()
+            .await
             .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"
@@ -221,6 +222,7 @@ mod tests {
             .target_partitions(1)
             .num_workers(4)
             .build()
+            .await
             .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"
@@ -278,7 +280,8 @@ mod tests {
         let test_plan = TestPlanBuilder::new()
             .target_partitions(target_partitions)
             .broadcast_joins(broadcast_enabled)
-            .build();
+            .build()
+            .await;
         let ctx = test_plan.get_ctx();
         let plan = test_plan.physical_plan(query).await;
         let plan = insert_broadcast_execs(plan, ctx.state_ref().read().config_options().as_ref())
