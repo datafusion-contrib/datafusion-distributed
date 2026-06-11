@@ -111,8 +111,6 @@ mod tests {
         let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_partial_reduce(true)
-            .build()
-            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"
@@ -139,8 +137,6 @@ mod tests {
         let query = r#"SELECT * FROM weather LIMIT 10"#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_partial_reduce(true)
-            .build()
-            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_not_contains!(physical_plan_ascii, "PartialReduce");
@@ -151,8 +147,6 @@ mod tests {
         let query = r#"SELECT COUNT(*) FROM weather"#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_partial_reduce(true)
-            .build()
-            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_not_contains!(physical_plan_ascii, "PartialReduce");
@@ -163,8 +157,6 @@ mod tests {
         let query = r#"SELECT "RainToday", COUNT(*) FROM weather GROUP BY "RainToday""#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .distributed_partial_reduce(false)
-            .build()
-            .await
             .physical_plan_as_ascii(query, false)
             .await;
         assert_not_contains!(physical_plan_ascii, "PartialReduce");

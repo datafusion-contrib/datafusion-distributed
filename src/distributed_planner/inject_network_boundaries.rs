@@ -531,7 +531,7 @@ fn calculate_scale_factor(plan: &Arc<dyn ExecutionPlan>, ctx: &Context) -> f64 {
 mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlan, TestPlanBuilder};
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -566,15 +566,13 @@ mod tests {
         let query = r#"
         SELECT * FROM weather
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"DataSourceExec: task_count=Desired(3)")
     }
 
@@ -583,15 +581,13 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         SortPreservingMergeExec: task_count=Maximum(1)
           NetworkCoalesceExec: task_count=Maximum(1)
@@ -610,15 +606,13 @@ mod tests {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
@@ -652,15 +646,13 @@ mod tests {
         LEFT JOIN b
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
@@ -691,15 +683,13 @@ mod tests {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp" FROM weather a INNER JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
@@ -713,15 +703,13 @@ mod tests {
         let query = r#"
         SELECT DISTINCT "RainToday" FROM weather
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Desired(2)
           NetworkShuffleExec: task_count=Desired(2)
@@ -738,15 +726,13 @@ mod tests {
         UNION ALL
         SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
@@ -766,15 +752,13 @@ mod tests {
             SELECT "MinTemp", "MaxTemp" FROM weather WHERE "RainToday" = 'yes'
         ) AS subquery WHERE "MinTemp" > 5
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         FilterExec: task_count=Desired(3)
           RepartitionExec: task_count=Desired(3)
@@ -788,15 +772,13 @@ mod tests {
         SELECT "MinTemp", ROW_NUMBER() OVER (PARTITION BY "RainToday" ORDER BY "MinTemp") as rn
         FROM weather
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ProjectionExec: task_count=Desired(3)
           BoundedWindowAggExec: task_count=Desired(3)
@@ -816,16 +798,14 @@ mod tests {
         UNION ALL
         SELECT "Rainfall" FROM weather WHERE "RainTomorrow" = 'yes'
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
-            .distributed_files_per_task(1)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_files_per_task(1);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
@@ -851,16 +831,14 @@ mod tests {
             Arc::new(CallbackEstimator::new(|_: &RepartitionExec| {
                 Some(TaskEstimation::maximum(1))
             }));
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
-            .distributed_task_estimator(task_estimator)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_task_estimator(task_estimator);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Desired(1)
           NetworkShuffleExec: task_count=Desired(1)
@@ -881,16 +859,14 @@ mod tests {
             Arc::new(CallbackEstimator::new(|_: &RepartitionExec| {
                 Some(TaskEstimation::maximum(1))
             }));
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
-            .distributed_task_estimator(task_estimator)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_task_estimator(task_estimator);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(2)
           FilterExec: task_count=Maximum(1)
@@ -910,15 +886,13 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(true)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
           CoalescePartitionsExec: task_count=Desired(3)
@@ -952,15 +926,13 @@ mod tests {
 
         // With target_partitions=1, there is no CoalescePartitionsExec initially
         // With broadcast, should create one and insert BroadcastExec below it
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(1)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(true)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
@@ -979,16 +951,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(3)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
-            .distributed_task_estimator(BuildSideOneTaskEstimator)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_task_estimator(BuildSideOneTaskEstimator);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
           CoalescePartitionsExec: task_count=Desired(3)
@@ -1006,16 +976,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(3)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
-            .distributed_task_estimator(BroadcastBuildCoalesceMaxEstimator)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_task_estimator(BroadcastBuildCoalesceMaxEstimator);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
@@ -1033,15 +1001,13 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         // With broadcast disabled, no broadcast annotation should appear
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
@@ -1060,15 +1026,13 @@ mod tests {
         INNER JOIN weather b ON a."RainToday" = b."RainToday"
         INNER JOIN weather c ON b."RainToday" = c."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(true)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
           CoalescePartitionsExec: task_count=Desired(3)
@@ -1099,16 +1063,14 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let test_plan = TestPlanBuilder::new()
+        let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
-            .distributed_children_isolator_unions(true)
-            .build()
-            .await;
-        let annotated = annotate_test_plan(test_plan, query).await;
+            .distributed_children_isolator_unions(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         // With ChildrenIsolatorUnionExec, each broadcast task_count should be limited to their
         // context.
         assert_snapshot!(annotated, @r"
@@ -1200,7 +1162,8 @@ mod tests {
         }
     }
 
-    async fn annotate_test_plan(test_plan: TestPlan, query: &str) -> String {
+    async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {
+        let test_plan = test_plan_builder.build().await;
         let plan = test_plan.physical_plan(query).await;
         let session_config = test_plan.get_ctx().copied_config();
 

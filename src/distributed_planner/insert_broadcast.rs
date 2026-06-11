@@ -191,8 +191,6 @@ mod tests {
         "#;
         let physical_plan_string = TestPlanBuilder::default()
             .num_workers(4)
-            .build()
-            .await
             .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"
@@ -221,8 +219,6 @@ mod tests {
         let physical_plan_string = TestPlanBuilder::new()
             .target_partitions(1)
             .num_workers(4)
-            .build()
-            .await
             .physical_plan_as_string(query)
             .await;
         assert_snapshot!(physical_plan_string, @r"

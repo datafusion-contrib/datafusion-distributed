@@ -111,11 +111,6 @@ impl TestPlan {
         displayable(plan.as_ref()).indent(true).to_string()
     }
 
-    /// get the physical plan of a query as an ascii string
-    pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
-        display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
-    }
-
     pub fn get_ctx(&self) -> &SessionContext {
         &self.ctx
     }
@@ -274,6 +269,23 @@ impl TestPlanBuilder {
         let ctx = SessionContext::new_with_state(state);
         register_parquet_tables(&ctx).await.unwrap();
         TestPlan { ctx }
+    }
+
+    /// sugar around TestPlan to lessen `.await` calls
+    pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        // build TestPlan, then get physical_plan
+        self.build().await.physical_plan(query).await
+    }
+
+    /// get the physical plan of a query as a string
+    pub async fn physical_plan_as_string(&self, query: &str) -> String {
+        let plan = self.physical_plan(query).await;
+        displayable(plan.as_ref()).indent(true).to_string()
+    }
+
+    /// get the physical plan of a query as an ascii string
+    pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
+        display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
     }
 }
 
