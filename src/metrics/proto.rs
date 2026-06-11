@@ -13,6 +13,7 @@ use super::latency_metric::{
     AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric,
     P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
+use crate::MaxGaugeMetric;
 use crate::worker::generated::worker as pb;
 
 /// df_metrics_set_to_proto converts a [datafusion::physical_plan::metrics::MetricsSet] to a [pb::MetricsSet].
@@ -235,6 +236,15 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
                     value: Some(pb::metric::Value::CustomP99Latency(pb::PercentileLatency {
                         name: name.to_string(),
                         sketch_bytes: p99.serialize_sketch()?,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(max_gauge) = value.as_any().downcast_ref::<MaxGaugeMetric>() {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomMaxGauge(pb::MaxGauge {
+                        name: name.to_string(),
+                        value: max_gauge.value() as u64,
                     })),
                     partition,
                     labels,
@@ -548,6 +558,17 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(p.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(pb::metric::Value::CustomMaxGauge(gauge)) => {
+            let value = MaxGaugeMetric::from_value(gauge.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(gauge.name),
                     value: Arc::new(value),
                 },
                 partition,
