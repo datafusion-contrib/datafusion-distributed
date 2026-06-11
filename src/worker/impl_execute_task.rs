@@ -48,6 +48,9 @@ pub(crate) async fn execute_local_task(
     let Some(key) = body.task_key.as_ref().cloned() else {
         return internal_err!("Missing task_key in LocalWorkerConnection");
     };
+    let Some(producer_head) = body.producer_head.as_ref().cloned() else {
+        return internal_err!("Missing producer_head");
+    };
     let entry = task_data_entries
         .get_with(key.clone(), async { Default::default() })
         .await;
@@ -61,7 +64,7 @@ pub(crate) async fn execute_local_task(
         .map_err(DataFusionError::Shared)?;
     task_data.task_data_metrics.mark_execution_started_once();
 
-    let plan = task_data.plan;
+    let plan = task_data.plan(producer_head)?;
     let task_ctx = task_data.task_ctx;
     let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())?;
     let d_ctx = *DistributedTaskContext::from_ctx(&task_ctx).as_ref();

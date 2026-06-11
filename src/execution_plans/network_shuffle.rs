@@ -1,9 +1,9 @@
 use crate::common::require_one_child;
+use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{DistributedTaskContext, NetworkBoundary};
-use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -105,31 +105,11 @@ pub struct NetworkShuffleExec {
 }
 
 impl NetworkShuffleExec {
-    pub(crate) fn scale_input(
-        plan: Arc<dyn ExecutionPlan>,
-        consumer_partitions: usize,
-        consumer_task_count: usize,
-    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        let Some(repartition_exec) = plan.downcast_ref::<RepartitionExec>() else {
-            return Ok(Transformed::no(plan));
-        };
-
-        let child = require_one_child(repartition_exec.children())?;
-        let partitioning = scale_partitioning(repartition_exec.partitioning(), |_| {
-            consumer_partitions * consumer_task_count
-        });
-
-        // Scale the input RepartitionExec to account for all the tasks to which it will
-        // need to fan data out.
-        let scaled = Arc::new(RepartitionExec::try_new(child, partitioning)?);
-        Ok(Transformed::new(scaled, true, TreeNodeRecursion::Stop))
-    }
-
-    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
+    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
         Self {
-            properties: input_stage.plan.properties().clone(),
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            properties: input_properties,
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -143,15 +123,19 @@ impl NetworkShuffleExec {
             return plan_err!("The input of a NetworkShuffleExec must be hash partitioned");
         }
 
-        Ok(Self::from_stage(LocalStage {
-            // At this point, query_id and num are just placeholders that will be filled by
-            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-            // these two parameters.
-            query_id: Uuid::nil(),
-            num: 0,
-            plan: input,
-            tasks: producer_tasks,
-        }))
+        let input_properties = Arc::clone(input.properties());
+        Ok(Self::from_stage(
+            Stage::Local(LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
+            }),
+            input_properties,
+        ))
     }
 }
 
@@ -165,6 +149,14 @@ impl NetworkBoundary for NetworkShuffleExec {
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
+    }
+
+    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
+        ProducerHead::RepartitionExec {
+            partitioning: scale_partitioning(&self.properties.partitioning, |prev| {
+                prev * consumer_task_count
+            }),
+        }
     }
 }
 
@@ -229,6 +221,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                self.producer_head(task_context.task_count),
                 &context,
             )?;
 

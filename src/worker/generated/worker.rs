@@ -107,16 +107,16 @@ pub struct WorkUnit {
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
     #[prost(bytes = "vec", tag = "3")]
     pub body: ::prost::alloc::vec::Vec<u8>,
-    /// Unix timestamp in nanoseconds at which this message was created.
+    /// Unix timestamp in nanoseconds at which this message was created in the coordinator.
     #[prost(uint64, tag = "4")]
     pub created_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was sent.
+    /// Unix timestamp in nanoseconds at which this message was sent by the coordinator.
     #[prost(uint64, tag = "5")]
     pub sent_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was received.
+    /// Unix timestamp in nanoseconds at which this message was received by a worker.
     #[prost(uint64, tag = "6")]
     pub received_timestamp_unix_nanos: u64,
-    /// Unix timestamp in nanoseconds at which this message was processed.
+    /// Unix timestamp in nanoseconds at which this message started being processed.
     #[prost(uint64, tag = "7")]
     pub processed_timestamp_unix_nanos: u64,
 }
@@ -131,6 +131,52 @@ pub struct ExecuteTaskRequest {
     /// The end of the partition range of the specified task that is going to be executed.
     #[prost(uint64, tag = "3")]
     pub target_partition_end: u64,
+    /// The head node the requested task should have. Depending on the network boundary executing
+    /// the task, the head node should be prepared differently, for example:
+    ///
+    /// * A RepartitionExecHead implies a RepartitionExec at the head of the task.
+    /// * A BroadcastExecHead implies a BroadcastExec at the head of the task.
+    /// * A NoneHead does not need any specific head.
+    #[prost(oneof = "execute_task_request::ProducerHead", tags = "6, 7, 8")]
+    pub producer_head: ::core::option::Option<execute_task_request::ProducerHead>,
+}
+/// Nested message and enum types in `ExecuteTaskRequest`.
+pub mod execute_task_request {
+    /// The head node the requested task should have. Depending on the network boundary executing
+    /// the task, the head node should be prepared differently, for example:
+    ///
+    /// * A RepartitionExecHead implies a RepartitionExec at the head of the task.
+    /// * A BroadcastExecHead implies a BroadcastExec at the head of the task.
+    /// * A NoneHead does not need any specific head.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ProducerHead {
+        /// The boundary executing the task is a NetworkCoalesceExec.
+        #[prost(message, tag = "6")]
+        None(super::NoneHead),
+        /// The boundary executing the task is a NetworkBroadcastExec.
+        #[prost(message, tag = "7")]
+        Broadcast(super::BroadcastExecHead),
+        /// The boundary executing the task is a NetworkShuffleExec.
+        #[prost(message, tag = "8")]
+        Repartition(super::RepartitionExecHead),
+    }
+}
+/// Head needed by a NetworkCoalesceExec.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NoneHead {}
+/// Head needed by a NetworkBroadcastExec.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BroadcastExecHead {
+    /// The amount of output partitions
+    #[prost(uint64, tag = "1")]
+    pub output_partitions: u64,
+}
+/// Head needed by a NetworkShuffleExec.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RepartitionExecHead {
+    /// `Partitioning` message from datafusion.proto
+    #[prost(bytes = "vec", tag = "1")]
+    pub partitioning: ::prost::alloc::vec::Vec<u8>,
 }
 /// A key that uniquely identifies a task in a query.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -171,7 +217,7 @@ pub struct Metric {
     pub partition: ::core::option::Option<u64>,
     #[prost(
         oneof = "metric::Value",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
     )]
     pub value: ::core::option::Option<metric::Value>,
 }
@@ -227,6 +273,8 @@ pub mod metric {
         CustomP95Latency(super::PercentileLatency),
         #[prost(message, tag = "33")]
         CustomP99Latency(super::PercentileLatency),
+        #[prost(message, tag = "34")]
+        CustomMaxGauge(super::MaxGauge),
     }
 }
 /// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
@@ -368,6 +416,13 @@ pub struct PercentileLatency {
     pub name: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub sketch_bytes: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MaxGauge {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub value: u64,
 }
 /// Generated client implementations.
 pub mod worker_service_client {

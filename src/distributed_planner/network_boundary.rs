@@ -1,6 +1,8 @@
-use crate::{NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
+use crate::{BroadcastExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
 use datafusion::common::Result;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::Partitioning;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -15,6 +17,22 @@ pub trait NetworkBoundary: ExecutionPlan {
 
     /// Returns the assigned input [Stage], if any.
     fn input_stage(&self) -> &Stage;
+
+    /// Defines what head node should the producer stage feeding this [NetworkBoundary]
+    /// implementation have. This information is used during planning an executing for ensuring
+    /// the head of a stage has the appropriate shape for consumption.
+    fn producer_head(&self, consumer_tasks: usize) -> ProducerHead;
+}
+
+/// Defines what shape should the head node of a stage have upon getting executed. Depending
+/// on the [NetworkBoundary] implementation, the stage below should have different head nodes.
+pub enum ProducerHead {
+    /// No specific head node is necessary.
+    None,
+    /// The head node should be a [BroadcastExec].
+    BroadcastExec { output_partitions: usize },
+    /// The head node should be a [RepartitionExec].
+    RepartitionExec { partitioning: Partitioning },
 }
 
 /// Extension trait for downcasting dynamic types to [NetworkBoundary].
@@ -41,38 +59,28 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
     }
 }
 
-/// Scales up the head node of the input stage of a network boundary. Different network boundaries
-/// have different needs for scaling up their input, like for example, scaling up a RepartitionExec
-/// during shuffles.
-pub(crate) fn network_boundary_scale_input(
+/// Ensures the head of the provided plan complies with the passed [ProducerHead] definition. This
+/// can be called both during planning and lazily at runtime.
+pub(crate) fn insert_producer_head(
     input: Arc<dyn ExecutionPlan>,
-    consumer_partitions: usize,
-    consumer_task_count: usize,
+    head: ProducerHead,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let transformed = NetworkShuffleExec::scale_input(
-        Arc::clone(&input),
-        consumer_partitions,
-        consumer_task_count,
-    )?;
-    if transformed.transformed {
-        return Ok(transformed.data);
-    }
-    let transformed = NetworkBroadcastExec::scale_input(
-        Arc::clone(&input),
-        consumer_partitions,
-        consumer_task_count,
-    )?;
-    if transformed.transformed {
-        return Ok(transformed.data);
-    }
-    let transformed = NetworkCoalesceExec::scale_input(
-        Arc::clone(&input),
-        consumer_partitions,
-        consumer_task_count,
-    )?;
-    if transformed.transformed {
-        return Ok(transformed.data);
-    }
-
-    Ok(input)
+    let input = if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
+        Arc::clone(r_exec.input())
+    } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
+        Arc::clone(b_exec.input())
+    } else {
+        input
+    };
+    let plan = match head {
+        ProducerHead::None => input,
+        ProducerHead::BroadcastExec { output_partitions } => {
+            let partitions = input.output_partitioning().partition_count();
+            Arc::new(BroadcastExec::new(input, output_partitions / partitions))
+        }
+        ProducerHead::RepartitionExec { partitioning } => {
+            Arc::new(RepartitionExec::try_new(input, partitioning)?)
+        }
+    };
+    Ok(plan)
 }

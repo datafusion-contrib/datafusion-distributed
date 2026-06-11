@@ -223,7 +223,7 @@ impl ShuffleFixture {
             let shuffle = NetworkShuffleExec {
                 properties: Arc::new(PlanProperties::new(
                     EquivalenceProperties::new(Arc::clone(&self.schema)),
-                    Partitioning::UnknownPartitioning(self.bench.partitions),
+                    Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], self.bench.partitions),
                     EmissionType::Incremental,
                     Boundedness::Bounded,
                 )),

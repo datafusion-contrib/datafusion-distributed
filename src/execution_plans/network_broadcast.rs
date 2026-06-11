@@ -1,9 +1,8 @@
 use crate::common::require_one_child;
-use crate::distributed_planner::NetworkBoundary;
+use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{BroadcastExec, DistributedTaskContext};
-use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -123,32 +122,17 @@ pub struct NetworkBroadcastExec {
 }
 
 impl NetworkBroadcastExec {
-    pub(crate) fn scale_input(
-        plan: Arc<dyn ExecutionPlan>,
-        _consumer_partitions: usize,
-        consumer_task_count: usize,
-    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        let Some(broadcast) = plan.downcast_ref::<BroadcastExec>() else {
-            return Ok(Transformed::no(plan));
-        };
-
-        Ok(Transformed::yes(Arc::new(BroadcastExec::new(
-            require_one_child(broadcast.children())?,
-            consumer_task_count,
-        ))))
-    }
-
-    pub(crate) fn from_stage(input_stage: LocalStage) -> Self {
-        let input_partition_count = input_stage.plan.properties().partitioning.partition_count();
+    pub(crate) fn from_stage(input_stage: Stage, input_properties: Arc<PlanProperties>) -> Self {
+        let input_partition_count = input_properties.partitioning.partition_count();
         let properties = Arc::new(
-            PlanProperties::clone(input_stage.plan.properties())
+            PlanProperties::clone(&input_properties)
                 .with_partitioning(Partitioning::UnknownPartitioning(input_partition_count)),
         );
 
         Self {
             properties,
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -159,15 +143,19 @@ impl NetworkBroadcastExec {
             return plan_err!("The input of a NetworkBroadcastExec can only be a BroadcastExec");
         }
 
-        Ok(Self::from_stage(LocalStage {
-            // At this point, query_id and num are just placeholders that will be filled by
-            // prepare_network_boundaries.rs. Users are not expected to provide valid values for
-            // these two parameters.
-            query_id: Uuid::nil(),
-            num: 0,
-            plan: input,
-            tasks: producer_tasks,
-        }))
+        let input_properties = Arc::clone(input.properties());
+        Ok(Self::from_stage(
+            Stage::Local(LocalStage {
+                // At this point, query_id and num are just placeholders that will be filled by
+                // prepare_network_boundaries.rs. Users are not expected to provide valid values for
+                // these two parameters.
+                query_id: Uuid::nil(),
+                num: 0,
+                plan: input,
+                tasks: producer_tasks,
+            }),
+            input_properties,
+        ))
     }
 }
 
@@ -181,6 +169,13 @@ impl NetworkBoundary for NetworkBroadcastExec {
 
     fn input_stage(&self) -> &Stage {
         &self.input_stage
+    }
+
+    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
+        let partition_count = self.properties.output_partitioning().partition_count();
+        ProducerHead::BroadcastExec {
+            output_partitions: partition_count * consumer_task_count,
+        }
     }
 }
 
@@ -243,7 +238,8 @@ impl ExecutionPlan for NetworkBroadcastExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let out_partitions = self.properties.partitioning.partition_count();
+        let off = out_partitions * task_context.task_index;
         let mut streams = Vec::with_capacity(self.input_stage.task_count());
 
         for input_task_index in 0..self.input_stage.task_count() {
@@ -251,6 +247,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                self.producer_head(task_context.task_count),
                 &context,
             )?;
 

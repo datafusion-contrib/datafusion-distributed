@@ -1,10 +1,9 @@
 use crate::DistributedTaskContext;
 use crate::common::require_one_child;
-use crate::distributed_planner::NetworkBoundary;
+use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::execution_plans::common::scale_partitioning_props;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use datafusion::common::tree_node::Transformed;
 use datafusion::common::{exec_err, not_impl_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -81,28 +80,21 @@ pub struct NetworkCoalesceExec {
 }
 
 impl NetworkCoalesceExec {
-    /// Does nothing, but it's here for explicitly stating that this network boundary does not
-    /// need to mutate the input plan in other to account for more consumer tasks.
-    pub(crate) fn scale_input(
-        plan: Arc<dyn ExecutionPlan>,
-        _consumer_partitions: usize,
-        _consumer_task_count: usize,
-    ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
-        Ok(Transformed::no(plan))
-    }
-
-    pub(crate) fn from_stage(input_stage: LocalStage, consumer_tasks: usize) -> Self {
+    pub(crate) fn from_stage(
+        input_stage: Stage,
+        input_properties: Arc<PlanProperties>,
+        consumer_tasks: usize,
+    ) -> Self {
         // Each output task coalesces a group of input tasks. We size the output partition count
         // per output task based on the maximum group size, returning empty streams for tasks with
         // smaller groups.
-        let max_input_task_count = input_stage.tasks.div_ceil(consumer_tasks).max(1);
-        let props =
-            scale_partitioning_props(input_stage.plan.properties(), |p| p * max_input_task_count);
+        let max_input_task_count = input_stage.task_count().div_ceil(consumer_tasks).max(1);
+        let props = scale_partitioning_props(&input_properties, |p| p * max_input_task_count);
 
         Self {
             properties: props,
-            worker_connections: WorkerConnectionPool::new(0),
-            input_stage: Stage::Local(input_stage),
+            worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
+            input_stage,
         }
     }
 
@@ -128,8 +120,10 @@ impl NetworkCoalesceExec {
         if consumer_tasks == 0 {
             return plan_err!("The `consumer_tasks` input of a NetworkCoalesceExec must not be 0");
         }
+
+        let input_properties = Arc::clone(input.properties());
         Ok(Self::from_stage(
-            LocalStage {
+            Stage::Local(LocalStage {
                 // At this point, query_id and num are just placeholders that will be filled by
                 // prepare_network_boundaries.rs. Users are not expected to provide valid values for
                 // these two parameters.
@@ -137,7 +131,8 @@ impl NetworkCoalesceExec {
                 num: 0,
                 plan: input,
                 tasks: producer_tasks,
-            },
+            }),
+            input_properties,
             consumer_tasks,
         ))
     }
@@ -180,6 +175,10 @@ impl NetworkBoundary for NetworkCoalesceExec {
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
         Ok(Arc::new(self_clone))
+    }
+
+    fn producer_head(&self, _consumer_task_count: usize) -> ProducerHead {
+        ProducerHead::None
     }
 }
 
@@ -293,6 +292,7 @@ impl ExecutionPlan for NetworkCoalesceExec {
             remote_stage,
             0..partitions_per_task,
             target_task,
+            self.producer_head(task_context.task_count),
             &context,
         )?;
 
