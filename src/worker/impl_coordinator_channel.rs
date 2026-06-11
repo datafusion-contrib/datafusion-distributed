@@ -18,8 +18,8 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, Streaming};
 use url::Url;
@@ -102,7 +102,8 @@ impl Worker {
             // Initialize partition count to the number of partitions in the stage
             let total_partitions = plan.properties().partitioning.partition_count();
             Ok::<_, DataFusionError>(TaskData {
-                plan,
+                base_plan: plan,
+                final_plan: Arc::new(OnceLock::new()),
                 task_ctx,
                 num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 metrics_tx: match collect_metrics {

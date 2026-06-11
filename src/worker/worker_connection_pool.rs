@@ -1,4 +1,5 @@
 use crate::common::{OnceLockResult, on_drop_stream, serialize_uuid};
+use crate::distributed_planner::ProducerHead;
 use crate::metrics::LatencyMetricExt;
 use crate::networking::get_distributed_channel_resolver;
 use crate::passthrough_headers::get_passthrough_headers;
@@ -16,7 +17,9 @@ use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    DataFusionError, Result, exec_err, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricValue};
@@ -88,6 +91,7 @@ impl WorkerConnectionPool {
         input_stage: &RemoteStage,
         target_partitions: Range<usize>,
         target_task: usize,
+        producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<&(dyn WorkerConnection + Sync + Send)> {
         let Some(worker_connection) = self.connections.get(target_task) else {
@@ -105,19 +109,23 @@ impl WorkerConnectionPool {
                 && &lw_ctx.self_url == target_url
             {
                 // Instead of making a gRPC call to ourselves, better to just use local comms.
-                Ok(Box::new(LocalWorkerConnection::init(
+                LocalWorkerConnection::init(
                     input_stage,
                     target_partitions,
                     target_task,
-                    lw_ctx,
+                    producer_head,
+                    ctx,
                     &self.metrics,
-                )) as Box<_>)
+                )
+                .map(|v| Box::new(v) as Box<_>)
+                .map_err(Arc::new)
             } else {
                 // We are trying to reach a URL different from ours, so use normal gRPC streams.
                 RemoteWorkerConnection::init(
                     input_stage,
                     target_partitions,
                     target_task,
+                    producer_head,
                     ctx,
                     &self.metrics,
                 )
@@ -174,6 +182,7 @@ impl RemoteWorkerConnection {
         input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,
+        producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> Result<Self> {
@@ -223,6 +232,7 @@ impl RemoteWorkerConnection {
                     stage_id: input_stage.num as u64,
                     task_number: target_task as u64,
                 }),
+                producer_head: Some(producer_head.to_proto(ctx)?),
             },
         );
 
@@ -456,12 +466,16 @@ impl LocalWorkerConnection {
         input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,
-        lw_ctx: Arc<LocalWorkerContext>,
+        producer_head: ProducerHead,
+        ctx: &Arc<TaskContext>,
         metrics: &ExecutionPlanMetricsSet,
-    ) -> Self {
+    ) -> Result<Self> {
         MetricBuilder::new(metrics)
             .global_counter("local_connections_used")
             .add(1);
+        let Some(lw_ctx) = ctx.session_config().get_extension::<LocalWorkerContext>() else {
+            return exec_err!("Missing LocalWorkerContext extension");
+        };
 
         let task_key = TaskKey {
             query_id: serialize_uuid(&input_stage.query_id),
@@ -476,6 +490,7 @@ impl LocalWorkerConnection {
                 task_key: Some(task_key.clone()),
                 target_partition_start: partition_i as u64,
                 target_partition_end: (partition_i + 1) as u64,
+                producer_head: Some(producer_head.to_proto(ctx)?),
             };
 
             let task_data_entries = Arc::clone(&lw_ctx.task_data_entries);
@@ -506,10 +521,10 @@ impl LocalWorkerConnection {
             local_streams.push(Mutex::new(Some(stream)));
         }
 
-        Self {
+        Ok(Self {
             partition_start,
             local_streams,
-        }
+        })
     }
 }
 

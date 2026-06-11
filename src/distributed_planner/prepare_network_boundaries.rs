@@ -1,5 +1,5 @@
 use crate::common::TreeNodeExt;
-use crate::distributed_planner::network_boundary::network_boundary_scale_input;
+use crate::distributed_planner::network_boundary::insert_producer_head;
 use crate::stage::LocalStage;
 use crate::{NetworkBoundaryExt, Stage};
 use datafusion::common::Result;
@@ -35,11 +35,8 @@ pub(crate) fn prepare_network_boundaries(
 
         // 2) Scale up the head node of the input stage in order to account for the amount of partition
         //    and consumer count above it.
-        let plan = network_boundary_scale_input(
-            Arc::clone(&input_stage.plan),
-            nb.properties().partitioning.partition_count(),
-            task_count,
-        )?;
+        let plan =
+            insert_producer_head(Arc::clone(&input_stage.plan), nb.producer_head(task_count))?;
 
         // 3) Make sure the input stage can be uniquely identified with a stage index and query id.
         //    If there were already some `query_id` and `num` that's fine.
