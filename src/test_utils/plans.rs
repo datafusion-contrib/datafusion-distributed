@@ -91,6 +91,8 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
 }
 
 /// Create a plan from a context and queries
+/// 
+/// NOTE: some functionality wrapped and available in TestPlanBuilder
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct TestPlan {
