@@ -1,4 +1,6 @@
-use crate::distributed_planner::inject_network_boundaries::inject_network_boundaries;
+use crate::distributed_planner::inject_network_boundaries::{
+    CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
+};
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
@@ -93,7 +95,7 @@ impl QueryPlanner for DistributedQueryPlanner {
 
         plan = insert_broadcast_execs(plan, cfg)?;
 
-        plan = inject_network_boundaries(plan, cfg).await?;
+        plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, cfg).await?;
 
         plan = prepare_network_boundaries(plan)?;
         if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
