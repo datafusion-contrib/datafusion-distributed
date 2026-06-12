@@ -47,34 +47,42 @@ impl RemoteWorkUnitFeedRegistry {
     }
 }
 
-pub(crate) fn build_work_unit_msg(
+pub(crate) fn build_work_unit_batch_msg(
     id: &Uuid,
-    partition: usize,
-    work_unit: Box<dyn WorkUnit>,
-) -> pb::CoordinatorToWorkerMsg {
-    pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnit(
-            pb::WorkUnit {
-                id: serialize_uuid(id),
-                partition: partition as u64,
-                body: work_unit.encode_to_bytes(),
-                created_timestamp_unix_nanos: now_ns(),
-                sent_timestamp_unix_nanos: 0,
-                received_timestamp_unix_nanos: 0,
-                processed_timestamp_unix_nanos: 0,
+    work_unit_batch: Vec<(usize, Result<Box<dyn WorkUnit>>)>,
+) -> Result<pb::CoordinatorToWorkerMsg> {
+    Ok(pb::CoordinatorToWorkerMsg {
+        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(
+            pb::WorkUnitBatch {
+                batch: work_unit_batch
+                    .into_iter()
+                    .map(|(partition, work_unit)| {
+                        Ok(pb::WorkUnit {
+                            id: serialize_uuid(id),
+                            partition: partition as u64,
+                            body: work_unit?.encode_to_bytes(),
+                            created_timestamp_unix_nanos: now_ns(),
+                            sent_timestamp_unix_nanos: 0,
+                            received_timestamp_unix_nanos: 0,
+                            processed_timestamp_unix_nanos: 0,
+                        })
+                    })
+                    .collect::<Result<_>>()?,
             },
         )),
-    }
+    })
 }
 
 pub(crate) fn set_work_unit_send_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {
     if let pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnit(work_unit)),
+        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(work_unit_batch)),
     } = &mut msg
     {
-        work_unit.sent_timestamp_unix_nanos = now_ns();
+        for work_unit in &mut work_unit_batch.batch {
+            work_unit.sent_timestamp_unix_nanos = now_ns();
+        }
     }
     msg
 }
@@ -83,10 +91,12 @@ pub(crate) fn set_work_unit_received_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {
     if let pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnit(work_unit)),
+        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(work_unit_batch)),
     } = &mut msg
     {
-        work_unit.received_timestamp_unix_nanos = now_ns();
+        for work_unit in &mut work_unit_batch.batch {
+            work_unit.received_timestamp_unix_nanos = now_ns();
+        }
     }
     msg
 }

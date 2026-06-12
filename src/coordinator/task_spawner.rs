@@ -5,7 +5,7 @@ use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::tonic_status_to_datafusion_error;
 use crate::stage::LocalStage;
-use crate::work_unit_feed::{build_work_unit_msg, set_work_unit_send_time};
+use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
@@ -39,6 +39,11 @@ use tonic::Request;
 use tonic::metadata::MetadataMap;
 use url::Url;
 use uuid::Uuid;
+
+/// How many [crate::WorkUnit] messages are allowed to be chunked synchronously together in order to
+/// send fewer bigger [crate::WorkUnit] batches over the wire, reducing the overhead of sending many
+/// small batches. See [StreamExt::ready_chunks] docs for more details about how chunking works.
+const WORK_UNIT_FEED_CHUNK_SIZE: usize = 256;
 
 /// Metrics that measure network details about communications between [DistributedExec] and a
 /// worker.
@@ -282,29 +287,29 @@ impl<'a> CoordinatorToWorkerTaskSpawner<'a> {
             };
             let t_ctx = Arc::new(task_ctx_with_extension(&ctx, dist_feed_ctx));
 
-            // There should be as many partition feeds as [num partitions] * [num tasks], so that
-            // each task index handles a non-overlapping set of partition feeds.
+            let mut feeds = Vec::with_capacity(end_partition - start_partition);
             for (partition, feed_idx) in (start_partition..end_partition).enumerate() {
-                // By calling `.take()` the respective partition feed is consumed, and further
-                // consumptions are allowed. Calling `.take()` on the same partition feed again
-                // will fail.
-                let mut work_unit_feed = wuf.feed(feed_idx, Arc::clone(&t_ctx))?;
-                let tx = tx.clone();
-                let id = wuf.id();
-                futures.push(Box::pin(async move {
-                    // At this point, the partition feed contains a stream of decoded messages,
-                    // so they must be encoded in order to send them over the wire.
-                    while let Some(data_or_err) = work_unit_feed.next().await {
-                        if tx
-                            .send(build_work_unit_msg(&id, partition, data_or_err?))
-                            .is_err()
-                        {
-                            break; // channel closed.
-                        };
-                    }
-                    Ok::<_, DataFusionError>(())
-                }));
+                let feed = wuf
+                    .feed(feed_idx, Arc::clone(&t_ctx))?
+                    .map(move |el| (partition, el));
+                feeds.push(feed);
             }
+            let interleaved_feed = futures::stream::select_all(feeds);
+            let mut chunked_interleaved_feed =
+                interleaved_feed.ready_chunks(WORK_UNIT_FEED_CHUNK_SIZE);
+
+            let id = wuf.id();
+            let tx = tx.clone();
+            futures.push(Box::pin(async move {
+                // At this point, the partition feed contains a stream of decoded messages,
+                // so they must be encoded in order to send them over the wire.
+                while let Some(chunk) = chunked_interleaved_feed.next().await {
+                    if tx.send(build_work_unit_batch_msg(&id, chunk)?).is_err() {
+                        break; // channel closed.
+                    };
+                }
+                Ok::<_, DataFusionError>(())
+            }));
             Ok(TreeNodeRecursion::Continue)
         })?;
         self.join_set.spawn(async move {

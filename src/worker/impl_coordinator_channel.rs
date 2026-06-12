@@ -121,22 +121,26 @@ impl Worker {
         })?;
 
         // Continue reading remaining messages (work unit feed data) in the background.
-        let work_unit_senders = remote_work_unit_feed_registry.senders;
+        let mut work_unit_senders = remote_work_unit_feed_registry.senders;
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let mut body = body.map_ok(set_work_unit_received_time);
             while let Some(Ok(msg)) = body.next().await {
-                let Some(Inner::WorkUnit(msg)) = msg.inner else {
+                let Some(Inner::WorkUnitBatch(msg)) = msg.inner else {
                     continue;
                 };
-                let Ok(id) = deserialize_uuid(&msg.id) else {
-                    continue;
-                };
-                let Some(tx) = work_unit_senders.get(&(id, msg.partition as usize)) else {
-                    continue;
-                };
-                if tx.send(Ok(msg)).is_err() {
-                    break; // channel closed
+                for msg in msg.batch {
+                    let Ok(id) = deserialize_uuid(&msg.id) else {
+                        continue;
+                    };
+                    let partition = msg.partition as usize;
+                    let Some(tx) = work_unit_senders.get(&(id, partition)) else {
+                        continue;
+                    };
+                    if tx.send(Ok(msg)).is_err() {
+                        work_unit_senders.remove(&(id, partition));
+                        continue;
+                    }
                 }
             }
         });

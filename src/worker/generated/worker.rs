@@ -12,11 +12,11 @@ pub mod coordinator_to_worker_msg {
         /// The plan is identified by a TaskKey.
         #[prost(message, tag = "1")]
         SetPlanRequest(super::SetPlanRequest),
-        /// A single message from a work unit feed belonging to one partition from one node from the plan set in
+        /// A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
         /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
         /// be executed within a partition, for example, a stream of file addresses that should be read.
         #[prost(message, tag = "2")]
-        WorkUnit(super::WorkUnit),
+        WorkUnitBatch(super::WorkUnitBatch),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -95,6 +95,12 @@ pub mod set_plan_request {
         #[prost(uint64, tag = "2")]
         pub partitions: u64,
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkUnitBatch {
+    /// A batch of WorkUnits.
+    #[prost(message, repeated, tag = "1")]
+    pub batch: ::prost::alloc::vec::Vec<WorkUnit>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkUnit {
