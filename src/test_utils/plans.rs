@@ -1,23 +1,26 @@
+#[cfg(test)]
 use super::parquet::register_parquet_tables;
 use crate::NetworkBoundaryExt;
 use crate::common::serialize_uuid;
 use crate::coordinator::DistributedExec;
-use crate::distributed_ext::DistributedExt;
 use crate::stage::Stage;
-use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
-use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
-#[cfg(test)]
-use datafusion::config::ConfigOptions;
+use crate::{
+    DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
+    display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
+};
 use datafusion::{
     common::{HashMap, HashSet},
-    execution::{SessionStateBuilder, context::SessionContext},
-    physical_plan::{ExecutionPlan, displayable},
-    prelude::SessionConfig,
+    physical_plan::ExecutionPlan,
 };
 #[cfg(test)]
-use itertools::Itertools;
+use datafusion::{
+    config::ConfigOptions,
+    execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
+    physical_plan::displayable,
+    prelude::SessionConfig,
+};
 use std::sync::Arc;
 
 /// count_plan_nodes counts the number of execution plan nodes in a plan using BFS traversal.
@@ -87,89 +90,224 @@ fn find_input_stages(plan: &dyn ExecutionPlan) -> Vec<&Stage> {
     result
 }
 
-/// Creates a physical plan from SQL without applying broadcast insertion or distribution.
-/// Used for snapshotting the baseline physical plan in tests.
-pub async fn sql_to_physical_plan(
-    query: &str,
-    target_partitions: usize,
-    num_workers: usize,
-) -> String {
-    let config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_information_schema(true);
-
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config)
-        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
-        .build();
-
-    let ctx = SessionContext::new_with_state(state);
-    register_parquet_tables(&ctx).await.unwrap();
-
-    let df = ctx.sql(query).await.unwrap();
-    let physical_plan = df.create_physical_plan().await.unwrap();
-
-    format!("{}", displayable(physical_plan.as_ref()).indent(true))
+/// Create a plan from a context and queries
+///
+/// NOTE: some functionality wrapped and available in TestPlanBuilder
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestPlan {
+    ctx: SessionContext,
 }
 
 #[cfg(test)]
-pub(crate) fn base_session_builder(
-    target_partitions: usize,
-    num_workers: usize,
-    broadcast_enabled: bool,
-) -> SessionStateBuilder {
-    let mut config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_information_schema(true);
+impl TestPlan {
+    /// get the physical plan of a query
+    pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        let df = self.ctx.sql(query).await.unwrap();
+        df.create_physical_plan().await.unwrap()
+    }
 
-    let d_cfg = DistributedConfig {
-        broadcast_joins: broadcast_enabled,
-        ..Default::default()
-    };
-    config.set_distributed_option_extension(d_cfg);
+    /// get the physical plan of a query as a string
+    pub async fn physical_plan_as_string(&self, query: &str) -> String {
+        let plan = self.physical_plan(query).await;
+        displayable(plan.as_ref()).indent(true).to_string()
+    }
 
-    SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config)
-        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+    pub fn get_ctx(&self) -> &SessionContext {
+        &self.ctx
+    }
+}
+
+/// Ergonomic builder for constructing a [TestPlan] in unit tests.
+///
+/// Wraps [SessionConfig] and [SessionStateBuilder] behind named knobs so tests can
+/// declare *what* they want (workers, broadcast, a task estimator) without managing
+/// the order distributed settings must be applied in. [`TestPlanBuilder::build`]
+/// resolves that order: config, then default features, then the distributed planner
+/// and any [DistributedConfig] modifiers.
+#[cfg(test)]
+pub(crate) struct TestPlanBuilder {
+    target_partitions: Option<usize>,
+    num_workers: Option<usize>,
+    distributed_planner: bool,
+    distributed_cardinality_effect_task_scale_factor: Option<f64>,
+    distributed_files_per_task: Option<usize>,
+    information_schema: Option<bool>,
+    broadcast_joins: bool,
+    distributed_task_estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
+    distributed_partial_reduce: Option<bool>,
+    distributed_children_isolator_unions: Option<bool>,
+    distributed_max_tasks_per_stage: Option<usize>,
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct TestPlanOptions {
-    pub(crate) target_partitions: usize,
-    pub(crate) num_workers: usize,
-    pub(crate) broadcast_enabled: bool,
-}
-
-#[cfg(test)]
-impl Default for TestPlanOptions {
-    fn default() -> Self {
+impl TestPlanBuilder {
+    pub fn new() -> Self {
         Self {
-            target_partitions: 4,
-            num_workers: 4,
-            broadcast_enabled: false,
+            target_partitions: None,
+            num_workers: None,
+            distributed_planner: false,
+            distributed_cardinality_effect_task_scale_factor: None,
+            distributed_files_per_task: None,
+            information_schema: None,
+            broadcast_joins: false,
+            distributed_task_estimator: None,
+            distributed_partial_reduce: None,
+            distributed_children_isolator_unions: None,
+            distributed_max_tasks_per_stage: None,
         }
     }
+
+    pub fn target_partitions(mut self, target_partitions: usize) -> Self {
+        self.target_partitions = Some(target_partitions);
+        self
+    }
+
+    pub fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = Some(num_workers);
+        self
+    }
+
+    pub fn distributed_planner(mut self, enabled: bool) -> Self {
+        self.distributed_planner = enabled;
+        self
+    }
+
+    pub fn distributed_cardinality_effect_task_scale_factor(mut self, factor: f64) -> Self {
+        self.distributed_cardinality_effect_task_scale_factor = Some(factor);
+        self
+    }
+
+    pub fn distributed_files_per_task(mut self, files_per_task: usize) -> Self {
+        self.distributed_files_per_task = Some(files_per_task);
+        self
+    }
+
+    pub fn information_schema(mut self, enabled: bool) -> Self {
+        self.information_schema = Some(enabled);
+        self
+    }
+
+    pub fn broadcast_joins(mut self, enabled: bool) -> Self {
+        self.broadcast_joins = enabled;
+        self
+    }
+
+    pub fn distributed_task_estimator(
+        mut self,
+        task_estimator: impl TaskEstimator + Send + Sync + 'static,
+    ) -> Self {
+        self.distributed_task_estimator = Some(Arc::new(task_estimator));
+        self
+    }
+
+    pub fn distributed_partial_reduce(mut self, enabled: bool) -> Self {
+        self.distributed_partial_reduce = Some(enabled);
+        self
+    }
+
+    pub fn distributed_children_isolator_unions(mut self, enabled: bool) -> Self {
+        self.distributed_children_isolator_unions = Some(enabled);
+        self
+    }
+
+    pub fn distributed_max_tasks_per_stage(mut self, n: usize) -> Self {
+        self.distributed_max_tasks_per_stage = Some(n);
+        self
+    }
+
+    fn build_config(&self) -> SessionConfig {
+        let mut d_cfg = DistributedConfig {
+            broadcast_joins: self.broadcast_joins,
+            ..Default::default()
+        };
+        // Option fields: Some overrides, None inherits the DistributedConfig default
+        if let Some(x) = self.distributed_children_isolator_unions {
+            d_cfg.children_isolator_unions = x;
+        }
+        if let Some(x) = self.distributed_partial_reduce {
+            d_cfg.partial_reduce = x;
+        }
+        if let Some(n) = self.distributed_files_per_task {
+            d_cfg.files_per_task = n;
+        }
+        if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
+            d_cfg.cardinality_task_count_factor = f; // note: the real field name
+        }
+        if let Some(n) = self.distributed_max_tasks_per_stage {
+            d_cfg.max_tasks_per_stage = n
+        }
+
+        let mut config = SessionConfig::new();
+        config.set_distributed_option_extension(d_cfg);
+        if let Some(n) = self.target_partitions {
+            config = config.with_target_partitions(n);
+        }
+        if let Some(enabled) = self.information_schema {
+            config = config.with_information_schema(enabled);
+        }
+        config
+    }
+
+    fn build_state(&self, config: SessionConfig) -> SessionState {
+        let mut state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config);
+        if let Some(n) = self.num_workers {
+            state = state.with_distributed_worker_resolver(InMemoryWorkerResolver::new(n));
+        }
+        if self.distributed_planner {
+            state = state.with_distributed_planner();
+        }
+        if let Some(t) = self.distributed_task_estimator.clone() {
+            state = state.with_distributed_task_estimator(t);
+        }
+        state.build()
+    }
+
+    pub async fn build(&self) -> TestPlan {
+        let config = self.build_config();
+        let state = self.build_state(config);
+        let ctx = SessionContext::new_with_state(state);
+        register_parquet_tables(&ctx).await.unwrap();
+        TestPlan { ctx }
+    }
+
+    /// sugar around TestPlan to lessen `.await` calls
+    pub async fn physical_plan(&self, query: &str) -> Arc<dyn ExecutionPlan> {
+        // build TestPlan, then get physical_plan
+        self.build().await.physical_plan(query).await
+    }
+
+    /// get the physical plan of a query as a string
+    pub async fn physical_plan_as_string(&self, query: &str) -> String {
+        let plan = self.physical_plan(query).await;
+        displayable(plan.as_ref()).indent(true).to_string()
+    }
+
+    /// get the physical plan of a query as an ascii string
+    pub async fn physical_plan_as_ascii(&self, query: &str, show_metrics: bool) -> String {
+        display_plan_ascii(self.physical_plan(query).await.as_ref(), show_metrics)
+    }
 }
 
 #[cfg(test)]
-pub(crate) async fn context_with_query(
-    builder: SessionStateBuilder,
-    query: &str,
-) -> (SessionContext, String) {
-    let state = builder.build();
-    let ctx = SessionContext::new_with_state(state);
-    let mut queries = query.split(';').collect_vec();
-    let last_query = queries.pop().unwrap();
-
-    for query in queries {
-        ctx.sql(query).await.unwrap();
+impl Default for TestPlanBuilder {
+    fn default() -> Self {
+        Self {
+            target_partitions: Some(4),
+            num_workers: Some(3),
+            distributed_planner: true,
+            distributed_cardinality_effect_task_scale_factor: None,
+            distributed_files_per_task: None,
+            information_schema: Some(false),
+            broadcast_joins: false,
+            distributed_task_estimator: None,
+            distributed_partial_reduce: None,
+            distributed_children_isolator_unions: None,
+            distributed_max_tasks_per_stage: None,
+        }
     }
-
-    register_parquet_tables(&ctx).await.unwrap();
-    (ctx, last_query.to_string())
 }
 
 #[cfg(test)]

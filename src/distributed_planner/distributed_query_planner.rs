@@ -113,14 +113,8 @@ impl QueryPlanner for DistributedQueryPlanner {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
-    use crate::test_utils::plans::{
-        BuildSideOneTaskEstimator, TestPlanOptions, base_session_builder, context_with_query,
-        sql_to_physical_plan,
-    };
-    use crate::{DistributedExt, SessionStateBuilderExt, assert_snapshot, display_plan_ascii};
-    use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_plan::displayable;
+    use crate::assert_snapshot;
+    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -152,11 +146,10 @@ mod tests {
         let query = r#"
         SELECT * FROM weather
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @"DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet");
     }
 
     #[tokio::test]
@@ -164,11 +157,10 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -192,11 +184,11 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .num_workers(2)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -220,11 +212,11 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(0))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .num_workers(0)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
           SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
@@ -240,13 +232,11 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-                .with_distributed_cardinality_effect_task_scale_factor(3.0)
-                .unwrap()
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_cardinality_effect_task_scale_factor(3.0)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
@@ -267,13 +257,11 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-                .with_distributed_files_per_task(3)
-                .unwrap()
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_files_per_task(3)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
           SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
@@ -289,11 +277,10 @@ mod tests {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -317,11 +304,10 @@ mod tests {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp" FROM weather a LEFT JOIN weather b ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
@@ -354,11 +340,10 @@ mod tests {
         LEFT JOIN b
         ON a."RainTomorrow" = b."RainTomorrow"
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   HashJoinExec: mode=CollectLeft, join_type=Left, on=[(RainTomorrow@1, RainTomorrow@1)], projection=[MinTemp@0, MaxTemp@2]
@@ -395,11 +380,10 @@ mod tests {
         let query = r#"
         SELECT * FROM weather ORDER BY "MinTemp" DESC
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -416,11 +400,10 @@ mod tests {
         let query = r#"
         SELECT "RainToday", count(*) FROM weather GROUP BY "RainToday" LIMIT 10
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
         │   CoalescePartitionsExec: fetch=10
@@ -444,11 +427,10 @@ mod tests {
         let query = r#"
         SELECT DISTINCT "RainToday", "WindGustDir" FROM weather
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
@@ -470,11 +452,11 @@ mod tests {
         let query = r#"
         SHOW COLUMNS from weather
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .information_schema(true)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         FilterExec: table_name@2 = weather, projection=[table_catalog@0, table_schema@1, table_name@2, column_name@3, data_type@5, is_nullable@4]
           RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
             StreamingTableExec: partition_sizes=1, projection=[table_catalog, table_schema, table_name, column_name, is_nullable, data_type]
@@ -484,16 +466,16 @@ mod tests {
     #[tokio::test]
     async fn test_limited_by_worker() {
         let query = r#"
-        SET datafusion.execution.target_partitions=2;
         SELECT 1 FROM weather
         UNION ALL
         SELECT 1 FROM flights_1m
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(2))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .target_partitions(2)
+            .num_workers(2)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
@@ -509,16 +491,15 @@ mod tests {
     #[tokio::test]
     async fn test_limited_by_config() {
         let query = r#"
-        SET distributed.max_tasks_per_stage=2;
         SELECT 1 FROM weather
         UNION ALL
         SELECT 1 FROM flights_1m
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .distributed_max_tasks_per_stage(2)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -534,16 +515,15 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_2_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(6))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .num_workers(6)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=6
@@ -564,16 +544,14 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_2_tables_limited_workers() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
@@ -594,18 +572,16 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_3_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
         UNION ALL
         SELECT "Temp9am", "RainToday" FROM weather WHERE "Temp9am" > 15.0
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=3
@@ -630,7 +606,6 @@ mod tests {
     #[tokio::test]
     async fn test_unioning_5_tables() {
         let query = r#"
-        set distributed.children_isolator_unions=true;
         SELECT "MinTemp", "RainToday" FROM weather WHERE "MinTemp" > 10.0
         UNION ALL
         SELECT "MaxTemp", "RainToday" FROM weather WHERE "MaxTemp" < 30.0
@@ -641,11 +616,10 @@ mod tests {
         UNION ALL
         SELECT "Rainfall", "RainToday" FROM weather WHERE "Rainfall" > 5.0
         "#;
-        let plan = sql_to_explain(query, |b| {
-            b.with_distributed_worker_resolver(InMemoryWorkerResolver::new(3))
-        })
-        .await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=24, input_tasks=3
@@ -682,8 +656,11 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let annotated = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(annotated, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -709,8 +686,11 @@ mod tests {
         INNER JOIN weather b ON a."RainToday" = b."RainToday"
         INNER JOIN weather c ON b."RainToday" = c."RainToday"
         "#;
-        let plan = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -742,17 +722,21 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-
-        let physical_plan = sql_to_physical_plan(query, 4, 3).await;
-        assert_snapshot!(physical_plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
 
-        let plan = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -773,7 +757,6 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_union_children_isolator_plan() {
         let query = r#"
-        SET distributed.children_isolator_unions = true;
         SELECT a."MinTemp", b."MaxTemp"
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
@@ -786,8 +769,11 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_explain_with_broadcast(query, 3, true).await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -829,8 +815,12 @@ mod tests {
         FROM weather a INNER JOIN weather b
         ON a."RainToday" = b."RainToday"
         "#;
-        let plan = sql_to_explain_with_broadcast_one_to_many(query, 3).await;
-        assert_snapshot!(plan, @r"
+        let physical_plan_ascii = TestPlanBuilder::default()
+            .broadcast_joins(true)
+            .distributed_task_estimator(BuildSideOneTaskEstimator)
+            .physical_plan_as_ascii(query, false)
+            .await;
+        assert_snapshot!(physical_plan_ascii, @r"
         ┌───── DistributedExec ── Tasks: t0:[p0]
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -846,72 +836,5 @@ mod tests {
             │   DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
             └──────────────────────────────────────────────────
         ");
-    }
-
-    async fn sql_to_explain(
-        query: &str,
-        f: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
-    ) -> String {
-        explain_test_plan(query, TestPlanOptions::default(), true, f).await
-    }
-
-    async fn sql_to_explain_with_broadcast(
-        query: &str,
-        num_workers: usize,
-        broadcast_enabled: bool,
-    ) -> String {
-        sql_to_plan_with_options(query, num_workers, broadcast_enabled, true).await
-    }
-
-    async fn sql_to_explain_with_broadcast_one_to_many(query: &str, num_workers: usize) -> String {
-        let options = TestPlanOptions {
-            target_partitions: 4,
-            num_workers,
-            broadcast_enabled: true,
-        };
-        explain_test_plan(query, options, true, |b| {
-            b.with_distributed_task_estimator(BuildSideOneTaskEstimator)
-        })
-        .await
-    }
-
-    async fn sql_to_plan_with_options(
-        query: &str,
-        num_workers: usize,
-        broadcast_enabled: bool,
-        use_optimizer: bool,
-    ) -> String {
-        let options = TestPlanOptions {
-            target_partitions: 4,
-            num_workers,
-            broadcast_enabled,
-        };
-        explain_test_plan(query, options, use_optimizer, |b| b).await
-    }
-
-    async fn explain_test_plan(
-        query: &str,
-        options: TestPlanOptions,
-        use_optimizer: bool,
-        configure: impl FnOnce(SessionStateBuilder) -> SessionStateBuilder,
-    ) -> String {
-        let mut builder = base_session_builder(
-            options.target_partitions,
-            options.num_workers,
-            options.broadcast_enabled,
-        );
-        if use_optimizer {
-            builder = builder.with_distributed_planner()
-        }
-        let builder = configure(builder);
-        let (ctx, query) = context_with_query(builder, query).await;
-        let df = ctx.sql(&query).await.unwrap();
-        let physical_plan = df.create_physical_plan().await.unwrap();
-
-        if use_optimizer {
-            display_plan_ascii(physical_plan.as_ref(), false)
-        } else {
-            format!("{}", displayable(physical_plan.as_ref()).indent(true))
-        }
     }
 }
