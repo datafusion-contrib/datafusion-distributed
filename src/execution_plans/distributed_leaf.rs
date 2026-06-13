@@ -1,5 +1,5 @@
 use crate::DistributedTaskContext;
-use datafusion::common::{Result, Statistics, exec_err, not_impl_err};
+use datafusion::common::{Result, Statistics, exec_err, not_impl_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
@@ -63,20 +63,48 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
+    pub(crate) properties: Arc<PlanProperties>,
     pub(crate) variants: Vec<Arc<dyn ExecutionPlan>>,
 }
 
 impl DistributedLeafExec {
     /// Builds a new [DistributedLeafExec] based on the provided original plan and its per-task
     /// variants. Provided variants must expose the same partition count as the original plan.
-    pub fn new(
+    pub fn try_new(
         original: Arc<dyn ExecutionPlan>,
         variants: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let mut properties = None;
+        let variants = variants
+            .into_iter()
+            .map(|plan| {
+                let plan_properties = plan.properties();
+                let Some(prev) = &properties else {
+                    properties = Some(Arc::clone(plan_properties));
+                    return Ok(plan);
+                };
+                if prev.partitioning.partition_count()
+                    != plan_properties.partitioning.partition_count()
+                {
+                    return plan_err!("Different partition count where provided in two different variants of DistributedLeafExec")
+                }
+                if !prev.eq_properties.schema().eq(plan_properties.eq_properties.schema()) {
+                    return plan_err!("Different schemas where provided in two different variants of DistributedLeafExec")
+                }
+
+                Ok(plan)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let Some(properties) = properties else {
+            return plan_err!("Empty list of variants was provided to DistributedLeafExec");
+        };
+
+        Ok(Self {
             original,
-            variants: variants.into_iter().collect(),
-        }
+            properties,
+            variants,
+        })
     }
 
     /// Returns the variant belonging to provided task index.
@@ -94,22 +122,11 @@ impl DisplayAs for DistributedLeafExec {
 
 impl ExecutionPlan for DistributedLeafExec {
     fn name(&self) -> &str {
-        // Delegate to the original so that metrics lookups (which compare plan.name() against
-        // T::static_name()) work transparently with the wrapped plan type. For example,
-        // node_metrics::<DataSourceExec> finds DistributedLeafExec nodes in the distributed
-        // plan while also finding DataSourceExec nodes in the single-node plan.
-        self.original.name()
-    }
-
-    fn static_name() -> &'static str
-    where
-        Self: Sized,
-    {
-        datafusion::catalog::memory::DataSourceExec::static_name()
+        "DistributedLeafExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
-        self.original.properties()
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

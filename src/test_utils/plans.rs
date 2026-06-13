@@ -10,16 +10,17 @@ use crate::{
     DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
     display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
-use datafusion::{
-    common::{HashMap, HashSet},
-    physical_plan::ExecutionPlan,
-};
 #[cfg(test)]
 use datafusion::{
+    common::Result,
     config::ConfigOptions,
     execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
     physical_plan::displayable,
     prelude::SessionConfig,
+};
+use datafusion::{
+    common::{HashMap, HashSet},
+    physical_plan::ExecutionPlan,
 };
 use std::sync::Arc;
 
@@ -131,7 +132,7 @@ pub(crate) struct TestPlanBuilder {
     num_workers: Option<usize>,
     distributed_planner: bool,
     distributed_cardinality_effect_task_scale_factor: Option<f64>,
-    distributed_files_per_task: Option<usize>,
+    distributed_file_scan_config_bytes_per_partition: Option<usize>,
     information_schema: Option<bool>,
     broadcast_joins: bool,
     distributed_task_estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
@@ -148,7 +149,7 @@ impl TestPlanBuilder {
             num_workers: None,
             distributed_planner: false,
             distributed_cardinality_effect_task_scale_factor: None,
-            distributed_files_per_task: None,
+            distributed_file_scan_config_bytes_per_partition: Some(1),
             information_schema: None,
             broadcast_joins: false,
             distributed_task_estimator: None,
@@ -178,8 +179,11 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn distributed_files_per_task(mut self, files_per_task: usize) -> Self {
-        self.distributed_files_per_task = Some(files_per_task);
+    pub fn distributed_file_scan_config_bytes_per_partition(
+        mut self,
+        bytes_per_partition: usize,
+    ) -> Self {
+        self.distributed_file_scan_config_bytes_per_partition = Some(bytes_per_partition);
         self
     }
 
@@ -228,8 +232,8 @@ impl TestPlanBuilder {
         if let Some(x) = self.distributed_partial_reduce {
             d_cfg.partial_reduce = x;
         }
-        if let Some(n) = self.distributed_files_per_task {
-            d_cfg.files_per_task = n;
+        if let Some(n) = self.distributed_file_scan_config_bytes_per_partition {
+            d_cfg.file_scan_config_bytes_per_partition = n;
         }
         if let Some(f) = self.distributed_cardinality_effect_task_scale_factor {
             d_cfg.cardinality_task_count_factor = f; // note: the real field name
@@ -299,7 +303,7 @@ impl Default for TestPlanBuilder {
             num_workers: Some(3),
             distributed_planner: true,
             distributed_cardinality_effect_task_scale_factor: None,
-            distributed_files_per_task: None,
+            distributed_file_scan_config_bytes_per_partition: Some(1),
             information_schema: Some(false),
             broadcast_joins: false,
             distributed_task_estimator: None,
@@ -339,7 +343,7 @@ impl TaskEstimator for BuildSideOneTaskEstimator {
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        None
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        Ok(None)
     }
 }

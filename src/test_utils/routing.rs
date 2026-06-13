@@ -260,8 +260,10 @@ impl TaskEstimator for URLEmitterTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let exec = plan.downcast_ref::<URLEmitterExec>()?;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(exec) = plan.downcast_ref::<URLEmitterExec>() else {
+            return Ok(None);
+        };
         let p = exec.properties.partitioning.partition_count();
         // Expose ceil(p / task_count) partitions per task so the network boundary
         // computes a consistent output partition count.
@@ -280,7 +282,10 @@ impl TaskEstimator for URLEmitterTaskEstimator {
             })
             .collect();
 
-        Some(Arc::new(DistributedLeafExec::new(template as _, per_task)))
+        Ok(Some(Arc::new(DistributedLeafExec::try_new(
+            template as _,
+            per_task,
+        )?)))
     }
 
     fn route_tasks(

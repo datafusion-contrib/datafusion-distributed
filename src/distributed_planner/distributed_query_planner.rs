@@ -253,12 +253,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_aggregation_with_a_lot_of_files_per_task() {
+    async fn test_aggregation_with_high_file_scan_config_bytes_per_task() {
         let query = r#"
         SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
-            .distributed_files_per_task(3)
+            .distributed_file_scan_config_bytes_per_partition(128 * 1024 * 1024)
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"

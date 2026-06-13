@@ -105,12 +105,11 @@ pub async fn start_in_memory_context(
     session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
 ) -> SessionContext {
     let channel_resolver = InMemoryChannelResolver::from_session_builder(session_builder);
-    let mut state = SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .with_distributed_planner()
         .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
         .with_distributed_channel_resolver(channel_resolver)
         .build();
-    state.config_mut().options_mut().execution.target_partitions = 3;
     SessionContext::from(state)
 }

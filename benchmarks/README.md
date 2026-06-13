@@ -31,11 +31,12 @@ WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch_sf1
 The same script is used for running distributed benchmarks:
 
 ```shell
-WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch_sf1 --files-per-task 2
+WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch_sf1 --file-scan-config-bytes-per-partition 16777216
 ```
 
 - `WORKERS`: Env variable that sets the amount of localhost workers used in the query.
 - `--threads`: Sets the Tokio runtime threads for each individual worker and for the benchmarking
   binary.
 - `--dataset`: Dataset directory name under `benchmarks/data/`.
-- `--files-per-task`: How many files each distributed task will handle.
+- `--file-scan-config-bytes-per-partition`: How many bytes each partition is expected to scan. Lower values
+  produce more partitions/tasks. Defaults to the engine default when unset.

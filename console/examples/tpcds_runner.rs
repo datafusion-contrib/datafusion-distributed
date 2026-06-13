@@ -102,7 +102,6 @@ async fn run_queries(
 
     let ctx = SessionContext::from(state);
     let ctx = ctx
-        .with_distributed_files_per_task(2)?
         .with_distributed_cardinality_effect_task_scale_factor(2.0)?
         .with_distributed_broadcast_joins(true)?;
 

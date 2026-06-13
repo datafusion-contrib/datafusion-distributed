@@ -1,5 +1,6 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
+    use datafusion::catalog::memory::DataSourceExec;
     use datafusion::common::assert_not_contains;
     use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::common::{Result, assert_contains};
@@ -39,7 +40,7 @@ mod tests {
         println!("{}", display_plan_ascii(s_physical.as_ref(), true));
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
-        assert_metrics_equal::<DistributedLeafExec>(
+        assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
             ["output_rows", "output_bytes"],
             &s_physical,
             &d_physical,
@@ -88,7 +89,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..2 {
-            assert_metrics_equal::<DistributedLeafExec>(
+            assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
@@ -127,7 +128,7 @@ mod tests {
         println!("{}", display_plan_ascii(d_physical.as_ref(), true));
 
         for data_source_index in 0..5 {
-            assert_metrics_equal::<DistributedLeafExec>(
+            assert_metrics_equal::<DataSourceExec, DistributedLeafExec>(
                 ["output_rows", "output_bytes"],
                 &s_physical,
                 &d_physical,
@@ -340,20 +341,20 @@ mod tests {
         Ok(())
     }
 
-    /// Looks for an [ExecutionPlan] that matches the provided type parameter `T` in
-    /// both root nodes and compares its metrics.
+    /// Looks for an [ExecutionPlan] that matches the provided type parameter `T1` in
+    /// the left node and `T2` in the right node and compares its metrics.
     /// There might be more than one, so `index` determines which one is compared.
     ///
     /// If the two root nodes contain a child T with different metrics, the assertion fails.
-    fn assert_metrics_equal<T: ExecutionPlan + 'static>(
+    fn assert_metrics_equal<T1: ExecutionPlan + 'static, T2: ExecutionPlan + 'static>(
         names: impl IntoIterator<Item = &'static str>,
         one: &Arc<dyn ExecutionPlan>,
         other: &Arc<dyn ExecutionPlan>,
         index: usize,
     ) {
         for name in names.into_iter() {
-            let one_metric = node_metrics::<T>(one, name, index);
-            let other_metric = node_metrics::<T>(other, name, index);
+            let one_metric = node_metrics::<T1>(one, name, index);
+            let other_metric = node_metrics::<T2>(other, name, index);
             assert_eq!(one_metric, other_metric);
         }
     }

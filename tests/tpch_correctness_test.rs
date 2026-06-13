@@ -12,7 +12,10 @@ mod tests {
     use std::path::Path;
     use tokio::sync::OnceCell;
 
+    const NUM_WORKERS: usize = 4;
     const PARTITIONS: usize = 6;
+    const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
+    const CARDINALITY_TASK_COUNT_FACTOR: f64 = 1.5;
     const TPCH_SCALE_FACTOR: f64 = 1.0;
     const TPCH_DATA_PARTS: usize = 16;
 
@@ -135,9 +138,15 @@ mod tests {
     // test_tpch_query runs each TPC-H query twice - once in a distributed manner and once
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
-        let d_ctx = start_in_memory_context(4, DefaultSessionBuilder).await;
+        let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
 
+        let d_ctx = d_ctx
+            .with_distributed_file_scan_config_bytes_per_partition(
+                FILE_SCAN_CONFIG_BYTES_PER_PARTITION,
+            )?
+            .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
+            .with_distributed_broadcast_joins(true)?;
         let results_d = run_tpch_query(d_ctx, sql.clone()).await?;
         let results_s = run_tpch_query(SessionContext::new(), sql).await?;
 

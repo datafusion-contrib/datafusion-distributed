@@ -420,7 +420,7 @@ impl InjectNetworkBoundaryContext<'_> {
                 plan,
                 task_count.as_usize(),
                 self.cfg,
-            );
+            )?;
             match scaled_up {
                 None => Ok(self.plan_with_task_count(Arc::clone(plan), task_count)),
                 Some(scaled_up) => {
@@ -899,22 +899,21 @@ mod tests {
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .distributed_files_per_task(1);
+            .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
             RepartitionExec: task_count=Maximum(2)
-              DataSourceExec: task_count=Maximum(2)
+              DistributedLeafExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
-                DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
-                DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -1226,8 +1225,8 @@ mod tests {
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Ok(None)
         }
     }
 
@@ -1253,8 +1252,8 @@ mod tests {
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Ok(None)
         }
     }
 

@@ -337,9 +337,13 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let exec = plan.downcast_ref::<RowGeneratorExec>()?;
-        let provider = exec.feed.clone().try_into_inner().ok()?;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(exec) = plan.downcast_ref::<RowGeneratorExec>() else {
+            return Ok(None);
+        };
+        let Some(provider) = exec.feed.clone().try_into_inner().ok() else {
+            return Ok(None);
+        };
         let partitions_per_task = provider.per_partition_ops.len() / task_count;
 
         // Rebuild the exec with the decided task count so its partition count matches.
@@ -356,7 +360,7 @@ impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
             Ok(Transformed::no(plan))
         });
 
-        Some(transformed.ok()?.data)
+        Ok(Some(transformed?.data))
     }
 }
 

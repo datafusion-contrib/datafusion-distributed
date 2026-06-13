@@ -19,13 +19,13 @@ mod tests {
     use tokio::sync::OnceCell;
 
     const NUM_WORKERS: usize = 4;
-    const FILES_PER_TASK: usize = 2;
+    const PARTITIONS: usize = 3;
+    const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 2.0;
     const FILE_RANGE: Range<usize> = 0..3;
 
     #[tokio::test]
     #[ignore = "Query 0 did not get distributed.The planner correctly chooses a single-task plan because of parquet statistics."]
-
     async fn test_clickbench_0() -> Result<()> {
         test_clickbench_query("q0").await
     }
@@ -282,8 +282,17 @@ mod tests {
 
         // Make distributed localhost context to run queries
         let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        d_ctx
+            .state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .target_partitions = PARTITIONS;
         let d_ctx = d_ctx
-            .with_distributed_files_per_task(FILES_PER_TASK)?
+            .with_distributed_file_scan_config_bytes_per_partition(
+                FILE_SCAN_CONFIG_BYTES_PER_PARTITION,
+            )?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
             .with_distributed_broadcast_joins(true)?;
 
