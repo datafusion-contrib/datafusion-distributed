@@ -209,7 +209,16 @@ impl ChildrenIsolatorUnionExec {
             .map(
                 |(child_i, plan)| match children_to_keep.contains(&child_i) {
                     true => Arc::clone(plan),
-                    false => Arc::new(EmptyExec::new(plan.schema())),
+                    // Preserve the replaced child's partition count on the placeholder. The
+                    // advertised partition count is `max` over tasks of the sum of each task's
+                    // children partition counts; if a later `with_new_children` (e.g. triggered by
+                    // specializing a nested DistributedLeafExec) recomputes it from these
+                    // placeholders, a default 1-partition EmptyExec would collapse that max and
+                    // desync from the partition ranges the coordinator assigned.
+                    false => Arc::new(
+                        EmptyExec::new(plan.schema())
+                            .with_partitions(plan.output_partitioning().partition_count()),
+                    ) as Arc<dyn ExecutionPlan>,
                 },
             )
             .collect_vec();
