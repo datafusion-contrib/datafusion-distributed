@@ -12,7 +12,7 @@ async function main() {
     program
         .requiredOption('--dataset <string>', 'Dataset to run queries on')
         .option('-i, --iterations <number>', 'Number of iterations', '5')
-        .option('--files-per-task <number>', 'Files per task', '8')
+        .option('--file-scan-config-bytes-per-partition <number>', 'Bytes each partition scans', '16777216')
         .option('--cardinality-task-sf <number>', 'Cardinality task scale factor', '1')
         .option('--batch-size <number>', 'Standard Batch coalescing size (number of rows)', '32768')
         .option('--shuffle-batch-size <number>', 'Override RepartitionExec batch size on worker stages (0 = no override)', '0')
@@ -33,7 +33,7 @@ async function main() {
 
     const dataset: string = options.dataset
     const iterations = parseInt(options.iterations);
-    const filesPerTask = parseInt(options.filesPerTask);
+    const fileScanConfigBytesPerPartition = parseInt(options.fileScanConfigBytesPerPartition);
     const cardinalityTaskSf = parseInt(options.cardinalityTaskSf);
     const batchSize = parseInt(options.batchSize);
     const shuffleBatchSize = parseInt(options.shuffleBatchSize);
@@ -50,7 +50,7 @@ async function main() {
     const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
     const runner = new DataFusionRunner({
-        filesPerTask,
+        fileScanConfigBytesPerPartition,
         cardinalityTaskSf,
         batchSize,
         shuffleBatchSize,
@@ -89,7 +89,7 @@ class DataFusionRunner implements BenchmarkRunner {
     private url = 'http://localhost:9000';
 
     constructor(private readonly options: {
-        filesPerTask: number;
+        fileScanConfigBytesPerPartition: number;
         cardinalityTaskSf: number;
         batchSize: number;
         shuffleBatchSize: number;
@@ -168,7 +168,7 @@ class DataFusionRunner implements BenchmarkRunner {
         }
         await this.query(stmt);
         await this.query(`
-      SET distributed.files_per_task=${this.options.filesPerTask};
+      SET distributed.file_scan_config_bytes_per_partition=${this.options.fileScanConfigBytesPerPartition};
       SET distributed.cardinality_task_count_factor=${this.options.cardinalityTaskSf};
       SET datafusion.execution.batch_size=${this.options.batchSize};
       SET distributed.shuffle_batch_size=${this.options.shuffleBatchSize};

@@ -2,7 +2,6 @@ use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use crate::work_unit_feed::WorkUnitFeedRegistry;
-use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
 use std::fmt::{Debug, Formatter};
@@ -11,11 +10,11 @@ use std::sync::Arc;
 extensions_options! {
     /// Configuration for the distributed planner.
     pub struct DistributedConfig {
-        /// Sets the maximum amount of files that will be assigned to each task. Reducing this
-        /// number will spawn more tasks for the same number of files. This only applies when
-        /// estimating tasks for stages containing `DataSourceExec` nodes with `FileScanConfig`
-        /// implementations.
-        pub files_per_task: usize, default = files_per_task_default()
+        /// Sets the number of bytes each partitions is expected to scan from parquet files. If
+        /// more partitions than the ones available in one machine would be needed, several machines
+        /// are used, and the scan is distributed.
+        /// Lowering this number will increase parallelism.
+        pub file_scan_config_bytes_per_partition: usize, default = 16 * 1024 * 1024
         /// Task multiplying factor for when a node declares that it changes the cardinality
         /// of the data:
         /// - If a node is increasing the cardinality of the data, this factor will increase.
@@ -77,14 +76,6 @@ extensions_options! {
         /// [WorkUnitFeedRegistry] that contains a set of getters that, applied to each node in a
         /// plan, will return the [crate::WorkUnitFeed]s present in all nodes.
         pub(crate) __private_work_unit_feed_registry: WorkUnitFeedRegistry, default = WorkUnitFeedRegistry::default()
-    }
-}
-
-fn files_per_task_default() -> usize {
-    if cfg!(test) || cfg!(feature = "integration") {
-        1
-    } else {
-        get_available_parallelism()
     }
 }
 

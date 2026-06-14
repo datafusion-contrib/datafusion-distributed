@@ -209,7 +209,10 @@ impl ChildrenIsolatorUnionExec {
             .map(
                 |(child_i, plan)| match children_to_keep.contains(&child_i) {
                     true => Arc::clone(plan),
-                    false => Arc::new(EmptyExec::new(plan.schema())),
+                    false => Arc::new(
+                        EmptyExec::new(plan.schema())
+                            .with_partitions(plan.output_partitioning().partition_count()),
+                    ) as Arc<dyn ExecutionPlan>,
                 },
             )
             .collect_vec();

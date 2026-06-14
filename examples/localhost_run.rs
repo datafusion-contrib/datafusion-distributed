@@ -39,7 +39,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_default_features()
         .with_distributed_worker_resolver(localhost_resolver)
         .with_distributed_planner()
-        .with_distributed_files_per_task(1)?
+        // Choose a very low value so queries get heavily distributed.
+        .with_distributed_file_scan_config_bytes_per_partition(1)?
         .build();
 
     let ctx = SessionContext::from(state);

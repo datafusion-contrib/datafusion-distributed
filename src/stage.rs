@@ -1,5 +1,5 @@
 use crate::coordinator::{DistributedExec, MetricsStore};
-use crate::execution_plans::NetworkCoalesceExec;
+use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use datafusion::common::{HashMap, config_err};
 use datafusion::common::{exec_err, plan_err};
@@ -295,22 +295,15 @@ fn display_inner_ascii(
     show_metrics: bool,
     f: &mut String,
 ) -> std::fmt::Result {
-    let metrics_str = if show_metrics {
-        if let Some(metrics) = plan.metrics() {
-            let formatted = format_metrics_by_task(&metrics);
-            if formatted.is_empty() {
-                ", metrics=[]".to_string()
-            } else {
-                format!(", metrics=[{formatted}]")
-            }
-        } else {
-            ", metrics=[]".to_string()
-        }
-    } else {
-        String::new()
-    };
+    if plan.is::<DistributedLeafExec>() {
+        return display_inner_distributed_leaf(plan, indent, show_metrics, f);
+    }
 
     let node_str = displayable(plan.as_ref()).one_line().to_string();
+    let metrics_str = match show_metrics {
+        true => metrics_suffix(plan.metrics().map(|m| format_metrics_by_task(&m))),
+        false => String::new(),
+    };
     writeln!(
         f,
         "{} {}{metrics_str}",
@@ -324,6 +317,50 @@ fn display_inner_ascii(
 
     for child in plan.children() {
         display_inner_ascii(child, indent + 2, show_metrics, f)?;
+    }
+    Ok(())
+}
+
+fn display_inner_distributed_leaf(
+    plan: &Arc<dyn ExecutionPlan>,
+    indent: usize,
+    show_metrics: bool,
+    f: &mut String,
+) -> std::fmt::Result {
+    let Some(leaf) = plan.downcast_ref::<DistributedLeafExec>() else {
+        return Ok(());
+    };
+    let indent = " ".repeat(indent);
+
+    // The leaf node is wrapped in a `MetricsWrapperExec` by the metrics rewriter, so the
+    // per-task metrics live on `plan.metrics()` (the wrapper), not on `leaf.metrics()` (which
+    // delegates to the un-rewritten original). Split them by task id to show each variant's
+    // own metrics.
+    if let Some(by_task) = show_metrics
+        .then(|| plan.metrics())
+        .flatten()
+        .map(|m| metrics_by_task_id(&m))
+        && !by_task.is_empty()
+    {
+        writeln!(f, "{indent} DistributedLeafExec:")?;
+        for (task_i, variant) in leaf.variants.iter().enumerate() {
+            let variant = displayable(variant.as_ref()).one_line().to_string();
+            let metrics = match by_task.is_empty() {
+                true => String::new(),
+                false => metrics_suffix(by_task.get(&task_i).map(format_metrics_by_task)),
+            };
+            writeln!(f, "{indent}   t{task_i}: {}{metrics}", variant.trim_end())?;
+        }
+    } else {
+        let header = match show_metrics {
+            true => metrics_suffix(plan.metrics().map(|m| format_metrics_by_task(&m))),
+            false => String::new(),
+        };
+        writeln!(f, "{indent} DistributedLeafExec:{header}")?;
+        for (task_i, variant) in leaf.variants.iter().enumerate() {
+            let variant = displayable(variant.as_ref()).one_line().to_string();
+            writeln!(f, "{indent}   t{task_i}: {}", variant.trim_end())?;
+        }
     }
     Ok(())
 }
@@ -453,6 +490,34 @@ fn format_metrics_by_task(metrics: &MetricsSet) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Wraps a formatted metrics string into the `, metrics=[...]` suffix used in plan displays.
+/// A missing or empty value renders as `, metrics=[]`.
+fn metrics_suffix(formatted: Option<String>) -> String {
+    match formatted.unwrap_or_default() {
+        s if s.is_empty() => ", metrics=[]".to_string(),
+        s => format!(", metrics=[{s}]"),
+    }
+}
+
+/// Splits a [MetricsSet] into a map from task index to the metrics belonging to that task.
+/// Only metrics that carry a [DISTRIBUTED_DATAFUSION_TASK_ID_LABEL] are included; metrics without
+/// that label are dropped. Returns an empty map when no task-labelled metrics are present.
+fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
+    let mut map: HashMap<usize, MetricsSet> = HashMap::new();
+    for metric in metrics.iter() {
+        let Some(task_id) = metric
+            .labels()
+            .iter()
+            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+            .and_then(|l| l.value().parse::<usize>().ok())
+        else {
+            continue;
+        };
+        map.entry(task_id).or_default().push(Arc::clone(metric));
+    }
+    map
 }
 
 fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> String {

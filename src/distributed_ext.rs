@@ -324,9 +324,10 @@ pub trait DistributedExt: Sized {
         estimator: T,
     );
 
-    /// Sets the maximum number of files each task in a stage with a FileScanConfig node will
-    /// handle. Reducing this number will increment the amount of tasks. By default, this
-    /// is close to the number of cores in the machine.
+    /// Sets the number of bytes each partition in a stage with a FileScanConfig node is
+    /// expected to scan. A task runs `target_partitions` partitions, so the task count is
+    /// roughly `total_scan_bytes / bytes_per_partition / target_partitions` (capped at the
+    /// number of available workers). Reducing this number increases the amount of tasks.
     ///
     /// ```text
     ///     ┌───────────────────────┐
@@ -345,20 +346,20 @@ pub trait DistributedExt: Sized {
     ///     ┌───────────────────────┐    │
     /// │   │      FilterExec       │
     ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐        Sets the max number of files
-    ///     │    FileScanConfig     │◀───┼─   each task will handle. Less
-    /// │   └───────────────────────┘        files_per_task == more tasks
+    /// │   ┌───────────────────────┐        Sets the bytes scanned per
+    ///     │    FileScanConfig     │◀───┼─   partition. Less
+    /// │   └───────────────────────┘        bytes_per_partition == more tasks
     ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
     ///```
-    fn with_distributed_files_per_task(
+    fn with_distributed_file_scan_config_bytes_per_partition(
         self,
-        files_per_task: usize,
+        bytes_per_partition: usize,
     ) -> Result<Self, DataFusionError>;
 
-    /// Same as [DistributedExt::with_distributed_files_per_task] but with an in-place mutation.
-    fn set_distributed_files_per_task(
+    /// Same as [DistributedExt::with_distributed_file_scan_config_bytes_per_partition] but with an in-place mutation.
+    fn set_distributed_file_scan_config_bytes_per_partition(
         &mut self,
-        files_per_task: usize,
+        bytes_per_partition: usize,
     ) -> Result<(), DataFusionError>;
 
     /// The number of tasks in each stage is calculated in a bottom-to-top fashion.
@@ -626,12 +627,12 @@ impl DistributedExt for SessionConfig {
         set_distributed_task_estimator(self, estimator)
     }
 
-    fn set_distributed_files_per_task(
+    fn set_distributed_file_scan_config_bytes_per_partition(
         &mut self,
-        files_per_task: usize,
+        bytes_per_partition: usize,
     ) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.files_per_task = files_per_task;
+        d_cfg.file_scan_config_bytes_per_partition = bytes_per_partition;
         Ok(())
     }
 
@@ -760,9 +761,9 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
-            #[call(set_distributed_files_per_task)]
+            #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_file_scan_config_bytes_per_partition(mut self, bytes_per_partition: usize) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
             #[expr($?;Ok(self))]
@@ -854,10 +855,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
+            fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_file_scan_config_bytes_per_partition(mut self, bytes_per_partition: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
@@ -965,10 +966,10 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
+            fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(mut self, files_per_task: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_file_scan_config_bytes_per_partition(mut self, bytes_per_partition: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
             #[call(set_distributed_cardinality_effect_task_scale_factor)]
@@ -1076,10 +1077,10 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(self, estimator: T) -> Self;
 
-            fn set_distributed_files_per_task(&mut self, files_per_task: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_files_per_task)]
+            fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_files_per_task(self, files_per_task: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_file_scan_config_bytes_per_partition(self, bytes_per_partition: usize) -> Result<Self, DataFusionError>;
 
             fn set_distributed_cardinality_effect_task_scale_factor(&mut self, factor: f64) -> Result<(), DataFusionError>;
             #[call(set_distributed_cardinality_effect_task_scale_factor)]

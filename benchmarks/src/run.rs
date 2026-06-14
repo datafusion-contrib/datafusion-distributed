@@ -77,9 +77,10 @@ pub struct RunOpt {
     #[structopt(long)]
     threads: Option<usize>,
 
-    /// Number of files per each distributed task.
+    /// Number of bytes each partition is expected to scan from parquet files. Lower values
+    /// produce more partitions/tasks. Defaults to the engine default when unset.
     #[structopt(long)]
-    files_per_task: Option<usize>,
+    file_scan_config_bytes_per_partition: Option<usize>,
 
     /// Task count scale factor for when nodes in stages change the cardinality of the data
     #[structopt(long)]
@@ -199,9 +200,6 @@ impl RunOpt {
             .with_config(self.config()?)
             .with_distributed_worker_resolver(LocalHostWorkerResolver::new(self.workers.clone()))
             .with_distributed_planner()
-            .with_distributed_files_per_task(
-                self.files_per_task.unwrap_or(get_available_parallelism()),
-            )?
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
@@ -222,6 +220,11 @@ impl RunOpt {
                     .downcast_ref::<WorkUnitFileScanConfig>()
                     .map(|v| &v.feed)
             });
+
+        if let Some(bytes_per_partition) = self.file_scan_config_bytes_per_partition {
+            builder = builder
+                .with_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
+        }
 
         if self.work_unit_file_scan {
             builder = builder.with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))

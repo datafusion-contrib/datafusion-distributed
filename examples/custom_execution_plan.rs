@@ -17,11 +17,11 @@
 //! cargo run --features integration --example custom_execution_plan "SELECT DISTINCT number FROM numbers(0, 100) ORDER BY number" --workers 10 --show-distributed-plan
 //! ```
 
-use arrow::array::{ArrayRef, Int64Array, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::record_batch::RecordBatchOptions;
-use arrow::util::pretty::pretty_format_batches;
 use async_trait::async_trait;
+use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::record_batch::RecordBatchOptions;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::catalog::{Session, TableFunctionImpl};
 use datafusion::common::{
     DataFusionError, Result, ScalarValue, exec_err, extensions_options, internal_err, plan_err,
@@ -320,8 +320,10 @@ impl TaskEstimator for NumbersTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = plan.downcast_ref::<NumbersExec>()?;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(plan) = plan.downcast_ref::<NumbersExec>() else {
+            return Ok(None);
+        };
         let range = &plan.ranges_per_task[0];
         let chunk_size = ((range.end - range.start) as f64 / task_count as f64).ceil() as i64;
 
@@ -331,7 +333,10 @@ impl TaskEstimator for NumbersTaskEstimator {
             start..end
         });
 
-        Some(Arc::new(NumbersExec::new(ranges_per_task, plan.schema())))
+        Ok(Some(Arc::new(NumbersExec::new(
+            ranges_per_task,
+            plan.schema(),
+        ))))
     }
 }
 

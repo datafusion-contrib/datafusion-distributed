@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::common::runtime::JoinSet;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use std::error::Error;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -63,12 +63,17 @@ where
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let worker_resolver = LocalHostWorkerResolver::new(ports);
-    let mut state = SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
+        .with_config(SessionConfig::new().with_target_partitions(3))
         .with_distributed_planner()
         .with_distributed_worker_resolver(worker_resolver)
+        // Test datasets are tiny, so budget one byte per partition: the estimator then asks for far
+        // more partitions than exist, which gets capped at the worker count, fanning every scan out
+        // across the whole (small) test cluster so the distributed paths are exercised.
+        .with_distributed_file_scan_config_bytes_per_partition(1)
+        .unwrap()
         .build();
-    state.config_mut().options_mut().execution.target_partitions = 3;
 
     (SessionContext::from(state), join_set, workers)
 }

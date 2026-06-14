@@ -4,13 +4,12 @@ use crate::execution_plans::DistributedLeafExec;
 use TaskCountAnnotation::*;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig};
+use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use delegate::delegate;
-use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::Arc;
 use url::Url;
@@ -135,7 +134,7 @@ pub trait TaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>>;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>>;
 
     /// Optionally defines a custom protocol for routing tasks to specific worker URLs. Receives
     /// routing context including task count and a list of available URLs, and returns a vector
@@ -181,8 +180,8 @@ impl TaskEstimator for usize {
         _: &Arc<dyn ExecutionPlan>,
         _: usize,
         _: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        None
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        Ok(None)
     }
 }
 
@@ -190,7 +189,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
-            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<Arc<dyn ExecutionPlan>>>;
             fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -200,7 +199,7 @@ impl TaskEstimator for Arc<dyn TaskEstimator + Send + Sync> {
     delegate! {
         to self.as_ref() {
             fn task_estimation(&self, plan: &Arc<dyn ExecutionPlan>, cfg: &ConfigOptions) -> Option<TaskEstimation>;
-            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Option<Arc<dyn ExecutionPlan>>;
+            fn scale_up_leaf_node(&self, plan: &Arc<dyn ExecutionPlan>, task_count: usize, cfg: &ConfigOptions) -> Result<Option<Arc<dyn ExecutionPlan>>>;
             fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
         }
     }
@@ -230,9 +229,9 @@ pub(crate) fn set_distributed_task_estimator(
 }
 
 /// [TaskEstimator] implementation that acts on [DataSourceExec] nodes that contain
-/// [FileScanConfig]s data sources (e.g., Parquet or CSV files). it will read the
-/// [DistributedConfig].`files_per_task` field and assigns as many tasks as needed so that
-/// no task handles more than the configured files.
+/// [FileScanConfig]s data sources (e.g., Parquet or CSV files). It reads the
+/// [DistributedConfig].`file_scan_config_bytes_per_partition` field and assigns as many tasks as
+/// needed so that no partition scans more than the configured number of bytes.
 #[derive(Debug)]
 pub(crate) struct FileScanConfigTaskEstimator;
 
@@ -247,19 +246,18 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
 
         let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
 
-        // Count how many partitioned files we have in the FileScanConfig.
-        let mut partitioned_files = 0;
+        let mut total_bytes = 0;
         for file_group in &file_scan.file_groups {
-            partitioned_files += file_group.len();
+            for file in file_group.files() {
+                total_bytes += file.effective_size() as usize
+            }
         }
 
-        // Based on the user-provided files_per_task configuration, do the math to calculate
-        // how many tasks should be used, without surpassing the number of available workers.
-        let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
+        let task_count = total_bytes
+            .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
+            .div_ceil(cfg.execution.target_partitions);
 
-        Some(TaskEstimation {
-            task_count: TaskCountAnnotation::Desired(task_count),
-        })
+        Some(TaskEstimation::desired(task_count))
     }
 
     fn scale_up_leaf_node(
@@ -267,46 +265,58 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        if task_count == 1 {
-            return None;
-        }
-        let dse: &DataSourceExec = plan.downcast_ref()?;
-        let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(dse) = plan.downcast_ref::<DataSourceExec>() else {
+            return Ok(None);
+        };
+        let Some(file_scan) = dse.data_source().downcast_ref::<FileScanConfig>() else {
+            return Ok(None);
+        };
+        let partition_count = plan.output_partitioning().partition_count();
+
+        let rebalanced = if file_scan.partitioned_by_file_group {
+            let all_partitioned_files = file_scan
+                .file_groups
+                .iter()
+                .flat_map(|file_group| file_group.iter().cloned())
+                .collect::<Vec<_>>();
+            rebalance_round_robin(all_partitioned_files, partition_count * task_count)
+                .into_iter()
+                .map(FileGroup::new)
+                .collect::<Vec<_>>()
+        } else {
+            FileGroupPartitioner::new()
+                .with_target_partitions(partition_count * task_count)
+                // Allow repartitioning beyond normal limits, putting the limit in
+                // `partition_count * task_count` target partitions, and not in the
+                // resulting size.
+                .with_repartition_file_min_size(0)
+                .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
+                .repartition_file_groups(&file_scan.file_groups)
+                .unwrap_or_else(|| file_scan.file_groups.clone())
+                .into_iter()
+                .collect()
+        };
 
         let mut file_scan_template = file_scan.clone();
-        let input_group_count = file_scan_template.file_groups.len().max(1);
-        let all_partitioned_files = file_scan_template
-            .file_groups
-            .iter()
-            .flat_map(|file_group| file_group.iter().cloned())
-            .collect::<Vec<_>>();
         file_scan_template.file_groups.clear();
-        let rebalanced =
-            rebalance_round_robin(all_partitioned_files, input_group_count * task_count);
-        let mut file_groups: VecDeque<FileGroup> = rebalanced.into_iter().map(Into::into).collect();
-        let expected_partitions = plan.output_partitioning().partition_count();
+        let mut file_scans = vec![file_scan_template; task_count];
+        for (i, file_group) in rebalanced.into_iter().enumerate() {
+            file_scans[i % task_count].file_groups.push(file_group);
+        }
 
-        let dle = DistributedLeafExec::new(
+        let dle = DistributedLeafExec::try_new(
             Arc::clone(plan),
-            (0..task_count).map(|_| {
-                let mut new_file_scan = file_scan_template.clone();
-                while new_file_scan.file_groups.len() < expected_partitions {
-                    match file_groups.pop_front() {
-                        None => new_file_scan.file_groups.push(FileGroup::new(vec![])),
-                        Some(fg) => new_file_scan.file_groups.push(fg),
-                    }
-                }
-                DataSourceExec::from_data_source(new_file_scan) as _
-            }),
-        );
+            file_scans
+                .into_iter()
+                .map(|file_scan| DataSourceExec::from_data_source(file_scan) as _),
+        )?;
 
-        Some(Arc::new(dle))
+        Ok(Some(Arc::new(dle)))
     }
 }
 
 fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {
-    let target_groups = target_groups.min(items.len());
     let mut groups = (0..target_groups)
         .map(|_| Vec::new())
         .collect::<Vec<Vec<T>>>();
@@ -351,21 +361,21 @@ impl TaskEstimator for CombinedTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         for estimator in &self.user_provided {
-            if let Some(result) = estimator.scale_up_leaf_node(plan, task_count, cfg) {
-                return Some(result);
+            if let Some(result) = estimator.scale_up_leaf_node(plan, task_count, cfg)? {
+                return Ok(Some(result));
             }
         }
         // We want to execute the default estimators last so that the user-provided ones have
         // a chance of providing an estimation.
         // If none of the user-provided returned an estimation, the default ones are used.
         for default_estimator in [&FileScanConfigTaskEstimator as &dyn TaskEstimator] {
-            if let Some(result) = default_estimator.scale_up_leaf_node(plan, task_count, cfg) {
-                return Some(result);
+            if let Some(result) = default_estimator.scale_up_leaf_node(plan, task_count, cfg)? {
+                return Ok(Some(result));
             }
         }
-        None
+        Ok(None)
     }
 
     fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
@@ -414,9 +424,28 @@ mod tests {
         let mut combined = CombinedTaskEstimator::default();
         combined.push(|_: &Arc<dyn ExecutionPlan>, _: &ConfigOptions| None);
 
+        // No user estimator returns a value, so the default FileScanConfigTaskEstimator kicks in.
+        // Size the per-partition budget (with target_partitions pinned to 1) so the scan splits
+        // into exactly 3 partitions.
         let node = make_data_source_exec().await?;
-        assert_eq!(combined.task_count(node, |cfg| cfg), 3);
+        let bytes_per_partition = total_scan_bytes(&node).div_ceil(3);
+        let task_count = combined.task_count(node, |mut cfg| {
+            cfg.file_scan_config_bytes_per_partition = bytes_per_partition;
+            cfg
+        });
+        assert_eq!(task_count, 3);
         Ok(())
+    }
+
+    fn total_scan_bytes(node: &Arc<dyn ExecutionPlan>) -> usize {
+        let dse = node.downcast_ref::<DataSourceExec>().unwrap();
+        let file_scan = dse.data_source().downcast_ref::<FileScanConfig>().unwrap();
+        file_scan
+            .file_groups
+            .iter()
+            .flat_map(|file_group| file_group.files())
+            .map(|file| file.effective_size() as usize)
+            .sum()
     }
 
     #[test]
@@ -428,11 +457,13 @@ mod tests {
     }
 
     #[test]
-    fn test_rebalance_round_robin_caps_partitions_to_file_count() {
+    fn test_rebalance_round_robin_pads_with_empty_groups() {
+        // With fewer items than target groups, the extra groups are kept empty rather than
+        // dropped. This guarantees every task ends up with the same number of partitions.
         let items = vec![10, 20, 30];
         let groups = rebalance_round_robin(items, 5);
         let sizes = groups.iter().map(Vec::len).collect::<Vec<_>>();
-        assert_eq!(sizes, vec![1, 1, 1]);
+        assert_eq!(sizes, vec![1, 1, 1, 0, 0]);
     }
 
     impl CombinedTaskEstimator {
@@ -446,8 +477,11 @@ mod tests {
             f: impl FnOnce(DistributedConfig) -> DistributedConfig,
         ) -> usize {
             let mut cfg = ConfigOptions::default();
+            // Pin target_partitions so the byte-based estimation is deterministic regardless of
+            // the host's core count.
+            cfg.execution.target_partitions = 1;
             let d_cfg = DistributedConfig {
-                files_per_task: 1,
+                file_scan_config_bytes_per_partition: 1,
                 __private_worker_resolver: WorkerResolverExtension(Arc::new(
                     InMemoryWorkerResolver::new(3),
                 )),
@@ -489,8 +523,8 @@ mod tests {
             _plan: &Arc<dyn ExecutionPlan>,
             _task_count: usize,
             _cfg: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Ok(None)
         }
     }
 }

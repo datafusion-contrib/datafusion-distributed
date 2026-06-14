@@ -420,7 +420,7 @@ impl InjectNetworkBoundaryContext<'_> {
                 plan,
                 task_count.as_usize(),
                 self.cfg,
-            );
+            )?;
             match scaled_up {
                 None => Ok(self.plan_with_task_count(Arc::clone(plan), task_count)),
                 Some(scaled_up) => {
@@ -669,7 +669,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"DataSourceExec: task_count=Desired(3)")
+        assert_snapshot!(annotated, @"DataSourceExec: task_count=Desired(4)")
     }
 
     #[tokio::test]
@@ -687,13 +687,13 @@ mod tests {
         assert_snapshot!(annotated, @r"
         SortPreservingMergeExec: task_count=Maximum(1)
           NetworkCoalesceExec: task_count=Maximum(1)
-            SortExec: task_count=Desired(2)
-              ProjectionExec: task_count=Desired(2)
-                AggregateExec: task_count=Desired(2)
-                  NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(3)
-                      AggregateExec: task_count=Desired(3)
-                        DataSourceExec: task_count=Desired(3)
+            SortExec: task_count=Desired(3)
+              ProjectionExec: task_count=Desired(3)
+                AggregateExec: task_count=Desired(3)
+                  NetworkShuffleExec: task_count=Desired(3)
+                    RepartitionExec: task_count=Desired(4)
+                      AggregateExec: task_count=Desired(4)
+                        DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -712,8 +712,8 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DataSourceExec: task_count=Maximum(1)
-          DataSourceExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -756,19 +756,19 @@ mod tests {
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
                   NetworkShuffleExec: task_count=Desired(2)
-                    RepartitionExec: task_count=Desired(3)
-                      AggregateExec: task_count=Desired(3)
-                        FilterExec: task_count=Desired(3)
-                          RepartitionExec: task_count=Desired(3)
-                            DataSourceExec: task_count=Desired(3)
+                    RepartitionExec: task_count=Desired(4)
+                      AggregateExec: task_count=Desired(4)
+                        FilterExec: task_count=Desired(4)
+                          RepartitionExec: task_count=Desired(4)
+                            DistributedLeafExec: task_count=Desired(4)
           ProjectionExec: task_count=Maximum(1)
             AggregateExec: task_count=Maximum(1)
               NetworkShuffleExec: task_count=Maximum(1)
-                RepartitionExec: task_count=Desired(3)
-                  AggregateExec: task_count=Desired(3)
-                    FilterExec: task_count=Desired(3)
-                      RepartitionExec: task_count=Desired(3)
-                        DataSourceExec: task_count=Desired(3)
+                RepartitionExec: task_count=Desired(4)
+                  AggregateExec: task_count=Desired(4)
+                    FilterExec: task_count=Desired(4)
+                      RepartitionExec: task_count=Desired(4)
+                        DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -789,8 +789,8 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DataSourceExec: task_count=Maximum(1)
-          DataSourceExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -807,11 +807,11 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(2)
-          NetworkShuffleExec: task_count=Desired(2)
-            RepartitionExec: task_count=Desired(3)
-              AggregateExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
+        AggregateExec: task_count=Desired(3)
+          NetworkShuffleExec: task_count=Desired(3)
+            RepartitionExec: task_count=Desired(4)
+              AggregateExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -833,11 +833,11 @@ mod tests {
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
             RepartitionExec: task_count=Maximum(2)
-              DataSourceExec: task_count=Maximum(2)
+              DistributedLeafExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(2)
             FilterExec: task_count=Maximum(2)
               RepartitionExec: task_count=Maximum(2)
-                DataSourceExec: task_count=Maximum(2)
+                DistributedLeafExec: task_count=Maximum(2)
         ")
     }
 
@@ -856,9 +856,9 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        FilterExec: task_count=Desired(3)
-          RepartitionExec: task_count=Desired(3)
-            DataSourceExec: task_count=Desired(3)
+        FilterExec: task_count=Desired(4)
+          RepartitionExec: task_count=Desired(4)
+            DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -876,12 +876,12 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        ProjectionExec: task_count=Desired(3)
-          BoundedWindowAggExec: task_count=Desired(3)
-            SortExec: task_count=Desired(3)
-              NetworkShuffleExec: task_count=Desired(3)
-                RepartitionExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
+        ProjectionExec: task_count=Desired(4)
+          BoundedWindowAggExec: task_count=Desired(4)
+            SortExec: task_count=Desired(4)
+              NetworkShuffleExec: task_count=Desired(4)
+                RepartitionExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -899,22 +899,21 @@ mod tests {
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
-            .broadcast_joins(false)
-            .distributed_files_per_task(1);
+            .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(4)
           FilterExec: task_count=Maximum(2)
             RepartitionExec: task_count=Maximum(2)
-              DataSourceExec: task_count=Maximum(2)
+              DistributedLeafExec: task_count=Maximum(2)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
-                DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
-                DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -940,7 +939,7 @@ mod tests {
           NetworkShuffleExec: task_count=Desired(1)
             RepartitionExec: task_count=Desired(1)
               AggregateExec: task_count=Desired(1)
-                DataSourceExec: task_count=Desired(1)
+                DistributedLeafExec: task_count=Desired(1)
         ")
     }
 
@@ -967,11 +966,11 @@ mod tests {
         ChildrenIsolatorUnionExec: task_count=Desired(2)
           FilterExec: task_count=Maximum(1)
             RepartitionExec: task_count=Maximum(1)
-              DataSourceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Maximum(1)
           ProjectionExec: task_count=Maximum(1)
             FilterExec: task_count=Maximum(1)
               RepartitionExec: task_count=Maximum(1)
-                DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -990,12 +989,12 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            NetworkBroadcastExec: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
-          DataSourceExec: task_count=Desired(3)
+        HashJoinExec: task_count=Desired(4)
+          CoalescePartitionsExec: task_count=Desired(4)
+            NetworkBroadcastExec: task_count=Desired(4)
+              BroadcastExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
+          DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -1031,12 +1030,12 @@ mod tests {
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert!(annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            NetworkBroadcastExec: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
-          DataSourceExec: task_count=Desired(3)
+        HashJoinExec: task_count=Desired(4)
+          CoalescePartitionsExec: task_count=Desired(4)
+            NetworkBroadcastExec: task_count=Desired(4)
+              BroadcastExec: task_count=Desired(4)
+                DistributedLeafExec: task_count=Desired(4)
+          DistributedLeafExec: task_count=Desired(4)
         ");
     }
 
@@ -1060,8 +1059,8 @@ mod tests {
           CoalescePartitionsExec: task_count=Desired(3)
             NetworkBroadcastExec: task_count=Desired(3)
               BroadcastExec: task_count=Desired(1)
-                DataSourceExec: task_count=Desired(1)
-          DataSourceExec: task_count=Desired(3)
+                DistributedLeafExec: task_count=Desired(1)
+          DistributedLeafExec: task_count=Desired(3)
         ");
     }
 
@@ -1085,8 +1084,8 @@ mod tests {
           CoalescePartitionsExec: task_count=Maximum(1)
             NetworkBroadcastExec: task_count=Maximum(1)
               BroadcastExec: task_count=Desired(3)
-                DataSourceExec: task_count=Desired(3)
-          DataSourceExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Desired(3)
+          DistributedLeafExec: task_count=Maximum(1)
         ");
     }
 
@@ -1109,8 +1108,8 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DataSourceExec: task_count=Maximum(1)
-          DataSourceExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 
@@ -1130,17 +1129,17 @@ mod tests {
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        HashJoinExec: task_count=Desired(3)
-          CoalescePartitionsExec: task_count=Desired(3)
-            NetworkBroadcastExec: task_count=Desired(3)
-              BroadcastExec: task_count=Desired(3)
-                HashJoinExec: task_count=Desired(3)
-                  CoalescePartitionsExec: task_count=Desired(3)
-                    NetworkBroadcastExec: task_count=Desired(3)
-                      BroadcastExec: task_count=Desired(3)
-                        DataSourceExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-          DataSourceExec: task_count=Desired(3)
+        HashJoinExec: task_count=Desired(4)
+          CoalescePartitionsExec: task_count=Desired(4)
+            NetworkBroadcastExec: task_count=Desired(4)
+              BroadcastExec: task_count=Desired(4)
+                HashJoinExec: task_count=Desired(4)
+                  CoalescePartitionsExec: task_count=Desired(4)
+                    NetworkBroadcastExec: task_count=Desired(4)
+                      BroadcastExec: task_count=Desired(4)
+                        DistributedLeafExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
+          DistributedLeafExec: task_count=Desired(4)
         ")
     }
 
@@ -1174,21 +1173,21 @@ mod tests {
           HashJoinExec: task_count=Maximum(2)
             CoalescePartitionsExec: task_count=Maximum(2)
               NetworkBroadcastExec: task_count=Maximum(2)
-                BroadcastExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(2)
+                BroadcastExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
+            DistributedLeafExec: task_count=Maximum(2)
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(1)
+                BroadcastExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
+            DistributedLeafExec: task_count=Maximum(1)
           HashJoinExec: task_count=Maximum(1)
             CoalescePartitionsExec: task_count=Maximum(1)
               NetworkBroadcastExec: task_count=Maximum(1)
-                BroadcastExec: task_count=Desired(3)
-                  DataSourceExec: task_count=Desired(3)
-            DataSourceExec: task_count=Maximum(1)
+                BroadcastExec: task_count=Desired(4)
+                  DistributedLeafExec: task_count=Desired(4)
+            DistributedLeafExec: task_count=Maximum(1)
         ");
     }
 
@@ -1226,8 +1225,8 @@ mod tests {
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Ok(None)
         }
     }
 
@@ -1253,8 +1252,8 @@ mod tests {
             _: &Arc<dyn ExecutionPlan>,
             _: usize,
             _: &ConfigOptions,
-        ) -> Option<Arc<dyn ExecutionPlan>> {
-            None
+        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+            Ok(None)
         }
     }
 

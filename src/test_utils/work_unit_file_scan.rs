@@ -372,12 +372,16 @@ impl TaskEstimator for WorkUnitFileScanTaskEstimator {
         // Same as FileScanConfigTaskEstimator.task_estimation.
         let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
 
-        let mut partitioned_files = 0;
+        let mut total_bytes = 0;
         for file_group in &wfs.feed.inner()?.file_groups {
-            partitioned_files += file_group.len();
+            for file in file_group.files() {
+                total_bytes += file.effective_size() as usize;
+            }
         }
 
-        let task_count = partitioned_files.div_ceil(d_cfg.files_per_task);
+        let task_count = total_bytes
+            .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
+            .div_ceil(cfg.execution.target_partitions);
 
         Some(TaskEstimation {
             task_count: TaskCountAnnotation::Desired(task_count),
@@ -389,11 +393,15 @@ impl TaskEstimator for WorkUnitFileScanTaskEstimator {
         plan: &Arc<dyn ExecutionPlan>,
         task_count: usize,
         _cfg: &ConfigOptions,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let dse = plan.downcast_ref::<DataSourceExec>()?;
-        let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(dse) = plan.downcast_ref::<DataSourceExec>() else {
+            return Ok(None);
+        };
+        let Some(wfs) = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>() else {
+            return Ok(None);
+        };
 
-        let wuf_provider = wfs.feed.inner()?;
+        let wuf_provider = wfs.feed.try_inner()?;
 
         // Same as FileScanConfigTaskEstimator.scale_up_leaf_node
         let mut new_file_groups = vec![];
@@ -402,10 +410,12 @@ impl TaskEstimator for WorkUnitFileScanTaskEstimator {
         }
 
         let new_provider = FileScanWorkUnitProvider::new(new_file_groups);
-        Some(DataSourceExec::from_data_source(WorkUnitFileScanConfig {
-            feed: WorkUnitFeed::new(new_provider),
-            fsc: wfs.fsc.clone(),
-            partitions: wfs.partitions,
-        }) as Arc<dyn ExecutionPlan>)
+        Ok(Some(
+            DataSourceExec::from_data_source(WorkUnitFileScanConfig {
+                feed: WorkUnitFeed::new(new_provider),
+                fsc: wfs.fsc.clone(),
+                partitions: wfs.partitions,
+            }) as Arc<dyn ExecutionPlan>,
+        ))
     }
 }
