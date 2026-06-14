@@ -1,3 +1,4 @@
+use crate::common::TreeNodeExt;
 use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
 };
@@ -5,9 +6,9 @@ use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
 use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
-use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
+use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt, TaskEstimator};
 use async_trait::async_trait;
-use datafusion::common::tree_node::TreeNode;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
@@ -69,13 +70,25 @@ impl QueryPlanner for DistributedQueryPlanner {
             return Ok(original_plan);
         }
 
-        let d_cfg = DistributedConfig::from_config_options(session_state.config_options())?;
+        let cfg = session_state.config_options().as_ref();
+        let d_cfg = DistributedConfig::from_config_options(cfg)?;
 
         // The plan already contains network boundaries set by the user. Just ensure they have nice
         // unique identifiers for each stage, and move forward with it.
         if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+            // Ensure the leafs are appropriately scaled up.
+            let scaled = original_plan.transform_down_with_task_count(1, |plan, task_count| {
+                if !plan.children().is_empty() {
+                    return Ok(Transformed::no(plan));
+                }
+                let task_estimator = &d_cfg.__private_task_estimator;
+                match task_estimator.scale_up_leaf_node(&plan, task_count, cfg)? {
+                    None => Ok(Transformed::no(plan)),
+                    Some(scaled) => Ok(Transformed::yes(scaled)),
+                }
+            })?;
             // Ensure the stages in the plan have nice unique identifiers.
-            let plan = prepare_network_boundaries(original_plan)?;
+            let plan = prepare_network_boundaries(scaled.data)?;
             if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
                 return Ok(plan);
             }

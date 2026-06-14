@@ -107,6 +107,21 @@ impl DistributedLeafExec {
         })
     }
 
+    /// The plan this leaf was built from (the leaf passed to
+    /// [crate::TaskEstimator::scale_up_leaf_node]). Useful for recognising which `DistributedLeafExec`
+    /// you are looking at — e.g. by downcasting it to your own leaf type — before inspecting its
+    /// [DistributedLeafExec::variants].
+    pub fn original(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.original
+    }
+
+    /// The per-task variants, in task order: `variants()[i]` is the plan sent to task `i`. Useful
+    /// for inspecting per-task information (e.g. data locality) when routing tasks to workers via
+    /// [crate::TaskEstimator::route_tasks].
+    pub fn variants(&self) -> &[Arc<dyn ExecutionPlan>] {
+        &self.variants
+    }
+
     /// Returns the variant belonging to provided task index.
     pub(crate) fn to_task_specialized(&self, task_i: usize) -> Arc<dyn ExecutionPlan> {
         Arc::clone(&self.variants[task_i])

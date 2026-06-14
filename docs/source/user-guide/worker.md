@@ -75,6 +75,32 @@ It receives a `WorkerQueryContext` containing:
 - `headers`: HTTP headers from the incoming request (useful for passing metadata like authentication tokens or
   configuration)
 
+## Registering custom execution plans
+
+If your queries contain **custom** `ExecutionPlan` nodes that cross a network boundary, the coordinator
+serializes them and the worker deserializes them — so both sides need the same `PhysicalExtensionCodec`.
+Register it symmetrically:
+
+```rust
+// On the coordinator's SessionStateBuilder:
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_distributed_worker_resolver(/* ... */)
+    .with_distributed_planner()
+    .with_distributed_user_codec(MyExecCodec)
+    .build();
+
+// And on every Worker, via its session builder:
+async fn build_state(ctx: WorkerQueryContext) -> Result<SessionState, DataFusionError> {
+    Ok(ctx.builder.with_distributed_user_codec(MyExecCodec).build())
+}
+```
+
+Forgetting either side surfaces as a decode error at execution time. The same symmetry applies to
+[work unit feeds](work-unit-feeds.md) (the feed getter) and to a custom [`ChannelResolver`](channel-resolver.md).
+Built-in nodes (`DataSourceExec`, `AggregateExec`, the `Network*Exec` boundaries, …) are handled by the default
+codec and need no registration.
+
 ## Serving the Endpoint
 
 Convert the endpoint to a gRPC service and serve it:

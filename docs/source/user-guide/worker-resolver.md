@@ -9,12 +9,11 @@ information is used in two different places:
    execution.
 
 You need to pass your own `WorkerResolver` to DataFusion's `SessionStateBuilder` so that it's available in the
-`SesionContext`:
+`SessionContext`:
 
 ```rust
 struct CustomWorkerResolver;
 
-#[async_trait]
 impl WorkerResolver for CustomWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         todo!()
@@ -36,17 +35,16 @@ async fn main() {
 
 This is the simplest approach, though it doesn't accommodate dynamic worker discovery. An example of this can be
 seen in the
-[localhost_worker.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/fad9fa222d65b7d2ddae92fbc20082b5c434e4ff/examples/localhost_run.rs)
+[localhost_run.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/localhost_run.rs)
 example:
 
 ```rust
 #[derive(Clone)]
-struct LocalhostChannelResolver {
+struct LocalhostWorkerResolver {
     ports: Vec<u16>,
 }
 
-#[async_trait]
-impl WorkerResolver for LocalhostChannelResolver {
+impl WorkerResolver for LocalhostWorkerResolver {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         Ok(self
             .ports
