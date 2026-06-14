@@ -68,9 +68,9 @@ use url::Url;
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  // 1. Spawn a Distributed DataFusion worker in a localhost port, and configure it
-  //    so that queries to Parquet files hosted at https://datasets.clickhouse.com 
-  //    can be resolved.
+    // 1. Spawn a Distributed DataFusion worker in a localhost port, and configure it
+    //    so that queries to Parquet files hosted at https://datasets.clickhouse.com 
+    //    can be resolved.
     let base = Url::parse("https://datasets.clickhouse.com")?;
     let store = HttpBuilder::new().with_url(base.clone()).build()?;
     let runtime = RuntimeEnvBuilder::new().build_arc()?;
