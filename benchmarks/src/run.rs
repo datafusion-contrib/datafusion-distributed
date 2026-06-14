@@ -222,7 +222,8 @@ impl RunOpt {
             });
 
         if let Some(bytes_per_partition) = self.file_scan_config_bytes_per_partition {
-            builder = builder.with_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
+            builder = builder
+                .with_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
         }
 
         if self.work_unit_file_scan {
