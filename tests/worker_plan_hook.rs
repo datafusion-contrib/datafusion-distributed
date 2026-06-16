@@ -4,7 +4,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::pretty_format_batches;
-    use datafusion::common::{HashSet, Result, extensions_options, internal_err};
+    use datafusion::common::{HashSet, Result, assert_contains, extensions_options, internal_err};
     use datafusion::config::ConfigExtension;
     use datafusion::error::DataFusionError;
     use datafusion::execution::SessionState;
@@ -12,7 +12,7 @@ mod tests {
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_configured_in_memory_context;
     use datafusion_distributed::test_utils::session_context::register_temp_parquet_table;
-    use datafusion_distributed::{DistributedExt, Worker, WorkerQueryContext};
+    use datafusion_distributed::{DistributedExt, Worker, WorkerQueryContext, assert_snapshot};
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -56,15 +56,14 @@ mod tests {
             fail_in_hook: false,
         });
 
-        assert_eq!(
-            collect_hook_query(&ctx).await?,
-            "+----+\n\
-             | id |\n\
-             +----+\n\
-             | 2  |\n\
-             | 3  |\n\
-             +----+"
-        );
+        let batches = collect_hook_query(&ctx).await?;
+        assert_snapshot!(batches, @r"
++----+
+| id |
++----+
+| 2  |
+| 3  |
++----+");
 
         let hook_calls = hook_calls.lock().unwrap();
         assert!(hook_calls.first > 0);
@@ -99,11 +98,7 @@ mod tests {
             .await
             .expect_err("plan hook error should propagate to the query");
 
-        let err = err.to_string();
-        assert!(
-            err.contains("plan hook failed for worker-session-value"),
-            "{err}"
-        );
+        assert_contains!(err.to_string(), "plan hook failed for worker-session-value");
 
         Ok(())
     }
