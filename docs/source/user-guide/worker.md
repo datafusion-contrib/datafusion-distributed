@@ -75,6 +75,27 @@ It receives a `WorkerQueryContext` containing:
 - `headers`: HTTP headers from the incoming request (useful for passing metadata like authentication tokens or
   configuration)
 
+## Plan hooks
+
+`Worker::add_on_plan_hook` registers callbacks that run after the worker session has been built and
+the physical plan has been decoded, but before the task plan is registered for execution.
+
+Each hook receives the decoded `ExecutionPlan` and the per-query `SessionConfig`:
+
+```rust
+worker.add_on_plan_hook(|plan, session_config| {
+    let rule = your_physical_optimizer_rule();
+    rule.optimize(plan, session_config.options())
+});
+```
+
+Hooks run in registration order. Treat them as trusted worker-local rewrites: transparent
+instrumentation wrappers and semantics-preserving physical optimizer rules are appropriate. The
+returned plan must preserve the coordinator-visible contract: row semantics, output schema,
+partitioning, and ordering requirements. Do not use hooks to add or remove rows or columns,
+repartition the stage, or re-plan distributed execution. If a hook returns an error, the distributed
+query fails when the coordinator tries to execute that task.
+
 ## Registering custom execution plans
 
 If your queries contain **custom** `ExecutionPlan` nodes that cross a network boundary, the coordinator

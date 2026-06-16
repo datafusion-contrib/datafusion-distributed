@@ -7,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Endpoint, Server};
 use url::Url;
@@ -28,6 +28,14 @@ impl InMemoryChannelResolver {
     /// spawned by this method.
     pub fn from_session_builder(
         builder: impl WorkerSessionBuilder + Send + Sync + 'static,
+    ) -> Self {
+        Self::from_configured_worker(builder, |worker| worker)
+    }
+
+    /// Build an [InMemoryChannelResolver] with a custom [WorkerSessionBuilder] and worker setup.
+    pub fn from_configured_worker(
+        builder: impl WorkerSessionBuilder + Send + Sync + 'static,
+        configure_worker: impl Fn(Worker) -> Worker + Send + Sync + 'static,
     ) -> Self {
         let (client, server) = tokio::io::duplex(1024 * 1024);
 
@@ -50,6 +58,7 @@ impl InMemoryChannelResolver {
             let this = this.clone();
             Ok(builder.with_distributed_channel_resolver(this).build())
         }));
+        let endpoint = configure_worker(endpoint);
 
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
@@ -110,6 +119,29 @@ pub async fn start_in_memory_context(
         .with_distributed_planner()
         .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
         .with_distributed_channel_resolver(channel_resolver)
+        .build();
+    SessionContext::from(state)
+}
+
+/// Creates a distributed session context backed by a configurable in-memory worker service.
+///
+/// Like [crate::test_utils::localhost::start_localhost_context], this uses tiny file-scan
+/// partitions so small test datasets still cross worker boundaries.
+pub async fn start_configured_in_memory_context(
+    num_workers: usize,
+    session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
+    configure_worker: impl Fn(Worker) -> Worker + Send + Sync + 'static,
+) -> SessionContext {
+    let channel_resolver =
+        InMemoryChannelResolver::from_configured_worker(session_builder, configure_worker);
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(SessionConfig::new().with_target_partitions(num_workers))
+        .with_distributed_planner()
+        .with_distributed_worker_resolver(InMemoryWorkerResolver::new(num_workers))
+        .with_distributed_channel_resolver(channel_resolver)
+        .with_distributed_file_scan_config_bytes_per_partition(1)
+        .unwrap()
         .build();
     SessionContext::from(state)
 }

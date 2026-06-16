@@ -96,7 +96,7 @@ impl Worker {
             let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
 
             for hook in self.hooks.on_plan.iter() {
-                plan = hook(plan)
+                plan = hook(plan, session_state.config())?;
             }
 
             // Initialize partition count to the number of partitions in the stage
