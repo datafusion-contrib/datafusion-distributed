@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
 use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -25,10 +26,13 @@ use tonic::{Request, Response, Status, Streaming};
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
 
 #[allow(clippy::type_complexity)]
+type OnPlanHook = dyn Fn(Arc<dyn ExecutionPlan>, &SessionConfig) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>
+    + Sync
+    + Send;
+
 #[derive(Clone, Default)]
 pub(super) struct WorkerHooks {
-    pub(super) on_plan:
-        Vec<Arc<dyn Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send>>,
+    pub(super) on_plan: Vec<Arc<OnPlanHook>>,
 }
 
 pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
@@ -82,12 +86,25 @@ impl Worker {
 
     /// Adds a callback for when an [ExecutionPlan] is received in the `set_plan` call.
     ///
-    /// The callback takes the plan and returns another plan that must be either the same,
-    /// or equivalent in terms of execution. Mutating the plan by adding nodes or removing them
-    /// will make the query blow up in unexpected ways.
+    /// The callback runs after worker session construction and plan decoding, and before task
+    /// registration and execution. It receives the per-query [SessionConfig], so it can use
+    /// propagated options or config extensions when rewriting the plan.
+    ///
+    /// The callback is trusted to preserve the worker stage contract already planned by the
+    /// coordinator: row semantics, output schema, partitioning, and ordering requirements. It is
+    /// intended for transparent wrappers, such as instrumentation, or semantics-preserving physical
+    /// rewrites. Do not use it to add or remove rows or columns, repartition the stage, or otherwise
+    /// re-plan distributed execution. Returned errors are propagated as worker plan-registration
+    /// failures.
     pub fn add_on_plan_hook(
         &mut self,
-        hook: impl Fn(Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> + Sync + Send + 'static,
+        hook: impl Fn(
+            Arc<dyn ExecutionPlan>,
+            &SessionConfig,
+        ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>
+        + Sync
+        + Send
+        + 'static,
     ) {
         self.hooks.on_plan.push(Arc::new(hook));
     }
