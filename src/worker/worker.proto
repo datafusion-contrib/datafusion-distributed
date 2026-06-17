@@ -21,6 +21,8 @@ message CoordinatorToWorkerMsg {
     // set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
     // be executed within a partition, for example, a stream of file addresses that should be read.
     WorkUnitBatch work_unit_batch = 2;
+    // Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
+    bool work_unit_eos = 3;
   }
 }
 

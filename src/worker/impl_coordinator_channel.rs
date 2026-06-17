@@ -121,28 +121,55 @@ impl Worker {
         })?;
 
         // Continue reading remaining messages (work unit feed data) in the background.
-        let mut work_unit_senders = remote_work_unit_feed_registry.senders;
+        let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
+        let task_data_entries = Arc::clone(&self.task_data_entries);
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let mut body = body.map_ok(set_work_unit_received_time);
             while let Some(Ok(msg)) = body.next().await {
-                let Some(Inner::WorkUnitBatch(msg)) = msg.inner else {
+                let Some(msg) = msg.inner else {
                     continue;
                 };
-                for msg in msg.batch {
-                    let Ok(id) = deserialize_uuid(&msg.id) else {
+                match msg {
+                    Inner::SetPlanRequest(_) => {
+                        // SetPlanRequest should be the first already polled message in the stream,
+                        // if some reached here it means that something is wrong.
                         continue;
-                    };
-                    let partition = msg.partition as usize;
-                    let Some(tx) = work_unit_senders.get(&(id, partition)) else {
-                        continue;
-                    };
-                    if tx.send(Ok(msg)).is_err() {
-                        work_unit_senders.remove(&(id, partition));
-                        continue;
+                    }
+                    Inner::WorkUnitBatch(msg) => {
+                        let Some(work_unit_senders) = work_unit_senders.as_mut() else {
+                            continue;
+                        };
+                        for wu in msg.batch {
+                            let Ok(id) = deserialize_uuid(&wu.id) else {
+                                continue;
+                            };
+                            let partition = wu.partition as usize;
+                            let Some(tx) = work_unit_senders.get(&(id, partition)) else {
+                                continue;
+                            };
+                            if tx.send(Ok(wu)).is_err() {
+                                // Channel closed, this sender needs to be dropped, as none will ever
+                                // be listening on the other side.
+                                work_unit_senders.remove(&(id, partition));
+                                continue;
+                            }
+                        }
+                    }
+                    Inner::WorkUnitEos(_) => {
+                        // No further work unit message will be received here, so drop all the
+                        // sender sides so that receiver sides see an EOS upon draining the
+                        // remaining messages.
+                        //
+                        // The [WorkUnitEos] message just applies work units, and it's not a global
+                        // EOS signal for the coordinator->worker stream, as there might be more
+                        // messages of different nature in that stream.
+                        let _ = work_unit_senders.take();
                     }
                 }
             }
+            #[allow(clippy::disallowed_methods)]
+            tokio::spawn(async move { task_data_entries.invalidate(&key).await });
         });
 
         // Stream back the metrics once the task finishes executing.
