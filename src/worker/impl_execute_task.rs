@@ -1,4 +1,4 @@
-use crate::common::{TreeNodeExt, now_ns, on_drop_stream};
+use crate::common::{TreeNodeExt, now_ns};
 use crate::metrics::proto::df_metrics_set_to_proto;
 use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::worker::generated::worker::{FlightAppMetadata, TaskMetrics};
@@ -8,6 +8,7 @@ use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEnco
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err, internal_err};
 
@@ -19,14 +20,15 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use prost::Message;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::oneshot::Sender;
 use tokio_stream::StreamExt;
@@ -85,7 +87,6 @@ pub(crate) async fn execute_local_task(
         }
 
         let stream = plan.execute(partition as usize, Arc::clone(&task_ctx))?;
-        let stream_schema = plan.schema();
 
         let plan = Arc::clone(&plan);
 
@@ -94,25 +95,86 @@ pub(crate) async fn execute_local_task(
         let metrics_tx = Arc::clone(&task_data.metrics_tx);
         let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
         let key = key.clone();
-        let stream = on_drop_stream(stream, move || {
-            // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
-            // Send metrics via the coordinator channel so they are not lost.
+        let stream = WorkerTaskStream::new(stream, move || {
+            // Send metrics via the coordinator channel once every partition
+            // stream finished or was dropped, so they are not lost.
             if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                // Fire-and-forget background tokio task to handle async
-                // invalidate() within synchronous on_drop_stream.
-                #[allow(clippy::disallowed_methods)]
-                tokio::spawn(async move {
-                    task_data_entries.invalidate(&key).await;
-                });
                 task_data_metrics.mark_execution_finished();
                 if send_metrics {
                     send_metrics_via_channel(&metrics_tx, &plan, d_ctx, &task_data_metrics);
                 }
+                // Fire-and-forget background tokio task to handle async
+                // invalidate() within synchronous stream drop.
+                #[allow(clippy::disallowed_methods)]
+                tokio::spawn(async move {
+                    task_data_entries.invalidate(&key).await;
+                });
             }
         });
-        streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);
+        streams.push(Box::pin(stream) as _);
     }
     Ok((streams, task_ctx))
+}
+
+struct WorkerTaskStream<F>
+where
+    F: FnOnce() + Unpin,
+{
+    schema: SchemaRef,
+    inner: Option<SendableRecordBatchStream>,
+    on_drop_after_inner: Option<F>,
+}
+
+impl<F> WorkerTaskStream<F>
+where
+    F: FnOnce() + Unpin,
+{
+    fn new(inner: SendableRecordBatchStream, on_drop_after_inner: F) -> Self {
+        let schema = inner.schema();
+        Self {
+            schema,
+            inner: Some(inner),
+            on_drop_after_inner: Some(on_drop_after_inner),
+        }
+    }
+}
+
+impl<F> Stream for WorkerTaskStream<F>
+where
+    F: FnOnce() + Unpin,
+{
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.inner.as_mut() {
+            Some(inner) => inner.as_mut().poll_next(cx),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+impl<F> RecordBatchStream for WorkerTaskStream<F>
+where
+    F: FnOnce() + Unpin,
+{
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+impl<F> Drop for WorkerTaskStream<F>
+where
+    F: FnOnce() + Unpin,
+{
+    fn drop(&mut self) {
+        // Some execution streams finalize metrics in Drop. Collect worker
+        // metrics only after the inner stream had a chance to flush them.
+        drop(self.inner.take());
+        if let Some(on_drop_after_inner) = self.on_drop_after_inner.take() {
+            on_drop_after_inner();
+        }
+    }
 }
 
 /// Builds several per-partition streams by retrieving the appropriate entry from [TaskDataEntries]
@@ -271,4 +333,56 @@ fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionE
         arrays,
         &RecordBatchOptions::new().with_row_count(Some(row_count)),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DropFinalizedMetricStream {
+        schema: SchemaRef,
+        drop_count: Count,
+    }
+
+    impl Stream for DropFinalizedMetricStream {
+        type Item = Result<RecordBatch>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(None)
+        }
+    }
+
+    impl RecordBatchStream for DropFinalizedMetricStream {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+    }
+
+    impl Drop for DropFinalizedMetricStream {
+        fn drop(&mut self) {
+            self.drop_count.add(1);
+        }
+    }
+
+    #[test]
+    fn worker_task_stream_runs_callback_after_inner_stream_drop() {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let drop_count = MetricBuilder::new(&metrics).counter("drop_count", 0);
+        let inner = DropFinalizedMetricStream {
+            schema: Arc::new(Schema::empty()),
+            drop_count: drop_count.clone(),
+        };
+        let observed_drop_count = Arc::new(AtomicUsize::new(0));
+        let observed_drop_count_clone = Arc::clone(&observed_drop_count);
+
+        let stream = WorkerTaskStream::new(Box::pin(inner), move || {
+            observed_drop_count_clone.store(drop_count.value(), Ordering::SeqCst);
+        });
+        drop(stream);
+
+        assert_eq!(observed_drop_count.load(Ordering::SeqCst), 1);
+    }
 }
