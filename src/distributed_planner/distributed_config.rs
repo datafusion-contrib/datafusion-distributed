@@ -1,9 +1,11 @@
-use crate::TaskEstimator;
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use crate::work_unit_feed::WorkUnitFeedRegistry;
+use crate::{TaskEstimator, WorkerResolver};
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};
+use datafusion::execution::TaskContext;
+use datafusion::prelude::SessionConfig;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -115,6 +117,21 @@ impl DistributedConfig {
             return plan_err!("DistributedConfig is not in ConfigOptions.extensions");
         };
         Ok(distributed_cfg)
+    }
+
+    /// Gets the [DistributedConfig] from the [ConfigOptions]'s in the provided [SessionConfig].
+    pub fn from_session_config(session_cfg: &SessionConfig) -> Result<&Self, DataFusionError> {
+        Self::from_config_options(session_cfg.options())
+    }
+
+    /// Gets the [DistributedConfig] from the [ConfigOptions]'s in the provided [TaskContext].
+    pub fn from_task_context(ctx: &Arc<TaskContext>) -> Result<&Self, DataFusionError> {
+        Self::from_session_config(ctx.session_config())
+    }
+
+    /// Returns the [WorkerResolver] currently in scope for this [DistributedConfig].
+    pub fn worker_resolver(&self) -> &Arc<dyn WorkerResolver> {
+        &self.__private_worker_resolver.0
     }
 }
 

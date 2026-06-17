@@ -375,18 +375,17 @@ impl<'a> StageCoordinator<'a> {
         let d_cfg = DistributedConfig::from_config_options(session_config.options())?;
         let worker_resolver = get_distributed_worker_resolver(session_config)?;
         let task_estimator = &d_cfg.__private_task_estimator;
-        let available_urls = worker_resolver.get_urls()?;
 
         let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
             task_ctx: Arc::clone(self.task_ctx),
             plan: self.plan,
             task_count: self.task_count,
-            available_urls: &available_urls,
         }) {
             Ok(Some(routed_urls)) => routed_urls,
             // If the user has not defined custom routing with a `route_tasks` implementation, we
             // default to round-robin task assignation from a randomized starting point.
             Ok(None) => {
+                let available_urls = worker_resolver.get_urls()?;
                 let start_idx = rand::rng().random_range(0..available_urls.len());
                 (0..self.task_count)
                     .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())

@@ -155,9 +155,6 @@ pub struct TaskRoutingContext<'a> {
     pub plan: &'a Arc<dyn ExecutionPlan>,
     /// The number of tasks to be assigned.
     pub task_count: usize,
-    /// Contains a list of URLs representing machines available to receive a task. These URLs are
-    /// sourced at execution time and thus should closely reflect the real state of the cluster.
-    pub available_urls: &'a [Url],
 }
 
 impl TaskEstimator for usize {
