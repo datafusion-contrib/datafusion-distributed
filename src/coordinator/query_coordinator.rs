@@ -11,9 +11,9 @@ use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::{
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedConfig,
-    DistributedTaskContext, DistributedWorkUnitFeedContext, TaskEstimator, TaskKey,
-    TaskRoutingContext, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec,
+    DistributedConfig, DistributedTaskContext, DistributedWorkUnitFeedContext, TaskEstimator,
+    TaskKey, TaskRoutingContext, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
@@ -21,9 +21,7 @@ use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr_common::metrics::{
-    Count, ExecutionPlanMetricsSet, Label, MetricBuilder,
-};
+use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -198,7 +196,7 @@ impl<'a> StageCoordinator<'a> {
                 })
             })?;
             metrics.plan_send_latency.record(&start);
-            metrics.plan_bytes_sent.add(plan_size);
+            metrics.plan_bytes_sent.add_bytes(plan_size);
             let mut worker_to_coordinator_stream = response.into_inner();
             while let Some(msg_or_err) = worker_to_coordinator_stream.next().await {
                 let msg = msg_or_err.map_err(|err| {
@@ -420,7 +418,7 @@ impl Drop for NotifyGuard {
 /// Metrics that measure network details about communications between [DistributedExec] and a worker.
 #[derive(Clone)]
 pub(super) struct CoordinatorToWorkerMetrics {
-    pub(super) plan_bytes_sent: Count,
+    pub(super) plan_bytes_sent: BytesCounterMetric,
     pub(super) plan_send_latency: Arc<LatencyMetric>,
     pub(super) instantiation_time: u64,
 }
@@ -431,7 +429,7 @@ impl CoordinatorToWorkerMetrics {
             // Metric that measures to total sum of bytes worth of subplans sent.
             plan_bytes_sent: MetricBuilder::new(metrics)
                 .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-                .global_counter("plan_bytes_sent"),
+                .bytes_counter("plan_bytes_sent"),
             // Latency statistics about the network calls issued to the workers for feeding subplans.
             plan_send_latency: Arc::new(LatencyMetric::new(
                 "plan_send_latency",
@@ -440,5 +438,31 @@ impl CoordinatorToWorkerMetrics {
             )),
             instantiation_time: now_ns(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coordinator_to_worker_plan_bytes_sent_prints_as_bytes() {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let coordinator_metrics = CoordinatorToWorkerMetrics::new(&metrics);
+
+        coordinator_metrics
+            .plan_bytes_sent
+            .add_bytes(4 * 1024 * 1024 * 1024);
+
+        let metrics_set = metrics.clone_inner();
+        let metric = metrics_set
+            .iter()
+            .find(|m| m.value().name() == "plan_bytes_sent")
+            .expect("plan_bytes_sent metric should be registered");
+
+        assert_eq!(
+            format!("{}={}", metric.value().name(), metric.value()),
+            "plan_bytes_sent=4.0 GB"
+        );
     }
 }
