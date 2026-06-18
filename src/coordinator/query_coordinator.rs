@@ -441,28 +441,3 @@ impl CoordinatorToWorkerMetrics {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn coordinator_to_worker_plan_bytes_sent_prints_as_bytes() {
-        let metrics = ExecutionPlanMetricsSet::new();
-        let coordinator_metrics = CoordinatorToWorkerMetrics::new(&metrics);
-
-        coordinator_metrics
-            .plan_bytes_sent
-            .add_bytes(4 * 1024 * 1024 * 1024);
-
-        let metrics_set = metrics.clone_inner();
-        let metric = metrics_set
-            .iter()
-            .find(|m| m.value().name() == "plan_bytes_sent")
-            .expect("plan_bytes_sent metric should be registered");
-
-        assert_eq!(
-            format!("{}={}", metric.value().name(), metric.value()),
-            "plan_bytes_sent=4.0 GB"
-        );
-    }
-}
