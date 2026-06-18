@@ -69,7 +69,8 @@ pub struct DistributedLeafExec {
 
 impl DistributedLeafExec {
     /// Builds a new [DistributedLeafExec] based on the provided original plan and its per-task
-    /// variants. Provided variants must expose the same partition count as the original plan.
+    /// variants. Every variant must expose the same schema and partition count as every other
+    /// variant.
     pub fn try_new(
         original: Arc<dyn ExecutionPlan>,
         variants: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
