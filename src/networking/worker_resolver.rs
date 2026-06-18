@@ -2,11 +2,12 @@ use crate::DistributedConfig;
 use crate::config_extension_ext::set_distributed_option_extension;
 use datafusion::common::{DataFusionError, exec_err, not_impl_err};
 use datafusion::prelude::SessionConfig;
+use std::any::Any;
 use std::sync::Arc;
 use url::Url;
 
 /// Resolves a list of worker URLs in the cluster available for executing parts of the plan.
-pub trait WorkerResolver {
+pub trait WorkerResolver: Any + Send + Sync {
     /// Gets all available worker URLs in the cluster. Note how this method is not async, which
     /// means that any async operation involved in discovering worker URLs must happen on a
     /// background thread and be retrieved by this method synchronously.
@@ -22,7 +23,7 @@ pub trait WorkerResolver {
 
 pub(crate) fn set_distributed_worker_resolver(
     cfg: &mut SessionConfig,
-    worker_resolver: impl WorkerResolver + Send + Sync + 'static,
+    worker_resolver: impl WorkerResolver + 'static,
 ) {
     let opts = cfg.options_mut();
     let worker_resolver = WorkerResolverExtension(Arc::new(worker_resolver));
@@ -41,7 +42,7 @@ pub(crate) fn set_distributed_worker_resolver(
 
 pub fn get_distributed_worker_resolver(
     cfg: &SessionConfig,
-) -> Result<Arc<dyn WorkerResolver + Send + Sync>, DataFusionError> {
+) -> Result<Arc<dyn WorkerResolver>, DataFusionError> {
     let opts = cfg.options();
     let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>() else {
         return exec_err!("WorkerResolver not present in the session config");
@@ -50,9 +51,7 @@ pub fn get_distributed_worker_resolver(
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkerResolverExtension(
-    pub(crate) Arc<dyn WorkerResolver + Send + Sync + 'static>,
-);
+pub(crate) struct WorkerResolverExtension(pub(crate) Arc<dyn WorkerResolver + 'static>);
 
 impl WorkerResolverExtension {
     pub(crate) fn not_implemented() -> Self {
@@ -66,7 +65,7 @@ impl WorkerResolverExtension {
     }
 }
 
-impl WorkerResolver for Arc<dyn WorkerResolver + Send + Sync> {
+impl WorkerResolver for Arc<dyn WorkerResolver> {
     fn get_urls(&self) -> Result<Vec<Url>, DataFusionError> {
         self.as_ref().get_urls()
     }

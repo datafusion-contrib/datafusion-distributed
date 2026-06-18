@@ -219,16 +219,10 @@ pub trait DistributedExt: Sized {
     ///     .with_distributed_planner()
     ///     .build();
     /// ```
-    fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
-        self,
-        resolver: T,
-    ) -> Self;
+    fn with_distributed_worker_resolver<T: WorkerResolver + 'static>(self, resolver: T) -> Self;
 
     /// Same as [DistributedExt::with_distributed_channel_resolver] but with an in-place mutation.
-    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
-        &mut self,
-        resolver: T,
-    );
+    fn set_distributed_worker_resolver<T: WorkerResolver + 'static>(&mut self, resolver: T);
 
     /// This is what tells Distributed DataFusion how to build a Worker gRPC client out of a worker URL.
     ///
@@ -606,10 +600,7 @@ impl DistributedExt for SessionConfig {
         set_distributed_user_codec_arc(self, codec)
     }
 
-    fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(
-        &mut self,
-        resolver: T,
-    ) {
+    fn set_distributed_worker_resolver<T: WorkerResolver + 'static>(&mut self, resolver: T) {
         set_distributed_worker_resolver(self, resolver);
     }
 
@@ -751,7 +742,7 @@ impl DistributedExt for SessionConfig {
 
             #[call(set_distributed_worker_resolver)]
             #[expr($;self)]
-            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_worker_resolver<T: WorkerResolver + 'static>(mut self, resolver: T) -> Self;
 
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
@@ -840,10 +831,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            fn set_distributed_worker_resolver<T: WorkerResolver + 'static>(&mut self, resolver: T);
             #[call(set_distributed_worker_resolver)]
             #[expr($;self)]
-            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_worker_resolver<T: WorkerResolver + 'static>(mut self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -951,10 +942,10 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            fn set_distributed_worker_resolver<T: WorkerResolver + 'static>(&mut self, resolver: T);
             #[call(set_distributed_worker_resolver)]
             #[expr($;self)]
-            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+            fn with_distributed_worker_resolver<T: WorkerResolver + 'static>(mut self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]
@@ -1062,10 +1053,10 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_user_codec_arc(self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self;
 
-            fn set_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(&mut self, resolver: T);
+            fn set_distributed_worker_resolver<T: WorkerResolver + 'static>(&mut self, resolver: T);
             #[call(set_distributed_worker_resolver)]
             #[expr($;self)]
-            fn with_distributed_worker_resolver<T: WorkerResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
+            fn with_distributed_worker_resolver<T: WorkerResolver + 'static>(self, resolver: T) -> Self;
 
             fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(&mut self, resolver: T);
             #[call(set_distributed_channel_resolver)]

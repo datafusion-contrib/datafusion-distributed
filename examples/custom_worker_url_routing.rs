@@ -41,8 +41,8 @@ use datafusion_distributed::test_utils::localhost::{
     LocalHostWorkerResolver, spawn_worker_service,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedLeafExec, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-    TaskRoutingContext, WorkerQueryContext, display_plan_ascii,
+    DistributedConfig, DistributedExt, DistributedLeafExec, SessionStateBuilderExt, TaskEstimation,
+    TaskEstimator, TaskRoutingContext, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -219,16 +219,16 @@ impl TaskEstimator for CachedFileScanConfigTaskEstimator {
     }
 
     fn route_tasks(&self, ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
-        if ctx.available_urls.is_empty() {
-            return Ok(None);
-        }
+        let d_cfg = DistributedConfig::from_task_context(&ctx.task_ctx)?;
+        let available_urls = d_cfg.worker_resolver().get_urls()?;
+
         let mut routed = None;
         ctx.plan.apply(|node| {
             if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>()
                 && leaf.original().downcast_ref::<CacheExec>().is_some()
             {
                 // Sort URLs so the slot→worker mapping is deterministic across planning passes.
-                let mut urls = ctx.available_urls.to_vec();
+                let mut urls = available_urls.to_vec();
                 urls.sort();
                 routed = Some(
                     (0..ctx.task_count)
