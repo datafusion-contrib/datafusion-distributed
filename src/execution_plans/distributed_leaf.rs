@@ -150,9 +150,12 @@ impl ExecutionPlan for DistributedLeafExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        not_impl_err!("DistributedLeafExec does not accept children")
+        if !children.is_empty() {
+            return not_impl_err!("DistributedLeafExec does not accept children");
+        }
+        Ok(self)
     }
 
     fn execute(
