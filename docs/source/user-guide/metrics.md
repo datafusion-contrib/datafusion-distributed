@@ -66,7 +66,7 @@ This produces an EXPLAIN ANALYZE that spans the whole cluster — every stage an
 runtime metrics, including network-level metrics on the boundaries:
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0] plan_bytes_sent_0=8.07 K, plan_send_latency_avg_0=22.63ms, ...
+┌───── DistributedExec ── Tasks: t0:[p0] plan_bytes_sent_0=8.07 KB, plan_send_latency_avg_0=22.63ms, ...
 │ SortPreservingMergeExec: [count(*)@0 DESC], fetch=5, metrics=[output_rows=5, elapsed_compute=391.83µs, ...]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2, metrics=[elapsed_compute=5.86ms, bytes_transferred=20.1 KB, network_latency_p50=366.00µs, network_latency_p95=603.43µs, ...]
 └──────────────────────────────────────────────────
