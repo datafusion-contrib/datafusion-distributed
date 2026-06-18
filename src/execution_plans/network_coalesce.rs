@@ -219,7 +219,11 @@ impl ExecutionPlan for NetworkCoalesceExec {
             Stage::Local(local) => {
                 local.plan = require_one_child(children)?;
             }
-            Stage::Remote(_) => not_impl_err!("NetworkBoundary cannot accept children")?,
+            Stage::Remote(_) => {
+                if !children.is_empty() {
+                    not_impl_err!("NetworkBoundary cannot accept children")?
+                }
+            }
         }
         Ok(Arc::new(self_clone))
     }
