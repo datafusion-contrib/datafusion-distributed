@@ -2,32 +2,28 @@ use crate::common::{TreeNodeExt, now_ns, serialize_uuid, task_ctx_with_extension
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
+use crate::coordinator::plan_encoding::encode_task_plan;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::tonic_status_to_datafusion_error;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
-use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::worker::{WorkerDispatch, WorkerDispatchRequest};
 use crate::{
-    BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec,
-    DistributedConfig, DistributedTaskContext, DistributedWorkUnitFeedContext, TaskKey,
+    BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, TaskKey,
     get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::AsExecutionPlan;
-use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::{Stream, StreamExt};
 use http::Extensions;
-use prost::Message;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -128,13 +124,9 @@ impl<'a> StageCoordinator<'a> {
         UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
     )> {
         let session_config = self.task_ctx.session_config();
-        let codec = DistributedCodec::new_combined_with_user(session_config);
 
-        let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
-
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(specialized, &codec)?.encode_to_vec();
-        let plan_size = plan_proto.len();
+        let encoded = encode_task_plan(self.plan, task_i, self.task_count, session_config)?;
+        let plan_size = encoded.plan_proto.len();
 
         let task_key = TaskKey {
             query_id: serialize_uuid(&self.query_id),
@@ -143,10 +135,10 @@ impl<'a> StageCoordinator<'a> {
         };
         let msg = pb::CoordinatorToWorkerMsg {
             inner: Some(Inner::SetPlanRequest(pb::SetPlanRequest {
-                plan_proto,
+                plan_proto: encoded.plan_proto,
                 task_count: self.task_count as u64,
                 task_key: Some(task_key.clone()),
-                work_unit_feed_declarations,
+                work_unit_feed_declarations: encoded.feed_declarations,
                 target_worker_url: url.to_string(),
                 query_start_time_ns: self.metrics.instantiation_time,
             })),
@@ -309,48 +301,6 @@ impl<'a> StageCoordinator<'a> {
         });
         Ok(())
     }
-
-    /// Specializes the [Arc<dyn ExecutionPlan>] for this stage to provided task index. This implies
-    /// trimming down any unnecessary information that the specific `task_i` task is not going to
-    /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
-    /// [DistributedLeafExec].
-    fn task_specialized_plan(
-        &self,
-        task_i: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>)> {
-        let session_config = self.task_ctx.session_config();
-        let d_cfg = DistributedConfig::from_config_options(session_config.options())?;
-        let wuf_registry = &d_cfg.__private_work_unit_feed_registry;
-
-        let mut work_unit_feed_declarations = vec![];
-        let d_ctx = DistributedTaskContext {
-            task_index: task_i,
-            task_count: self.task_count,
-        };
-
-        let plan = Arc::clone(self.plan);
-        let transformed = plan.transform_down_with_dt_ctx(d_ctx, |plan, d_ctx| {
-            if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
-                work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
-                    id: serialize_uuid(&wuf.id()),
-                    partitions: plan.properties().partitioning.partition_count() as u64,
-                });
-            };
-
-            if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
-                let ciu = ciu.to_task_specialized(d_ctx.task_index);
-                return Ok(Transformed::yes(Arc::new(ciu)));
-            };
-
-            if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
-                let specialized = dle.to_task_specialized(d_ctx.task_index);
-                return Ok(Transformed::yes(specialized));
-            }
-
-            Ok(Transformed::no(plan))
-        })?;
-        Ok((transformed.data, work_unit_feed_declarations))
-    }
 }
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
@@ -359,14 +309,14 @@ fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> +
 
 /// Metrics that measure network details about communications between [DistributedExec] and a worker.
 #[derive(Clone)]
-pub(super) struct CoordinatorToWorkerMetrics {
-    pub(super) plan_bytes_sent: BytesCounterMetric,
-    pub(super) plan_send_latency: Arc<LatencyMetric>,
-    pub(super) instantiation_time: u64,
+pub(crate) struct CoordinatorToWorkerMetrics {
+    pub(crate) plan_bytes_sent: BytesCounterMetric,
+    pub(crate) plan_send_latency: Arc<LatencyMetric>,
+    pub(crate) instantiation_time: u64,
 }
 
 impl CoordinatorToWorkerMetrics {
-    pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
             // Metric that measures to total sum of bytes worth of subplans sent.
             plan_bytes_sent: MetricBuilder::new(metrics)

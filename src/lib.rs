@@ -24,7 +24,9 @@ pub use common::{
     TreeNodeExt, deserialize_uuid, get_distributed_cancellation_token, serialize_uuid,
 };
 pub use config_extension_ext::get_config_extension_propagation_headers;
-pub use coordinator::{DistributedExec, LatencyMetric, MetricsStore};
+pub use coordinator::{
+    DistributedExec, EncodedTaskPlan, LatencyMetric, MetricsStore, encode_task_plan,
+};
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, PartitionRoute, ProducerHead,
@@ -51,15 +53,18 @@ pub use stage::{
     explain_analyze,
 };
 pub use work_unit_feed::{
-    DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
+    DistributedWorkUnitFeedContext, RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedRxs,
+    RemoteWorkUnitFeedTxs, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
+    WorkUnitRx, WorkUnitTx, collect_task_work_unit_feeds, set_received_time, set_sent_time,
 };
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
 pub use worker::generated::worker::worker_service_server::WorkerServiceServer;
 pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
-    DefaultSessionBuilder, FlightWorkerTransport, MappedWorkerSessionBuilder,
-    MappedWorkerSessionBuilderExt, TaskData, Worker, WorkerConnection, WorkerDispatch,
-    WorkerDispatchRequest, WorkerQueryContext, WorkerSessionBuilder, WorkerTransport,
+    DefaultSessionBuilder, FlightWorkerTransport, InMemoryWorkerTransport,
+    MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData, Worker, WorkerConnection,
+    WorkerDispatch, WorkerDispatchRequest, WorkerQueryContext, WorkerSessionBuilder,
+    WorkerTransport,
 };
 
 pub use observability::{

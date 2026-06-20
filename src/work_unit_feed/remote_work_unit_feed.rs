@@ -47,6 +47,24 @@ impl RemoteWorkUnitFeedRegistry {
     }
 }
 
+/// Encodes one feed element into a [pb::WorkUnit] for `partition` of feed `id`. The send/receive
+/// stamps stay zero for the transport to fill in right before delivery.
+pub(crate) fn build_work_unit(
+    id: &Uuid,
+    partition: usize,
+    work_unit: Box<dyn WorkUnit>,
+) -> pb::WorkUnit {
+    pb::WorkUnit {
+        id: serialize_uuid(id),
+        partition: partition as u64,
+        body: work_unit.encode_to_bytes(),
+        created_timestamp_unix_nanos: now_ns(),
+        sent_timestamp_unix_nanos: 0,
+        received_timestamp_unix_nanos: 0,
+        processed_timestamp_unix_nanos: 0,
+    }
+}
+
 pub(crate) fn build_work_unit_batch_msg(
     id: &Uuid,
     work_unit_batch: Vec<(usize, Result<Box<dyn WorkUnit>>)>,
@@ -56,21 +74,22 @@ pub(crate) fn build_work_unit_batch_msg(
             pb::WorkUnitBatch {
                 batch: work_unit_batch
                     .into_iter()
-                    .map(|(partition, work_unit)| {
-                        Ok(pb::WorkUnit {
-                            id: serialize_uuid(id),
-                            partition: partition as u64,
-                            body: work_unit?.encode_to_bytes(),
-                            created_timestamp_unix_nanos: now_ns(),
-                            sent_timestamp_unix_nanos: 0,
-                            received_timestamp_unix_nanos: 0,
-                            processed_timestamp_unix_nanos: 0,
-                        })
-                    })
+                    .map(|(partition, work_unit)| Ok(build_work_unit(id, partition, work_unit?)))
                     .collect::<Result<_>>()?,
             },
         )),
     })
+}
+
+/// Stamps the send time on a bare unit. Any transport can stamp before delivery; the worker-side
+/// latency math treats a missing stamp as zero latency.
+pub fn set_sent_time(work_unit: &mut pb::WorkUnit) {
+    work_unit.sent_timestamp_unix_nanos = now_ns();
+}
+
+/// Stamps the receive time on a bare unit. See [set_sent_time].
+pub fn set_received_time(work_unit: &mut pb::WorkUnit) {
+    work_unit.received_timestamp_unix_nanos = now_ns();
 }
 
 pub(crate) fn set_work_unit_send_time(
