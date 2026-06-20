@@ -65,6 +65,7 @@ pub(crate) fn build_work_unit(
     }
 }
 
+#[cfg(feature = "flight")]
 pub(crate) fn build_work_unit_batch_msg(
     id: &Uuid,
     work_unit_batch: Vec<(usize, Result<Box<dyn WorkUnit>>)>,
@@ -92,6 +93,7 @@ pub fn set_received_time(work_unit: &mut pb::WorkUnit) {
     work_unit.received_timestamp_unix_nanos = now_ns();
 }
 
+#[cfg(feature = "flight")]
 pub(crate) fn set_work_unit_send_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {
@@ -106,6 +108,7 @@ pub(crate) fn set_work_unit_send_time(
     msg
 }
 
+#[cfg(feature = "flight")]
 pub(crate) fn set_work_unit_received_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {

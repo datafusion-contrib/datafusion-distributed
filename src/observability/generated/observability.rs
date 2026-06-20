@@ -71,6 +71,7 @@ impl TaskStatus {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "flight")]
 pub mod observability_service_client {
     #![allow(
         unused_variables,
@@ -218,6 +219,7 @@ pub mod observability_service_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "flight")]
 pub mod observability_service_server {
     #![allow(
         unused_variables,

@@ -110,11 +110,13 @@ impl TaskDataMetrics {
 
 impl TaskData {
     /// Returns the number of partitions remaining to be processed.
+    #[cfg(feature = "flight")]
     pub(crate) fn num_partitions_remaining(&self) -> usize {
         self.num_partitions_remaining.load(Ordering::SeqCst)
     }
 
     /// Returns the total number of partitions in this task.
+    #[cfg(feature = "flight")]
     pub(crate) fn total_partitions(&self) -> usize {
         match self.final_plan.get() {
             Some(Ok(plan)) => plan.output_partitioning().partition_count(),

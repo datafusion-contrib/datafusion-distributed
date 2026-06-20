@@ -1,17 +1,8 @@
+use crate::DefaultSessionBuilder;
 use crate::worker::WorkerSessionBuilder;
-use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
-use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
-};
-use crate::worker::impl_execute_task::execute_remote_task;
+use crate::worker::generated::worker::TaskKey;
 use crate::worker::single_write_multi_read::SingleWriteMultiRead;
 use crate::worker::task_data::TaskData;
-use crate::{
-    DefaultSessionBuilder, GetWorkerInfoRequest, GetWorkerInfoResponse, ObservabilityServiceImpl,
-    ObservabilityServiceServer, WorkerResolver,
-};
-use arrow_flight::FlightData;
-use async_trait::async_trait;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
@@ -20,7 +11,27 @@ use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::{
+    CoordinatorToWorkerMsg, ExecuteTaskRequest, WorkerToCoordinatorMsg,
+};
+#[cfg(feature = "flight")]
+use crate::worker::impl_execute_task::execute_remote_task;
+#[cfg(feature = "flight")]
+use crate::{
+    GetWorkerInfoRequest, GetWorkerInfoResponse, ObservabilityServiceImpl,
+    ObservabilityServiceServer, WorkerResolver,
+};
+#[cfg(feature = "flight")]
+use arrow_flight::FlightData;
+#[cfg(feature = "flight")]
+use async_trait::async_trait;
+#[cfg(feature = "flight")]
 use tonic::codegen::BoxStream;
+#[cfg(feature = "flight")]
 use tonic::{Request, Response, Status, Streaming};
 
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
@@ -35,8 +46,8 @@ pub(super) struct WorkerHooks {
     pub(super) on_plan: Vec<Arc<OnPlanHook>>,
 }
 
-pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
-pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
+pub type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
+pub type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
 
 #[derive(Clone)]
 pub struct Worker {
@@ -66,6 +77,12 @@ impl Default for Worker {
 }
 
 impl Worker {
+    /// The registry of in-flight task plans this worker hosts. An in-process transport reads it to
+    /// execute fragments locally, the same registry the Flight service writes to.
+    pub fn task_data_entries(&self) -> &Arc<TaskDataEntries> {
+        &self.task_data_entries
+    }
+
     /// Builds a [Worker] with a custom [WorkerSessionBuilder]. Use this
     /// method whenever you need to add custom stuff to the `SessionContext` that executes the query.
     pub fn from_session_builder(
@@ -151,6 +168,7 @@ impl Worker {
     ///
     /// # }
     /// ```
+    #[cfg(feature = "flight")]
     pub fn into_worker_server(self) -> WorkerServiceServer<Self> {
         WorkerServiceServer::new(self)
             .max_decoding_message_size(usize::MAX)
@@ -162,6 +180,7 @@ impl Worker {
     ///
     /// The returned server is meant to be added to the same [`tonic::transport::Server`] as the
     /// Flight service — gRPC multiplexes both services on a single port.
+    #[cfg(feature = "flight")]
     pub fn with_observability_service(
         &self,
         worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
@@ -192,6 +211,7 @@ impl Worker {
 ///
 /// The methods are delegated to plan `impl Worker` implementations so that they can be implemented
 /// in different files.
+#[cfg(feature = "flight")]
 #[async_trait]
 impl WorkerService for Worker {
     type CoordinatorChannelStream = BoxStream<WorkerToCoordinatorMsg>;

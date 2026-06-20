@@ -62,6 +62,18 @@ impl InMemoryWorkerTransport {
         }
     }
 
+    /// Builds the transport from a custom [WorkerSessionBuilder], then runs `configure_worker` over
+    /// the hosted [Worker], so a test can install worker-level hooks the session builder can't reach
+    /// (e.g. `add_on_plan_hook`).
+    pub fn from_configured_worker(
+        session_builder: impl WorkerSessionBuilder + Send + Sync + 'static,
+        configure_worker: impl FnOnce(Worker) -> Worker,
+    ) -> Self {
+        Self {
+            worker: configure_worker(Worker::from_session_builder(session_builder)),
+        }
+    }
+
     /// The in-process [Worker] backing this transport.
     pub fn worker(&self) -> &Worker {
         &self.worker
@@ -397,6 +409,24 @@ mod tests {
         let (_, expected) = run(&single).await?;
 
         assert_eq!(distributed, expected);
+        Ok(())
+    }
+
+    // With `flight` compiled out, no transport is registered here: the query must run through the
+    // process-wide default, which is the in-memory transport.
+    #[cfg(not(feature = "flight"))]
+    #[tokio::test]
+    async fn no_flight_default_runs_distributed_queries() -> Result<()> {
+        let ctx = distributed_ctx(None);
+        register_temp_parquet_table("t", sample_batch().schema(), vec![sample_batch()], &ctx)
+            .await?;
+
+        let (display, results) = run(&ctx).await?;
+        assert!(
+            display.contains("NetworkShuffleExec"),
+            "the query did not distribute:\n{display}"
+        );
+        assert!(results.contains("tag0"));
         Ok(())
     }
 }

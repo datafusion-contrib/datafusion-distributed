@@ -1,4 +1,4 @@
-#[cfg(all(feature = "integration", feature = "tpch", test))]
+#[cfg(all(feature = "tpch", test))]
 mod tests {
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{

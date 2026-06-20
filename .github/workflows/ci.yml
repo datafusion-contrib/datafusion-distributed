@@ -32,6 +32,8 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # The generic suite runs over the in-memory transport (what `start_localhost_context` builds by
+  # default), so it covers the distributed paths without a gRPC server.
   unit-test:
     runs-on: ubuntu-latest
     steps:
@@ -41,12 +43,50 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
 
+  # The same suite over the Arrow-Flight gRPC transport. `start_localhost_context` switches to it
+  # when `DATAFUSION_DISTRIBUTED_TEST_TRANSPORT=flight`, so both transports get full coverage.
+  unit-test-flight-transport:
+    runs-on: ubuntu-latest
+    env:
+      DATAFUSION_DISTRIBUTED_TEST_TRANSPORT: flight
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: ./.github/actions/setup
+      - run: cargo test --features integration
+
+  # Builds the lib and the suite with `flight` off: no `tonic` / `arrow-flight`, in-memory transport
+  # as the default. The dataset suites moved to the benchmarks crate, so the suite no longer drags
+  # the benchmarks dev-dependency in (which re-enabled `flight` through feature unification).
+  # Examples are left out: they demo the Flight cluster, so `--all-features` clippy covers them.
+  no-flight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          components: clippy
+      - run: cargo build --no-default-features --features integration
+      - run: cargo clippy --no-default-features --features integration --lib --tests -- -D warnings
+
+  # The integration suite over the in-memory transport with `flight` off, so the no-flight runtime
+  # path is run, not just built. Flight-specific tests gate themselves out.
+  unit-test-no-flight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: ./.github/actions/setup
+      - run: cargo test --no-default-features --features integration --lib --tests
+
   tpch-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test 'tpch_*'
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpch --test 'tpch_*'
 
   tpcds-correctness-test:
     runs-on: ubuntu-latest
@@ -59,9 +99,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/tpcds/main.zip
+          path: benchmarks/testdata/tpcds/main.zip
           key: "main.zip"
-      - run: cargo test --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
 
   tpcds-plans-test:
     runs-on: ubuntu-latest
@@ -70,9 +110,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/tpcds/main.zip
+          path: benchmarks/testdata/tpcds/main.zip
           key: "main.zip"
-      - run: cargo test --features tpcds --test tpcds_plans_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpcds --test tpcds_plans_test
 
   clickbench-test:
     runs-on: ubuntu-latest
@@ -81,9 +121,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/clickbench/
+          path: benchmarks/testdata/clickbench/
           key: "data"
-      - run: cargo test --features clickbench --test 'clickbench_*'
+      - run: cargo test -p datafusion-distributed-benchmarks --features clickbench --test 'clickbench_*'
 
   format-check:
     runs-on: ubuntu-latest

@@ -1,4 +1,6 @@
-#[cfg(all(feature = "integration", test))]
+// The `URLEmitter` tests emit and assert per-URL worker identity, so they need the distinct dialed
+// workers the gRPC in-memory cluster gives, not the single in-process worker.
+#[cfg(all(feature = "integration", feature = "flight", test))]
 mod tests {
     use std::sync::Arc;
 

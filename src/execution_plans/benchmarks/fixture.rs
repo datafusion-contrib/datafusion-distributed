@@ -1,4 +1,6 @@
+#[cfg(feature = "flight")]
 use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
+#[cfg(feature = "flight")]
 use crate::{BoxCloneSyncChannel, ChannelResolver, create_worker_client};
 use arrow::datatypes::DataType::{
     Boolean, Dictionary, Float64, Int32, Int64, List, Timestamp, UInt8, Utf8,
@@ -8,6 +10,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::data_gen::create_random_batch;
 use datafusion::common::{Result, exec_err};
 use std::sync::Arc;
+#[cfg(feature = "flight")]
 use url::Url;
 
 pub(super) fn benchmark_schema() -> Arc<Schema> {
@@ -58,6 +61,7 @@ pub(super) fn make_input_partitions(
     Ok(partitions)
 }
 
+#[cfg(feature = "flight")]
 pub(super) fn rows_for_producer(
     total_rows: usize,
     producer_tasks: usize,
@@ -70,11 +74,13 @@ pub(super) fn rows_for_producer(
 
 /// [ChannelResolver] implementation that returns gRPC clients backed by an in-memory
 /// tokio duplex rather than a TCP connection.
+#[cfg(feature = "flight")]
 #[derive(Clone)]
 pub(super) struct InMemoryChannelsResolver {
     pub channels: Vec<BoxCloneSyncChannel>,
 }
 
+#[cfg(feature = "flight")]
 #[async_trait::async_trait]
 impl ChannelResolver for InMemoryChannelsResolver {
     async fn get_worker_client_for_url(

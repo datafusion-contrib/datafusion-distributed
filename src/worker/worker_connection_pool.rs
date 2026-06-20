@@ -1,49 +1,92 @@
-use crate::common::{OnceLockResult, on_drop_stream, serialize_uuid};
+use crate::common::OnceLockResult;
 use crate::distributed_planner::ProducerHead;
-use crate::metrics::LatencyMetricExt;
-use crate::networking::{get_distributed_channel_resolver, get_distributed_worker_transport};
-use crate::passthrough_headers::get_passthrough_headers;
-use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
+use crate::networking::get_distributed_worker_transport;
 use crate::stage::RemoteStage;
-use crate::worker::generated::worker::FlightAppMetadata;
-use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
-use crate::worker::impl_execute_task::execute_local_task;
 use crate::worker::transport::WorkerConnection;
-use crate::worker::worker_service::TaskDataEntries;
-use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
-use arrow_flight::FlightData;
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
-use dashmap::DashMap;
-use datafusion::arrow::array::RecordBatch;
-use datafusion::common::instant::Instant;
-use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{
-    DataFusionError, Result, exec_err, internal_datafusion_err, internal_err,
-};
+use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
-use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricValue};
-use datafusion::physical_plan::metrics::{MetricBuilder, Time};
-use futures::stream::BoxStream;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use http::Extensions;
-use pin_project::{pin_project, pinned_drop};
-use prost::Message;
-use std::borrow::Cow;
+use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
+use std::sync::{Arc, OnceLock};
+
+#[cfg(feature = "flight")]
+use crate::common::{on_drop_stream, serialize_uuid};
+#[cfg(feature = "flight")]
+use crate::metrics::LatencyMetricExt;
+#[cfg(feature = "flight")]
+use crate::networking::get_distributed_channel_resolver;
+#[cfg(feature = "flight")]
+use crate::passthrough_headers::get_passthrough_headers;
+#[cfg(feature = "flight")]
+use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::FlightAppMetadata;
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
+#[cfg(feature = "flight")]
+use crate::worker::impl_execute_task::execute_local_task;
+#[cfg(feature = "flight")]
+use crate::worker::worker_service::TaskDataEntries;
+#[cfg(feature = "flight")]
+use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
+#[cfg(feature = "flight")]
+use arrow_flight::FlightData;
+#[cfg(feature = "flight")]
+use arrow_flight::decode::FlightRecordBatchStream;
+#[cfg(feature = "flight")]
+use arrow_flight::error::FlightError;
+#[cfg(feature = "flight")]
+use dashmap::DashMap;
+#[cfg(feature = "flight")]
+use datafusion::arrow::array::RecordBatch;
+#[cfg(feature = "flight")]
+use datafusion::common::instant::Instant;
+#[cfg(feature = "flight")]
+use datafusion::common::runtime::SpawnedTask;
+#[cfg(feature = "flight")]
+use datafusion::common::{exec_err, internal_datafusion_err};
+#[cfg(feature = "flight")]
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+#[cfg(feature = "flight")]
+use datafusion::physical_expr_common::metrics::MetricValue;
+#[cfg(feature = "flight")]
+use datafusion::physical_plan::metrics::{MetricBuilder, Time};
+#[cfg(feature = "flight")]
+use futures::stream::BoxStream;
+#[cfg(feature = "flight")]
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+#[cfg(feature = "flight")]
+use http::Extensions;
+#[cfg(feature = "flight")]
+use pin_project::{pin_project, pinned_drop};
+#[cfg(feature = "flight")]
+use prost::Message;
+#[cfg(feature = "flight")]
+use std::borrow::Cow;
+#[cfg(feature = "flight")]
 use std::pin::Pin;
+#[cfg(feature = "flight")]
+use std::sync::Mutex;
+#[cfg(feature = "flight")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(feature = "flight")]
 use std::task::{Context, Poll};
+#[cfg(feature = "flight")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "flight")]
 use tokio::sync::Notify;
+#[cfg(feature = "flight")]
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+#[cfg(feature = "flight")]
 use tokio_stream::wrappers::UnboundedReceiverStream;
+#[cfg(feature = "flight")]
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "flight")]
 use tonic::metadata::MetadataMap;
+#[cfg(feature = "flight")]
 use tonic::{Request, Status};
+#[cfg(feature = "flight")]
 use url::Url;
 
 /// Context set by [crate::Worker::coordinator_channel] in DataFusion's
@@ -52,6 +95,7 @@ use url::Url;
 ///
 /// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
 /// needs to be remotely executed happens to be owned by this same worker.
+#[cfg(feature = "flight")]
 pub(crate) struct LocalWorkerContext {
     /// The registry of in-flight tasks the [crate::Worker] in the current scope owns.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
@@ -124,6 +168,7 @@ impl WorkerConnectionPool {
     }
 }
 
+#[cfg(feature = "flight")]
 type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
@@ -137,6 +182,7 @@ type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
 /// the same underlying TCP connection, there do is some overhead in having one gRPC stream per
 /// partition VS a single gRPC stream interleaving multiple partitions. The whole serialized plan
 /// needs to be sent over the wire on every gRPC call, so the less gRPC calls we do the better.
+#[cfg(feature = "flight")]
 pub(crate) struct RemoteWorkerConnection {
     task: Arc<SpawnedTask<()>>,
     not_consumed_streams: Arc<AtomicUsize>,
@@ -152,6 +198,7 @@ pub(crate) struct RemoteWorkerConnection {
     elapsed_compute: Time,
 }
 
+#[cfg(feature = "flight")]
 impl RemoteWorkerConnection {
     pub(crate) fn init(
         input_stage: &RemoteStage,
@@ -373,6 +420,7 @@ impl RemoteWorkerConnection {
     }
 }
 
+#[cfg(feature = "flight")]
 impl WorkerConnection for RemoteWorkerConnection {
     /// Streams the provided `partition` from the remote worker.
     ///
@@ -431,11 +479,13 @@ impl WorkerConnection for RemoteWorkerConnection {
 
 /// Equivalent to [RemoteWorkerConnection], but that pulls data from the local registry of tasks
 /// rather than doing it across a gRPC interface.
+#[cfg(feature = "flight")]
 pub(crate) struct LocalWorkerConnection {
     partition_start: usize,
     local_streams: Vec<Mutex<Option<BoxStream<'static, Result<RecordBatch>>>>>,
 }
 
+#[cfg(feature = "flight")]
 impl LocalWorkerConnection {
     pub(crate) fn init(
         input_stage: &RemoteStage,
@@ -503,6 +553,7 @@ impl LocalWorkerConnection {
     }
 }
 
+#[cfg(feature = "flight")]
 impl WorkerConnection for LocalWorkerConnection {
     fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>> {
         let Some(relative_i) = partition.checked_sub(self.partition_start) else {
@@ -524,6 +575,7 @@ impl WorkerConnection for LocalWorkerConnection {
     }
 }
 
+#[cfg(feature = "flight")]
 fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
     for o_tx in o_txs {
         let _ = o_tx.send(Err(err.clone()));
@@ -544,20 +596,24 @@ impl Clone for WorkerConnectionPool {
     }
 }
 
+#[cfg(feature = "flight")]
 impl Debug for RemoteWorkerConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerConnection").finish()
     }
 }
 
+#[cfg(feature = "flight")]
 trait ElapsedComputeFutureExt: Future + Sized {
     fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeFuture<Self>;
 }
 
+#[cfg(feature = "flight")]
 trait ElapsedComputeStreamExt: Stream + Sized {
     fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeStream<Self>;
 }
 
+#[cfg(feature = "flight")]
 impl<O, F: Future<Output = O>> ElapsedComputeFutureExt for F {
     fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeFuture<Self> {
         ElapsedComputeFuture {
@@ -568,6 +624,7 @@ impl<O, F: Future<Output = O>> ElapsedComputeFutureExt for F {
     }
 }
 
+#[cfg(feature = "flight")]
 impl<O, S: Stream<Item = O>> ElapsedComputeStreamExt for S {
     fn with_elapsed_compute(self, elapsed_compute: Time) -> ElapsedComputeStream<Self> {
         ElapsedComputeStream {
@@ -578,6 +635,7 @@ impl<O, S: Stream<Item = O>> ElapsedComputeStreamExt for S {
     }
 }
 
+#[cfg(feature = "flight")]
 #[pin_project(PinnedDrop)]
 struct ElapsedComputeStream<T> {
     #[pin]
@@ -588,6 +646,7 @@ struct ElapsedComputeStream<T> {
 
 /// Drop implementation that ensures that any accumulated time is properly dumped to the metric
 /// in case the stream gets dropped before completion.
+#[cfg(feature = "flight")]
 #[pinned_drop]
 impl<T> PinnedDrop for ElapsedComputeStream<T> {
     fn drop(self: Pin<&mut Self>) {
@@ -600,6 +659,7 @@ impl<T> PinnedDrop for ElapsedComputeStream<T> {
     }
 }
 
+#[cfg(feature = "flight")]
 impl<O, F: Stream<Item = O>> Stream for ElapsedComputeStream<F> {
     type Item = O;
 
@@ -618,6 +678,7 @@ impl<O, F: Stream<Item = O>> Stream for ElapsedComputeStream<F> {
     }
 }
 
+#[cfg(feature = "flight")]
 #[pin_project(PinnedDrop)]
 struct ElapsedComputeFuture<T> {
     #[pin]
@@ -628,6 +689,7 @@ struct ElapsedComputeFuture<T> {
 
 /// Drop implementation that ensures that any accumulated time is properly dumped to the metric
 /// in case the future gets dropped before completion.
+#[cfg(feature = "flight")]
 #[pinned_drop]
 impl<T> PinnedDrop for ElapsedComputeFuture<T> {
     fn drop(self: Pin<&mut Self>) {
@@ -640,6 +702,7 @@ impl<T> PinnedDrop for ElapsedComputeFuture<T> {
     }
 }
 
+#[cfg(feature = "flight")]
 impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
     type Output = O;
 
@@ -658,7 +721,7 @@ impl<O, F: Future<Output = O>> Future for ElapsedComputeFuture<F> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "flight"))]
 mod tests {
     use super::*;
     use futures::StreamExt;

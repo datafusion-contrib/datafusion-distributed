@@ -1,7 +1,7 @@
-use crate::common::{TreeNodeExt, now_ns, serialize_uuid, task_ctx_with_extension};
+use crate::common::{TreeNodeExt, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
+use crate::coordinator::CoordinatorToWorkerMetrics;
 use crate::coordinator::MetricsStore;
-use crate::coordinator::latency_metric::LatencyMetric;
 use crate::coordinator::plan_encoding::encode_task_plan;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::tonic_status_to_datafusion_error;
@@ -10,8 +10,7 @@ use crate::worker::generated::worker as pb;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
 use crate::worker::{WorkerDispatch, WorkerDispatchRequest};
 use crate::{
-    BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedConfig,
-    DistributedTaskContext, DistributedWorkUnitFeedContext, TaskKey,
+    DistributedConfig, DistributedTaskContext, DistributedWorkUnitFeedContext, TaskKey,
     get_distributed_channel_resolver,
 };
 use datafusion::common::Result;
@@ -20,7 +19,6 @@ use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
 use futures::{Stream, StreamExt};
 use http::Extensions;
@@ -305,30 +303,4 @@ impl<'a> StageCoordinator<'a> {
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
-}
-
-/// Metrics that measure network details about communications between [DistributedExec] and a worker.
-#[derive(Clone)]
-pub(crate) struct CoordinatorToWorkerMetrics {
-    pub(crate) plan_bytes_sent: BytesCounterMetric,
-    pub(crate) plan_send_latency: Arc<LatencyMetric>,
-    pub(crate) instantiation_time: u64,
-}
-
-impl CoordinatorToWorkerMetrics {
-    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
-        Self {
-            // Metric that measures to total sum of bytes worth of subplans sent.
-            plan_bytes_sent: MetricBuilder::new(metrics)
-                .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-                .bytes_counter("plan_bytes_sent"),
-            // Latency statistics about the network calls issued to the workers for feeding subplans.
-            plan_send_latency: Arc::new(LatencyMetric::new(
-                "plan_send_latency",
-                |b| b.with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0")),
-                metrics,
-            )),
-            instantiation_time: now_ns(),
-        }
-    }
 }

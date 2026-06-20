@@ -33,9 +33,20 @@ aws-sdk-ec2 = "1"
 openssl = { version = "0.10", features = ["vendored"] } # Keep this. Necessary for the remote benchmarks worker.
 mimalloc = "0.1"
 
+[features]
+# Gates for the dataset test suites under `tests/`. They live here instead of the library because
+# they depend on it: as a dev-dependency of the library they re-enable `flight` on every test build
+# through feature unification, which makes the no-flight config untestable.
+tpch = []
+tpcds = []
+clickbench = []
+slow-tests = []
+
 [dev-dependencies]
 criterion = "0.5"
 sysinfo = "0.30"
+pretty_assertions = "1.4"
+test-case = "3.3.1"
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2", "chrono"] }

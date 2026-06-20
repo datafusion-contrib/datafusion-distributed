@@ -1,18 +1,36 @@
+#[cfg(feature = "flight")]
 use crate::DistributedConfig;
+#[cfg(feature = "flight")]
 use crate::config_extension_ext::set_distributed_option_extension;
+#[cfg(feature = "flight")]
 use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
+#[cfg(feature = "flight")]
 use async_trait::async_trait;
+#[cfg(feature = "flight")]
 use datafusion::common::{DataFusionError, config_datafusion_err, exec_datafusion_err};
+#[cfg(feature = "flight")]
 use datafusion::execution::TaskContext;
+#[cfg(feature = "flight")]
 use datafusion::prelude::SessionConfig;
+#[cfg(feature = "flight")]
 use futures::FutureExt;
+#[cfg(feature = "flight")]
 use futures::future::Shared;
-use std::sync::{Arc, LazyLock};
+#[cfg(feature = "flight")]
+use std::sync::Arc;
+#[cfg(feature = "flight")]
+use std::sync::LazyLock;
+#[cfg(feature = "flight")]
 use std::time::Duration;
+#[cfg(feature = "flight")]
 use tonic::body::Body;
+#[cfg(feature = "flight")]
 use tonic::codegen::BoxFuture;
+#[cfg(feature = "flight")]
 use tonic::transport::Channel;
+#[cfg(feature = "flight")]
 use tower::ServiceExt;
+#[cfg(feature = "flight")]
 use url::Url;
 
 /// Allows users to customize the way Worker clients are created. A common use case is to
@@ -29,6 +47,7 @@ use url::Url;
 ///   [`create_worker_client`] helper function to ensure clients are configured with
 ///   appropriate message size limits for internal communication. This helps avoid message
 ///   size errors when transferring large datasets.
+#[cfg(feature = "flight")]
 #[async_trait]
 pub trait ChannelResolver {
     /// For a given URL, get a Worker gRPC client for communicating to it.
@@ -46,6 +65,7 @@ pub trait ChannelResolver {
     ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError>;
 }
 
+#[cfg(feature = "flight")]
 pub(crate) fn set_distributed_channel_resolver(
     cfg: &mut SessionConfig,
     channel_resolver: impl ChannelResolver + Send + Sync + 'static,
@@ -72,6 +92,7 @@ pub(crate) fn set_distributed_channel_resolver(
 // The Tonic channels need to be established and reused under a whole RuntimeEnv scope, not a single
 // TaskContext, which forces us to put the default implementation in a static global variable that
 // stores and reuses tonic channels per RuntimeEnv's pointer address.
+#[cfg(feature = "flight")]
 static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
     moka::sync::Cache<
         /* Arc<RuntimeEnv> pointer address */ usize,
@@ -79,6 +100,7 @@ static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
     >,
 > = LazyLock::new(|| moka::sync::Cache::builder().max_capacity(256).build());
 
+#[cfg(feature = "flight")]
 pub fn get_distributed_channel_resolver(
     task_ctx: &TaskContext,
 ) -> Arc<dyn ChannelResolver + Send + Sync> {
@@ -93,27 +115,36 @@ pub fn get_distributed_channel_resolver(
         .get_with(runtime_addr, || Arc::new(DefaultChannelResolver::default()))
 }
 
+#[cfg(feature = "flight")]
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
     http::Request<Body>,
     http::Response<Body>,
     tonic::transport::Error,
 >;
 
+#[cfg(feature = "flight")]
 type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionError>>>;
 
+/// Holds the user-provided [ChannelResolver], if any. Always present in [DistributedConfig] (the
+/// `extensions_options!` macro can't gate a field), but the inner channel-resolver handle only
+/// exists with the `flight` feature; without it the field is empty and nothing dials.
 #[derive(Clone, Default)]
-pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send + Sync>>);
+pub(crate) struct ChannelResolverExtension(
+    #[cfg(feature = "flight")] Option<Arc<dyn ChannelResolver + Send + Sync>>,
+);
 
 /// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
 /// and stores the connection instance in a TTI cache.
 ///
 /// Sane default over which other [ChannelResolver] can be built for better customization of the
 /// [WorkerServiceClient]s.
+#[cfg(feature = "flight")]
 #[derive(Clone)]
 pub struct DefaultChannelResolver {
     cache: Arc<moka::sync::Cache<Url, ChannelCacheValue>>,
 }
 
+#[cfg(feature = "flight")]
 impl Default for DefaultChannelResolver {
     fn default() -> Self {
         Self {
@@ -130,6 +161,7 @@ impl Default for DefaultChannelResolver {
     }
 }
 
+#[cfg(feature = "flight")]
 impl DefaultChannelResolver {
     /// Gets the cached [BoxCloneSyncChannel] for the given URL, or builds a new one.
     pub async fn get_channel(&self, url: &Url) -> Result<BoxCloneSyncChannel, DataFusionError> {
@@ -170,6 +202,7 @@ impl DefaultChannelResolver {
     }
 }
 
+#[cfg(feature = "flight")]
 #[async_trait]
 impl ChannelResolver for DefaultChannelResolver {
     async fn get_worker_client_for_url(
@@ -180,6 +213,7 @@ impl ChannelResolver for DefaultChannelResolver {
     }
 }
 
+#[cfg(feature = "flight")]
 #[async_trait]
 impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
     async fn get_worker_client_for_url(
@@ -217,6 +251,7 @@ impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
 ///     }
 /// }
 /// ```
+#[cfg(feature = "flight")]
 pub fn create_worker_client(
     channel: BoxCloneSyncChannel,
 ) -> WorkerServiceClient<BoxCloneSyncChannel> {
@@ -225,7 +260,7 @@ pub fn create_worker_client(
         .max_encoding_message_size(usize::MAX)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "flight"))]
 mod tests {
     use super::*;
     use crate::Worker;
