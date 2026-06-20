@@ -6,7 +6,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-pub(crate) trait TreeNodeExt {
+pub trait TreeNodeExt {
     /// Applies `f` to the node then each of its children, recursively (a
     /// top-down, pre-order traversal), propagating the [DistributedTaskContext] correctly
     /// across nodes that mutate this context, and ignoring nodes that do not belong to

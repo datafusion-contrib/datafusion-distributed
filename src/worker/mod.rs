@@ -1,3 +1,4 @@
+mod flight;
 pub(crate) mod generated;
 mod impl_coordinator_channel;
 mod impl_execute_task;
@@ -7,11 +8,15 @@ mod spawn_select_all;
 mod task_data;
 #[cfg(any(test, feature = "integration"))]
 pub(crate) mod test_utils;
+mod transport;
 mod worker_connection_pool;
 mod worker_service;
 
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
 pub(crate) use worker_connection_pool::{LocalWorkerContext, WorkerConnectionPool};
+
+pub use flight::FlightWorkerTransport;
+pub use transport::{WorkerConnection, WorkerDispatch, WorkerDispatchRequest, WorkerTransport};
 
 pub use session_builder::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt,

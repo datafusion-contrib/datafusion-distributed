@@ -1,20 +1,28 @@
-use crate::common::{require_one_child, serialize_uuid};
+use crate::DistributedConfig;
+use crate::common::{
+    DistributedCancellationToken, on_drop_stream, require_one_child, serialize_uuid,
+    task_ctx_with_extension,
+};
 use crate::coordinator::metrics_store::MetricsStore;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
-use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::NetworkBoundaryExt;
+use crate::networking::get_distributed_worker_transport;
 use crate::worker::generated::worker::TaskKey;
 use datafusion::common::internal_datafusion_err;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
+use datafusion::physical_plan::stream::{
+    RecordBatchReceiverStreamBuilder, RecordBatchStreamAdapter,
+};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::StreamExt;
 use std::fmt::Formatter;
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 
 /// [ExecutionPlan] that executes the inner plan in distributed mode.
 /// Before executing it, two modifications are lazily performed on the plan:
@@ -70,6 +78,14 @@ impl DistributedExec {
             false => None,
         };
         self
+    }
+
+    /// Exposes the metrics store so a transport that collects worker `TaskMetrics` out-of-band can
+    /// file them where [`rewrite_distributed_plan_with_metrics`] reads them.
+    ///
+    /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
+    pub fn metrics_store(&self) -> Option<Arc<MetricsStore>> {
+        self.metrics_store.clone()
     }
 
     /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
@@ -133,6 +149,63 @@ impl DistributedExec {
             .clone()
             .ok_or_else(|| internal_datafusion_err!("No head stage found. Was execute() called?"))
     }
+
+    /// Routes and dispatches every stage through the registered transport, then returns the head
+    /// stage for the caller to drive synchronously, with no `execute()` background task.
+    ///
+    /// This is the extension point the in-crate shared-memory transport (and its in-process test) executes
+    /// through: it owns the runtime and drives the head stage itself. The transport's dispatch must
+    /// complete synchronously: a transport that spawns background delivery work, or a plan that
+    /// declares work-unit feeds (which are pumped by that background work), is rejected rather than
+    /// left to stall.
+    pub fn prepare_in_process_plan(
+        &self,
+        ctx: &Arc<TaskContext>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let d_cfg = DistributedConfig::from_config_options(ctx.session_config().options())?;
+        let registry = &d_cfg.__private_work_unit_feed_registry;
+        let mut has_feeds = false;
+        self.base_plan.apply(|plan| {
+            if registry.get_work_unit_feed(plan).is_some() {
+                has_feeds = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        if has_feeds {
+            return exec_err!(
+                "the plan declares work-unit feeds, which are not delivered on the in-process path"
+            );
+        }
+
+        let dispatcher = get_distributed_worker_transport(ctx.session_config()).dispatcher();
+        let mut join_set = JoinSet::new();
+        let result = prepare_static_plan(
+            &self.base_plan,
+            ctx,
+            dispatcher.as_ref(),
+            &mut join_set,
+            &self.metrics,
+            self.metrics_store.as_ref(),
+        )?;
+        // Dropping the join set aborts anything still on it, which would kill an async delivery
+        // mid-flight and surface as a hang far from the cause. Reject instead.
+        if !join_set.is_empty() {
+            return exec_err!(
+                "the registered transport spawned background delivery work; \
+                 prepare_in_process_plan requires a transport whose dispatch completes synchronously"
+            );
+        }
+        self.plan_for_viz
+            .lock()
+            .expect("poisoned lock")
+            .replace(result.plan_for_viz);
+        self.head_stage
+            .lock()
+            .expect("poisoned lock")
+            .replace(Arc::clone(&result.head_stage));
+        Ok(result.head_stage)
+    }
 }
 
 impl DisplayAs for DistributedExec {
@@ -185,20 +258,36 @@ impl ExecutionPlan for DistributedExec {
         let base_plan = Arc::clone(&self.base_plan);
         let plan_for_viz = Arc::clone(&self.plan_for_viz);
         let head_stage = Arc::clone(&self.head_stage);
+        let metrics = self.metrics.clone();
+        let metrics_store = self.metrics_store.clone();
 
-        let query_coordinator = QueryCoordinator::new(
-            Arc::clone(&context),
-            &self.metrics,
-            self.metrics_store.clone(),
-        );
+        // One token per execution. In-process transports watch it to tear down the moment this
+        // output stream drops, whether the consumer read to the end or abandoned it early (a LIMIT
+        // gather). It rides the dispatch context so every worker fragment shares it.
+        let token = CancellationToken::new();
+        let context = Arc::new(task_ctx_with_extension(
+            &context,
+            DistributedCancellationToken(token.clone()),
+        ));
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
         let tx = builder.tx();
 
         builder.spawn(async move {
-            let _guard = query_coordinator.end_query_guard();
+            let dispatcher =
+                get_distributed_worker_transport(context.session_config()).dispatcher();
+            // The query owns the join set: background plan-delivery and metrics tasks spawned by the
+            // dispatcher run on it, so draining it below is what waits for the workers to finish.
+            let mut join_set = JoinSet::new();
 
-            let result = prepare_static_plan(&query_coordinator, &base_plan)?;
+            let result = prepare_static_plan(
+                &base_plan,
+                &context,
+                dispatcher.as_ref(),
+                &mut join_set,
+                &metrics,
+                metrics_store.as_ref(),
+            )?;
 
             plan_for_viz
                 .lock()
@@ -215,11 +304,20 @@ impl ExecutionPlan for DistributedExec {
                 }
             }
             drop(tx);
-            query_coordinator.drain_pending_tasks().await?;
+            for res in join_set.join_all().await {
+                res?;
+            }
+            // Dropping the dispatcher ends the coordinator->worker streams, propagating EOS so the
+            // workers can clean up. It is held until here so those streams stay open during draining.
+            drop(dispatcher);
             Ok(())
         });
 
-        Ok(builder.build())
+        let stream = builder.build();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            on_drop_stream(stream, move || token.cancel()),
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

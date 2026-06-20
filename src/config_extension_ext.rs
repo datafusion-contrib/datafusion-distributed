@@ -80,7 +80,7 @@ struct ConfigExtensionPropagationContext {
     prefixes: Vec<&'static str>,
 }
 
-pub(crate) fn get_config_extension_propagation_headers(
+pub fn get_config_extension_propagation_headers(
     cfg: &SessionConfig,
 ) -> Result<HeaderMap, DataFusionError> {
     fn parse_err(err: impl Error) -> DataFusionError {

@@ -1,13 +1,14 @@
 use crate::common::{OnceLockResult, on_drop_stream, serialize_uuid};
 use crate::distributed_planner::ProducerHead;
 use crate::metrics::LatencyMetricExt;
-use crate::networking::get_distributed_channel_resolver;
+use crate::networking::{get_distributed_channel_resolver, get_distributed_worker_transport};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::protobuf::{datafusion_error_to_tonic_status, map_flight_to_datafusion_error};
 use crate::stage::RemoteStage;
 use crate::worker::generated::worker::FlightAppMetadata;
 use crate::worker::generated::worker::{ExecuteTaskRequest, TaskKey};
 use crate::worker::impl_execute_task::execute_local_task;
+use crate::worker::transport::WorkerConnection;
 use crate::worker::worker_service::TaskDataEntries;
 use crate::{BytesMetricExt, ChannelResolver, DistributedConfig};
 use arrow_flight::FlightData;
@@ -65,7 +66,7 @@ pub(crate) struct LocalWorkerContext {
 /// it will initialize the corresponding position in the vector matching the provided `target_task`
 /// index.
 pub(crate) struct WorkerConnectionPool {
-    connections: Vec<OnceLockResult<Box<dyn WorkerConnection + Sync + Send>>>,
+    connections: Vec<OnceLockResult<Box<dyn WorkerConnection>>>,
     pub(crate) metrics: ExecutionPlanMetricsSet,
 }
 
@@ -93,7 +94,7 @@ impl WorkerConnectionPool {
         target_task: usize,
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
-    ) -> Result<&(dyn WorkerConnection + Sync + Send)> {
+    ) -> Result<&dyn WorkerConnection> {
         let Some(worker_connection) = self.connections.get(target_task) else {
             return internal_err!(
                 "WorkerConnections: Task index {target_task} not found, only have {} tasks",
@@ -102,14 +103,10 @@ impl WorkerConnectionPool {
         };
 
         let conn = worker_connection.get_or_init(|| {
-            let Some(target_url) = input_stage.workers.get(target_task) else {
-                internal_err!("input_stage.workers[{target_task}] out of range.")?
-            };
-            if let Some(lw_ctx) = ctx.session_config().get_extension::<LocalWorkerContext>()
-                && &lw_ctx.self_url == target_url
-            {
-                // Instead of making a gRPC call to ourselves, better to just use local comms.
-                LocalWorkerConnection::init(
+            // Local-vs-remote is the transport's concern now; the pool only caches one connection
+            // per worker task and hands the routing decision to the configured transport.
+            get_distributed_worker_transport(ctx.session_config())
+                .open(
                     input_stage,
                     target_partitions,
                     target_task,
@@ -117,21 +114,7 @@ impl WorkerConnectionPool {
                     ctx,
                     &self.metrics,
                 )
-                .map(|v| Box::new(v) as Box<_>)
                 .map_err(Arc::new)
-            } else {
-                // We are trying to reach a URL different from ours, so use normal gRPC streams.
-                RemoteWorkerConnection::init(
-                    input_stage,
-                    target_partitions,
-                    target_task,
-                    producer_head,
-                    ctx,
-                    &self.metrics,
-                )
-                .map(|v| Box::new(v) as Box<_>)
-                .map_err(Arc::new)
-            }
         });
 
         match conn {
@@ -142,14 +125,6 @@ impl WorkerConnectionPool {
 }
 
 type WorkerMsg = Result<(FlightData, FlightAppMetadata), Status>;
-
-/// Abstraction that allows treating remote and local comms as equal. Network boundaries do not
-/// care if the stream comes over the wire or locally.
-pub(crate) trait WorkerConnection {
-    /// Streams the specified partition. Consumers do not care if the implementation pulls data
-    /// from in-memory or from local comms.
-    fn execute(&self, partition: usize) -> Result<BoxStream<'static, Result<RecordBatch>>>;
-}
 
 /// Represents a connection to one [Worker]. Network boundaries will use this for streaming
 /// data from single partitions while the actual network communication is handling all the partitions
@@ -162,7 +137,7 @@ pub(crate) trait WorkerConnection {
 /// the same underlying TCP connection, there do is some overhead in having one gRPC stream per
 /// partition VS a single gRPC stream interleaving multiple partitions. The whole serialized plan
 /// needs to be sent over the wire on every gRPC call, so the less gRPC calls we do the better.
-struct RemoteWorkerConnection {
+pub(crate) struct RemoteWorkerConnection {
     task: Arc<SpawnedTask<()>>,
     not_consumed_streams: Arc<AtomicUsize>,
     cancel_token: CancellationToken,
@@ -178,7 +153,7 @@ struct RemoteWorkerConnection {
 }
 
 impl RemoteWorkerConnection {
-    fn init(
+    pub(crate) fn init(
         input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,
@@ -462,7 +437,7 @@ pub(crate) struct LocalWorkerConnection {
 }
 
 impl LocalWorkerConnection {
-    fn init(
+    pub(crate) fn init(
         input_stage: &RemoteStage,
         target_partition_range: Range<usize>,
         target_task: usize,

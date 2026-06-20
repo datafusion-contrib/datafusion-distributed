@@ -13,10 +13,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
 
-pub(crate) type WorkUnitTx = UnboundedSender<Result<pb::WorkUnit>>;
-pub(crate) type WorkUnitRx = UnboundedReceiver<Result<pb::WorkUnit>>;
-pub(crate) type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
-pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
+pub type WorkUnitTx = UnboundedSender<Result<pb::WorkUnit>>;
+pub type WorkUnitRx = UnboundedReceiver<Result<pb::WorkUnit>>;
+pub type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
+pub type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
 
 /// Bridge between the worker's gRPC layer and the remote-variant
 /// [`crate::WorkUnitFeed`]s installed in the deserialized plan.
@@ -30,15 +30,15 @@ pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
 ///   concrete `T::WorkUnit` type so the leaf sees the same typed stream as it would in a
 ///   single-node execution.
 #[derive(Default)]
-pub(crate) struct RemoteWorkUnitFeedRegistry {
-    pub(crate) receivers: RemoteWorkUnitFeedRxs,
-    pub(crate) senders: RemoteWorkUnitFeedTxs,
+pub struct RemoteWorkUnitFeedRegistry {
+    pub receivers: RemoteWorkUnitFeedRxs,
+    pub senders: RemoteWorkUnitFeedTxs,
 }
 
 impl RemoteWorkUnitFeedRegistry {
     /// Creates all the receivers and senders for a specific [WorkUnit] Feed id. One feed per
     /// partition is created.
-    pub(crate) fn add(&mut self, id: Uuid, partitions: usize) {
+    pub fn add(&mut self, id: Uuid, partitions: usize) {
         for partition in 0..partitions {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             self.receivers.insert((id, partition), Mutex::new(Some(rx)));
