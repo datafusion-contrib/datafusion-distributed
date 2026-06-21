@@ -233,7 +233,7 @@ async fn _inject_network_boundaries(
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        return if let Some(estimate) = estimator.task_estimation(&plan, nb_ctx.cfg) {
+        return if let Some(estimate) = estimator.task_estimation(&plan, nb_ctx.cfg).await? {
             Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -255,6 +255,7 @@ async fn _inject_network_boundaries(
 
     let mut task_count = estimator
         .task_estimation(&plan, nb_ctx.cfg)
+        .await?
         .map_or(Desired(1), |v| v.task_count);
     if nb_ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
@@ -1211,13 +1212,14 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl TaskEstimator for CallbackEstimator {
-        fn task_estimation(
+        async fn task_estimation(
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            (self.f)(plan.as_ref())
+        ) -> Result<Option<TaskEstimation>> {
+            Ok((self.f)(plan.as_ref()))
         }
 
         fn scale_up_leaf_node(
@@ -1233,17 +1235,20 @@ mod tests {
     #[derive(Debug)]
     struct BroadcastBuildCoalesceMaxEstimator;
 
+    #[async_trait]
     impl TaskEstimator for BroadcastBuildCoalesceMaxEstimator {
-        fn task_estimation(
+        async fn task_estimation(
             &self,
             plan: &Arc<dyn ExecutionPlan>,
             _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            let coalesce = plan.downcast_ref::<CoalescePartitionsExec>()?;
+        ) -> Result<Option<TaskEstimation>> {
+            let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() else {
+                return Ok(None);
+            };
             if coalesce.input().is::<BroadcastExec>() {
-                Some(TaskEstimation::maximum(1))
+                Ok(Some(TaskEstimation::maximum(1)))
             } else {
-                None
+                Ok(None)
             }
         }
 

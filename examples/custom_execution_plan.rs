@@ -301,18 +301,23 @@ impl ConfigExtension for NumbersConfig {
 #[derive(Debug)]
 struct NumbersTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for NumbersTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let plan = plan.downcast_ref::<NumbersExec>()?;
-        let cfg: &NumbersConfig = cfg.extensions.get()?;
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(plan) = plan.downcast_ref::<NumbersExec>() else {
+            return Ok(None);
+        };
+        let Some(cfg) = cfg.extensions.get::<NumbersConfig>() else {
+            return Ok(None);
+        };
         let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
             / cfg.numbers_per_task as f64;
 
-        Some(TaskEstimation::desired(task_count.ceil() as usize))
+        Ok(Some(TaskEstimation::desired(task_count.ceil() as usize)))
     }
 
     fn scale_up_leaf_node(

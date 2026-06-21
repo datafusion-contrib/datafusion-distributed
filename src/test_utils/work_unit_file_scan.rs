@@ -5,8 +5,9 @@
 //! the latency impact of routing file scan inputs through the work unit
 //! pipeline as compared to the regular [`FileScanConfig`] path.
 
-use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimation, TaskEstimator};
+use crate::{DistributedConfig, TaskEstimation, TaskEstimator};
 use crate::{WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider};
+use async_trait::async_trait;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, internal_datafusion_err};
@@ -360,20 +361,30 @@ impl PhysicalOptimizerRule for WorkUnitFileScanRule {
 #[derive(Debug, Default)]
 pub struct WorkUnitFileScanTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for WorkUnitFileScanTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let dse = plan.downcast_ref::<DataSourceExec>()?;
-        let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(dse) = plan.downcast_ref::<DataSourceExec>() else {
+            return Ok(None);
+        };
+        let Some(wfs) = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>() else {
+            return Ok(None);
+        };
 
         // Same as FileScanConfigTaskEstimator.task_estimation.
-        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
+        let Some(d_cfg) = cfg.extensions.get::<DistributedConfig>() else {
+            return Ok(None);
+        };
 
         let mut total_bytes = 0;
-        for file_group in &wfs.feed.inner()?.file_groups {
+        let Some(wuf_provider) = wfs.feed.inner() else {
+            return Ok(None);
+        };
+        for file_group in &wuf_provider.file_groups {
             for file in file_group.files() {
                 total_bytes += file.effective_size() as usize;
             }
@@ -383,9 +394,7 @@ impl TaskEstimator for WorkUnitFileScanTaskEstimator {
             .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
             .div_ceil(cfg.execution.target_partitions);
 
-        Some(TaskEstimation {
-            task_count: TaskCountAnnotation::Desired(task_count),
-        })
+        Ok(Some(TaskEstimation::desired(task_count)))
     }
 
     fn scale_up_leaf_node(

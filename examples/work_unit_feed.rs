@@ -247,18 +247,20 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
 #[derive(Debug)]
 struct RemoteScanTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for RemoteScanTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let task_count = plan
-            .downcast_ref::<RemoteScanExec>()?
-            .feed
-            .inner()?
-            .task_count;
-        Some(TaskEstimation::desired(task_count))
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(exec) = plan.downcast_ref::<RemoteScanExec>() else {
+            return Ok(None);
+        };
+        let Some(provider) = exec.feed.inner() else {
+            return Ok(None);
+        };
+        Ok(Some(TaskEstimation::desired(provider.task_count)))
     }
 
     fn scale_up_leaf_node(

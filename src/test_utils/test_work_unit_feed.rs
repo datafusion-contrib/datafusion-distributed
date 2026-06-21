@@ -321,15 +321,20 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
 
 pub struct TestWorkUnitFeedTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let exec = plan.downcast_ref::<RowGeneratorExec>()?;
-        let provider = exec.feed.clone().try_into_inner().ok()?;
-        Some(TaskEstimation::desired(provider.task_count))
+    ) -> Result<Option<TaskEstimation>> {
+        let Some(exec) = plan.downcast_ref::<RowGeneratorExec>() else {
+            return Ok(None);
+        };
+        let Some(provider) = exec.feed.clone().try_into_inner().ok() else {
+            return Ok(None);
+        };
+        Ok(Some(TaskEstimation::desired(provider.task_count)))
     }
 
     fn scale_up_leaf_node(

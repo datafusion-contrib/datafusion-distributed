@@ -247,14 +247,16 @@ fn url_emitter_schema() -> SchemaRef {
 #[derive(Clone)]
 pub struct URLEmitterTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for URLEmitterTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
         _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        plan.downcast_ref::<URLEmitterExec>()
-            .map(|exec| TaskEstimation::desired(exec.task_count))
+    ) -> Result<Option<TaskEstimation>> {
+        Ok(plan
+            .downcast_ref::<URLEmitterExec>()
+            .map(|exec| TaskEstimation::desired(exec.task_count)))
     }
 
     fn scale_up_leaf_node(

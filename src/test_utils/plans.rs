@@ -11,6 +11,8 @@ use crate::{
     display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
 #[cfg(test)]
+use async_trait::async_trait;
+#[cfg(test)]
 use datafusion::{
     common::Result,
     config::ConfigOptions,
@@ -319,22 +321,23 @@ impl Default for TestPlanBuilder {
 pub(crate) struct BuildSideOneTaskEstimator;
 
 #[cfg(test)]
+#[async_trait]
 impl TaskEstimator for BuildSideOneTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
+    ) -> Result<Option<TaskEstimation>> {
         if !plan.children().is_empty() {
-            return None;
+            return Ok(None);
         }
         let schema = plan.schema();
         let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
         let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
         if has_min_temp && !has_max_temp {
-            Some(TaskEstimation::maximum(1))
+            Ok(Some(TaskEstimation::maximum(1)))
         } else {
-            None
+            Ok(None)
         }
     }
 

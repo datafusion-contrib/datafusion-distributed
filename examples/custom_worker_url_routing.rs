@@ -22,6 +22,7 @@
 //!     --show-distributed-plan
 //! ```
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -161,14 +162,17 @@ fn hash_key(file_group: &FileGroup) -> usize {
 #[derive(Debug)]
 struct CachedFileScanConfigTaskEstimator;
 
+#[async_trait]
 impl TaskEstimator for CachedFileScanConfigTaskEstimator {
-    fn task_estimation(
+    async fn task_estimation(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        plan.downcast_ref::<CacheExec>()?;
-        Some(TaskEstimation::desired(usize::MAX))
+    ) -> Result<Option<TaskEstimation>> {
+        if plan.downcast_ref::<CacheExec>().is_none() {
+            return Ok(None);
+        }
+        Ok(Some(TaskEstimation::desired(usize::MAX)))
     }
 
     fn scale_up_leaf_node(
