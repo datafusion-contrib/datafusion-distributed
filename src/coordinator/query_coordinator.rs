@@ -1,3 +1,7 @@
+//! Arrow-Flight plan delivery: ships each task's plan to its worker over the coordinator-to-worker
+//! gRPC stream. Flight-specific, so `coordinator/mod.rs` gates the whole module on the `flight`
+//! feature.
+
 use crate::common::{TreeNodeExt, serialize_uuid, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::CoordinatorToWorkerMetrics;

@@ -153,11 +153,10 @@ impl DistributedExec {
     /// Routes and dispatches every stage through the registered transport, then returns the head
     /// stage for the caller to drive synchronously, with no `execute()` background task.
     ///
-    /// This is the extension point the in-crate shared-memory transport (and its in-process test) executes
-    /// through: it owns the runtime and drives the head stage itself. The transport's dispatch must
-    /// complete synchronously: a transport that spawns background delivery work, or a plan that
-    /// declares work-unit feeds (which are pumped by that background work), is rejected rather than
-    /// left to stall.
+    /// This is the extension point for an in-process transport that owns the runtime and drives the
+    /// head stage itself. The transport's dispatch must complete synchronously: a transport that
+    /// spawns background delivery work, or a plan that declares work-unit feeds (which are pumped by
+    /// that background work), is rejected rather than left to stall.
     pub fn prepare_in_process_plan(
         &self,
         ctx: &Arc<TaskContext>,
