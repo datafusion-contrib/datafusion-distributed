@@ -7,6 +7,9 @@ mod network_broadcast;
 mod network_coalesce;
 mod network_shuffle;
 
+#[cfg(test)]
+mod orphaned_task_cleanup_tests;
+
 #[cfg(any(test, feature = "integration"))]
 pub mod benchmarks;
 
