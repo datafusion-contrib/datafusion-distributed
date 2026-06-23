@@ -1,7 +1,5 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::worker::generated::worker::ExecuteTaskRequest;
 use crate::worker::generated::worker::TaskKey;
-use crate::worker::impl_execute_task::execute_local_task;
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
 use arrow_ipc::CompressionType;
@@ -9,7 +7,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
@@ -127,19 +125,6 @@ impl MemoryWorkerHandle {
             .invalidate(&test_task_key_with_query(query_id, self.task_index as _))
             .await;
     }
-}
-
-#[allow(dead_code)]
-pub async fn execute_local_task_for_test(
-    worker: &Worker,
-    body: ExecuteTaskRequest,
-) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
-    execute_local_task(&worker.task_data_entries, body).await
-}
-
-#[allow(dead_code)]
-pub async fn invalidate_task_for_test(worker: &Worker, task_key: &TaskKey) {
-    worker.task_data_entries.invalidate(task_key).await;
 }
 
 pub struct TcpWorkerHandle {
