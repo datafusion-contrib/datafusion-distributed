@@ -1,28 +1,33 @@
 use crate::common::task_ctx_with_extension;
 use crate::stage::RemoteStage;
+use crate::test_utils::in_memory_channel_resolver::start_configured_in_memory_context;
 use crate::worker::WorkerConnectionPool;
 use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use crate::worker::test_utils::worker_handles::MemoryWorkerHandle;
 use crate::{
-    BoxCloneSyncChannel, ChannelResolver, DistributedExt, DistributedTaskContext,
-    NetworkShuffleExec, Stage, create_worker_client,
+    BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
+    DistributedTaskContext, NetworkShuffleExec, Stage, create_worker_client,
 };
 use arrow::array::{ArrayRef, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{DataFusionError, Result, exec_err};
+use datafusion::datasource::MemTable;
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_plan::execute_stream;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
@@ -51,6 +56,76 @@ async fn injected_error_before_first_poll_orphans_producer_task() -> Result<()> 
     fixture.invalidate_producer_tasks().await;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn normal_planning_injected_error_before_first_poll_orphans_repartition_task() -> Result<()> {
+    let worker_ref = Arc::new(Mutex::new(None));
+    let failed_once = Arc::new(AtomicBool::new(false));
+    let tracked_repartitions = Arc::new(AtomicUsize::new(0));
+    let tracked_drops = Arc::new(AtomicUsize::new(0));
+
+    let mut ctx = start_configured_in_memory_context(3, DefaultSessionBuilder, {
+        let worker_ref = Arc::clone(&worker_ref);
+        let failed_once = Arc::clone(&failed_once);
+        let tracked_repartitions = Arc::clone(&tracked_repartitions);
+        let tracked_drops = Arc::clone(&tracked_drops);
+        move |mut worker| {
+            *worker_ref.lock().unwrap() = Some(worker.clone());
+            worker.add_on_plan_hook({
+                let failed_once = Arc::clone(&failed_once);
+                let tracked_repartitions = Arc::clone(&tracked_repartitions);
+                let tracked_drops = Arc::clone(&tracked_drops);
+                move |plan, _session_config| {
+                    install_normal_planning_repro_hooks(
+                        plan,
+                        Arc::clone(&failed_once),
+                        Arc::clone(&tracked_repartitions),
+                        Arc::clone(&tracked_drops),
+                    )
+                }
+            });
+            worker
+        }
+    })
+    .await;
+
+    ctx.set_distributed_task_estimator(3);
+    register_input_table(&ctx)?;
+    let plan = ctx
+        .sql("SELECT id, COUNT(*) AS count FROM input GROUP BY id ORDER BY id")
+        .await?
+        .create_physical_plan()
+        .await?;
+    assert!(plan.is::<crate::DistributedExec>());
+
+    let err = execute_stream(plan, ctx.task_ctx())?
+        .try_collect::<Vec<_>>()
+        .await
+        .expect_err("injected worker error should fail the query");
+    assert!(err.to_string().contains("injected error before poll"));
+
+    let worker = worker_ref
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("test worker should have been captured");
+    eventually(
+        "normal distributed planning producer leak after unpolled upper streams",
+        || async {
+            let tasks_running = worker.tasks_running().await;
+            let tracked_repartitions = tracked_repartitions.load(Ordering::SeqCst);
+            let drops = tracked_drops.load(Ordering::SeqCst);
+            if tasks_running > 0 && tracked_repartitions > 0 && drops < tracked_repartitions {
+                Ok(())
+            } else {
+                exec_err!(
+                    "producer unexpectedly cleaned up: tasks_running={tasks_running}, tracked drops={drops}/{tracked_repartitions}"
+                )
+            }
+        },
+    )
+    .await
 }
 
 struct ShuffleCleanupFixture {
@@ -220,6 +295,61 @@ fn build_producer_plan(
     )?))
 }
 
+fn install_normal_planning_repro_hooks(
+    plan: Arc<dyn ExecutionPlan>,
+    failed_once: Arc<AtomicBool>,
+    tracked_repartitions: Arc<AtomicUsize>,
+    tracked_drops: Arc<AtomicUsize>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|plan| {
+            if plan.is::<NetworkShuffleExec>() {
+                return Ok(Transformed::yes(Arc::new(
+                    FailBeforePollingNetworkShuffleExec::new(plan, Arc::clone(&failed_once)),
+                )));
+            }
+
+            if plan.is::<RepartitionExec>() {
+                let children = plan.children();
+                if children.len() != 1 {
+                    return exec_err!("RepartitionExec expected one child");
+                }
+                tracked_repartitions.fetch_add(1, Ordering::SeqCst);
+                let tracked = Arc::new(TrackedDropExec::new(
+                    Arc::clone(children[0]),
+                    Arc::clone(&tracked_drops),
+                ));
+                return plan.with_new_children(vec![tracked]).map(Transformed::yes);
+            }
+
+            Ok(Transformed::no(plan))
+        })?
+        .data)
+}
+
+fn register_input_table(ctx: &SessionContext) -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batches = (0..3)
+        .map(|task_index| {
+            make_input_partitions(Arc::clone(&schema), task_index).map(|mut partitions| {
+                partitions
+                    .pop()
+                    .expect("one partition")
+                    .pop()
+                    .expect("one batch")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ctx.register_table(
+        "input",
+        Arc::new(MemTable::try_new(
+            Arc::clone(&schema),
+            batches.into_iter().map(|batch| vec![batch]).collect(),
+        )?),
+    )?;
+    Ok(())
+}
+
 fn make_input_partitions(schema: Arc<Schema>, task_index: usize) -> Result<Vec<Vec<RecordBatch>>> {
     let first_id = task_index * ROWS_PER_PRODUCER;
     let ids = (0..ROWS_PER_PRODUCER).map(|offset| (first_id + offset) as i64);
@@ -309,6 +439,92 @@ impl TrackedDropExec {
 impl Drop for TrackedDropExec {
     fn drop(&mut self) {
         self.drop_counter.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
+struct FailBeforePollingNetworkShuffleExec {
+    input: Arc<dyn ExecutionPlan>,
+    properties: Arc<PlanProperties>,
+    failed_once: Arc<AtomicBool>,
+}
+
+impl FailBeforePollingNetworkShuffleExec {
+    fn new(input: Arc<dyn ExecutionPlan>, failed_once: Arc<AtomicBool>) -> Self {
+        Self {
+            properties: Arc::clone(input.properties()),
+            input,
+            failed_once,
+        }
+    }
+}
+
+impl Debug for FailBeforePollingNetworkShuffleExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailBeforePollingNetworkShuffleExec")
+            .finish_non_exhaustive()
+    }
+}
+
+impl DisplayAs for FailBeforePollingNetworkShuffleExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FailBeforePollingNetworkShuffleExec")
+    }
+}
+
+impl ExecutionPlan for FailBeforePollingNetworkShuffleExec {
+    fn name(&self) -> &str {
+        "FailBeforePollingNetworkShuffleExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        self.input.maintains_input_order()
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        self.input.benefits_from_input_partitioning()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return exec_err!(
+                "FailBeforePollingNetworkShuffleExec expected one child, got {}",
+                children.len()
+            );
+        }
+        Ok(Arc::new(Self::new(
+            Arc::clone(&children[0]),
+            Arc::clone(&self.failed_once),
+        )))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let d_ctx = DistributedTaskContext::from_ctx(&context);
+        if d_ctx.task_index == 0 && !self.failed_once.swap(true, Ordering::SeqCst) {
+            let mut streams = Vec::new();
+            for partition in 0..self.properties.partitioning.partition_count() {
+                streams.push(self.input.execute(partition, Arc::clone(&context))?);
+            }
+            let _created_stream_count = streams.len();
+            return exec_err!("injected error before poll");
+        }
+
+        self.input.execute(partition, context)
     }
 }
 
