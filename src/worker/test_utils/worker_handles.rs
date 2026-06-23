@@ -84,11 +84,6 @@ impl MemoryWorkerHandle {
         self.channel.clone()
     }
 
-    #[allow(dead_code)]
-    pub async fn tasks_running(&self) -> usize {
-        self.worker.tasks_running().await
-    }
-
     pub async fn register_plan(&self, query_id: Uuid) {
         self.register_plan_with(query_id, Ok)
             .await
@@ -116,14 +111,6 @@ impl MemoryWorkerHandle {
         )
         .await;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub async fn invalidate_task(&self, query_id: Uuid) {
-        self.worker
-            .task_data_entries
-            .invalidate(&test_task_key_with_query(query_id, self.task_index as _))
-            .await;
     }
 }
 

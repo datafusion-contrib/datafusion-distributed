@@ -21,6 +21,21 @@ use tokio::time::sleep;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const ROWS_PER_PRODUCER: usize = 32;
 
+// Failure shape this test protects:
+//
+// coordinator task 0
+//   NetworkShuffleExec::execute(p0)
+//     creates remote streams, then errors before polling them
+//                 |
+//                 v
+// worker stage 1 task
+//   RepartitionExec
+//     +-- output partition for failed task 0     (never polled)
+//     +-- output partition for sibling task 1   (may keep polling)
+//
+// If the failed upper task only drops its local streams and no query-wide
+// cleanup reaches the worker, the repartition producer can stay alive and
+// retain its child plan/state after the coordinator query has already failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn normal_planning_injected_error_before_first_poll_orphans_repartition_task() -> Result<()> {
     let worker_ref = Arc::new(Mutex::new(None));
