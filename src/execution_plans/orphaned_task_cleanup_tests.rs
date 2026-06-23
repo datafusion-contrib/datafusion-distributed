@@ -11,14 +11,12 @@ use arrow::array::{ArrayRef, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use datafusion::common::{DataFusionError, JoinType, NullEquality, Result, exec_err};
+use datafusion::common::{DataFusionError, Result, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{Partitioning, PhysicalExprRef};
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::TryStreamExt;
@@ -37,9 +35,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const PRODUCER_TASKS: usize = 3;
 const CONSUMER_TASKS: usize = 2;
 const PARTITIONS_PER_CONSUMER: usize = 4;
-const INPUT_PARTITIONS: usize = 3;
-const ROWS_PER_PRODUCER: usize = 384;
-const BATCH_SIZE: usize = 32;
+const ROWS_PER_PRODUCER: usize = 32;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn injected_error_before_first_poll_orphans_producer_task() -> Result<()> {
@@ -76,13 +72,7 @@ impl ShuffleCleanupFixture {
         let mut input_stage_workers = Vec::with_capacity(PRODUCER_TASKS);
 
         for task_index in 0..PRODUCER_TASKS {
-            let partitions_batches = make_input_partitions(
-                Arc::clone(&schema),
-                ROWS_PER_PRODUCER,
-                BATCH_SIZE,
-                INPUT_PARTITIONS,
-                task_index * ROWS_PER_PRODUCER,
-            )?;
+            let partitions_batches = make_input_partitions(Arc::clone(&schema), task_index)?;
             let worker = MemoryWorkerHandle::spawn(task_index, partitions_batches, None).await;
             channels.push(worker.channel());
             input_stage_workers
@@ -220,22 +210,7 @@ fn build_producer_plan(
     input: Arc<dyn ExecutionPlan>,
     drop_counter: Arc<AtomicUsize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let left = Arc::new(CoalescePartitionsExec::new(Arc::clone(&input)));
-    let right = input;
-    let left_on: PhysicalExprRef = Arc::new(Column::new("id", 0));
-    let right_on: PhysicalExprRef = Arc::new(Column::new("id", 0));
-    let hash_join = Arc::new(HashJoinExec::try_new(
-        left,
-        right,
-        vec![(left_on, right_on)],
-        None,
-        &JoinType::Inner,
-        Some(vec![0]),
-        PartitionMode::CollectLeft,
-        NullEquality::NullEqualsNothing,
-        false,
-    )?);
-    let tracked = Arc::new(TrackedDropExec::new(hash_join, drop_counter));
+    let tracked = Arc::new(TrackedDropExec::new(input, drop_counter));
     Ok(Arc::new(RepartitionExec::try_new(
         tracked,
         Partitioning::Hash(
@@ -245,43 +220,14 @@ fn build_producer_plan(
     )?))
 }
 
-fn make_input_partitions(
-    schema: Arc<Schema>,
-    total_rows: usize,
-    batch_size: usize,
-    partition_count: usize,
-    first_id: usize,
-) -> Result<Vec<Vec<RecordBatch>>> {
-    if batch_size == 0 {
-        return exec_err!("batch_size must be greater than zero");
-    }
-
-    let mut partitions = vec![Vec::new(); partition_count.max(1)];
-    let mut next_id = first_id as i64;
-    let mut remaining = total_rows;
-    let mut partition = 0;
-    while remaining > 0 {
-        let rows = remaining.min(batch_size);
-        let ids: Vec<_> = (0..rows).map(|offset| next_id + offset as i64).collect();
-        next_id += rows as i64;
-        remaining -= rows;
-
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from(ids)) as ArrayRef],
-        )?;
-        partitions[partition].push(batch);
-        partition = (partition + 1) % partitions.len();
-    }
-
-    if total_rows == 0 {
-        partitions[0].push(RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef],
-        )?);
-    }
-
-    Ok(partitions)
+fn make_input_partitions(schema: Arc<Schema>, task_index: usize) -> Result<Vec<Vec<RecordBatch>>> {
+    let first_id = task_index * ROWS_PER_PRODUCER;
+    let ids = (0..ROWS_PER_PRODUCER).map(|offset| (first_id + offset) as i64);
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from_iter_values(ids)) as ArrayRef],
+    )?;
+    Ok(vec![vec![batch]])
 }
 
 async fn drain_stream(stream: SendableRecordBatchStream) -> Result<usize> {

@@ -196,7 +196,7 @@ impl ExecutionPlan for DistributedExec {
         let tx = builder.tx();
 
         builder.spawn(async move {
-            let guard = query_coordinator.end_query_guard();
+            let _guard = query_coordinator.end_query_guard();
 
             let result = prepare_static_plan(&query_coordinator, &base_plan)?;
 
@@ -214,8 +214,6 @@ impl ExecutionPlan for DistributedExec {
                     break; // channel closed
                 }
             }
-            drop(stream);
-            drop(guard);
             drop(tx);
             query_coordinator.drain_pending_tasks().await?;
             Ok(())
