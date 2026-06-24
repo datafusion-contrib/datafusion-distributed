@@ -1,8 +1,7 @@
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::{DataFusionError, HashSet, internal_datafusion_err};
 use datafusion::config::ConfigExtension;
 use datafusion::prelude::SessionConfig;
 use http::{HeaderMap, HeaderName};
-use std::collections::HashSet;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -132,8 +131,8 @@ pub(crate) fn get_config_extension_propagation_headers(
 #[cfg(test)]
 mod tests {
     use crate::config_extension_ext::{
-        get_config_extension_propagation_headers, set_distributed_option_extension,
-        set_distributed_option_extension_from_headers, ConfigExtensionPropagationContext,
+        ConfigExtensionPropagationContext, get_config_extension_propagation_headers,
+        set_distributed_option_extension, set_distributed_option_extension_from_headers,
     };
     use datafusion::common::extensions_options;
     use datafusion::config::ConfigExtension;
