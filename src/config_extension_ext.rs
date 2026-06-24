@@ -1,7 +1,8 @@
-use datafusion::common::{DataFusionError, internal_datafusion_err};
+use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::config::ConfigExtension;
 use datafusion::prelude::SessionConfig;
 use http::{HeaderMap, HeaderName};
+use std::collections::HashSet;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -53,16 +54,27 @@ pub(crate) fn set_distributed_option_extension_from_headers<'a, T: ConfigExtensi
         None => MutOrOwned::Owned(T::default()),
     };
 
+    let known_keys = result
+        .as_mut()
+        .entries()
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect::<HashSet<_>>();
+    let prefix = format!("{FLIGHT_METADATA_CONFIG_PREFIX}{}.", T::PREFIX);
+
     for (k, v) in headers.iter() {
-        let key = k.as_str().trim_start_matches(FLIGHT_METADATA_CONFIG_PREFIX);
-        let prefix = format!("{}.", T::PREFIX);
-        if key.starts_with(&prefix) {
-            result.as_mut().set(
-                key.trim_start_matches(&prefix),
-                v.to_str()
-                    .map_err(|err| internal_datafusion_err!("Cannot parse header value: {err}"))?,
-            )?;
+        let Some(key) = k.as_str().strip_prefix(&prefix) else {
+            continue;
+        };
+        if !known_keys.contains(key) {
+            continue;
         }
+
+        result.as_mut().set(
+            key,
+            v.to_str()
+                .map_err(|err| internal_datafusion_err!("Cannot parse header value: {err}"))?,
+        )?;
     }
 
     // Only insert the extension if it is not already there. If this is otherwise MutOrOwned::Mut it
@@ -119,8 +131,8 @@ pub(crate) fn get_config_extension_propagation_headers(
 #[cfg(test)]
 mod tests {
     use crate::config_extension_ext::{
-        ConfigExtensionPropagationContext, get_config_extension_propagation_headers,
-        set_distributed_option_extension, set_distributed_option_extension_from_headers,
+        get_config_extension_propagation_headers, set_distributed_option_extension,
+        set_distributed_option_extension_from_headers, ConfigExtensionPropagationContext,
     };
     use datafusion::common::extensions_options;
     use datafusion::config::ConfigExtension;
@@ -247,6 +259,72 @@ mod tests {
         assert_eq!(extension.foo, default.foo);
         assert_eq!(extension.bar, default.bar);
         assert_eq!(extension.baz, default.baz);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_header_key_is_ignored() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = SessionConfig::new();
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.foo")?,
+            HeaderValue::from_str("known")?,
+        );
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.bar")?,
+            HeaderValue::from_str("99")?,
+        );
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.newer_field")?,
+            HeaderValue::from_str("ignored")?,
+        );
+
+        set_distributed_option_extension_from_headers::<CustomExtension>(&mut config, &header_map)?;
+
+        let extension = get_ext::<CustomExtension>(&config);
+        assert_eq!(extension.foo, "known");
+        assert_eq!(extension.bar, 99);
+        assert_eq!(extension.baz, CustomExtension::default().baz);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_header_key_invalid_value_ignored() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = SessionConfig::new();
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.foo")?,
+            HeaderValue::from_str("known")?,
+        );
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.newer_field")?,
+            HeaderValue::from_bytes(b"\xff")?,
+        );
+
+        set_distributed_option_extension_from_headers::<CustomExtension>(&mut config, &header_map)?;
+
+        let extension = get_ext::<CustomExtension>(&config);
+        assert_eq!(extension.foo, "known");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_known_header_key_with_invalid_value_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = SessionConfig::new();
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str("x-datafusion-distributed-config-custom.foo")?,
+            HeaderValue::from_bytes(b"\xff")?,
+        );
+
+        let result = set_distributed_option_extension_from_headers::<CustomExtension>(
+            &mut config,
+            &header_map,
+        );
+        assert!(result.is_err());
 
         Ok(())
     }
