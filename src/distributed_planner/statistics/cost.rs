@@ -1,7 +1,7 @@
 use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
 use crate::distributed_planner::statistics::complexity_memory::complexity_memory;
 use crate::distributed_planner::statistics::complexity_network::complexity_network;
-use crate::distributed_planner::statistics::plan_statistics::partition_statistics_with_children_override;
+use crate::distributed_planner::statistics::plan_statistics::plan_statistics;
 use datafusion::common::Result;
 use datafusion::physical_plan::{ExecutionPlan, Statistics};
 use std::ops::AddAssign;
@@ -36,11 +36,7 @@ fn f(plan: &Arc<dyn ExecutionPlan>) -> Result<(Cost, Arc<Statistics>)> {
         child_stats.push(child_stat);
     }
 
-    let stats = Arc::new(partition_statistics_with_children_override(
-        plan,
-        None,
-        &child_stats,
-    )?);
+    let stats = plan_statistics(plan, &child_stats)?;
     let cpu = complexity_cpu(plan);
     acc_cost.cpu += cpu.cost(&stats, &child_stats).unwrap_or(0);
     let memory = complexity_memory(plan);
