@@ -1,4 +1,4 @@
-use crate::distributed_planner::statistics::compute_per_node::calculate_compute_complexity;
+use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
 use crate::distributed_planner::statistics::plan_statistics::partition_statistics_with_children_override;
 use datafusion::common::Result;
 use datafusion::physical_plan::{ExecutionPlan, Statistics};
@@ -23,7 +23,7 @@ fn f(plan: &Arc<dyn ExecutionPlan>) -> Result<(usize, Arc<Statistics>)> {
         None,
         &child_stats,
     )?);
-    let complexity = calculate_compute_complexity(plan);
+    let complexity = complexity_cpu(plan);
     acc_cost += complexity.cost(&stats, &child_stats).unwrap_or(0);
     Ok((acc_cost, stats))
 }
