@@ -125,12 +125,12 @@ impl Complexity {
                 // contribute 0 there, i.e. sorting/merging nothing costs nothing.
                 n * m.checked_ilog2().unwrap_or(0) as usize
             }
-            Self::Plus(n, m) => {
-                n.cost(output_stat, input_stats)? + m.cost(output_stat, input_stats)?
-            }
-            Self::Multiply(n, m) => {
-                n.cost(output_stat, input_stats)? * m.cost(output_stat, input_stats)?
-            }
+            Self::Plus(n, m) => n
+                .cost(output_stat, input_stats)?
+                .saturating_add(m.cost(output_stat, input_stats)?),
+            Self::Multiply(n, m) => n
+                .cost(output_stat, input_stats)?
+                .saturating_mul(m.cost(output_stat, input_stats)?),
         })
     }
 }
