@@ -216,17 +216,22 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return n.unwrap_or(Complexity::Constant(1.));
     }
 
-    // RepartitionExec with Hash: computes hash per row + take_arrays
+    // RepartitionExec copies rows into output partitions and may evaluate repartition keys.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/repartition/mod.rs
     if let Some(node) = node.downcast_ref::<RepartitionExec>() {
         // It needs to copy all the data for chunking it to the different output partitions...
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
-        // And it might need to compute a hash per row based on the provided expressions; hashing a
-        // plain column key still costs its bytes.
+        // Hash/range partitioning reads the partition keys. A plain column key still costs its
+        // bytes because the operator hashes or compares it.
         match node.partitioning() {
             Partitioning::Hash(expressions, _) => {
                 for expr in expressions {
                     n = n.plus(hashed_or_sorted_key_complexity(expr))
+                }
+            }
+            Partitioning::Range(range) => {
+                for expr in range.ordering() {
+                    n = n.plus(hashed_or_sorted_key_complexity(&expr.expr))
                 }
             }
             Partitioning::RoundRobinBatch(_) => {}
@@ -429,8 +434,14 @@ mod tests {
     use crate::assert_snapshot;
     use crate::distributed_planner::statistics::complexity_cpu::complexity_cpu;
     use crate::test_utils::plans::TestPlanBuilder;
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::tree_node::{Transformed, TreeNode};
-    use datafusion::physical_plan::{ExecutionPlan, displayable};
+    use datafusion::common::{ScalarValue, SplitPoint};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::{ExecutionPlan, Partitioning, displayable};
     use std::cell::RefCell;
     use std::sync::Arc;
     /* schema for the "weather" table
@@ -565,7 +576,7 @@ mod tests {
         assert_snapshot!(plan_costs(plan), @r"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1)) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -589,7 +600,7 @@ mod tests {
         assert_snapshot!(plan_costs(plan), @r"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1+(left_Col0+right_Col0))) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], filter=MinTemp@0 > MaxTemp@1, projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -771,6 +782,34 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn range_repartition_exec() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "range_key",
+            DataType::Int64,
+            false,
+        )]));
+        let input = Arc::new(EmptyExec::new(schema).with_partitions(2));
+        let ordering = LexOrdering::new([PhysicalSortExpr::new_default(Arc::new(Column::new(
+            "range_key",
+            0,
+        )))])
+        .expect("non-empty ordering");
+        let partitioning = Partitioning::Range(
+            RangePartitioning::try_new(
+                ordering,
+                vec![SplitPoint::new(vec![ScalarValue::Int64(Some(10))])],
+            )
+            .expect("valid range partitioning"),
+        );
+        let plan = Arc::new(RepartitionExec::try_new(input, partitioning).unwrap());
+
+        assert_snapshot!(plan_costs(plan), @r"
+        O((Cols+Col0)) | RepartitionExec: partitioning=Range([range_key@0 ASC], [(10)], 2), input_partitions=2
+         O(1) | EmptyExec
+        ");
+    }
+
     // HashJoinExec in Partitioned mode: a distinct planner path from CollectLeft. The cost formula
     // is the same (build 2x read + key hash, probe read + key hash), now over hash-repartitioned
     // inputs rather than a collected left side.
@@ -795,7 +834,7 @@ mod tests {
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
           O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
-          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
