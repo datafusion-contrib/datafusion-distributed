@@ -8,7 +8,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, displayable,
+    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, StatisticsArgs, displayable,
 };
 use itertools::Either;
 use std::collections::VecDeque;
@@ -158,7 +158,9 @@ impl Stage {
         schema: SchemaRef,
     ) -> Result<Arc<Statistics>> {
         match self {
-            Stage::Local(local) => local.plan.partition_statistics(partition),
+            Stage::Local(local) => local
+                .plan
+                .statistics_with_args(&StatisticsArgs::new().with_partition(partition)),
             Stage::Remote(remote) => {
                 let Some(runtime_stats) = &remote.runtime_stats else {
                     return Ok(Arc::new(Statistics::new_unknown(&schema)));
