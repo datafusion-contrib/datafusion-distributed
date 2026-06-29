@@ -42,8 +42,7 @@ pub(super) fn plan_statistics(
             break;
         };
 
-        // If some of the NDVs are not present in one of the column-level stats, assume the
-        // worst and use the same as the input number of rows.
+        // If a column's NDV is absent, fall back to a fraction of the row count
         if matches!(col_stats.distinct_count, Precision::Absent) {
             let fallback_ndv = ((*rows as f64) * FALLBACK_NDV_RATIO) as usize;
             col_stats.distinct_count = Precision::Inexact(fallback_ndv);
@@ -58,16 +57,18 @@ pub(super) fn plan_statistics(
         // If it turns out that we do not have `byte_size` stats, but we do have an estimated number
         // of rows, do a best-effort in trying to infer the byte size for each column.
         if matches!(col_stats.byte_size, Precision::Absent) {
-            col_stats.byte_size = Precision::Inexact(default_bytes_for_datatype(dt) * rows)
+            col_stats.byte_size =
+                Precision::Inexact(default_bytes_for_datatype(dt).saturating_mul(*rows))
         }
     }
 
     // If bytes are absent, let's just infer them based on the schema and the
     // number of rows.
     if matches!(stats.total_byte_size, Precision::Absent) {
-        let mut total_byte_size = 0;
+        let mut total_byte_size: usize = 0;
         for col_stats in &stats.column_statistics {
-            total_byte_size += col_stats.byte_size.get_value().unwrap_or(&0);
+            total_byte_size =
+                total_byte_size.saturating_add(*col_stats.byte_size.get_value().unwrap_or(&0));
         }
         stats.total_byte_size = Precision::Inexact(total_byte_size);
     }

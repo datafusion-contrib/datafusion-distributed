@@ -49,7 +49,7 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // SortMergeJoinExec streams sorted inputs and only keeps bounded merge state.
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/joins/sort_merge_join/exec.rs
     if node.is::<SortMergeJoinExec>() {
-        return Complexity::Constant(0);
+        return Complexity::Constant(0.);
     }
 
     // SymmetricHashJoinExec keeps hash tables for both inputs.
@@ -64,7 +64,7 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/aggregates/mod.rs
     if let Some(agg) = node.downcast_ref::<AggregateExec>() {
         if agg.group_expr().is_true_no_grouping() {
-            return Complexity::Constant(1);
+            return Complexity::Constant(1.);
         }
 
         return Complexity::Linear(LinearComplexity::AllOutputColumns);
@@ -78,13 +78,13 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     }
 
     if node.is::<BoundedWindowAggExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // SortPreservingMergeExec performs a streaming K-way merge.
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/sort_preserving_merge.rs
     if node.is::<SortPreservingMergeExec>() {
-        return Complexity::Constant(0);
+        return Complexity::Constant(0.);
     }
 
     // BroadcastExec retains batches so several consumers can replay the same input partition.
@@ -92,7 +92,7 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return Complexity::Linear(LinearComplexity::AllOutputColumns);
     }
 
-    Complexity::Constant(0)
+    Complexity::Constant(0.)
 }
 
 #[cfg(test)]

@@ -16,9 +16,9 @@ pub(crate) struct Cost {
 
 impl AddAssign for Cost {
     fn add_assign(&mut self, rhs: Self) {
-        self.cpu += rhs.cpu;
-        self.memory += rhs.memory;
-        self.network += rhs.network;
+        self.cpu = self.cpu.saturating_add(rhs.cpu);
+        self.memory = self.memory.saturating_add(rhs.memory);
+        self.network = self.network.saturating_add(rhs.network);
     }
 }
 
@@ -38,10 +38,16 @@ fn f(plan: &Arc<dyn ExecutionPlan>) -> Result<(Cost, Arc<Statistics>)> {
 
     let stats = plan_statistics(plan, &child_stats)?;
     let cpu = complexity_cpu(plan);
-    acc_cost.cpu += cpu.cost(&stats, &child_stats).unwrap_or(0);
+    acc_cost.cpu = acc_cost
+        .cpu
+        .saturating_add(cpu.cost(&stats, &child_stats).unwrap_or(0));
     let memory = complexity_memory(plan);
-    acc_cost.memory += memory.cost(&stats, &child_stats).unwrap_or(0);
+    acc_cost.memory = acc_cost
+        .memory
+        .saturating_add(memory.cost(&stats, &child_stats).unwrap_or(0));
     let network = complexity_network(plan);
-    acc_cost.network += network.cost(&stats, &child_stats).unwrap_or(0);
+    acc_cost.network = acc_cost
+        .network
+        .saturating_add(network.cost(&stats, &child_stats).unwrap_or(0));
     Ok((acc_cost, stats))
 }

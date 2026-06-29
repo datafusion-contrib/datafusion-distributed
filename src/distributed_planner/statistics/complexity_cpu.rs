@@ -116,7 +116,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
                 None => f,
             });
         }
-        return c.unwrap_or(Complexity::Constant(1));
+        return c.unwrap_or(Complexity::Constant(1.));
     }
 
     // SymmetricHashJoinExec: streaming join with hash tables on both sides
@@ -213,7 +213,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
                 Some(expression_complexity(&expr.expr))
             };
         }
-        return n.unwrap_or(Complexity::Constant(1));
+        return n.unwrap_or(Complexity::Constant(1.));
     }
 
     // RepartitionExec with Hash: computes hash per row + take_arrays
@@ -243,37 +243,37 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     // Limit: just counts rows and stops early.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/limit.rs
     if node.is::<GlobalLimitExec>() || node.is::<LocalLimitExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // CoalescePartitionsExec: receives batches from partitions, just passes through the record
     // batches in a zero copy manner.
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/coalesce_partitions.rs
     if node.is::<CoalescePartitionsExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.0);
     }
 
     // BroadcastExec: This node does not do any computation, does not even read the data.
     if node.is::<BroadcastExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // UnionExec: combines multiple input streams, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
     if node.is::<UnionExec>() || node.is::<ChildrenIsolatorUnionExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // InterleaveExec: round-robin merging of inputs, no processing
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/union.rs
     if node.is::<InterleaveExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // EmptyExec: produces no data
     // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/empty.rs
     if node.is::<EmptyExec>() {
-        return Complexity::Constant(1);
+        return Complexity::Constant(1.);
     }
 
     // For unknown node types, assume we have to do an O(N) operation over all the rows.
@@ -288,7 +288,7 @@ struct BytesPerRow {
 fn expression_complexity(expression: &Arc<dyn PhysicalExpr>) -> Complexity {
     _expression_complexity(expression)
         .processed
-        .unwrap_or(Complexity::Constant(1))
+        .unwrap_or(Complexity::Constant(1.))
 }
 
 /// Computes the complexity of processing a join key expression, including the cost of
@@ -309,7 +309,7 @@ fn join_key_complexity(expression: &Arc<dyn PhysicalExpr>, from_left: bool) -> C
             None => Complexity::Linear(linear),
         });
     }
-    result.unwrap_or(Complexity::Constant(1))
+    result.unwrap_or(Complexity::Constant(1.))
 }
 
 /// Computes the per-row processing cost of a join filter predicate.
@@ -342,7 +342,7 @@ fn remap_filter_columns(c: Complexity, column_indices: &[ColumnIndex]) -> Comple
                 index,
                 side: JoinSide::Right,
             }) => Complexity::Linear(LinearComplexity::ColumnFromRight(*index)),
-            _ => Complexity::Constant(1),
+            _ => Complexity::Constant(1.),
         },
         // `expression_complexity` only ever emits `Column` linear terms, but keep the rest
         // intact so the remapping stays total.
@@ -374,7 +374,7 @@ fn hashed_or_sorted_key_complexity(expression: &Arc<dyn PhysicalExpr>) -> Comple
             None => Complexity::Linear(LinearComplexity::Column(*col_idx)),
         });
     }
-    result.unwrap_or(Complexity::Constant(1))
+    result.unwrap_or(Complexity::Constant(1.))
 }
 
 fn _expression_complexity(expression: &Arc<dyn PhysicalExpr>) -> BytesPerRow {

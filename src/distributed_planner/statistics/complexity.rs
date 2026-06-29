@@ -2,10 +2,10 @@ use datafusion::common::Statistics;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub(super) enum Complexity {
     /// Constant complexity
-    Constant(usize),
+    Constant(f32),
     /// Linear with a specific column from a specific child.
     Linear(LinearComplexity),
     /// NLogM
@@ -37,9 +37,7 @@ pub(super) enum LinearComplexity {
 impl Complexity {
     pub(super) fn log(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Constant(n), Self::Constant(m)) => {
-                Self::Constant(n * (m as f64).log2() as usize)
-            }
+            (Self::Constant(n), Self::Constant(m)) => Self::Constant(n * m.log2()),
             (s, o) => Self::Log(Box::new(s), Box::new(o)),
         }
     }
@@ -51,7 +49,7 @@ impl Complexity {
             (Self::Plus(a, b), Self::Constant(m)) if matches!(*b, Self::Constant(_)) => {
                 (*a).plus((*b).plus(Self::Constant(m)))
             }
-            (s, o) if s == o => Self::Constant(2).multiply(s),
+            (s, o) if s == o => Self::Constant(2.).multiply(s),
             (s, o) => Self::Plus(Box::new(s), Box::new(o)),
         }
     }
@@ -71,7 +69,7 @@ impl Complexity {
         input_stats: &[Arc<Statistics>],
     ) -> Option<usize> {
         Some(match self {
-            Self::Constant(v) => *v,
+            Self::Constant(v) => *v as usize,
             Self::Linear(linear) => match linear {
                 LinearComplexity::Column(i) => {
                     let col_stats = &input_stats.first()?.column_statistics;
