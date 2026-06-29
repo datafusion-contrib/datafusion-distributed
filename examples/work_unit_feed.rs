@@ -33,7 +33,7 @@ use datafusion_distributed::{
     DistributedExt, DistributedTaskContext, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
     WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider, WorkerQueryContext, display_plan_ascii,
 };
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use datafusion_proto::protobuf::proto_error;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
@@ -209,6 +209,7 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let p = RemoteScanProto::decode(buf).map_err(|e| proto_error(format!("{e}")))?;
         let feed = WorkUnitFeed::<ChunkFeedProvider>::from_proto(
@@ -223,7 +224,12 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         )))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let exec = node
             .downcast_ref::<RemoteScanExec>()
             .ok_or_else(|| proto_error(format!("expected RemoteScanExec, got {}", node.name())))?;
