@@ -1,10 +1,10 @@
 use super::channel_resolver::BoxCloneSyncChannel;
 use super::errors::{map_flight_to_datafusion_error, map_status_to_datafusion_error};
-use super::generated::worker as pb;
 use super::metrics_proto::metrics_set_proto_to_df;
 use crate::common::serialize_uuid;
-use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
+use crate::protocol::generated::worker as pb;
+use crate::protocol::generated::worker::FlightAppMetadata;
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
     FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
