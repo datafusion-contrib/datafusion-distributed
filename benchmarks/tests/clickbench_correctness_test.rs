@@ -1,4 +1,4 @@
-#[cfg(all(feature = "integration", feature = "clickbench", test))]
+#[cfg(all(feature = "clickbench", test))]
 mod tests {
     use datafusion::arrow::array::RecordBatch;
     use datafusion::common::plan_err;
