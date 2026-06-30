@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(feature = "integration", test))]
 mod tests {
     use datafusion::common::internal_err;
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};

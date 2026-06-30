@@ -242,7 +242,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{ChannelResolver, DistributedExt, SessionStateBuilderExt, WorkerChannel, WorkerQueryContext, grpc};
+    /// # use datafusion_distributed::{ChannelResolver, DistributedExt, SessionStateBuilderExt, WorkerChannel, WorkerQueryContext};
     ///
     /// struct CustomChannelResolver;
     ///

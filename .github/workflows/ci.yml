@@ -41,6 +41,17 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
 
+  # Runs the whole lib unit suite with `grpc` off, the proof that the abstraction builds and runs
+  # without gRPC. `lfs: true` because some planner unit tests load parquet testdata.
+  unit-test-no-grpc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: ./.github/actions/setup
+      - run: cargo test --no-default-features --lib
+
   tpch-correctness-test:
     runs-on: ubuntu-latest
     strategy:
@@ -50,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_correctness_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpch --test tpch_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -59,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test tpch_plans_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpch --test tpch_plans_test
 
   tpcds-correctness-test:
     runs-on: ubuntu-latest
@@ -73,9 +84,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/tpcds/main.zip
+          path: benchmarks/testdata/tpcds/main.zip
           key: "main.zip"
-      - run: cargo test --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -86,9 +97,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/tpcds/main.zip
+          path: benchmarks/testdata/tpcds/main.zip
           key: "main.zip"
-      - run: cargo test --features tpcds --test tpcds_plans_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features tpcds --test tpcds_plans_test
 
   clickbench-correctness-test:
     runs-on: ubuntu-latest
@@ -101,9 +112,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/clickbench/
+          path: benchmarks/testdata/clickbench/
           key: "data"
-      - run: cargo test --features clickbench --test clickbench_correctness_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features clickbench --test clickbench_correctness_test
         env:
           ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
@@ -114,9 +125,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: actions/cache@v4
         with:
-          path: testdata/clickbench/
+          path: benchmarks/testdata/clickbench/
           key: "data"
-      - run: cargo test --features clickbench --test clickbench_plans_test
+      - run: cargo test -p datafusion-distributed-benchmarks --features clickbench --test clickbench_plans_test
 
   format-check:
     runs-on: ubuntu-latest

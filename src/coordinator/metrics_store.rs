@@ -27,7 +27,7 @@ impl MetricsStore {
         self.rx.borrow().get(key).cloned()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grpc"))]
     pub(crate) fn from_entries(entries: impl IntoIterator<Item = (TaskKey, TaskMetrics)>) -> Self {
         let map: HashMap<_, _> = entries.into_iter().collect();
         let (tx, rx) = watch::channel(map);
