@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "benchmarks",
-    "cli",
-    "console",
-]
+members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
 datafusion = { version = "55", default-features = false }
@@ -21,8 +17,8 @@ repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 [dependencies]
 chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [
-  "unicode_expressions",
-  "datetime_expressions",
+    "unicode_expressions",
+    "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
 async-trait = "0.1.89"
@@ -47,7 +43,7 @@ sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
 bincode = "1"
-tonic-prost = "0.14.2"
+tonic-prost = { version = "0.14.2", optional = true }
 
 # grpc-specific features
 arrow-flight = { version = "59", optional = true }
@@ -76,10 +72,19 @@ grpc = [
     "arrow-select",
     "arrow-ipc",
     "tonic",
-    "tower"
+    "tonic-prost",
+    "tower",
 ]
 
-integration = ["insta", "dep:parquet", "arrow", "hyper-util", "grpc", "parquet", "sql"]
+integration = [
+    "insta",
+    "dep:parquet",
+    "arrow",
+    "hyper-util",
+    "grpc",
+    "parquet",
+    "sql",
+]
 
 system-metrics = ["sysinfo"]
 
