@@ -20,13 +20,18 @@ mod tests {
     const TPCH_DATA_PARTS: usize = 16;
     const CARDINALITY_TASK_COUNT_FACTOR: f64 = 1.0;
 
-    #[test_case(false; "metrics_disabled")]
-    #[test_case(true; "metrics_enabled")]
+    #[test_case((false, false); "metrics_disabled_static_planner")]
+    #[test_case((true, false); "metrics_enabled_static_planner")]
+    #[test_case((false, true); "metrics_disabled_dynamic_planner")]
+    #[test_case((true, true); "metrics_enabled_dynamic_planner")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn no_pending_tasks_if_dynamic_query_completes(collect_metrics: bool) -> Result<()> {
+    async fn no_pending_tasks_if_dynamic_query_completes(
+        (collect_metrics, adaptive): (bool, bool),
+    ) -> Result<()> {
         let (mut d_ctx, _guard, workers) =
             start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
         d_ctx.set_distributed_metrics_collection(collect_metrics)?;
+        d_ctx.set_distributed_dynamic_task_count(adaptive)?;
 
         run_tpch_query(d_ctx, "q1").await?;
 
@@ -35,10 +40,18 @@ mod tests {
         Ok(())
     }
 
+    #[test_case((false, false); "metrics_disabled_static_planner")]
+    #[test_case((true, false); "metrics_enabled_static_planner")]
+    #[test_case((false, true); "metrics_disabled_dynamic_planner")]
+    #[test_case((true, true); "metrics_enabled_dynamic_planner")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn no_pending_tasks_if_query_aborts() -> Result<()> {
-        let (d_ctx, _guard, workers) =
+    async fn no_pending_tasks_if_query_aborts(
+        (collect_metrics, adaptive): (bool, bool),
+    ) -> Result<()> {
+        let (mut d_ctx, _guard, workers) =
             start_localhost_context(NUM_WORKERS, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_metrics_collection(collect_metrics)?;
+        d_ctx.set_distributed_dynamic_task_count(adaptive)?;
 
         let _ = timeout(Duration::from_millis(100), run_tpch_query(d_ctx, "q1")).await;
 

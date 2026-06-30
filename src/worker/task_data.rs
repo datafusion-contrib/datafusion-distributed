@@ -1,6 +1,7 @@
 use crate::MaxLatencyMetric;
-use crate::common::{OnceLockResult, now_ns};
-use crate::distributed_planner::{ProducerHead, insert_producer_head};
+use crate::common::OnceLockResult;
+use crate::common::now_ns;
+use crate::distributed_planner::ProducerHead;
 use crate::worker::generated::worker as pb;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -134,7 +135,7 @@ impl TaskData {
             let producer_head =
                 ProducerHead::from_proto(producer_head, &self.base_plan.schema(), &self.task_ctx)?;
 
-            let plan = insert_producer_head(Arc::clone(&self.base_plan), producer_head)?;
+            let plan = producer_head.insert(Arc::clone(&self.base_plan))?;
 
             self.num_partitions_remaining.store(
                 plan.output_partitioning().partition_count(),

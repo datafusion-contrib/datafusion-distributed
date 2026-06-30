@@ -12,6 +12,7 @@ mod tests {
     use std::path::Path;
     use tokio::sync::OnceCell;
 
+    const ADAPTIVE_ENV_VAR: &str = "ADAPTIVE";
     const NUM_WORKERS: usize = 4;
     const PARTITIONS: usize = 6;
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
@@ -139,7 +140,10 @@ mod tests {
     // in a non-distributed manner. For each query, it asserts that the results are identical.
     async fn test_tpch_query(sql: String) -> Result<(), Box<dyn Error>> {
         let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder).await;
-        let d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
+        let mut d_ctx = d_ctx.with_distributed_broadcast_joins(true)?;
+        if std::env::var(ADAPTIVE_ENV_VAR).unwrap_or_default() == "true" {
+            d_ctx.set_distributed_dynamic_task_count(true)?;
+        }
 
         let d_ctx = d_ctx
             .with_distributed_file_scan_config_bytes_per_partition(

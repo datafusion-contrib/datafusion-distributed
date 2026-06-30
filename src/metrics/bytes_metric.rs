@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 
+use datafusion::physical_plan::Metric;
 use datafusion::{
     common::human_readable_size,
     physical_plan::metrics::{CustomMetricValue, MetricBuilder, MetricValue},
@@ -50,6 +51,16 @@ impl Default for BytesCounterMetric {
 }
 
 impl BytesCounterMetric {
+    pub fn new_metric(name: impl Into<Cow<'static, str>>, bytes: usize) -> Arc<Metric> {
+        Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: name.into(),
+                value: Arc::new(BytesCounterMetric::from_value(bytes)),
+            },
+            None,
+        ))
+    }
+
     pub fn from_value(bytes: usize) -> Self {
         Self {
             bytes: Arc::new(AtomicUsize::new(bytes)),

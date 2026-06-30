@@ -24,7 +24,7 @@ pub mod coordinator_to_worker_msg {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
-    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1")]
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3")]
     pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
 }
 /// Nested message and enum types in `WorkerToCoordinatorMsg`.
@@ -37,6 +37,12 @@ pub mod worker_to_coordinator_msg {
         /// metrics\[i\] is the set of metrics for plan node i in pre-order traversal order.
         #[prost(message, tag = "1")]
         TaskMetrics(super::TaskMetrics),
+        /// Load information reported by a task. This information is used for dynamically
+        /// sizing the number of workers involved in a query.
+        #[prost(message, tag = "2")]
+        LoadInfo(super::LoadInfo),
+        #[prost(bool, tag = "3")]
+        LoadInfoEos(bool),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -51,6 +57,34 @@ pub struct TaskMetrics {
     /// was fed by the coordinator to the worker.
     #[prost(message, optional, tag = "2")]
     pub task_metrics: ::core::option::Option<MetricsSet>,
+}
+/// Load information reported for a specific partition with information about this
+/// amount of data flowing through the plan.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LoadInfo {
+    /// The partition index to which this message belongs to.
+    #[prost(uint64, tag = "1")]
+    pub partition: u64,
+    /// The amount of rows ready to be returned.
+    #[prost(uint64, tag = "2")]
+    pub rows_ready: u64,
+    /// The estimated velocity at which rows will flow through the node. If all the rows were
+    /// already accumulated, they will be reported by `rows_ready`, and this field will be 0.
+    #[prost(uint64, tag = "3")]
+    pub rows_per_second: u64,
+    /// The amount of bytes ready to be returned per column.
+    #[prost(uint64, repeated, tag = "4")]
+    pub per_column_bytes_ready: ::prost::alloc::vec::Vec<u64>,
+    /// The estimated velocity at which data will flow through each column. If all the bytes were
+    /// already accumulated, they will be reported by `bytes_ready`, and this field will be 0.
+    #[prost(uint64, repeated, tag = "5")]
+    pub per_column_bytes_per_second: ::prost::alloc::vec::Vec<u64>,
+    /// Approximate ratio of NDV for each column.
+    #[prost(float, repeated, tag = "6")]
+    pub per_column_ndv_percentage: ::prost::alloc::vec::Vec<f32>,
+    /// Approximate ratio of null count for each column.
+    #[prost(float, repeated, tag = "7")]
+    pub per_column_null_percentage: ::prost::alloc::vec::Vec<f32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}

@@ -12,7 +12,7 @@ use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    internal_err,
+    Statistics, internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -131,6 +131,7 @@ impl NetworkCoalesceExec {
                 num: 0,
                 plan: input,
                 tasks: producer_tasks,
+                metrics_set: Default::default(),
             }),
             input_properties,
             consumer_tasks,
@@ -157,6 +158,7 @@ impl NetworkCoalesceExec {
             num: local.num,
             plan: input_with_fetch,
             tasks: local.tasks,
+            metrics_set: Default::default(),
         });
         Ok(Arc::new(self_clone))
     }
@@ -167,7 +169,7 @@ impl NetworkBoundary for NetworkCoalesceExec {
         &self.input_stage
     }
 
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.properties = scale_partitioning_props(self_clone.properties(), |p| {
             p * input_stage.task_count() / self_clone.input_stage.task_count().max(1)
@@ -247,10 +249,8 @@ impl ExecutionPlan for NetworkCoalesceExec {
             );
         }
 
-        let partitions_per_task = self
-            .properties()
-            .partitioning
-            .partition_count()
+        let out_partitions = self.properties().partitioning.partition_count();
+        let partitions_per_task = out_partitions
             .checked_div(
                 self.input_stage
                     .task_count()
@@ -310,6 +310,14 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+        self.input_stage.partition_statistics(
+            partition,
+            self.properties.output_partitioning().partition_count(),
+            self.schema(),
+        )
     }
 }
 

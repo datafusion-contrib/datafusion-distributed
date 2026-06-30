@@ -108,6 +108,14 @@ impl QueryPlanner for DistributedQueryPlanner {
 
         plan = insert_broadcast_execs(plan, cfg)?;
 
+        if d_cfg.dynamic_task_count {
+            // The task count will be decided dynamically at execution time.
+            return Ok(Arc::new(
+                DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
+            ));
+        }
+
+        // Compute per-node task counts and inject `Network*Exec` nodes at the stage boundaries.
         plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, cfg).await?;
 
         plan = prepare_network_boundaries(plan)?;

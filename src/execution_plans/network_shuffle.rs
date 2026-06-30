@@ -11,7 +11,9 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics,
+};
 use std::fmt::Formatter;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -133,6 +135,7 @@ impl NetworkShuffleExec {
                 num: 0,
                 plan: input,
                 tasks: producer_tasks,
+                metrics_set: Default::default(),
             }),
             input_properties,
         ))
@@ -144,7 +147,7 @@ impl NetworkBoundary for NetworkShuffleExec {
         &self.input_stage
     }
 
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
@@ -217,7 +220,8 @@ impl ExecutionPlan for NetworkShuffleExec {
         };
 
         let task_context = DistributedTaskContext::from_ctx(&context);
-        let off = self.properties.partitioning.partition_count() * task_context.task_index;
+        let out_partitions = self.properties.partitioning.partition_count();
+        let off = out_partitions * task_context.task_index;
 
         let mut streams = Vec::with_capacity(remote_stage.workers.len());
         for input_task_index in 0..remote_stage.workers.len() {
@@ -241,5 +245,13 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+        self.input_stage.partition_statistics(
+            partition,
+            self.properties.output_partitioning().partition_count(),
+            self.schema(),
+        )
     }
 }

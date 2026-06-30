@@ -1,3 +1,4 @@
+use crate::execution_plans::SamplerExec;
 use crate::{BroadcastExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
 use datafusion::common::Result;
 use datafusion::physical_expr::Partitioning;
@@ -13,7 +14,7 @@ pub trait NetworkBoundary: ExecutionPlan {
     /// information to perform any internal transformations necessary for distributed execution.
     ///
     /// Typically, [NetworkBoundary]s will use this call for transitioning from "Pending" to "ready".
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>>;
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>>;
 
     /// Returns the assigned input [Stage], if any.
     fn input_stage(&self) -> &Stage;
@@ -59,28 +60,40 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
     }
 }
 
-/// Ensures the head of the provided plan complies with the passed [ProducerHead] definition. This
-/// can be called both during planning and lazily at runtime.
-pub(crate) fn insert_producer_head(
-    input: Arc<dyn ExecutionPlan>,
-    head: ProducerHead,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let input = if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
-        Arc::clone(r_exec.input())
-    } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
-        Arc::clone(b_exec.input())
-    } else {
-        input
-    };
-    let plan = match head {
-        ProducerHead::None => input,
-        ProducerHead::BroadcastExec { output_partitions } => {
-            let partitions = input.output_partitioning().partition_count();
-            Arc::new(BroadcastExec::new(input, output_partitions / partitions))
+impl ProducerHead {
+    /// Ensures the head of the provided plan complies with the passed [ProducerHead] definition. This
+    /// can be called both during planning and lazily at runtime.
+    pub(crate) fn insert(self, input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let input = if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
+            Arc::clone(r_exec.input())
+        } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
+            Arc::clone(b_exec.input())
+        } else {
+            input
+        };
+        let plan = match self {
+            ProducerHead::None => input,
+            ProducerHead::BroadcastExec { output_partitions } => {
+                let partitions = input.output_partitioning().partition_count();
+                Arc::new(BroadcastExec::new(input, output_partitions / partitions))
+            }
+            ProducerHead::RepartitionExec { partitioning } => {
+                Arc::new(RepartitionExec::try_new(input, partitioning)?)
+            }
+        };
+        Ok(plan)
+    }
+
+    /// Injects a [SamplerExec] right below a [RepartitionExec] or [BroadcastExec].
+    pub(crate) fn insert_sampler(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
+            let child = Arc::clone(r_exec.input());
+            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+        } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
+            let child = Arc::clone(b_exec.input());
+            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+        } else {
+            Ok(input)
         }
-        ProducerHead::RepartitionExec { partitioning } => {
-            Arc::new(RepartitionExec::try_new(input, partitioning)?)
-        }
-    };
-    Ok(plan)
+    }
 }

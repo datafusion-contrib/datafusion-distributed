@@ -1,13 +1,15 @@
 use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::execution_plans::{DistributedLeafExec, NetworkCoalesceExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-use datafusion::common::{HashMap, config_err};
+use datafusion::common::{HashMap, Statistics, config_err};
 use datafusion::common::{exec_err, plan_err};
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{Label, Metric, MetricsSet};
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
+use datafusion::physical_plan::{
+    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, displayable,
+};
 use itertools::Either;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -84,6 +86,8 @@ pub struct LocalStage {
     pub plan: Arc<dyn ExecutionPlan>,
     /// The number of tasks the stage has.
     pub tasks: usize,
+    /// Metrics collected by the coordinator
+    pub metrics_set: MetricsSet,
 }
 
 impl LocalStage {
@@ -107,6 +111,8 @@ pub struct RemoteStage {
     pub num: usize,
     /// The worker URLs to which queries should be issued.
     pub workers: Vec<Url>,
+    /// Statistics collected at runtime, if any.
+    pub runtime_stats: Option<Arc<Statistics>>,
 }
 
 impl Stage {
@@ -137,6 +143,63 @@ impl Stage {
             Self::Remote(_) => None,
         }
     }
+
+    pub fn metrics(&self) -> MetricsSet {
+        match &self {
+            Self::Local(v) => v.metrics_set.clone(),
+            Self::Remote(_) => MetricsSet::new(),
+        }
+    }
+
+    pub fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+        partition_count: usize,
+        schema: SchemaRef,
+    ) -> Result<Arc<Statistics>> {
+        match self {
+            Stage::Local(local) => local.plan.partition_statistics(partition),
+            Stage::Remote(remote) => {
+                let Some(runtime_stats) = &remote.runtime_stats else {
+                    return Ok(Arc::new(Statistics::new_unknown(&schema)));
+                };
+                match partition {
+                    None => Ok(Arc::clone(runtime_stats)),
+                    Some(_) => Ok(Arc::new(multiply_stats(
+                        runtime_stats,
+                        1.0 / partition_count as f32,
+                    ))),
+                }
+            }
+        }
+    }
+}
+
+fn multiply_stats(stats: &Statistics, f: f32) -> Statistics {
+    Statistics {
+        num_rows: multiply_precision(stats.num_rows, f),
+        total_byte_size: multiply_precision(stats.total_byte_size, f),
+        column_statistics: stats
+            .column_statistics
+            .iter()
+            .map(|col| ColumnStatistics {
+                null_count: multiply_precision(col.null_count, f),
+                max_value: Precision::Absent,
+                min_value: Precision::Absent,
+                sum_value: Precision::Absent,
+                distinct_count: multiply_precision(col.distinct_count, f),
+                byte_size: multiply_precision(col.byte_size, f),
+            })
+            .collect(),
+    }
+}
+
+fn multiply_precision(p: Precision<usize>, f: f32) -> Precision<usize> {
+    match p {
+        Precision::Exact(v) => Precision::Exact((v as f32 * f) as usize),
+        Precision::Inexact(v) => Precision::Inexact((v as f32 * f) as usize),
+        Precision::Absent => Precision::Absent,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,7 +224,9 @@ use crate::metrics::proto::metric_proto_to_df;
 use crate::worker::generated::worker as pb;
 use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
+use datafusion::common::stats::Precision;
 use datafusion::physical_expr::Partitioning;
 /// Be able to display a nice tree for stages.
 ///
@@ -373,7 +438,7 @@ fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> M
         stage_id: stage.num() as u64,
         task_number: 0,
     };
-    let mut all_metrics = MetricsSet::new();
+    let mut all_metrics = stage.metrics();
     while let Some(metrics_set) = metrics_store.get(&task_key).and_then(|v| v.task_metrics) {
         for mut metric in metrics_set.metrics {
             metric.labels.push(pb::Label {
@@ -573,6 +638,7 @@ pub fn display_plan_graphviz(plan: Arc<dyn ExecutionPlan>) -> Result<String> {
             num: max_num + 1,
             plan: plan.clone(),
             tasks: 1,
+            metrics_set: MetricsSet::new(),
         });
         all_stages.insert(0, &head_stage);
 

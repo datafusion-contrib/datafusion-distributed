@@ -266,6 +266,7 @@ impl TransportFixture {
             query_id,
             num: 0,
             workers: self.input_stage_tasks.clone(),
+            runtime_stats: None,
         });
 
         let mut join_set = JoinSet::default();

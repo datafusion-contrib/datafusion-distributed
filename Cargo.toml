@@ -48,6 +48,7 @@ moka = { version = "0.12", features = ["sync", "future"] }
 crossbeam-queue = "0.3"
 sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
+num-traits = "0.2"
 bincode = "1"
 tonic-prost = "0.14.2"
 
