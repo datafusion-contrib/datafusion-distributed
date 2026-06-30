@@ -5,6 +5,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::statistics::StatisticsArgs;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use delegate::delegate;
 use itertools::Itertools;
@@ -102,7 +103,7 @@ fn partition_statistics_with_children_override(
 
     let stats = Arc::clone(node)
         .with_new_children(statistics_wrapped_children)?
-        .partition_statistics(partition)?;
+        .statistics_with_args(&StatisticsArgs::new().with_partition(partition))?;
 
     Ok(stats.as_ref().clone())
 }
@@ -122,8 +123,8 @@ impl DisplayAs for StatisticsWrapper {
 }
 
 impl ExecutionPlan for StatisticsWrapper {
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        if partition.is_some() {
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        if args.partition().is_some() {
             return plan_err!("StatisticsWrapper not prepared for partition-specific stats");
         }
         Ok(Arc::clone(&self.stats))

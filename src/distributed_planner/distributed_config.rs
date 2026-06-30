@@ -1,4 +1,5 @@
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
+use crate::filter_expressions::PlanFilterExpressionRegistry;
 use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::{TaskEstimator, WorkerResolver};
@@ -78,6 +79,9 @@ extensions_options! {
         /// [WorkUnitFeedRegistry] that contains a set of getters that, applied to each node in a
         /// plan, will return the [crate::WorkUnitFeed]s present in all nodes.
         pub(crate) __private_work_unit_feed_registry: WorkUnitFeedRegistry, default = WorkUnitFeedRegistry::default()
+        /// [PlanFilterExpressionRegistry] that contains typed extractors for filter expressions
+        /// present in physical plan nodes.
+        pub(crate) __private_filter_expression_registry: PlanFilterExpressionRegistry, default = PlanFilterExpressionRegistry::default()
     }
 }
 
@@ -208,5 +212,15 @@ impl ConfigField for WorkUnitFeedRegistry {
 impl Debug for WorkUnitFeedRegistry {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "WorkUnitFeedRegistry")
+    }
+}
+
+impl ConfigField for PlanFilterExpressionRegistry {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        // nothing to do.
+    }
+
+    fn set(&mut self, _: &str, _: &str) -> datafusion::common::Result<()> {
+        not_impl_err!("Not implemented")
     }
 }

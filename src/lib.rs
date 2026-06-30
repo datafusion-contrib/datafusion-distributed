@@ -4,6 +4,7 @@ mod common;
 mod config_extension_ext;
 mod distributed_ext;
 mod execution_plans;
+mod filter_expressions;
 mod metrics;
 mod passthrough_headers;
 mod stage;
@@ -29,6 +30,9 @@ pub use distributed_planner::{
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
     NetworkShuffleExec,
+};
+pub use filter_expressions::{
+    FilterExpression, PlanFilterExpressionRegistry, PlanFilterExpressions,
 };
 pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,

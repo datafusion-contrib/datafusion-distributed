@@ -22,8 +22,8 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{
-    ComposedPhysicalExtensionCodec, DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
-    PhysicalPlanDecodeContext,
+    ComposedPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+    PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf;
 use datafusion_proto::protobuf::proto_error;
@@ -51,6 +51,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let DistributedExecProto {
             node: Some(distributed_exec_node),
@@ -105,12 +106,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkShuffleExec is missing partitioning"))?;
 
@@ -130,12 +131,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkCoalesceExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkCoalesceExec is missing partitioning"))?;
 
@@ -155,12 +156,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkBroadcastExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
                     &schema,
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?
                 .ok_or(proto_error("NetworkBroadcastExec is missing partitioning"))?;
 
@@ -236,7 +237,12 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         fn encode_stage_proto(stage: &Stage) -> Result<StageProto, DataFusionError> {
             Ok(match stage {
                 Stage::Local(local) => StageProto {
@@ -266,7 +272,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -282,7 +288,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -298,7 +304,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
                     &DistributedCodec {},
-                    &DefaultPhysicalProtoConverter {},
+                    proto_converter,
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
             };
@@ -537,6 +543,11 @@ mod tests {
         physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
+
+    fn default_proto_converter() -> DefaultPhysicalProtoConverter {
+        DefaultPhysicalProtoConverter {}
+    }
 
     fn empty_exec() -> Arc<dyn ExecutionPlan> {
         Arc::new(EmptyExec::new(SchemaRef::new(Schema::empty())))
@@ -582,9 +593,9 @@ mod tests {
             Arc::new(new_network_hash_shuffle_exec(part, schema, dummy_stage()));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -612,9 +623,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(union.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[union], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[union], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -645,9 +656,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(sort.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[sort], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[sort], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -666,9 +677,9 @@ mod tests {
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -688,9 +699,9 @@ mod tests {
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -709,9 +720,9 @@ mod tests {
         ));
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[empty_exec()], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -733,9 +744,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(flight.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[flight], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[flight], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -763,9 +774,9 @@ mod tests {
             Arc::new(NetworkCoalesceExec::try_new(union.clone(), 1, 1)?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[union], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[union], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
@@ -796,9 +807,9 @@ mod tests {
             )?);
 
         let mut buf = Vec::new();
-        codec.try_encode(plan.clone(), &mut buf)?;
+        codec.try_encode(plan.clone(), &mut buf, &default_proto_converter())?;
 
-        let decoded = codec.try_decode(&buf, &[left, right], &ctx)?;
+        let decoded = codec.try_decode(&buf, &[left, right], &ctx, &default_proto_converter())?;
         assert_eq!(repr(&plan), repr(&decoded));
 
         Ok(())
