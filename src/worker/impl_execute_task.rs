@@ -1,38 +1,61 @@
-use crate::common::{TreeNodeExt, now_ns, on_drop_stream};
+use crate::common::{TreeNodeExt, on_drop_stream};
 use crate::metrics::proto::df_metrics_set_to_proto;
-use crate::protobuf::datafusion_error_to_tonic_status;
-use crate::worker::generated::worker::{FlightAppMetadata, TaskMetrics};
-use crate::worker::worker_service::{TaskDataEntries, Worker};
+use crate::worker::generated::worker::TaskMetrics;
+use crate::worker::worker_service::TaskDataEntries;
 use crate::{DistributedConfig, DistributedTaskContext};
-use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
-use arrow_flight::error::FlightError;
-use arrow_select::dictionary::garbage_collect_any_dictionary;
-use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
+#[cfg(feature = "flight")]
+use datafusion::arrow::array::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err, internal_err};
 
 use crate::worker::generated::worker::ExecuteTaskRequest;
-use crate::worker::generated::worker::worker_service_server::WorkerService;
-use crate::worker::spawn_select_all::spawn_select_all;
 use crate::worker::task_data::TaskDataMetrics;
-use datafusion::arrow::ipc::CompressionType;
-use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::TryStreamExt;
-use prost::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::oneshot::Sender;
+
+#[cfg(feature = "flight")]
+use crate::common::now_ns;
+#[cfg(feature = "flight")]
+use crate::protobuf::datafusion_error_to_tonic_status;
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::FlightAppMetadata;
+#[cfg(feature = "flight")]
+use crate::worker::generated::worker::worker_service_server::WorkerService;
+#[cfg(feature = "flight")]
+use crate::worker::spawn_select_all::spawn_select_all;
+#[cfg(feature = "flight")]
+use crate::worker::worker_service::Worker;
+#[cfg(feature = "flight")]
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
+#[cfg(feature = "flight")]
+use arrow_flight::error::FlightError;
+#[cfg(feature = "flight")]
+use arrow_select::dictionary::garbage_collect_any_dictionary;
+#[cfg(feature = "flight")]
+use datafusion::arrow::array::{Array, AsArray, RecordBatchOptions};
+#[cfg(feature = "flight")]
+use datafusion::arrow::ipc::CompressionType;
+#[cfg(feature = "flight")]
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
+#[cfg(feature = "flight")]
+use futures::TryStreamExt;
+#[cfg(feature = "flight")]
+use prost::Message;
+#[cfg(feature = "flight")]
 use tokio_stream::StreamExt;
+#[cfg(feature = "flight")]
 use tonic::{Request, Response, Status};
 
 /// How many record batches to buffer from the plan execution.
+#[cfg(feature = "flight")]
 const RECORD_BATCH_BUFFER_SIZE: usize = 2;
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 
@@ -41,7 +64,7 @@ const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
 ///
 /// This method is async mainly for the key retrieval operation from [TaskDataEntries], but it does
 /// not start polling any stream, it just instantiates them.
-pub(crate) async fn execute_local_task(
+pub async fn execute_local_task(
     task_data_entries: &Arc<TaskDataEntries>,
     body: ExecuteTaskRequest,
 ) -> Result<(Vec<SendableRecordBatchStream>, Arc<TaskContext>)> {
@@ -120,6 +143,7 @@ pub(crate) async fn execute_local_task(
 ///
 /// This method eagerly starts streaming data from the task, and communicates via channels the
 /// produced [RecordBatch]s already encoded as Arrow Flight data.
+#[cfg(feature = "flight")]
 pub(crate) async fn execute_remote_task(
     task_data_entries: &Arc<TaskDataEntries>,
     request: Request<ExecuteTaskRequest>,
@@ -170,6 +194,7 @@ pub(crate) async fn execute_remote_task(
     }))))
 }
 
+#[cfg(feature = "flight")]
 fn build_flight_data_stream(
     stream: SendableRecordBatchStream,
     compression_type: Option<CompressionType>,
@@ -208,14 +233,13 @@ fn build_flight_data_stream(
     Ok(stream)
 }
 
-/// Collects metrics from the plan in pre-order traversal order and sends them via the
-/// coordinator channel oneshot.
-fn send_metrics_via_channel(
-    metrics_tx: &Arc<Mutex<Option<Sender<TaskMetrics>>>>,
+/// Collects the per-node metrics of `plan` in pre-order traversal order, encoded as protos. Shared
+/// by the gRPC metrics oneshot and a push transport's metrics frame, so both report the same
+/// per-node shape.
+pub fn collect_plan_metrics_protos(
     plan: &Arc<dyn ExecutionPlan>,
     dt_ctx: DistributedTaskContext,
-    task_data_metrics: &Arc<TaskDataMetrics>,
-) {
+) -> Vec<crate::worker::generated::worker::MetricsSet> {
     let mut pre_order_plan_metrics = vec![];
     let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
         pre_order_plan_metrics.push(
@@ -225,6 +249,18 @@ fn send_metrics_via_channel(
         );
         Ok(TreeNodeRecursion::Continue)
     });
+    pre_order_plan_metrics
+}
+
+/// Collects metrics from the plan in pre-order traversal order and sends them via the
+/// coordinator channel oneshot.
+fn send_metrics_via_channel(
+    metrics_tx: &Arc<Mutex<Option<Sender<TaskMetrics>>>>,
+    plan: &Arc<dyn ExecutionPlan>,
+    dt_ctx: DistributedTaskContext,
+    task_data_metrics: &Arc<TaskDataMetrics>,
+) {
+    let pre_order_plan_metrics = collect_plan_metrics_protos(plan, dt_ctx);
 
     let tx = {
         let mut guard = match metrics_tx.lock() {
@@ -248,6 +284,7 @@ fn send_metrics_via_channel(
 ///
 /// Unused values can arise from operations such as filtering, where
 /// some keys may no longer be referenced in the filtered result.
+#[cfg(feature = "flight")]
 fn garbage_collect_arrays(batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
     let (schema, arrays, row_count) = batch.into_parts();
 

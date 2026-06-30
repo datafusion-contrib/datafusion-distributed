@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// DataFusion metrics system is pretty limited from an API standpoint. This intermediate struct
 /// bridges the gaps that are not satisfied by upstream API for measuring latency.
-pub(super) struct LatencyMetric {
+pub struct LatencyMetric {
     max: Time,
     avg: Time,
     max_latency_micros: AtomicU64,
@@ -53,7 +53,7 @@ impl LatencyMetric {
         }
     }
 
-    pub(super) fn record(&self, start: &Instant) {
+    pub fn record(&self, start: &Instant) {
         let micros = start.elapsed().as_micros() as u64;
         self.max_latency_micros.fetch_max(micros, Ordering::Relaxed);
         self.sum_latency_micros.fetch_add(micros, Ordering::Relaxed);

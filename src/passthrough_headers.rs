@@ -32,7 +32,7 @@ pub(crate) fn set_passthrough_headers(
 
 /// Gets passthrough headers from a SessionConfig extension.
 /// Returns an empty HeaderMap if none are set.
-pub(crate) fn get_passthrough_headers(cfg: &SessionConfig) -> HeaderMap {
+pub fn get_passthrough_headers(cfg: &SessionConfig) -> HeaderMap {
     cfg.get_extension::<PassthroughHeaders>()
         .map(|h| h.0.clone())
         .unwrap_or_default()

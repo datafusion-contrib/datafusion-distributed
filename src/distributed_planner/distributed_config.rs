@@ -1,5 +1,7 @@
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
-use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
+use crate::networking::{
+    ChannelResolverExtension, WorkerResolverExtension, WorkerTransportExtension,
+};
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::{TaskEstimator, WorkerResolver};
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
@@ -75,6 +77,9 @@ extensions_options! {
         /// [WorkerResolver] implementation that tells the distributed planner information about
         /// the available workers ready to execute distributed tasks.
         pub(crate) __private_worker_resolver: WorkerResolverExtension, default = WorkerResolverExtension::not_implemented()
+        /// [crate::WorkerTransport] used to open worker connections and dispatch plans. Defaults to
+        /// the Arrow-Flight gRPC transport; embedders can override it with their own transport.
+        pub(crate) __private_worker_transport: WorkerTransportExtension, default = WorkerTransportExtension::default()
         /// [WorkUnitFeedRegistry] that contains a set of getters that, applied to each node in a
         /// plan, will return the [crate::WorkUnitFeed]s present in all nodes.
         pub(crate) __private_work_unit_feed_registry: WorkUnitFeedRegistry, default = WorkUnitFeedRegistry::default()
@@ -176,6 +181,22 @@ impl ConfigField for WorkerResolverExtension {
 impl Debug for WorkerResolverExtension {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "WorkerResolverExtension")
+    }
+}
+
+impl ConfigField for WorkerTransportExtension {
+    fn visit<V: Visit>(&self, _: &mut V, _: &str, _: &'static str) {
+        // nothing to do.
+    }
+
+    fn set(&mut self, _: &str, _: &str) -> datafusion::common::Result<()> {
+        not_impl_err!("Not implemented")
+    }
+}
+
+impl Debug for WorkerTransportExtension {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WorkerTransportExtension")
     }
 }
 

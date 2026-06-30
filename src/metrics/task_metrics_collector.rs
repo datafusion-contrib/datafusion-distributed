@@ -29,14 +29,13 @@ mod tests {
     use futures::StreamExt;
 
     use crate::coordinator::DistributedExec;
-    use crate::test_utils::in_memory_channel_resolver::{
-        InMemoryChannelResolver, InMemoryWorkerResolver,
-    };
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::{
         count_plan_nodes_up_to_network_boundary, get_stages_and_task_keys,
     };
     use crate::test_utils::session_context::register_temp_parquet_table;
+    use crate::worker::InMemoryWorkerTransport;
     use crate::{DistributedExt, SessionStateBuilderExt};
     use datafusion::execution::{SessionStateBuilder, context::SessionContext};
     use datafusion::prelude::SessionConfig;
@@ -57,7 +56,7 @@ mod tests {
             .with_default_features()
             .with_config(config)
             .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
-            .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+            .with_distributed_worker_transport(InMemoryWorkerTransport::default())
             .with_distributed_planner()
             .with_distributed_task_estimator(2)
             .with_distributed_metrics_collection(true)

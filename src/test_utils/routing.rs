@@ -2,6 +2,7 @@ use arrow::{
     array::{Int64Array, RecordBatch, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
+use async_trait::async_trait;
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
     common::{ScalarValue, Statistics, internal_err, plan_err},
@@ -19,10 +20,10 @@ use datafusion_proto::{physical_plan::PhysicalExtensionCodec, protobuf::proto_er
 use futures::stream;
 use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
-use tonic::async_trait;
 use url::Url;
 
 use crate::execution_plans::DistributedLeafExec;
+#[cfg(feature = "flight")]
 use crate::worker::LocalWorkerContext;
 use crate::{
     DistributedConfig, DistributedTaskContext, TaskEstimation, TaskEstimator, WorkerResolver,
@@ -201,17 +202,24 @@ impl ExecutionPlan for URLEmitterExec {
             return EmptyExec::new(schema).execute(0, context);
         }
         let distributed_ctx = DistributedTaskContext::from_ctx(&context);
-        let local_worker_ctx = context
+        // The worker URL each task lands on only exists with the Flight transport; the in-process
+        // transport runs every task in this process, so it has no per-task self URL to emit.
+        #[cfg(feature = "flight")]
+        let self_url = context
             .session_config()
             .get_extension::<LocalWorkerContext>()
-            .expect("URLEmitterExec requires LocalWorkerContext during distributed execution");
+            .expect("URLEmitterExec requires LocalWorkerContext during distributed execution")
+            .self_url
+            .as_str()
+            .trim_end_matches('/')
+            .to_string();
+        #[cfg(not(feature = "flight"))]
+        let self_url = String::new();
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
             Arc::new(Int64Array::from(vec![distributed_ctx.task_count as i64])),
             Arc::new(Int64Array::from(vec![distributed_ctx.task_index as i64])),
             Arc::new(StringArray::from(vec![self.tag.as_str()])),
-            Arc::new(StringArray::from(vec![
-                local_worker_ctx.self_url.as_str().trim_end_matches('/'),
-            ])),
+            Arc::new(StringArray::from(vec![self_url.as_str()])),
         ];
         if let Some(indices) = &self.projection {
             columns = indices.iter().map(|&i| Arc::clone(&columns[i])).collect();

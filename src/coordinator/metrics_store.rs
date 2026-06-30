@@ -18,7 +18,7 @@ impl MetricsStore {
         Self { tx, rx }
     }
 
-    pub(crate) fn insert(&self, key: TaskKey, metrics: pb::TaskMetrics) {
+    pub fn insert(&self, key: TaskKey, metrics: pb::TaskMetrics) {
         self.tx.send_modify(|map| {
             map.insert(key, metrics);
         });

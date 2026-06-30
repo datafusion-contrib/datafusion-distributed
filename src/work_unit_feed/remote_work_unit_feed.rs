@@ -13,10 +13,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
 
-pub(crate) type WorkUnitTx = UnboundedSender<Result<pb::WorkUnit>>;
-pub(crate) type WorkUnitRx = UnboundedReceiver<Result<pb::WorkUnit>>;
-pub(crate) type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
-pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
+pub type WorkUnitTx = UnboundedSender<Result<pb::WorkUnit>>;
+pub type WorkUnitRx = UnboundedReceiver<Result<pb::WorkUnit>>;
+pub type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
+pub type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
 
 /// Bridge between the worker's gRPC layer and the remote-variant
 /// [`crate::WorkUnitFeed`]s installed in the deserialized plan.
@@ -30,15 +30,15 @@ pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
 ///   concrete `T::WorkUnit` type so the leaf sees the same typed stream as it would in a
 ///   single-node execution.
 #[derive(Default)]
-pub(crate) struct RemoteWorkUnitFeedRegistry {
-    pub(crate) receivers: RemoteWorkUnitFeedRxs,
-    pub(crate) senders: RemoteWorkUnitFeedTxs,
+pub struct RemoteWorkUnitFeedRegistry {
+    pub receivers: RemoteWorkUnitFeedRxs,
+    pub senders: RemoteWorkUnitFeedTxs,
 }
 
 impl RemoteWorkUnitFeedRegistry {
     /// Creates all the receivers and senders for a specific [WorkUnit] Feed id. One feed per
     /// partition is created.
-    pub(crate) fn add(&mut self, id: Uuid, partitions: usize) {
+    pub fn add(&mut self, id: Uuid, partitions: usize) {
         for partition in 0..partitions {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             self.receivers.insert((id, partition), Mutex::new(Some(rx)));
@@ -47,6 +47,25 @@ impl RemoteWorkUnitFeedRegistry {
     }
 }
 
+/// Encodes one feed element into a [pb::WorkUnit] for `partition` of feed `id`. The send/receive
+/// stamps stay zero for the transport to fill in right before delivery.
+pub(crate) fn build_work_unit(
+    id: &Uuid,
+    partition: usize,
+    work_unit: Box<dyn WorkUnit>,
+) -> pb::WorkUnit {
+    pb::WorkUnit {
+        id: serialize_uuid(id),
+        partition: partition as u64,
+        body: work_unit.encode_to_bytes(),
+        created_timestamp_unix_nanos: now_ns(),
+        sent_timestamp_unix_nanos: 0,
+        received_timestamp_unix_nanos: 0,
+        processed_timestamp_unix_nanos: 0,
+    }
+}
+
+#[cfg(feature = "flight")]
 pub(crate) fn build_work_unit_batch_msg(
     id: &Uuid,
     work_unit_batch: Vec<(usize, Result<Box<dyn WorkUnit>>)>,
@@ -56,23 +75,25 @@ pub(crate) fn build_work_unit_batch_msg(
             pb::WorkUnitBatch {
                 batch: work_unit_batch
                     .into_iter()
-                    .map(|(partition, work_unit)| {
-                        Ok(pb::WorkUnit {
-                            id: serialize_uuid(id),
-                            partition: partition as u64,
-                            body: work_unit?.encode_to_bytes(),
-                            created_timestamp_unix_nanos: now_ns(),
-                            sent_timestamp_unix_nanos: 0,
-                            received_timestamp_unix_nanos: 0,
-                            processed_timestamp_unix_nanos: 0,
-                        })
-                    })
+                    .map(|(partition, work_unit)| Ok(build_work_unit(id, partition, work_unit?)))
                     .collect::<Result<_>>()?,
             },
         )),
     })
 }
 
+/// Stamps the send time on a bare unit. Any transport can stamp before delivery; the worker-side
+/// latency math treats a missing stamp as zero latency.
+pub fn set_sent_time(work_unit: &mut pb::WorkUnit) {
+    work_unit.sent_timestamp_unix_nanos = now_ns();
+}
+
+/// Stamps the receive time on a bare unit. See [set_sent_time].
+pub fn set_received_time(work_unit: &mut pb::WorkUnit) {
+    work_unit.received_timestamp_unix_nanos = now_ns();
+}
+
+#[cfg(feature = "flight")]
 pub(crate) fn set_work_unit_send_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {
@@ -87,6 +108,7 @@ pub(crate) fn set_work_unit_send_time(
     msg
 }
 
+#[cfg(feature = "flight")]
 pub(crate) fn set_work_unit_received_time(
     mut msg: pb::CoordinatorToWorkerMsg,
 ) -> pb::CoordinatorToWorkerMsg {

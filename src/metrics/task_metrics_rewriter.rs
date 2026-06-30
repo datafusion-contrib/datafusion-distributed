@@ -290,12 +290,11 @@ mod tests {
         annotate_metrics_set_with_task_id, stage_metrics_rewriter,
     };
     use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
-    use crate::test_utils::in_memory_channel_resolver::{
-        InMemoryChannelResolver, InMemoryWorkerResolver,
-    };
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
+    use crate::worker::InMemoryWorkerTransport;
     use crate::worker::generated::worker as pb;
     use crate::{DistributedExec, SessionStateBuilderExt};
     use datafusion::arrow::array::{Int32Array, StringArray};
@@ -339,7 +338,7 @@ mod tests {
         if distributed {
             builder = builder
                 .with_distributed_worker_resolver(InMemoryWorkerResolver::new(10))
-                .with_distributed_channel_resolver(InMemoryChannelResolver::default())
+                .with_distributed_worker_transport(InMemoryWorkerTransport::default())
                 .with_distributed_metrics_collection(true)
                 .unwrap()
                 .with_distributed_planner()

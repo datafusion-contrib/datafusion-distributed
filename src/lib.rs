@@ -20,11 +20,18 @@ pub mod test_utils;
 mod work_unit_feed;
 
 pub use arrow_ipc::CompressionType;
-pub use coordinator::DistributedExec;
+pub use common::{
+    TreeNodeExt, deserialize_uuid, get_distributed_cancellation_token, serialize_uuid,
+};
+pub use config_extension_ext::get_config_extension_propagation_headers;
+pub use coordinator::{
+    CoordinatorToWorkerMetrics, DistributedExec, EncodedTaskPlan, LatencyMetric, MetricsStore,
+    encode_task_plan,
+};
 pub use distributed_ext::DistributedExt;
 pub use distributed_planner::{
-    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
+    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, PartitionRoute, ProducerHead,
+    SessionStateBuilderExt, TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
@@ -36,33 +43,57 @@ pub use metrics::{
     MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
     P99LatencyMetric, rewrite_distributed_plan_with_metrics,
 };
+#[cfg(feature = "flight")]
 pub use networking::{
-    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
-    create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
+    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, create_worker_client,
+    get_distributed_channel_resolver,
 };
+pub use networking::{
+    WorkerResolver, get_distributed_worker_resolver, get_distributed_worker_transport,
+    set_distributed_worker_transport,
+};
+pub use passthrough_headers::get_passthrough_headers;
 pub use stage::{
-    DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
+    DistributedTaskContext, RemoteStage, Stage, display_plan_ascii, display_plan_graphviz,
+    explain_analyze,
 };
 pub use work_unit_feed::{
-    DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
+    DistributedWorkUnitFeedContext, RemoteWorkUnitFeedRegistry, RemoteWorkUnitFeedRxs,
+    RemoteWorkUnitFeedTxs, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
+    WorkUnitRx, WorkUnitTx, collect_task_work_unit_feeds, set_received_time, set_sent_time,
 };
+#[cfg(feature = "flight")]
+pub use worker::FlightWorkerTransport;
+// `protobuf` already names a private module, so the generated worker messages re-export as `proto`
+// for an out-of-crate transport to build the same frames the Flight path does.
+pub use worker::generated::worker as proto;
+#[cfg(feature = "flight")]
 pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
+#[cfg(feature = "flight")]
 pub use worker::generated::worker::worker_service_server::WorkerServiceServer;
 pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
-    DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
-    Worker, WorkerQueryContext, WorkerSessionBuilder,
+    DefaultSessionBuilder, InMemoryWorkerTransport, MappedWorkerSessionBuilder,
+    MappedWorkerSessionBuilderExt, ResultTaskData, SingleWriteMultiRead, TaskData, TaskDataEntries,
+    Worker, WorkerConnection, WorkerDispatch, WorkerDispatchRequest, WorkerQueryContext,
+    WorkerSessionBuilder, WorkerTransport, collect_plan_metrics_protos, execute_local_task,
 };
 
 pub use observability::{
     GetClusterWorkersRequest, GetClusterWorkersResponse, GetTaskProgressRequest,
-    GetTaskProgressResponse, ObservabilityService, ObservabilityServiceClient,
-    ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest, PingResponse, TaskProgress,
-    TaskStatus, WorkerMetrics,
+    GetTaskProgressResponse, PingRequest, PingResponse, TaskProgress, TaskStatus, WorkerMetrics,
+};
+#[cfg(feature = "flight")]
+pub use observability::{
+    ObservabilityService, ObservabilityServiceClient, ObservabilityServiceImpl,
+    ObservabilityServiceServer,
 };
 
 #[cfg(any(feature = "integration", test))]
 pub use execution_plans::benchmarks::{
-    LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode, ShuffleBench,
-    ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
+    LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode,
+};
+#[cfg(all(feature = "flight", any(feature = "integration", test)))]
+pub use execution_plans::benchmarks::{
+    ShuffleBench, ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
 };
