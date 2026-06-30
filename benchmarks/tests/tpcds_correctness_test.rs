@@ -1,4 +1,4 @@
-#[cfg(all(feature = "integration", feature = "tpcds", test))]
+#[cfg(all(feature = "tpcds", test))]
 mod tests {
     use datafusion::arrow::array::RecordBatch;
     use datafusion::common::plan_err;

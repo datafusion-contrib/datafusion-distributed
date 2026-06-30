@@ -2,6 +2,7 @@ use arrow::{
     array::{Int64Array, RecordBatch, StringArray},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
+use async_trait::async_trait;
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
     common::{Result, ScalarValue, Statistics, internal_err, plan_err},
@@ -21,7 +22,6 @@ use datafusion_proto::{
 use futures::stream;
 use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
-use tonic::async_trait;
 
 use crate::execution_plans::DistributedLeafExec;
 use crate::worker::LocalWorkerContext;
