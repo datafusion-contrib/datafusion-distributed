@@ -139,6 +139,9 @@ pub(crate) struct TestPlanBuilder {
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
+    prefer_hash_join: Option<bool>,
+    hash_join_single_partition_threshold: Option<usize>,
+    hash_join_single_partition_threshold_rows: Option<usize>,
 }
 
 #[cfg(test)]
@@ -156,6 +159,9 @@ impl TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
+            prefer_hash_join: None,
+            hash_join_single_partition_threshold: None,
+            hash_join_single_partition_threshold_rows: None,
         }
     }
 
@@ -189,6 +195,21 @@ impl TestPlanBuilder {
 
     pub fn information_schema(mut self, enabled: bool) -> Self {
         self.information_schema = Some(enabled);
+        self
+    }
+
+    pub fn prefer_hash_joins(mut self, prefer_hash_joins: bool) -> Self {
+        self.prefer_hash_join = Some(prefer_hash_joins);
+        self
+    }
+
+    pub fn hash_join_single_partition_threshold(mut self, v: usize) -> Self {
+        self.hash_join_single_partition_threshold = Some(v);
+        self
+    }
+
+    pub fn hash_join_single_partition_threshold_rows(mut self, v: usize) -> Self {
+        self.hash_join_single_partition_threshold_rows = Some(v);
         self
     }
 
@@ -250,6 +271,21 @@ impl TestPlanBuilder {
         if let Some(enabled) = self.information_schema {
             config = config.with_information_schema(enabled);
         }
+        if let Some(enabled) = self.prefer_hash_join {
+            config.options_mut().optimizer.prefer_hash_join = enabled
+        }
+        if let Some(value) = self.hash_join_single_partition_threshold {
+            config
+                .options_mut()
+                .optimizer
+                .hash_join_single_partition_threshold = value
+        }
+        if let Some(value) = self.hash_join_single_partition_threshold_rows {
+            config
+                .options_mut()
+                .optimizer
+                .hash_join_single_partition_threshold_rows = value
+        }
         config
     }
 
@@ -310,6 +346,9 @@ impl Default for TestPlanBuilder {
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
+            prefer_hash_join: None,
+            hash_join_single_partition_threshold: None,
+            hash_join_single_partition_threshold_rows: None,
         }
     }
 }
