@@ -153,8 +153,8 @@ pub(crate) async fn inject_network_boundaries(
 #[derive(Clone)]
 pub(crate) struct InjectNetworkBoundaryContext<'a> {
     pub(crate) d_cfg: &'a DistributedConfig,
+    pub(crate) cfg: &'a ConfigOptions,
 
-    cfg: &'a ConfigOptions,
     nb_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
     query_id: Uuid,

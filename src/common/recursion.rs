@@ -70,6 +70,17 @@ pub(crate) trait TreeNodeExt {
     ) -> Result<Transformed<Self>>
     where
         Self: Sized;
+
+    /// Recursively rewrite the tree using `f` in a top-down (pre-order) fashion, passing down
+    /// the parent node immediately above.
+    ///
+    /// `f` is applied to the node first, and then its children.
+    fn transform_down_with_parent<F: FnMut(Self, Option<Self>) -> Result<Transformed<Self>>>(
+        self,
+        f: F,
+    ) -> Result<Transformed<Self>>
+    where
+        Self: Sized;
 }
 
 impl TreeNodeExt for Arc<dyn ExecutionPlan> {
@@ -204,6 +215,24 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             },
             |node| Ok(Transformed::no(node)),
         )
+    }
+
+    fn transform_down_with_parent<F: FnMut(Self, Option<Self>) -> Result<Transformed<Self>>>(
+        self,
+        mut f: F,
+    ) -> Result<Transformed<Self>> {
+        let mut stack = vec![];
+        self.transform_down(|node| {
+            let parent = stack.pop();
+            let transformed = f(node, parent)?;
+            if transformed.tnr != TreeNodeRecursion::Continue {
+                return Ok(transformed);
+            }
+
+            let child_count = transformed.data.children().len();
+            stack.extend((0..child_count).map(|_| Arc::clone(&transformed.data)));
+            Ok(transformed)
+        })
     }
 }
 

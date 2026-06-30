@@ -15,6 +15,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
+use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Transforms a single-node physical plan into a distributed plan by injecting network
@@ -52,16 +53,28 @@ impl QueryPlanner for DistributedQueryPlanner {
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let d_cfg = DistributedConfig::from_config_options(session_state.config_options())?;
+        let mut session_state = Cow::Borrowed(session_state);
+        if d_cfg.dynamic_task_count {
+            let mut session_state_clone = session_state.as_ref().clone();
+            let options = session_state_clone.config_mut().options_mut();
+            // Always do shuffle JOINs, we will collapse them to broadcast joins if we find it
+            // necessary.
+            options.optimizer.hash_join_single_partition_threshold = usize::MAX;
+            options.optimizer.hash_join_single_partition_threshold_rows = usize::MAX;
+            session_state = Cow::Owned(session_state_clone);
+        }
+
         let original_plan = match &self.prev {
             None => {
                 // Use the default physical planner.
                 let planner = DefaultPhysicalPlanner::default();
                 planner
-                    .create_physical_plan(logical_plan, session_state)
+                    .create_physical_plan(logical_plan, &session_state)
                     .await?
             }
             Some(prev) => {
-                prev.create_physical_plan(logical_plan, session_state)
+                prev.create_physical_plan(logical_plan, &session_state)
                     .await?
             }
         };

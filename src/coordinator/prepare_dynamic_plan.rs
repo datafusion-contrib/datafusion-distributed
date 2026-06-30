@@ -9,12 +9,22 @@ use crate::distributed_planner::{
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::worker::generated::worker as pb;
-use crate::{BytesCounterMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage};
+use crate::{
+    BroadcastExec, BytesCounterMetric, NetworkBoundaryExt, NetworkBroadcastExec,
+    NetworkCoalesceExec, NetworkShuffleExec, Stage,
+};
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::config::ConfigOptions;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::enforce_distribution::EnforceDistribution;
+use datafusion::physical_optimizer::join_selection::JoinSelection;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics,
 };
@@ -68,6 +78,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .task_count(&input_stage.plan)?
                 .merge(Desired(compute_based_task_count));
 
+            input_stage.plan = optimize_plan(input_stage.plan, nb_ctx.cfg)?;
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by TaskEstimator::scale_up_leaf_node, and the
             // plan is finally left ready for distribution.
@@ -357,5 +368,91 @@ fn zero_stats(n_cols: usize) -> Statistics {
                 byte_size: Precision::Exact(0),
             })
             .collect(),
+    }
+}
+
+fn optimize_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let (repartition, plan) = pop_front_repartition(plan);
+
+    let plan = JoinSelection::new().optimize(plan, cfg)?;
+    let plan = rearrange_network_boundaries(plan, cfg)?;
+    let plan = EnforceDistribution::new().optimize(plan, cfg)?;
+
+    let plan = push_front_repartition(repartition, plan)?;
+
+    Ok(plan)
+}
+
+fn pop_front_repartition(
+    plan: Arc<dyn ExecutionPlan>,
+) -> (Option<Arc<dyn ExecutionPlan>>, Arc<dyn ExecutionPlan>) {
+    if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>() {
+        let input = Arc::clone(r_exec.input());
+        (Some(plan), input)
+    } else if let Some(b_exec) = plan.downcast_ref::<BroadcastExec>() {
+        let input = Arc::clone(b_exec.input());
+        (Some(plan), input)
+    } else {
+        (None, plan)
+    }
+}
+
+fn push_front_repartition(
+    plan: Option<Arc<dyn ExecutionPlan>>,
+    rest: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    match plan {
+        None => Ok(rest),
+        Some(plan) => plan.with_new_children(vec![rest]),
+    }
+}
+
+fn rearrange_network_boundaries(
+    plan: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let transformed = plan.transform_down_with_parent(|plan, parent| {
+        let Some(parent) = parent else {
+            return Ok(Transformed::no(plan));
+        };
+
+        let Some(hj) = parent.downcast_ref::<HashJoinExec>() else {
+            return Ok(Transformed::no(plan));
+        };
+
+        if hj.mode == PartitionMode::CollectLeft && Arc::ptr_eq(&plan, &hj.left) {
+            if let Some(shuffle) = plan.downcast_ref::<NetworkShuffleExec>() {
+                return Ok(Transformed::yes(Arc::new(shuffle.to_broadcast())));
+            }
+        } else if hj.mode == PartitionMode::CollectLeft
+            && Arc::ptr_eq(&plan, &hj.right)
+            && let Some(broadcast) = plan
+                .child_if::<CoalescePartitionsExec>()
+                .downcast_ref::<NetworkBroadcastExec>()
+        {
+            return Ok(Transformed::yes(Arc::new(
+                broadcast.to_round_robin_shuffle(cfg),
+            )));
+        }
+
+        Ok(Transformed::no(plan))
+    })?;
+
+    Ok(transformed.data)
+}
+
+trait PlanMatcherExt<'a> {
+    fn child_if<T: ExecutionPlan + 'static>(&'a self) -> &'a Arc<dyn ExecutionPlan>;
+}
+
+impl<'a> PlanMatcherExt<'a> for Arc<dyn ExecutionPlan> {
+    fn child_if<T: ExecutionPlan + 'static>(&'a self) -> &'a Arc<dyn ExecutionPlan> {
+        match self.downcast_ref::<T>() {
+            None => self,
+            Some(plan) => plan.children().swap_remove(0),
+        }
     }
 }
