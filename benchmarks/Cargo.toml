@@ -34,9 +34,20 @@ openssl = { version = "0.10", features = ["vendored"] } # Keep this. Necessary f
 mimalloc = "0.1"
 sketches-ddsketch = "0.3"
 
+[features]
+# Gates for the dataset test suites under `tests/`. They live here rather than in the library
+# because, as a dev-dependency of the library, this crate re-enables `grpc` on every test build
+# through feature unification, which made the no-grpc config untestable.
+tpch = []
+tpcds = []
+clickbench = []
+slow-tests = []
+
 [dev-dependencies]
 criterion = "0.5"
 sysinfo = "0.30"
+pretty_assertions = "1.4"
+test-case = "3.3.1"
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2", "chrono"] }
