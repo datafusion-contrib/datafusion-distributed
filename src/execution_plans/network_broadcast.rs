@@ -2,8 +2,9 @@ use crate::common::require_one_child;
 use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{BroadcastExec, DistributedTaskContext};
+use crate::{BroadcastExec, DistributedTaskContext, NetworkShuffleExec};
 use datafusion::common::{Result, not_impl_err, plan_err};
+use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
@@ -133,6 +134,19 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+        }
+    }
+
+    pub(crate) fn to_round_robin_shuffle(&self, cfg: &ConfigOptions) -> NetworkShuffleExec {
+        NetworkShuffleExec {
+            properties: Arc::new(PlanProperties::new(
+                self.properties.eq_properties.clone(),
+                Partitioning::RoundRobinBatch(cfg.execution.target_partitions),
+                self.properties.emission_type,
+                self.properties.boundedness,
+            )),
+            worker_connections: WorkerConnectionPool::new(self.input_stage.task_count()),
+            input_stage: self.input_stage.clone(),
         }
     }
 

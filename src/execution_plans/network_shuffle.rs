@@ -3,7 +3,7 @@ use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedTaskContext, NetworkBoundary, NetworkBroadcastExec};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -112,6 +112,19 @@ impl NetworkShuffleExec {
             properties: input_properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+        }
+    }
+
+    pub(crate) fn to_broadcast(&self) -> NetworkBroadcastExec {
+        NetworkBroadcastExec {
+            properties: Arc::new(PlanProperties::new(
+                self.properties.eq_properties.clone(),
+                Partitioning::UnknownPartitioning(self.properties.partitioning.partition_count()),
+                self.properties.emission_type,
+                self.properties.boundedness,
+            )),
+            worker_connections: WorkerConnectionPool::new(self.input_stage.task_count()),
+            input_stage: self.input_stage.clone(),
         }
     }
 

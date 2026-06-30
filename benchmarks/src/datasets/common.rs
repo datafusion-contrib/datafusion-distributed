@@ -77,12 +77,13 @@ pub async fn register_tables(
         let path = entry?.path();
         if path.is_dir() {
             let table_name = path.file_name().unwrap().to_str().unwrap();
-            ctx.register_parquet(
-                table_name,
-                path.to_str().unwrap(),
-                ParquetReadOptions::default(),
-            )
-            .await?;
+            let _ = ctx
+                .register_parquet(
+                    table_name,
+                    path.to_str().unwrap(),
+                    ParquetReadOptions::default(),
+                )
+                .await;
         }
     }
     Ok(())

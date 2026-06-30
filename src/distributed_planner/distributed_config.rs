@@ -76,6 +76,8 @@ extensions_options! {
         /// If `dynamic_task_count` is enabled, this value is the amount of bytes/second each
         /// partition is expected to handle. Lower values will result in greater parallelism.
         pub bytes_per_partition_per_second: usize, default = 16 * 1024 * 1024
+        /// Enables dynamic join reordering.
+        pub dynamic_join_reordering: bool, default = false
         /// Collection of [TaskEstimator]s that will be applied to leaf nodes in order to
         /// estimate how many tasks should be spawned for the [Stage] containing the leaf node.
         pub(crate) __private_task_estimator: CombinedTaskEstimator, default = CombinedTaskEstimator::default()
