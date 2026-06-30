@@ -21,7 +21,7 @@ impl MetricsWrapperExec {
         Self { inner, metrics }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grpc"))]
     pub(crate) fn inner(&self) -> &Arc<dyn ExecutionPlan> {
         &self.inner
     }
