@@ -286,82 +286,78 @@ async fn _inject_network_boundaries(
     // Cap the reconciled task count by the configured max-per-stage budget.
     task_count = task_count.limit(nb_ctx.max_tasks()?);
 
-    // Upon reaching a hash repartition, we need to introduce a shuffle right above it.
-    if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>() {
-        if matches!(r_exec.partitioning(), Partitioning::Hash(_, _)) {
-            let input_stage = LocalStage {
-                query_id: nb_ctx.query_id,
-                num: nb_ctx.fetch_add_stage_id(),
-                plan: nb_ctx.plan_with_task_count(plan, task_count),
-                tasks: task_count.as_usize(),
-            };
-            let result = nb_ctx
-                .nb_builder
-                .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
-                .await?;
-            let nb = Arc::new(NetworkShuffleExec::from_stage(
-                result.input_stage,
-                result.input_properties,
-            ));
-            return Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count));
-        }
+    // Upon reaching a hash repartition, we need to introduce a network shuffle right above it.
+    if let Some(r_exec) = plan.downcast_ref::<RepartitionExec>()
+        && matches!(r_exec.partitioning(), Partitioning::Hash(_, _))
+    {
+        let input_stage = LocalStage {
+            query_id: nb_ctx.query_id,
+            num: nb_ctx.fetch_add_stage_id(),
+            plan: nb_ctx.plan_with_task_count(plan, task_count),
+            tasks: task_count.as_usize(),
+        };
+        let result = nb_ctx
+            .nb_builder
+            .build(input_stage, TypeId::of::<NetworkShuffleExec>(), nb_ctx)
+            .await?;
+        let nb = Arc::new(NetworkShuffleExec::from_stage(
+            result.input_stage,
+            result.input_properties,
+        ));
+        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+    }
+    // Upon reaching a broadcast, we need to introduce a network broadcast right above it.
+    else if let Some(_b_exec) = plan.downcast_ref::<BroadcastExec>() {
+        let input_stage = LocalStage {
+            query_id: nb_ctx.query_id,
+            num: nb_ctx.fetch_add_stage_id(),
+            plan: nb_ctx.plan_with_task_count(plan, task_count),
+            tasks: task_count.as_usize(),
+        };
+        let result = nb_ctx
+            .nb_builder
+            .build(input_stage, TypeId::of::<NetworkBroadcastExec>(), nb_ctx)
+            .await?;
+        let nb = Arc::new(NetworkBroadcastExec::from_stage(
+            result.input_stage,
+            result.input_properties,
+        ));
+        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+    }
     // If the parent of the current node is either a `CoalescePartitionsExec` or a
     // `SortPreservingMergeExec`, a network boundary below it is necessary.
-    } else if let Some(parent) = parent
+    else if let Some(parent) = parent
         // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
         // we don't want to do it.
         && !plan.children().is_empty()
-        // If the parent is trying to coalesce all partitions into one, we need to introduce
-        // a network coalesce right below it (or in other words, above the current node)
         && (parent.is::<CoalescePartitionsExec>()
         || parent.is::<SortPreservingMergeExec>())
     {
-        // A BroadcastExec underneath a coalesce parent means the build side will cross stages.
-        return if plan.is::<BroadcastExec>() {
-            let input_stage = LocalStage {
-                query_id: nb_ctx.query_id,
-                num: nb_ctx.fetch_add_stage_id(),
-                plan: nb_ctx.plan_with_task_count(plan, task_count),
-                tasks: task_count.as_usize(),
-            };
-            let result = nb_ctx
-                .nb_builder
-                .build(input_stage, TypeId::of::<NetworkBroadcastExec>(), nb_ctx)
-                .await?;
-            let nb = Arc::new(NetworkBroadcastExec::from_stage(
-                result.input_stage,
-                result.input_properties,
-            ));
-            Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
-        } else {
-            let input_stage = LocalStage {
-                query_id: nb_ctx.query_id,
-                num: nb_ctx.fetch_add_stage_id(),
-                plan: nb_ctx.plan_with_task_count(plan, task_count),
-                tasks: task_count.as_usize(),
-            };
-            let result = nb_ctx
-                .nb_builder
-                .build(input_stage, TypeId::of::<NetworkCoalesceExec>(), nb_ctx)
-                .await?;
-            if !matches!(result.consumer_task_count, Maximum(1)) {
-                return plan_err!(
-                    "A NetworkCoalesceExec must return exactly a Maximum(1) annotation above"
-                );
-            }
-            // The parent that triggered this branch is a `CoalescePartitionsExec` or
-            // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
-            // stage above this boundary must run in exactly one task.
-            let nb = Arc::new(NetworkCoalesceExec::from_stage(
-                result.input_stage,
-                result.input_properties,
-                1,
-            ));
-            Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+        let input_stage = LocalStage {
+            query_id: nb_ctx.query_id,
+            num: nb_ctx.fetch_add_stage_id(),
+            plan: nb_ctx.plan_with_task_count(plan, task_count),
+            tasks: task_count.as_usize(),
         };
-    }
-
-    if parent.is_none() {
+        let result = nb_ctx
+            .nb_builder
+            .build(input_stage, TypeId::of::<NetworkCoalesceExec>(), nb_ctx)
+            .await?;
+        if !matches!(result.consumer_task_count, Maximum(1)) {
+            return plan_err!(
+                "A NetworkCoalesceExec must return exactly a Maximum(1) annotation above"
+            );
+        }
+        // The parent that triggered this branch is a `CoalescePartitionsExec` or
+        // `SortPreservingMergeExec`, both of which fold all partitions into one — so the
+        // stage above this boundary must run in exactly one task.
+        let nb = Arc::new(NetworkCoalesceExec::from_stage(
+            result.input_stage,
+            result.input_properties,
+            1,
+        ));
+        Ok(nb_ctx.plan_with_task_count(nb, result.consumer_task_count))
+    } else if parent.is_none() {
         // We've just finished walking the head stage's subplan. Run a final propagation so
         // every node in the head stage (which never crossed a stage boundary on the way up)
         // gets its task count recorded.
