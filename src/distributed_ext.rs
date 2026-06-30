@@ -2,6 +2,7 @@ use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::distributed_planner::set_distributed_task_estimator;
+use crate::filter_expressions::{PlanFilterExpressions, set_distributed_filter_expressions};
 use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
@@ -577,6 +578,19 @@ pub trait DistributedExt: Sized {
         P: WorkUnitFeedProvider + 'static,
         P::WorkUnit: 'static,
         F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+    /// Registers a plan node type that exposes filter expressions for dynamic filter display.
+    ///
+    /// Custom plan nodes should implement [PlanFilterExpressions] and register the concrete type
+    /// on both the coordinator and worker session builders.
+    fn with_distributed_filter_expressions<T>(self) -> Self
+    where
+        T: PlanFilterExpressions + 'static;
+
+    /// Same as [DistributedExt::with_distributed_filter_expressions] but with an in-place mutation.
+    fn set_distributed_filter_expressions<T>(&mut self)
+    where
+        T: PlanFilterExpressions + 'static;
 }
 
 impl DistributedExt for SessionConfig {
@@ -722,6 +736,13 @@ impl DistributedExt for SessionConfig {
         })
     }
 
+    fn set_distributed_filter_expressions<T>(&mut self)
+    where
+        T: PlanFilterExpressions + 'static,
+    {
+        set_distributed_filter_expressions::<T>(self)
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -804,6 +825,12 @@ impl DistributedExt for SessionConfig {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            #[call(set_distributed_filter_expressions)]
+            #[expr($;self)]
+            fn with_distributed_filter_expressions<T>(mut self) -> Self
+            where
+                T: PlanFilterExpressions + 'static;
         }
     }
 }
@@ -915,6 +942,15 @@ impl DistributedExt for SessionStateBuilder {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_filter_expressions<T>(&mut self)
+            where
+                T: PlanFilterExpressions + 'static;
+            #[call(set_distributed_filter_expressions)]
+            #[expr($;self)]
+            fn with_distributed_filter_expressions<T>(mut self) -> Self
+            where
+                T: PlanFilterExpressions + 'static;
         }
     }
 }
@@ -1026,6 +1062,15 @@ impl DistributedExt for SessionState {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_filter_expressions<T>(&mut self)
+            where
+                T: PlanFilterExpressions + 'static;
+            #[call(set_distributed_filter_expressions)]
+            #[expr($;self)]
+            fn with_distributed_filter_expressions<T>(mut self) -> Self
+            where
+                T: PlanFilterExpressions + 'static;
         }
     }
 }
@@ -1137,6 +1182,15 @@ impl DistributedExt for SessionContext {
                 P: WorkUnitFeedProvider + 'static,
                 P::WorkUnit: 'static,
                 F: Fn(&T) -> Option<&WorkUnitFeed<P>> + Send + Sync + 'static;
+
+            fn set_distributed_filter_expressions<T>(&mut self)
+            where
+                T: PlanFilterExpressions + 'static;
+            #[call(set_distributed_filter_expressions)]
+            #[expr($;self)]
+            fn with_distributed_filter_expressions<T>(self) -> Self
+            where
+                T: PlanFilterExpressions + 'static;
         }
     }
 }
