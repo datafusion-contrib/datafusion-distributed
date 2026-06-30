@@ -45,7 +45,7 @@ sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
 bincode = "1"
-tonic-prost = "0.14.2"
+tonic-prost = { version = "0.14.2", optional = true }
 
 # grpc-specific features
 arrow-flight = { version = "58", optional = true }
@@ -68,6 +68,7 @@ grpc = [
     "arrow-select",
     "arrow-ipc",
     "tonic",
+    "tonic-prost",
     "tower"
 ]
 

@@ -40,6 +40,11 @@ pub mod test_utils;
 #[cfg(feature = "grpc")]
 pub use protocol::grpc;
 
+/// The worker-protocol prost message types, independent of any transport. A non-gRPC transport
+/// reaches for these to speak the same wire shape the gRPC path serializes. Unstable: this
+/// mirrors `worker.proto`, which is regenerated freely.
+pub use protocol::generated::worker as proto;
+
 pub use codec::DistributedCodec;
 pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
