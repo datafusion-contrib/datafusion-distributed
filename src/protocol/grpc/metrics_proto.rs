@@ -1,4 +1,4 @@
-use super::generated::worker as pb;
+use crate::protocol::generated::worker as pb;
 use chrono::DateTime;
 use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
