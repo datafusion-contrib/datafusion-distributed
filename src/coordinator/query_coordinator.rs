@@ -13,7 +13,7 @@ use crate::{
     CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
     DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext, MaybeEncoded, NetworkBoundaryExt,
     SetPlanRequest, TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    get_distributed_channel_resolver, get_distributed_dispatch_plan_source,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -146,16 +146,25 @@ impl<'a> StageCoordinator<'a> {
 
         let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
 
+        // An embedder can serialize the dispatch bytes for this stage itself (e.g. with a codec
+        // the config's extension point cannot express) instead of the coordinator encoding the
+        // plan. Either way the bytes describe `specialized`, the ready-to-run per-task plan.
         let task_key = TaskKey {
             query_id: self.query_id,
             stage_id: self.stage_id,
             task_number: task_i,
         };
+        let plan = match get_distributed_dispatch_plan_source(session_config)
+            .and_then(|source| source.dispatch_plan_proto(&task_key, &specialized))
+        {
+            Some(bytes) => MaybeEncoded::Encoded(bytes?),
+            None => MaybeEncoded::Decoded(specialized),
+        };
 
         let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
-            plan: MaybeEncoded::Decoded(specialized),
+            plan,
             work_unit_feed_declarations,
             target_worker_url: url.clone(),
             query_start_time_ns: self.metrics.instantiation_time,
