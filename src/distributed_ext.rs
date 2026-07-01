@@ -2,6 +2,7 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
+use crate::dispatch_plan_source::set_distributed_dispatch_plan_source;
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTasksHandler, RouteTasksHandlers,
     ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, WorkerPlanRewriteHandler,
@@ -12,8 +13,8 @@ use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DispatchPlanSource, DistributedConfig, LocalWorkerContext, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -282,6 +283,15 @@ pub trait DistributedExt: Sized {
         resolver: T,
     );
 
+    /// Registers a [DispatchPlanSource] the coordinator consults for each stage's dispatch bytes
+    /// instead of encoding the plan it holds. See [DispatchPlanSource] for when this is needed.
+    fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(
+        self,
+        source: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_dispatch_plan_source] but with an in-place mutation.
+    fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
     /// Sets the number of bytes each partition in a stage with a FileScanConfig node is
     /// expected to scan. A task runs `target_partitions` partitions, so the task count is
     /// roughly `total_scan_bytes / bytes_per_partition / target_partitions` (capped at the
@@ -779,6 +789,9 @@ impl DistributedExt for SessionConfig {
         set_distributed_channel_resolver(self, resolver);
     }
 
+    fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T) {
+        set_distributed_dispatch_plan_source(self, source);
+    }
     fn set_distributed_file_scan_config_bytes_per_partition(
         &mut self,
         bytes_per_partition: usize,
@@ -945,6 +958,9 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_file_scan_config_bytes_per_partition(mut self, bytes_per_partition: usize) -> Result<Self, DataFusionError>;
@@ -1068,6 +1084,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1218,6 +1238,10 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1361,6 +1385,10 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
 
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(self, source: T) -> Self;
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
