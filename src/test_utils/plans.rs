@@ -1,15 +1,13 @@
 #[cfg(test)]
 use super::parquet::register_parquet_tables;
-use crate::NetworkBoundaryExt;
-use crate::common::serialize_uuid;
 use crate::coordinator::DistributedExec;
 use crate::stage::Stage;
-use crate::worker::generated::worker::TaskKey;
 #[cfg(test)]
 use crate::{
     DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
     display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
+use crate::{NetworkBoundaryExt, TaskKey};
 #[cfg(test)]
 use datafusion::{
     common::Result,
@@ -67,9 +65,9 @@ pub fn get_stages_and_task_keys(
         // Add each task.
         for j in 0..stage.task_count() {
             task_keys.insert(TaskKey {
-                query_id: serialize_uuid(&stage.query_id()),
-                stage_id: stage.num() as u64,
-                task_number: j as u64,
+                query_id: stage.query_id(),
+                stage_id: stage.num(),
+                task_number: j,
             });
         }
 

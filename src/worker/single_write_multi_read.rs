@@ -63,6 +63,7 @@ impl<T: Clone> SingleWriteMultiRead<T> {
     }
 
     /// Reads the current value, if any, not waiting for it to be set by a writer.
+    #[cfg(feature = "grpc")]
     pub(crate) fn read_now(&self) -> Option<T> {
         self.rx.borrow().clone()
     }

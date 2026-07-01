@@ -2,13 +2,16 @@ use super::{
     GetTaskProgressResponse, ObservabilityService, TaskProgress, TaskStatus, WorkerMetrics,
     generated::observability::{GetTaskProgressRequest, PingRequest, PingResponse},
 };
-use crate::worker::generated::worker::TaskKey;
+use crate::common::serialize_uuid;
+use crate::grpc::{GetClusterWorkersRequest, GetClusterWorkersResponse};
+use crate::protocol::grpc::generated::worker as worker_pb;
 use crate::worker::{SingleWriteMultiRead, TaskData};
-use crate::{GetClusterWorkersRequest, GetClusterWorkersResponse, WorkerResolver};
+use crate::{TaskKey, WorkerResolver};
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use moka::future::Cache;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 #[cfg(feature = "system-metrics")]
 use std::time::Duration;
 #[cfg(feature = "system-metrics")]
@@ -99,7 +102,7 @@ impl ObservabilityService for ObservabilityServiceImpl {
                 let output_rows = output_rows_from_plan(&task_data.base_plan);
 
                 tasks.push(TaskProgress {
-                    task_key: Some((*internal_key).clone()),
+                    task_key: Some(task_key_to_proto(&internal_key)),
                     total_partitions,
                     completed_partitions,
                     status: TaskStatus::Running as i32,
@@ -139,11 +142,38 @@ impl ObservabilityServiceImpl {
         }
 
         #[cfg(feature = "system-metrics")]
-        return *self.system.borrow();
+        *self.system.borrow()
     }
 }
 
 /// Extracts output rows from the root plan node's metrics.
 fn output_rows_from_plan(plan: &Arc<dyn ExecutionPlan>) -> u64 {
     plan.metrics().and_then(|m| m.output_rows()).unwrap_or(0) as u64
+}
+
+fn task_key_to_proto(task_key: &TaskKey) -> worker_pb::TaskKey {
+    worker_pb::TaskKey {
+        query_id: serialize_uuid(&task_key.query_id),
+        stage_id: task_key.stage_id as u64,
+        task_number: task_key.task_number as u64,
+    }
+}
+
+impl TaskData {
+    /// Returns the number of partitions remaining to be processed.
+    fn num_partitions_remaining(&self) -> usize {
+        self.num_partitions_remaining.load(Ordering::SeqCst)
+    }
+
+    /// Returns the total number of partitions in this task.
+    fn total_partitions(&self) -> usize {
+        match self.final_plan.get() {
+            Some(Ok(plan)) => plan.output_partitioning().partition_count(),
+            _ => self
+                .base_plan
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+        }
+    }
 }

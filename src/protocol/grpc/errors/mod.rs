@@ -6,7 +6,7 @@ use datafusion::error::DataFusionError;
 use prost::Message;
 use std::borrow::Borrow;
 
-use crate::protobuf::errors::datafusion_error::DataFusionErrorProto;
+use super::errors::datafusion_error::DataFusionErrorProto;
 
 mod arrow_error;
 mod datafusion_error;

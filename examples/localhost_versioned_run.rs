@@ -4,8 +4,8 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    DefaultChannelResolver, DistributedExt, GetWorkerInfoRequest, SessionStateBuilderExt,
-    WorkerResolver, create_worker_client, display_plan_ascii,
+    DistributedExt, GetWorkerInfoRequest, SessionStateBuilderExt, WorkerResolver,
+    display_plan_ascii, grpc,
 };
 use futures::TryStreamExt;
 use std::error::Error;
@@ -40,7 +40,7 @@ struct Args {
 /// the `GetWorkerInfo` RPC. Returns `false` if the worker is unreachable, returns
 /// an error, or reports a different version.
 async fn worker_has_version(
-    channel_resolver: &DefaultChannelResolver,
+    channel_resolver: &grpc::DefaultChannelResolver,
     url: &Url,
     expected_version: &str,
 ) -> bool {
@@ -48,12 +48,12 @@ async fn worker_has_version(
         return false;
     };
 
-    let mut client = create_worker_client(channel);
+    let mut client = grpc::create_worker_client(channel);
     let Ok(response) = client.get_worker_info(GetWorkerInfoRequest {}).await else {
         return false;
     };
 
-    response.into_inner().version == expected_version
+    response.version == expected_version
 }
 
 #[tokio::main]
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::from_args();
 
     let ports = if let Some(target_version) = &args.version {
-        let channel_resolver = DefaultChannelResolver::default();
+        let channel_resolver = grpc::DefaultChannelResolver::default();
         let mut compatible = Vec::new();
         for &port in &args.cluster_ports {
             let url = Url::parse(&format!("http://localhost:{port}"))?;

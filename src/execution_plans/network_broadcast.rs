@@ -248,16 +248,14 @@ impl ExecutionPlan for NetworkBroadcastExec {
         let mut streams = Vec::with_capacity(self.input_stage.task_count());
 
         for input_task_index in 0..self.input_stage.task_count() {
-            let worker_connection = self.worker_connections.get_or_init_worker_connection(
+            streams.push(self.worker_connections.execute(
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                off + partition,
                 self.producer_head(task_context.task_count),
                 &context,
-            )?;
-
-            let stream = worker_connection.execute(off + partition)?;
-            streams.push(stream);
+            )?);
         }
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(

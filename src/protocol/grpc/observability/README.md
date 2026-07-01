@@ -8,5 +8,5 @@ for tonic/gRPC services.
 In the root of the datafusion-distribued repo, run:
 
 ```bash
-./src/observability/gen/regen.sh
+./src/protocol/grpc/observability/gen/regen.sh
 ```

@@ -219,10 +219,9 @@ impl DistributedTaskContext {
     }
 }
 
-use crate::common::serialize_uuid;
-use crate::metrics::proto::metric_proto_to_df;
-use crate::worker::generated::worker as pb;
-use crate::{DistributedMetricsFormat, NetworkShuffleExec, rewrite_distributed_plan_with_metrics};
+use crate::{
+    DistributedMetricsFormat, NetworkShuffleExec, TaskKey, rewrite_distributed_plan_with_metrics,
+};
 use crate::{NetworkBoundary, NetworkBoundaryExt};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -433,21 +432,24 @@ fn display_inner_distributed_leaf(
 /// Gathers the metrics global to a stage. These metrics are not specific to any plan node, and
 /// are instead global to a whole stage.
 fn gather_stage_header_metrics(stage: &Stage, metrics_store: &MetricsStore) -> MetricsSet {
-    let mut task_key = pb::TaskKey {
-        query_id: serialize_uuid(&stage.query_id()),
-        stage_id: stage.num() as u64,
+    let mut task_key = TaskKey {
+        query_id: stage.query_id(),
+        stage_id: stage.num(),
         task_number: 0,
     };
     let mut all_metrics = stage.metrics();
-    while let Some(metrics_set) = metrics_store.get(&task_key).and_then(|v| v.task_metrics) {
-        for mut metric in metrics_set.metrics {
-            metric.labels.push(pb::Label {
-                name: DISTRIBUTED_DATAFUSION_TASK_ID_LABEL.to_string(),
-                value: task_key.task_number.to_string(),
-            });
-            if let Ok(metric) = metric_proto_to_df(metric) {
-                all_metrics.push(metric)
-            };
+    while let Some(metrics_set) = metrics_store.get(&task_key).map(|v| v.task_metrics) {
+        for metric in metrics_set.iter() {
+            let mut labels = metric.labels().to_vec();
+            labels.push(Label::new(
+                DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+                task_key.task_number.to_string(),
+            ));
+            all_metrics.push(Arc::new(Metric::new_with_labels(
+                metric.value().clone(),
+                metric.partition(),
+                labels,
+            )));
         }
         task_key.task_number += 1;
     }

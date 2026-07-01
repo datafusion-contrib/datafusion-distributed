@@ -1,5 +1,4 @@
-use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
-use crate::{BoxCloneSyncChannel, ChannelResolver, create_worker_client};
+use crate::{ChannelResolver, WorkerChannel, grpc};
 use arrow::datatypes::DataType::{
     Boolean, Dictionary, Float64, Int32, Int64, List, Timestamp, UInt8, Utf8,
 };
@@ -72,18 +71,17 @@ pub(super) fn rows_for_producer(
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
 pub(super) struct InMemoryChannelsResolver {
-    pub channels: Vec<BoxCloneSyncChannel>,
+    pub channels: Vec<grpc::BoxCloneSyncChannel>,
 }
 
 #[async_trait::async_trait]
 impl ChannelResolver for InMemoryChannelsResolver {
-    async fn get_worker_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>> {
+    async fn get_worker_client_for_url(&self, url: &Url) -> Result<Box<dyn WorkerChannel>> {
         let Some(port) = url.port() else {
             return exec_err!("Missing port in url {url}");
         };
-        Ok(create_worker_client(self.channels[port as usize].clone()))
+        Ok(grpc::create_worker_client(
+            self.channels[port as usize].clone(),
+        ))
     }
 }

@@ -4,9 +4,8 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_distributed::{
-    BoxCloneSyncChannel, ChannelResolver, DistributedExt, SessionStateBuilderExt, Worker,
-    WorkerQueryContext, WorkerResolver, WorkerServiceClient, create_worker_client,
-    display_plan_ascii,
+    ChannelResolver, DistributedExt, SessionStateBuilderExt, Worker, WorkerChannel,
+    WorkerQueryContext, WorkerResolver, display_plan_ascii, grpc,
 };
 use futures::TryStreamExt;
 use hyper_util::rt::TokioIo;
@@ -66,7 +65,7 @@ const DUMMY_URL: &str = "http://localhost:50051";
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
 struct InMemoryChannelResolver {
-    channel: WorkerServiceClient<BoxCloneSyncChannel>,
+    channel: grpc::BoxCloneSyncChannel,
 }
 
 impl InMemoryChannelResolver {
@@ -84,7 +83,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: create_worker_client(BoxCloneSyncChannel::new(channel)),
+            channel: grpc::BoxCloneSyncChannel::new(channel),
         };
         let this_clone = this.clone();
 
@@ -110,8 +109,8 @@ impl ChannelResolver for InMemoryChannelResolver {
     async fn get_worker_client_for_url(
         &self,
         _: &url::Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        Ok(self.channel.clone())
+    ) -> Result<Box<dyn WorkerChannel>, DataFusionError> {
+        Ok(grpc::create_worker_client(self.channel.clone()))
     }
 }
 
