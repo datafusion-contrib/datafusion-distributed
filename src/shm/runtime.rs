@@ -37,13 +37,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use futures::stream::{self, BoxStream, StreamExt};
 use http::HeaderMap;
 use url::Url;
 
+use crate::common::serialize_uuid;
 use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedTxs;
 use crate::{
@@ -52,7 +53,10 @@ use crate::{
 };
 
 use super::AliveFlag;
-use super::transport::{CooperativeDrainSet, DrainHandle, DrainItem, Interrupt, MppSender};
+use super::transport::{
+    CooperativeDrainSet, DrainHandle, DrainItem, Interrupt, MppFrameHeader, MppSender,
+    SendBatchStats, SetPlanFrame,
+};
 
 /// A proc's outbound senders to each peer inbox, shared between the mesh (for `Cancel` frames) and
 /// the embedder that owns their lifetime. Indexed by destination `proc_idx`; this proc's own slot
@@ -141,6 +145,37 @@ impl MppMesh {
     /// the DSM unmaps, so the mesh never extends the senders past teardown.
     pub fn set_cancel_senders(&self, senders: PeerSenders) {
         *self.cancel_senders.lock().unwrap() = Some(senders);
+    }
+
+    /// Route a leader-built `SetPlan` frame to the worker proc that owns `task_number`, over the
+    /// leader's outbound senders (installed via [`Self::set_cancel_senders`]). This is the unified
+    /// dispatch path: the coordinator ships each stage's plan through here, so the embedder no
+    /// longer routes it out of band. Errors if the senders aren't installed or the destination
+    /// slot is empty; the caller treats a failure as best-effort (the worker starves on its
+    /// `SetPlan` wait, which the dispatch deadlock detector surfaces).
+    pub async fn send_set_plan(
+        self: &Arc<Self>,
+        stage_id: u32,
+        task_number: u32,
+        frame: SetPlanFrame,
+    ) -> Result<()> {
+        let dest_proc = proc_for_task(self.n_workers(), task_number);
+        let sender = {
+            let guard = self.cancel_senders.lock().unwrap();
+            let Some(senders) = guard.as_ref() else {
+                return internal_err!(
+                    "shm mesh: control senders not installed; cannot route SetPlan"
+                );
+            };
+            let senders = senders.lock().unwrap();
+            let Some(Some(base)) = senders.get(dest_proc as usize) else {
+                return internal_err!("shm mesh: no control sender for proc {dest_proc}");
+            };
+            base.clone_with_header(MppFrameHeader::set_plan(stage_id, task_number, 0))
+                .with_cooperative_drain(Arc::clone(self) as Arc<dyn CooperativeDrainSet>)
+        };
+        let mut stats = SendBatchStats::default();
+        sender.send_set_plan_traced(&frame, &mut stats).await
     }
 
     /// Tell the producer on `producer_proc` to stop the `(stage_id, partition)` stream: this proc's
@@ -281,17 +316,56 @@ struct ShmWorkerChannel {
 
 #[async_trait]
 impl WorkerChannel for ShmWorkerChannel {
-    /// pg_search delivers each worker's plan over DSM, not over this channel, so plan delivery is a
-    /// no-op (what the old `NoOpDispatch` did). Drain the inbound control stream to exhaustion so the
-    /// coordinator's keep-alive tail does not wedge, then complete with an empty output stream: task
-    /// metrics travel back over the mesh, not here.
+    /// Route each `SetPlanRequest` the coordinator ships to the worker proc that owns its task, as a
+    /// `SetPlan` frame the worker picks up with `take_set_plan`. The coordinator's keep-alive tail
+    /// emits nothing after the request, so the loop then blocks until the stream closes, draining it
+    /// to exhaustion. Completes with an empty output stream: task metrics travel back over the mesh,
+    /// not here.
     async fn coordinator_channel(
         &mut self,
-        _headers: HeaderMap,
+        headers: HeaderMap,
         mut c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
+        let mesh = Arc::clone(&self.mesh);
         #[allow(clippy::disallowed_methods)]
-        tokio::spawn(async move { while c2w_stream.next().await.is_some() {} });
+        tokio::spawn(async move {
+            while let Some(msg) = c2w_stream.next().await {
+                let CoordinatorToWorkerMsg::SetPlanRequest(req) = msg else {
+                    continue;
+                };
+                let stage_id = req.task_key.stage_id as u32;
+                let task_number = req.task_key.task_number as u32;
+                let set_plan = pb::SetPlanRequest {
+                    task_key: Some(pb::TaskKey {
+                        query_id: serialize_uuid(&req.task_key.query_id),
+                        stage_id: req.task_key.stage_id as u64,
+                        task_number: req.task_key.task_number as u64,
+                    }),
+                    task_count: req.task_count as u64,
+                    plan_proto: req.plan_proto,
+                    work_unit_feed_declarations: req
+                        .work_unit_feed_declarations
+                        .into_iter()
+                        .map(|d| pb::set_plan_request::WorkUnitFeedDeclaration {
+                            id: serialize_uuid(&d.id),
+                            partitions: d.partitions as u64,
+                        })
+                        .collect(),
+                    target_worker_url: req.target_worker_url.to_string(),
+                    query_start_time_ns: req.query_start_time_ns as u64,
+                };
+                let frame = match SetPlanFrame::from_parts(set_plan, &headers) {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        log::warn!("shm coordinator_channel: SetPlan frame build failed: {e}");
+                        continue;
+                    }
+                };
+                if let Err(e) = mesh.send_set_plan(stage_id, task_number, frame).await {
+                    log::warn!("shm coordinator_channel: SetPlan route failed: {e}");
+                }
+            }
+        });
         Ok(stream::empty().boxed())
     }
 
