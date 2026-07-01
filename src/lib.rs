@@ -4,6 +4,7 @@ mod codec;
 mod common;
 mod config_extension_ext;
 mod coordinator;
+mod dispatch_plan_source;
 mod distributed_ext;
 mod distributed_planner;
 mod execution_plans;
@@ -48,6 +49,7 @@ pub use protocol::grpc;
 pub use protocol::generated::worker as proto;
 
 pub use codec::DistributedCodec;
+pub use dispatch_plan_source::{DispatchPlanSource, get_distributed_dispatch_plan_source};
 pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{

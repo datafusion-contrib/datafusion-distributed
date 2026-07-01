@@ -14,7 +14,8 @@ use crate::{
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedTaskContext,
     DistributedWorkUnitFeedContext, LoadInfo, NetworkBoundaryExt, SetPlanRequest, Stage,
     TaskEstimator, TaskKey, TaskRoutingContext, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    get_distributed_channel_resolver, get_distributed_dispatch_plan_source,
+    get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -143,19 +144,27 @@ impl<'a> StageCoordinator<'a> {
         UnboundedReceiver<WorkerToCoordinatorMsg>,
     )> {
         let session_config = self.task_ctx.session_config();
-        let codec = DistributedCodec::new_combined_with_user(session_config);
 
         let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
 
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(specialized, &codec)?.encode_to_vec();
-        let plan_size = plan_proto.len();
-
+        // An embedder can serialize the dispatch bytes for this stage itself (e.g. with a codec
+        // the config's extension point cannot express) instead of the coordinator encoding the
+        // plan. Either way the bytes describe `specialized`, the ready-to-run per-task plan.
         let task_key = TaskKey {
             query_id: self.query_id,
             stage_id: self.stage_id,
             task_number: task_i,
         };
+        let plan_proto = match get_distributed_dispatch_plan_source(session_config)
+            .and_then(|source| source.dispatch_plan_proto(&task_key, &specialized))
+        {
+            Some(bytes) => bytes?,
+            None => {
+                let codec = DistributedCodec::new_combined_with_user(session_config);
+                PhysicalPlanNode::try_from_physical_plan(specialized, &codec)?.encode_to_vec()
+            }
+        };
+        let plan_size = plan_proto.len();
 
         let msg = CoordinatorToWorkerMsg::SetPlanRequest(SetPlanRequest {
             task_key,

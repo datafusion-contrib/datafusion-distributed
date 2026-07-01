@@ -2,14 +2,15 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
+use crate::dispatch_plan_source::set_distributed_dispatch_plan_source;
 use crate::distributed_planner::set_distributed_task_estimator;
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, TaskEstimator, WorkUnitFeed,
-    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DispatchPlanSource, DistributedConfig, LocalWorkerContext, TaskEstimator,
+    WorkUnitFeed, WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -277,6 +278,16 @@ pub trait DistributedExt: Sized {
         &mut self,
         resolver: T,
     );
+
+    /// Registers a [DispatchPlanSource] the coordinator consults for each stage's dispatch bytes
+    /// instead of encoding the plan it holds. See [DispatchPlanSource] for when this is needed.
+    fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(
+        self,
+        source: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_dispatch_plan_source] but with an in-place mutation.
+    fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
 
     /// Adds a distributed task count estimator. [TaskEstimator]s are executed on each node
     /// sequentially until one returns an estimation on the number of tasks that should be
@@ -652,6 +663,10 @@ impl DistributedExt for SessionConfig {
         set_distributed_channel_resolver(self, resolver);
     }
 
+    fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T) {
+        set_distributed_dispatch_plan_source(self, source);
+    }
+
     fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
         &mut self,
         estimator: T,
@@ -809,6 +824,10 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
+
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
             fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
@@ -919,6 +938,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
+
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
 
             fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
             #[call(set_distributed_task_estimator)]
@@ -1055,6 +1079,11 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(mut self, source: T) -> Self;
+
             fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
             #[call(set_distributed_task_estimator)]
             #[expr($;self)]
@@ -1182,6 +1211,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
+
+            fn set_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(&mut self, source: T);
+            #[call(set_distributed_dispatch_plan_source)]
+            #[expr($;self)]
+            fn with_distributed_dispatch_plan_source<T: DispatchPlanSource + 'static>(self, source: T) -> Self;
 
             fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
             #[call(set_distributed_task_estimator)]
