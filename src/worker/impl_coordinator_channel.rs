@@ -1,4 +1,5 @@
 use crate::common::deserialize_uuid;
+use crate::execution_plans::SamplerExec;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::LocalWorkerContext;
 use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
@@ -17,6 +18,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, OnceLock};
@@ -55,6 +57,7 @@ impl Worker {
         }
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
+        let mut load_info_rxs = vec![];
 
         let task_data = || async {
             let headers = grpc_headers.into_headers();
@@ -98,6 +101,8 @@ impl Worker {
             for hook in self.hooks.on_plan.iter() {
                 plan = hook(plan, session_state.config())?;
             }
+            load_info_rxs =
+                SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
             // Initialize partition count to the number of partitions in the stage
             let total_partitions = plan.properties().partitioning.partition_count();
@@ -172,19 +177,34 @@ impl Worker {
             tokio::spawn(async move { task_data_entries.invalidate(&key).await });
         });
 
+        let load_info_stream = FuturesUnordered::from_iter(load_info_rxs)
+            .filter_map(async |load_info_or_channel_dropped| {
+                // This error can only happen if the pb::LoadInfo sender was dropped, which is fine.
+                let load_info = load_info_or_channel_dropped.ok()?;
+                Some(Ok(WorkerToCoordinatorMsg {
+                    inner: Some(worker_to_coordinator_msg::Inner::LoadInfo(load_info)),
+                }))
+            })
+            .chain(futures::stream::once(async move {
+                Ok(WorkerToCoordinatorMsg {
+                    inner: Some(worker_to_coordinator_msg::Inner::LoadInfoEos(true)),
+                })
+            }));
+
         // Stream back the metrics once the task finishes executing.
         // The oneshot receiver resolves when impl_execute_task sends the collected
         // metrics after all partitions have finished or been dropped.
         let metrics_stream = metrics_rx.into_stream();
-        let metrics_stream = metrics_stream.filter_map(|task_metrics| async move {
-            match task_metrics {
-                Ok(task_metrics) => Some(WorkerToCoordinatorMsg {
-                    inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
-                }),
-                Err(_) => None, // channel dropped without sending any message
-            }
+        let metrics_stream = metrics_stream.filter_map(async |task_metrics_or_channel_dropped| {
+            let task_metrics = task_metrics_or_channel_dropped.ok()?;
+            Some(Ok(WorkerToCoordinatorMsg {
+                inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
+            }))
         });
-        Ok(Response::new(metrics_stream.map(Ok).boxed()))
+
+        Ok(Response::new(
+            futures::stream::select(load_info_stream, metrics_stream).boxed(),
+        ))
     }
 }
 

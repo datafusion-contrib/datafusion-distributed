@@ -108,6 +108,10 @@ pub struct RunOpt {
     #[structopt(long, default_value = "0")]
     max_tasks_per_stage: usize,
 
+    /// Activate dynamic task count
+    #[structopt(long)]
+    dynamic: bool,
+
     /// Number of iterations of each test run
     #[structopt(short = "i", long = "iterations", default_value = "5")]
     iterations: usize,
@@ -205,6 +209,7 @@ impl RunOpt {
             .with_distributed_cardinality_effect_task_scale_factor(
                 self.cardinality_task_sf.unwrap_or(1.0),
             )?
+            .with_distributed_dynamic_task_count(self.dynamic)?
             .with_distributed_compression(match self.compression.as_str() {
                 "zstd" => Some(CompressionType::ZSTD),
                 "lz4" => Some(CompressionType::LZ4_FRAME),

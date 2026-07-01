@@ -50,6 +50,7 @@ pub(super) fn prepare_static_plan(
                 query_id: stage.query_id,
                 num: stage.num,
                 workers,
+                runtime_stats: None,
             },
         ))?))
     })?;

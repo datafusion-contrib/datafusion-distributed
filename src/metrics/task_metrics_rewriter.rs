@@ -81,6 +81,7 @@ pub async fn rewrite_distributed_plan_with_metrics(
                 num: stage.num,
                 plan: plan_with_metrics,
                 tasks: stage.tasks,
+                metrics_set: stage.metrics_set.clone(),
             }))?;
             let network_boundary =
                 MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
@@ -415,6 +416,7 @@ mod tests {
             num: 2,
             plan,
             tasks: 4,
+            metrics_set: Default::default(),
         }
     }
 

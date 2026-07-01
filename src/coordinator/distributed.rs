@@ -1,5 +1,7 @@
+use crate::DistributedConfig;
 use crate::common::{require_one_child, serialize_uuid};
 use crate::coordinator::metrics_store::MetricsStore;
+use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::NetworkBoundaryExt;
@@ -198,7 +200,11 @@ impl ExecutionPlan for DistributedExec {
         builder.spawn(async move {
             let _guard = query_coordinator.end_query_guard();
 
-            let result = prepare_static_plan(&query_coordinator, &base_plan)?;
+            let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
+            let result = match d_cfg.dynamic_task_count {
+                true => prepare_dynamic_plan(&query_coordinator, &base_plan).await?,
+                false => prepare_static_plan(&query_coordinator, &base_plan)?,
+            };
 
             plan_for_viz
                 .lock()

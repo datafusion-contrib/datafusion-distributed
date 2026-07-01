@@ -589,6 +589,7 @@ mod tests {
                 query_id: uuid::Uuid::nil(),
                 num: 0,
                 workers: vec![],
+                runtime_stats: None,
             }))
             .unwrap()
     }

@@ -24,6 +24,8 @@ async function main() {
         .option('--max-tasks-per-stage <number>', 'Max tasks per stage', '0')
         .option('--repartition-file-min-size <number>', 'repartition_file_min_size DF option', '10485760' /* upstream default */)
         .option('--target-partitions <number>', 'target_partitions DF option', '8')
+        .option('--dynamic <boolean>', 'Use the dynamic task count assigner', 'false')
+        .option('--bytes-per-partition-per-second <number>', 'Target throughput in bytes per partition per second for the dynamic task count allocator', `${16 * 1024 * 1024}`)
         .option('--queries <string>', 'Specific queries to run', undefined)
         .option('--debug <boolean>', 'Print the generated plans to stdout')
         .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
@@ -46,6 +48,8 @@ async function main() {
     const childrenIsolatorUnions = options.childrenIsolatorUnions === 'true' || options.childrenIsolatorUnions === 1
     const broadcastJoins = options.broadcastJoins === 'true' || options.broadcastJoins === 1
     const partialReduce = options.partialReduce === 'true' || options.partialReduce === 1
+    const dynamicTaskCount = options.dynamic === 'true' || options.dynamic === 1
+    const bytesPerPartitionPerSecond = parseInt(options.bytesPerPartitionPerSecond)
     const debug = options.debug === true || options.debug === 'true' || options.debug === 1
     const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
 
@@ -59,6 +63,8 @@ async function main() {
         compression,
         broadcastJoins,
         partialReduce,
+        dynamicTaskCount,
+        bytesPerPartitionPerSecond,
         maxTasksPerStage,
         repartitionFileMinSize,
         targetPartitions
@@ -98,6 +104,8 @@ class DataFusionRunner implements BenchmarkRunner {
         childrenIsolatorUnions: boolean;
         broadcastJoins: boolean;
         partialReduce: boolean;
+        dynamicTaskCount: boolean;
+        bytesPerPartitionPerSecond: number;
         maxTasksPerStage: number;
         repartitionFileMinSize: number;
         targetPartitions: number;
@@ -177,6 +185,8 @@ class DataFusionRunner implements BenchmarkRunner {
       SET distributed.children_isolator_unions=${this.options.childrenIsolatorUnions};
       SET distributed.broadcast_joins=${this.options.broadcastJoins};
       SET distributed.partial_reduce=${this.options.partialReduce};
+      SET distributed.dynamic_task_count=${this.options.dynamicTaskCount};
+      SET distributed.bytes_per_partition_per_second=${this.options.bytesPerPartitionPerSecond};
       SET distributed.max_tasks_per_stage=${this.options.maxTasksPerStage};
       SET datafusion.optimizer.repartition_file_min_size=${this.options.repartitionFileMinSize};
       SET datafusion.execution.target_partitions=${this.options.targetPartitions};

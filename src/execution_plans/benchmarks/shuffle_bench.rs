@@ -216,6 +216,7 @@ impl ShuffleFixture {
             query_id,
             num: 0,
             workers: self.input_stage_workers.clone(),
+            runtime_stats: None,
         });
 
         let mut join_set = JoinSet::default();

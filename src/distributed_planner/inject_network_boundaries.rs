@@ -152,8 +152,9 @@ pub(crate) async fn inject_network_boundaries(
 
 #[derive(Clone)]
 pub(crate) struct InjectNetworkBoundaryContext<'a> {
+    pub(crate) d_cfg: &'a DistributedConfig,
+
     cfg: &'a ConfigOptions,
-    d_cfg: &'a DistributedConfig,
     nb_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
     query_id: Uuid,
@@ -161,7 +162,7 @@ pub(crate) struct InjectNetworkBoundaryContext<'a> {
 }
 
 impl<'a> InjectNetworkBoundaryContext<'a> {
-    fn max_tasks(&self) -> Result<usize> {
+    pub(crate) fn max_tasks(&self) -> Result<usize> {
         Ok(match self.d_cfg.max_tasks_per_stage {
             0 => self
                 .d_cfg
@@ -190,7 +191,7 @@ impl<'a> InjectNetworkBoundaryContext<'a> {
         plan
     }
 
-    fn task_count(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<TaskCountAnnotation> {
+    pub(crate) fn task_count(&self, plan: &Arc<dyn ExecutionPlan>) -> Result<TaskCountAnnotation> {
         let Some(task_count) = self
             .task_counts
             .lock()
@@ -295,6 +296,7 @@ async fn _inject_network_boundaries(
             num: nb_ctx.fetch_add_stage_id(),
             plan: nb_ctx.plan_with_task_count(plan, task_count),
             tasks: task_count.as_usize(),
+            metrics_set: Default::default(),
         };
         let result = nb_ctx
             .nb_builder
@@ -313,6 +315,7 @@ async fn _inject_network_boundaries(
             num: nb_ctx.fetch_add_stage_id(),
             plan: nb_ctx.plan_with_task_count(plan, task_count),
             tasks: task_count.as_usize(),
+            metrics_set: Default::default(),
         };
         let result = nb_ctx
             .nb_builder
@@ -338,6 +341,7 @@ async fn _inject_network_boundaries(
             num: nb_ctx.fetch_add_stage_id(),
             plan: nb_ctx.plan_with_task_count(plan, task_count),
             tasks: task_count.as_usize(),
+            metrics_set: Default::default(),
         };
         let result = nb_ctx
             .nb_builder
@@ -405,7 +409,7 @@ async fn _inject_network_boundaries(
 /// - **Everything else**: recurse into children with the same `task_count`, then rebuild the
 ///   node with the rebuilt children.
 impl InjectNetworkBoundaryContext<'_> {
-    fn propagate_task_count_until_network_boundaries(
+    pub(crate) fn propagate_task_count_until_network_boundaries(
         &self,
         plan: &Arc<dyn ExecutionPlan>,
         task_count: TaskCountAnnotation,

@@ -38,8 +38,18 @@ pub(crate) struct RemoteWorkUnitFeedRegistry {
 impl RemoteWorkUnitFeedRegistry {
     /// Creates all the receivers and senders for a specific [WorkUnit] Feed id. One feed per
     /// partition is created.
+    ///
+    /// Calling this twice with the same `id` is a coordinator bug — duplicate declarations
+    /// mean two plan nodes share a UUID, which would cause "already consumed" when both
+    /// nodes call `feed()`. We skip rather than overwrite so the coordinator-side duplicate
+    /// detection in `task_specialized_plan` surfaces the real error first.
     pub(crate) fn add(&mut self, id: Uuid, partitions: usize) {
         for partition in 0..partitions {
+            // Skip if already registered; overwriting would silently drop the existing
+            // receiver and cause a confusing "already consumed" error at execution time.
+            if self.receivers.contains_key(&(id, partition)) {
+                continue;
+            }
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             self.receivers.insert((id, partition), Mutex::new(Some(rx)));
             self.senders.insert((id, partition), tx);

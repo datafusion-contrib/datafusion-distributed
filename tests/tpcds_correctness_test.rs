@@ -18,6 +18,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::OnceCell;
 
+    const ADAPTIVE_ENV_VAR: &str = "ADAPTIVE";
     const NUM_WORKERS: usize = 4;
     const PARTITIONS: usize = 3;
     const FILE_SCAN_CONFIG_BYTES_PER_PARTITION: usize = 1;
@@ -575,12 +576,15 @@ mod tests {
             .options_mut()
             .execution
             .target_partitions = PARTITIONS;
-        let d_ctx = d_ctx
+        let mut d_ctx = d_ctx
             .with_distributed_file_scan_config_bytes_per_partition(
                 FILE_SCAN_CONFIG_BYTES_PER_PARTITION,
             )?
             .with_distributed_cardinality_effect_task_scale_factor(CARDINALITY_TASK_COUNT_FACTOR)?
             .with_distributed_broadcast_joins(true)?;
+        if std::env::var(ADAPTIVE_ENV_VAR).unwrap_or_default() == "true" {
+            d_ctx.set_distributed_dynamic_task_count(true)?;
+        }
 
         register_tables(&s_ctx, &data_dir).await?;
         register_tables(&d_ctx, &data_dir).await?;

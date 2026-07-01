@@ -9,7 +9,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, Statistics,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -153,6 +153,7 @@ impl NetworkBroadcastExec {
                 num: 0,
                 plan: input,
                 tasks: producer_tasks,
+                metrics_set: Default::default(),
             }),
             input_properties,
         ))
@@ -160,7 +161,7 @@ impl NetworkBroadcastExec {
 }
 
 impl NetworkBoundary for NetworkBroadcastExec {
-    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_input_stage(&self, input_stage: Stage) -> Result<Arc<dyn NetworkBoundary>> {
         let mut self_clone = self.clone();
         self_clone.worker_connections = WorkerConnectionPool::new(input_stage.task_count());
         self_clone.input_stage = input_stage;
@@ -267,5 +268,13 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.worker_connections.metrics.clone_inner())
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+        self.input_stage.partition_statistics(
+            partition,
+            self.properties.output_partitioning().partition_count(),
+            self.schema(),
+        )
     }
 }

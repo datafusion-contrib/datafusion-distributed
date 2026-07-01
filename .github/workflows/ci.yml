@@ -41,19 +41,33 @@ jobs:
       - uses: ./.github/actions/setup
       - run: cargo test --features integration
 
-  tpch-test:
+  tpch-correctness-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        planning_mode: [ "adaptive", "static" ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: cargo test --features tpch --test tpch_correctness_test
+        env:
+          ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
+
+  tpch-plans-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: cargo test --features tpch --test 'tpch_*'
+      - run: cargo test --features tpch --test tpch_plans_test
 
   tpcds-correctness-test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]
+        shard: [ "01", "02", "03", "04", "05", "06", "07", "08", "09", "10" ]
+        planning_mode: [ "adaptive", "static" ]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -62,6 +76,8 @@ jobs:
           path: testdata/tpcds/main.zip
           key: "main.zip"
       - run: cargo test --features tpcds --test tpcds_correctness_test shard${{ matrix.shard }}
+        env:
+          ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
 
   tpcds-plans-test:
     runs-on: ubuntu-latest
@@ -74,7 +90,24 @@ jobs:
           key: "main.zip"
       - run: cargo test --features tpcds --test tpcds_plans_test
 
-  clickbench-test:
+  clickbench-correctness-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        planning_mode: [ "adaptive", "static" ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/cache@v4
+        with:
+          path: testdata/clickbench/
+          key: "data"
+      - run: cargo test --features clickbench --test clickbench_correctness_test
+        env:
+          ADAPTIVE: ${{ matrix.planning_mode == 'adaptive' }}
+
+  clickbench-plans-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +116,7 @@ jobs:
         with:
           path: testdata/clickbench/
           key: "data"
-      - run: cargo test --features clickbench --test 'clickbench_*'
+      - run: cargo test --features clickbench --test clickbench_plans_test
 
   format-check:
     runs-on: ubuntu-latest
