@@ -182,6 +182,16 @@ impl NetworkBoundary for NetworkCoalesceExec {
     fn producer_head(&self, _consumer_task_count: usize) -> ProducerHead {
         ProducerHead::None
     }
+
+    fn route_partition(
+        &self,
+        output_partition: usize,
+    ) -> Result<crate::distributed_planner::PartitionRoute> {
+        internal_err!(
+            "NetworkCoalesceExec routes by producer task group, not by output partition; \
+             partition {output_partition} has no slice-layout route"
+        )
+    }
 }
 
 impl DisplayAs for NetworkCoalesceExec {
