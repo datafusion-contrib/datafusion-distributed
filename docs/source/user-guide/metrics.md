@@ -32,8 +32,8 @@ Two functions, both exported from the crate root, do the work:
   coordinator's copy of the plan. It waits for all worker metrics to arrive, so the result is always
   complete. The `format` is a `DistributedMetricsFormat`:
     - `Aggregated` — metrics from all tasks of a stage are summed/aggregated into one value per node.
-    - `PerTask` — metric names are suffixed with the task id (`output_rows_0`, `output_rows_1`, …) so
-      you can see each task individually.
+    - `PerTask` — each metric collects its per-task values into a map keyed by task id
+      (`output_rows={0:.., 1:..}`) so you can see each task individually.
 - `display_plan_ascii(plan, show_metrics)` — renders the plan tree. Pass `true` to include the metrics
   attached to each node.
 
@@ -66,15 +66,15 @@ This produces an EXPLAIN ANALYZE that spans the whole cluster — every stage an
 runtime metrics, including network-level metrics on the boundaries:
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0] plan_bytes_sent_0=8.07 KB, plan_send_latency_avg_0=22.63ms, ...
+┌───── DistributedExec ── tasks=1, partitions=1 plan_bytes_sent={0:8.07 KB}, plan_send_latency_avg={0:22.63ms}, ...
 │ SortPreservingMergeExec: [count(*)@0 DESC], fetch=5, metrics=[output_rows=5, elapsed_compute=391.83µs, ...]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2, metrics=[elapsed_compute=5.86ms, bytes_transferred=20.1 KB, network_latency_p50=366.00µs, network_latency_p95=603.43µs, ...]
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] plan_added_at_0=25.78ms, plan_finished_at_0=38.35ms, ...
+  ┌───── Stage 2 ── tasks=2, partitions=16 plan_added_at={0:25.78ms}, plan_finished_at={0:38.35ms}, ...
   │ AggregateExec: mode=FinalPartitioned, gby=[MinTemp@0 as MinTemp], aggr=[count(Int64(1))], metrics=[output_rows=180, elapsed_compute=5.44ms, ...]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=2, metrics=[bytes_transferred=15.0 KB, ...]
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] ...
+    ┌───── Stage 1 ── tasks=2, partitions=32 ...
     │ AggregateExec: mode=Partial, gby=[MinTemp@0 as MinTemp], aggr=[count(Int64(1))], metrics=[output_rows=249, ...]
     │     DistributedLeafExec: DataSourceExec: ..., metrics=[output_rows=366, bytes_scanned=5.40 K, ...]
     └──────────────────────────────────────────────────

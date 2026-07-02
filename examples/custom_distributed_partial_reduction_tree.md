@@ -57,18 +57,18 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0]
+┌───── DistributedExec ── tasks=1, partitions=1
 │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
 │   AggregateExec: mode=Final, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
 │     CoalescePartitionsExec
 │       [Stage 2] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0] t1:[p1]
+  ┌───── Stage 2 ── tasks=2, partitions=2
   │ AggregateExec: mode=PartialReduce, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
   │   CoalescePartitionsExec
   │     [Stage 1] => NetworkCoalesceExec: output_partitions=6, input_tasks=3
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
+    ┌───── Stage 1 ── tasks=3, partitions=9
     │ AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
     │   DistributedLeafExec: DataSourceExec: file_groups={3 groups: [[.../weather/result-000000.parquet], [.../weather/result-000001.parquet], [.../weather/result-000002.parquet]]}, projection=[RainToday], file_type=parquet
     └──────────────────────────────────────────────────

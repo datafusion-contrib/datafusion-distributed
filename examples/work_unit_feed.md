@@ -51,11 +51,11 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0]
+┌───── DistributedExec ── tasks=1, partitions=1
 │ SortPreservingMergeExec: [task@0 ASC NULLS LAST, partition@1 ASC NULLS LAST]
 │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
 └──────────────────────────────────────────────────
-  ┌───── Stage 1 ── Tasks: t0:[p0..p1] t1:[p2..p3]
+  ┌───── Stage 1 ── tasks=2, partitions=4
   │ SortExec: expr=[task@0 ASC NULLS LAST, partition@1 ASC NULLS LAST], preserve_partitioning=[true]
   │   RemoteScanExec: tasks=2, partition_chunks=[[3, 1], [2], [4], [1, 1]]
   └──────────────────────────────────────────────────

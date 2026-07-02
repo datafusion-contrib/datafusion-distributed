@@ -47,18 +47,18 @@ mod tests {
         );
 
         assert_snapshot!(physical_distributed_str,
-            @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+            @"
+        ┌───── DistributedExec ── tasks=1, partitions=1
         │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2]
+          ┌───── Stage 2 ── tasks=2, partitions=3
           │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
           │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p5] t1:[p0..p5] t2:[p0..p5]
+            ┌───── Stage 1 ── tasks=3, partitions=6
             │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     DistributedLeafExec:
@@ -130,17 +130,17 @@ mod tests {
         );
 
         assert_snapshot!(physical_distributed_str,
-            @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+            @"
+        ┌───── DistributedExec ── tasks=1, partitions=1
         │ CoalescePartitionsExec
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
-          ┌───── Stage 2 ── Tasks: t0:[p0..p2] t1:[p0..p2] t2:[p0..p2] t3:[p0..p2]
+          ┌───── Stage 2 ── tasks=4, partitions=3
           │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
           │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │     [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=6
           └──────────────────────────────────────────────────
-            ┌───── Stage 1 ── Tasks: t0:[p0..p11] t1:[p0..p11] t2:[p0..p11] t3:[p0..p11] t4:[p0..p11] t5:[p0..p11]
+            ┌───── Stage 1 ── tasks=6, partitions=12
             │ RepartitionExec: partitioning=Hash([RainToday@0], 12), input_partitions=3
             │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
             │     DistributedLeafExec:

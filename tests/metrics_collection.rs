@@ -292,7 +292,7 @@ mod tests {
                 // Metrics belong next to each variant, not aggregated on the header line.
                 assert_not_contains!(header, "metrics=");
                 for (task, line) in variants.iter().enumerate() {
-                    assert_contains!(*line, format!("metrics=[output_rows_{task}="));
+                    assert_contains!(*line, format!("metrics=[output_rows={{{task}:"));
                 }
             }
             DistributedMetricsFormat::Aggregated => {

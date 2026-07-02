@@ -61,16 +61,16 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0] 
+┌───── DistributedExec ── tasks=1, partitions=1
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] 
+  ┌───── Stage 2 ── tasks=2, partitions=16
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=2
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] 
+    ┌───── Stage 1 ── tasks=2, partitions=32
     │ RepartitionExec: partitioning=Hash([number@0], 32), input_partitions=16
     │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
@@ -92,16 +92,16 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0] 
+┌───── DistributedExec ── tasks=1, partitions=1
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=48, input_tasks=3
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] 
+  ┌───── Stage 2 ── tasks=3, partitions=16
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=4
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p47] t1:[p0..p47] t2:[p0..p47] t3:[p0..p47] 
+    ┌───── Stage 1 ── tasks=4, partitions=48
     │ RepartitionExec: partitioning=Hash([number@0], 48), input_partitions=16
     │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1
@@ -123,16 +123,16 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0] 
+┌───── DistributedExec ── tasks=1, partitions=1
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=112, input_tasks=7
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15] t2:[p0..p15] t3:[p0..p15] t4:[p0..p15] t5:[p0..p15] t6:[p0..p15] 
+  ┌───── Stage 2 ── tasks=7, partitions=16
   │ SortExec: expr=[number@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   AggregateExec: mode=FinalPartitioned, gby=[number@0 as number], aggr=[]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=10
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p111] t1:[p0..p111] t2:[p0..p111] t3:[p0..p111] t4:[p0..p111] t5:[p0..p111] t6:[p0..p111] t7:[p0..p111] t8:[p0..p111] t9:[p0..p111] 
+    ┌───── Stage 1 ── tasks=10, partitions=112
     │ RepartitionExec: partitioning=Hash([number@0], 112), input_partitions=16
     │   AggregateExec: mode=Partial, gby=[number@0 as number], aggr=[]
     │     RepartitionExec: partitioning=RoundRobinBatch(16), input_partitions=1

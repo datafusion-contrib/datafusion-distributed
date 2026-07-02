@@ -525,12 +525,13 @@ fn sorted_for_display_by_task_id(metrics: MetricsSet) -> MetricsSet {
     result
 }
 
-/// Formats metrics as "{metric_name}_{task_id}={value}, {metric_name}_{task_id}={value}"
-/// e.g., "output_rows_0=100, output_rows_1=150, elapsed_compute_0=50ns, elapsed_compute_1=100ns"
+/// Formats metrics grouped by name, collapsing each metric's per-task values into a
+/// `{task_id:value, ...}` map so a single line can carry every task without repeating the name.
+/// e.g., "output_rows={0:100, 1:150}, elapsed_compute={0:50ns, 1:100ns}"
 ///
-/// For a non-distributed plan, this is equivalent to using [ShowMetrics::Aggregated] /
-/// [DisplayableExecutionPlan::with_metrics] which aggregates, sorts, removes timestamps, and finally formats
-/// the metrics.
+/// For a non-distributed plan the metrics carry no task id and keep the plain `name=value` form,
+/// equivalent to using [ShowMetrics::Aggregated] / [DisplayableExecutionPlan::with_metrics] which
+/// aggregates, sorts, removes timestamps, and finally formats the metrics.
 ///
 /// See
 /// https://github.com/apache/datafusion/blob/b463a9f9e3c9603eb2db7113125fea3a1b7f5455/datafusion/physical-plan/src/display.rs#L421.
@@ -538,20 +539,32 @@ fn format_metrics_by_task(metrics: &MetricsSet) -> String {
     let aggregated = aggregate_by_task_id(metrics);
     let sorted = sorted_for_display_by_task_id(aggregated).timestamps_removed();
 
-    sorted
-        .iter()
-        .map(|m| {
-            let name = m.value().name();
-            let task_id = m
-                .labels()
-                .iter()
-                .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
-                .map(|l| l.value());
+    // Metrics are sorted by (name, task_id), so entries sharing a name are contiguous. Fold each
+    // name into a single group, then render task-labeled values as a `{task_id:value, ...}` map and
+    // task-less values (non-distributed plans) as a bare `value`.
+    let mut groups: Vec<(String, bool, Vec<String>)> = Vec::new();
+    for m in sorted.iter() {
+        let name = m.value().name().to_string();
+        let task_id = m
+            .labels()
+            .iter()
+            .find(|l| l.name() == DISTRIBUTED_DATAFUSION_TASK_ID_LABEL)
+            .map(|l| l.value());
+        let entry = match task_id {
+            Some(id) => format!("{id}:{}", m.value()),
+            None => m.value().to_string(),
+        };
+        match groups.last_mut() {
+            Some((n, _, entries)) if *n == name => entries.push(entry),
+            _ => groups.push((name, task_id.is_some(), vec![entry])),
+        }
+    }
 
-            match task_id {
-                Some(id) => format!("{name}_{id}={}", m.value()),
-                None => format!("{name}={}", m.value()),
-            }
+    groups
+        .into_iter()
+        .map(|(name, has_task_id, entries)| match has_task_id {
+            true => format!("{name}={{{}}}", entries.join(", ")),
+            false => format!("{name}={}", entries.join(", ")),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -589,19 +602,14 @@ fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> Stri
     let partitioning = head.properties().output_partitioning();
     let input_partitions = partitioning.partition_count();
     let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
-    let mut tasks = Vec::with_capacity(n_tasks);
-    let mut off = 0;
-    for i in 0..n_tasks {
-        let end = off + input_partitions - 1;
-        let partitions = if input_partitions == 1 {
-            format!("p{off}")
-        } else {
-            format!("p{off}..p{end}")
-        };
-        tasks.push(format!("t{i}:[{partitions}]"));
-        off += if hash_shuffle { 0 } else { input_partitions }
-    }
-    format!("Tasks: {}", tasks.join(" "))
+    // In a hash shuffle every task reads the same partition range, so the stage spans
+    // `input_partitions` distinct partitions. Otherwise each task owns its own slice, for a total
+    // of `n_tasks * input_partitions`.
+    let partitions = match hash_shuffle {
+        true => input_partitions,
+        false => n_tasks * input_partitions,
+    };
+    format!("tasks={n_tasks}, partitions={partitions}")
 }
 
 // num_colors must agree with the colorscheme selected from
@@ -1028,4 +1036,94 @@ pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
         result.extend(find_all_stages(child));
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::mock_exec::MockExec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+    use datafusion::physical_plan::metrics::{Count, MetricValue};
+    use datafusion::physical_plan::repartition::RepartitionExec;
+
+    /// Builds an `output_rows` metric holding `rows`, optionally tagged with a task id.
+    fn output_rows(rows: usize, task_id: Option<u64>) -> Arc<Metric> {
+        let count = Count::new();
+        count.add(rows);
+        let labels = task_id
+            .map(|id| {
+                vec![Label::new(
+                    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+                    id.to_string(),
+                )]
+            })
+            .unwrap_or_default();
+        Arc::new(Metric::new_with_labels(
+            MetricValue::OutputRows(count),
+            None,
+            labels,
+        ))
+    }
+
+    fn metrics_set(metrics: impl IntoIterator<Item = Arc<Metric>>) -> MetricsSet {
+        let mut set = MetricsSet::new();
+        for m in metrics {
+            set.push(m);
+        }
+        set
+    }
+
+    #[test]
+    fn format_metrics_by_task_collapses_per_task_values_into_a_map() {
+        let set = metrics_set([
+            output_rows(100, Some(0)),
+            output_rows(150, Some(1)),
+            output_rows(200, Some(2)),
+        ]);
+        assert_eq!(
+            format_metrics_by_task(&set),
+            "output_rows={0:100, 1:150, 2:200}"
+        );
+    }
+
+    #[test]
+    fn format_metrics_by_task_keeps_task_ids_explicit_when_non_contiguous() {
+        // A node that only ran on a subset of tasks (e.g. under a ChildrenIsolatorUnionExec)
+        // reports a non-contiguous set of ids. The map keeps them explicit; a positional list
+        // would misread task 2's value as task 1's.
+        let set = metrics_set([output_rows(100, Some(0)), output_rows(200, Some(2))]);
+        assert_eq!(format_metrics_by_task(&set), "output_rows={0:100, 2:200}");
+    }
+
+    #[test]
+    fn format_metrics_by_task_without_task_ids_stays_scalar() {
+        let set = metrics_set([output_rows(100, None)]);
+        assert_eq!(format_metrics_by_task(&set), "output_rows=100");
+    }
+
+    fn single_column_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    #[test]
+    fn format_tasks_for_stage_non_hash_counts_every_task_slice() {
+        // Non-hash: each task owns a distinct slice of 3 partitions, so 2 tasks span 6 partitions.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(MockExec::new_partitioned(
+            vec![vec![], vec![], vec![]],
+            single_column_schema(),
+        ));
+        assert_eq!(format_tasks_for_stage(2, &plan), "tasks=2, partitions=6");
+    }
+
+    #[test]
+    fn format_tasks_for_stage_hash_shares_partitions_across_tasks() {
+        // Hash shuffle: every task reads the same range, so the stage spans just those 8 partitions.
+        let mock: Arc<dyn ExecutionPlan> = Arc::new(MockExec::new(vec![], single_column_schema()));
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("id", 0));
+        let hashed: Arc<dyn ExecutionPlan> =
+            Arc::new(RepartitionExec::try_new(mock, Partitioning::Hash(vec![expr], 8)).unwrap());
+        assert_eq!(format_tasks_for_stage(3, &hashed), "tasks=3, partitions=8");
+    }
 }

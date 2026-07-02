@@ -63,12 +63,12 @@ mod tests {
         let plan_str = display_plan_ascii(plan.as_ref(), false);
 
         assert_snapshot!(plan_str,
-            @r"
-        ┌───── DistributedExec ── Tasks: t0:[p0]
+            @"
+        ┌───── DistributedExec ── tasks=1, partitions=1
         │ SortPreservingMergeExec: [MinTemp@0 DESC]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
-          ┌───── Stage 1 ── Tasks: t0:[p0..p2] t1:[p3..p5] t2:[p6..p8]
+          ┌───── Stage 1 ── tasks=3, partitions=9
           │ SortExec: expr=[MinTemp@0 DESC], preserve_partitioning=[true]
           │   FilterExec: MinTemp@0 > 20
           │     StatefulPassThroughExec

@@ -25,7 +25,8 @@ pub enum DistributedMetricsFormat {
     /// Metrics are aggregated across all tasks. ex. a `output_rows=X` represents the output rows for all tasks.
     Aggregated,
 
-    /// Metric names are rewritten to include the task id. ex. `output_rows` -> `output_rows_0`, `output_rows_1` etc.
+    /// Metrics are labeled with their task id and displayed per task. ex. `output_rows` is shown as
+    /// `output_rows={0:.., 1:..}`, one entry per task.
     PerTask,
 }
 

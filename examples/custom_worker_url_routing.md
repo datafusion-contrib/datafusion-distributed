@@ -93,16 +93,16 @@ cargo run --features integration --example custom_worker_url_routing \
 ```
 
 ```
-┌───── DistributedExec ── Tasks: t0:[p0]
+┌───── DistributedExec ── tasks=1, partitions=1
 │ CoalescePartitionsExec
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p15] t1:[p0..p15]
+  ┌───── Stage 2 ── tasks=2, partitions=16
   │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as days, avg(weather.Rainfall)@2 as avg_mm]
   │   AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1)), avg(weather.Rainfall)]
   │     [Stage 1] => NetworkShuffleExec: output_partitions=16, input_tasks=3
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p31] t1:[p0..p31] t2:[p0..p31]
+    ┌───── Stage 1 ── tasks=3, partitions=32
     │ RepartitionExec: partitioning=Hash([RainToday@0], 32), input_partitions=1
     │   AggregateExec: mode=Partial, gby=[RainToday@1 as RainToday], aggr=[count(Int64(1)), avg(weather.Rainfall)]
     │     DistributedLeafExec: DataSourceExec: file_groups={3 groups: [...]}, projection=[Rainfall, RainToday], file_type=parquet

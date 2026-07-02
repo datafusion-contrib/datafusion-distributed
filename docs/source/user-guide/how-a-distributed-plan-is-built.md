@@ -25,17 +25,17 @@ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
 And the distributed plan for the same query, rendered with `display_plan_ascii`:
 
 ```text
-┌───── DistributedExec ── Tasks: t0:[p0]
+┌───── DistributedExec ── tasks=1, partitions=1
 │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
 └──────────────────────────────────────────────────
-  ┌───── Stage 2 ── Tasks: t0:[p0..p3] t1:[p0..p3]
+  ┌───── Stage 2 ── tasks=2, partitions=4
   │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
   │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
   │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
   │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
   └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7]
+    ┌───── Stage 1 ── tasks=3, partitions=8
     │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
     │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
     │     DistributedLeafExec: DataSourceExec: file_groups={3 groups: [...]}, projection=[RainToday], file_type=parquet
@@ -51,9 +51,8 @@ Same operators, same order. The planner only:
 
 ### Reading the output
 
-- `┌───── Stage 1 ── Tasks: t0:[p0..p7] t1:[p0..p7] t2:[p0..p7]` — a stage running on **3 tasks** (`t0`, `t1`,
-  `t2`), each on a different worker, each executing partitions `p0..p7`. Tasks are machines; partitions are the
-  threads within a task.
+- `┌───── Stage 1 ── tasks=3, partitions=8` — a stage running on **3 tasks**, each on a different worker,
+  together spanning **8 partitions**. Tasks are machines; partitions are the threads within a task.
 - `[Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3` — a **network boundary**: this node
   streams the output of Stage 1 over Arrow Flight instead of from a child node. `input_tasks` is how many tasks
   produced the data; `output_partitions` is how many partitions it exposes to its parent.
