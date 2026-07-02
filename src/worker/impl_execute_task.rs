@@ -1,34 +1,26 @@
-use crate::common::{TreeNodeExt, now_ns, on_drop_stream};
-use crate::metrics::proto::df_metrics_set_to_proto;
+use crate::DistributedConfig;
+use crate::common::now_ns;
 use crate::protobuf::datafusion_error_to_tonic_status;
-use crate::worker::generated::worker::{FlightAppMetadata, TaskMetrics};
+use crate::worker::generated::worker::ExecuteTaskRequest;
+use crate::worker::generated::worker::FlightAppMetadata;
+use crate::worker::generated::worker::worker_service_server::WorkerService;
+use crate::worker::spawn_select_all::spawn_select_all;
 use crate::worker::worker_service::{TaskDataEntries, Worker};
-use crate::{DistributedConfig, DistributedTaskContext};
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoder, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::arrow::array::{Array, AsArray, RecordBatch, RecordBatchOptions};
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, exec_err, internal_err};
-
-use crate::worker::generated::worker::ExecuteTaskRequest;
-use crate::worker::generated::worker::worker_service_server::WorkerService;
-use crate::worker::spawn_select_all::spawn_select_all;
-use crate::worker::task_data::TaskDataMetrics;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::exec_datafusion_err;
+use datafusion::common::{Result, exec_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::TryStreamExt;
 use prost::Message;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::oneshot::Sender;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
@@ -66,10 +58,7 @@ pub(crate) async fn execute_local_task(
 
     let plan = task_data.plan(producer_head)?;
     let task_ctx = task_data.task_ctx;
-    let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())?;
-    let d_ctx = *DistributedTaskContext::from_ctx(&task_ctx).as_ref();
 
-    let send_metrics = d_cfg.collect_metrics;
     let partition_count = plan.properties().partitioning.partition_count();
     let plan_name = plan.name();
 
@@ -87,29 +76,6 @@ pub(crate) async fn execute_local_task(
         let stream = plan.execute(partition as usize, Arc::clone(&task_ctx))?;
         let stream_schema = plan.schema();
 
-        let plan = Arc::clone(&plan);
-
-        let task_data_entries = Arc::clone(task_data_entries);
-        let num_partitions_remaining = Arc::clone(&task_data.num_partitions_remaining);
-        let metrics_tx = Arc::clone(&task_data.metrics_tx);
-        let task_data_metrics = Arc::clone(&task_data.task_data_metrics);
-        let key = key.clone();
-        let stream = on_drop_stream(stream, move || {
-            // Stream was dropped before fully consumed -- see https://github.com/datafusion-contrib/datafusion-distributed/issues/412
-            // Send metrics via the coordinator channel so they are not lost.
-            if num_partitions_remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                // Fire-and-forget background tokio task to handle async
-                // invalidate() within synchronous on_drop_stream.
-                #[allow(clippy::disallowed_methods)]
-                tokio::spawn(async move {
-                    task_data_entries.invalidate(&key).await;
-                });
-                task_data_metrics.mark_execution_finished();
-                if send_metrics {
-                    send_metrics_via_channel(&metrics_tx, &plan, d_ctx, &task_data_metrics);
-                }
-            }
-        });
         streams.push(Box::pin(RecordBatchStreamAdapter::new(stream_schema, stream)) as _);
     }
     Ok((streams, task_ctx))
@@ -206,39 +172,6 @@ fn build_flight_data_stream(
                 .map_err(|err| FlightError::Tonic(Box::new(datafusion_error_to_tonic_status(err)))),
         );
     Ok(stream)
-}
-
-/// Collects metrics from the plan in pre-order traversal order and sends them via the
-/// coordinator channel oneshot.
-fn send_metrics_via_channel(
-    metrics_tx: &Arc<Mutex<Option<Sender<TaskMetrics>>>>,
-    plan: &Arc<dyn ExecutionPlan>,
-    dt_ctx: DistributedTaskContext,
-    task_data_metrics: &Arc<TaskDataMetrics>,
-) {
-    let mut pre_order_plan_metrics = vec![];
-    let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
-        pre_order_plan_metrics.push(
-            node.metrics()
-                .and_then(|m| df_metrics_set_to_proto(&m).ok())
-                .unwrap_or_default(),
-        );
-        Ok(TreeNodeRecursion::Continue)
-    });
-
-    let tx = {
-        let mut guard = match metrics_tx.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        guard.take()
-    };
-    let Some(tx) = tx else { return };
-    // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
-    let _ = tx.send(TaskMetrics {
-        pre_order_plan_metrics,
-        task_metrics: Some(task_data_metrics.to_proto_metrics_set()),
-    });
 }
 
 /// Garbage collects values sub-arrays.

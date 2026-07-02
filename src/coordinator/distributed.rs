@@ -198,7 +198,17 @@ impl ExecutionPlan for DistributedExec {
         let tx = builder.tx();
 
         builder.spawn(async move {
-            let _guard = query_coordinator.end_query_guard();
+            // Dropping this `guard` is what signals the coordinator->worker channel to be dropped,
+            // which triggers a chain reaction that ends up also gracefully closing the
+            // worker->coordinator channel. The flow looks like this:
+            // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
+            // 2. The `guard` here is dropped.
+            // 3. In StageCoordinator::send_plan_task(), `end_stream_notifier` fires and the
+            //    coordinator->worker channel is gracefully ended.
+            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+            // 5. The metrics are send back in the worker->coordinator channel, and then that
+            //    channel is closed.
+            let guard = query_coordinator.end_query_guard();
 
             let d_cfg = DistributedConfig::from_config_options(context.session_config().options())?;
             let result = match d_cfg.dynamic_task_count {
@@ -221,6 +231,7 @@ impl ExecutionPlan for DistributedExec {
                 }
             }
             drop(tx);
+            drop(guard);
             query_coordinator.drain_pending_tasks().await?;
             Ok(())
         });
