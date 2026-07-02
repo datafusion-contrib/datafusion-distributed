@@ -1,5 +1,5 @@
 use datafusion::common::{HashMap, HashSet};
-use datafusion_distributed::{
+use datafusion_distributed::grpc::{
     GetClusterWorkersRequest, GetTaskProgressRequest, ObservabilityServiceClient, PingRequest,
     TaskProgress, TaskStatus,
 };

@@ -12,7 +12,7 @@ pub struct GetTaskProgressRequest {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskProgress {
     #[prost(message, optional, tag = "1")]
-    pub task_key: ::core::option::Option<crate::worker::generated::worker::TaskKey>,
+    pub task_key: ::core::option::Option<crate::protocol::grpc::generated::worker::TaskKey>,
     #[prost(uint64, tag = "2")]
     pub total_partitions: u64,
     #[prost(uint64, tag = "3")]

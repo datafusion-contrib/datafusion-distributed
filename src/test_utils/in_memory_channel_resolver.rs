@@ -1,8 +1,6 @@
-use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
 use crate::{
-    BoxCloneSyncChannel, ChannelResolver, DefaultSessionBuilder, DistributedExt,
-    MappedWorkerSessionBuilderExt, SessionStateBuilderExt, Worker, WorkerResolver,
-    WorkerSessionBuilder, create_worker_client,
+    ChannelResolver, DefaultSessionBuilder, DistributedExt, MappedWorkerSessionBuilderExt,
+    SessionStateBuilderExt, Worker, WorkerChannel, WorkerResolver, WorkerSessionBuilder, grpc,
 };
 use async_trait::async_trait;
 use datafusion::common::DataFusionError;
@@ -19,7 +17,7 @@ const DUMMY_URL_PREFIX: &str = "http://url-";
 /// tokio duplex rather than a TCP connection.
 #[derive(Clone)]
 pub struct InMemoryChannelResolver {
-    channel: WorkerServiceClient<BoxCloneSyncChannel>,
+    channel: grpc::BoxCloneSyncChannel,
 }
 
 impl InMemoryChannelResolver {
@@ -50,7 +48,7 @@ impl InMemoryChannelResolver {
             }));
 
         let this = Self {
-            channel: create_worker_client(BoxCloneSyncChannel::new(channel)),
+            channel: grpc::BoxCloneSyncChannel::new(channel),
         };
         let this_clone = this.clone();
 
@@ -83,8 +81,8 @@ impl ChannelResolver for InMemoryChannelResolver {
     async fn get_worker_client_for_url(
         &self,
         _: &url::Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        Ok(self.channel.clone())
+    ) -> Result<Box<dyn WorkerChannel>, DataFusionError> {
+        Ok(grpc::create_worker_client(self.channel.clone()))
     }
 }
 

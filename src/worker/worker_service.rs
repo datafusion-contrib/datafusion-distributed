@@ -1,17 +1,5 @@
-use crate::worker::WorkerSessionBuilder;
-use crate::worker::generated::worker::worker_service_server::{WorkerService, WorkerServiceServer};
-use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, ExecuteTaskRequest, TaskKey, WorkerToCoordinatorMsg,
-};
-use crate::worker::impl_execute_task::execute_remote_task;
-use crate::worker::single_write_multi_read::SingleWriteMultiRead;
-use crate::worker::task_data::TaskData;
-use crate::{
-    DefaultSessionBuilder, GetWorkerInfoRequest, GetWorkerInfoResponse, ObservabilityServiceImpl,
-    ObservabilityServiceServer, WorkerResolver,
-};
-use arrow_flight::FlightData;
-use async_trait::async_trait;
+use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
+use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ExecutionPlan;
@@ -20,8 +8,6 @@ use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::codegen::BoxStream;
-use tonic::{Request, Response, Status, Streaming};
 
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
 
@@ -44,10 +30,10 @@ pub struct Worker {
     /// TTL-based cache for task execution data. Entries are automatically evicted after
     /// TASK_CACHE_TTI seconds. This prevents memory leaks from abandoned or incomplete queries
     /// while allowing concurrent access to task results across multiple partition requests.
-    pub(super) task_data_entries: Arc<TaskDataEntries>,
+    pub(crate) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(super) hooks: WorkerHooks,
-    pub(super) max_message_size: Option<usize>,
+    pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
 }
 
@@ -124,58 +110,15 @@ impl Worker {
         self
     }
 
-    /// Converts this [Worker] into a [`WorkerServiceServer`] with high default message size limits.
-    ///
-    /// This is a convenience method that wraps the endpoint in a [`WorkerServiceServer`] and
-    /// configures it with `max_decoding_message_size(usize::MAX)` and
-    /// `max_encoding_message_size(usize::MAX)` to avoid message size limitations for internal
-    /// communication.
-    ///
-    /// You can further customize the returned server by chaining additional tonic methods.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use datafusion_distributed::Worker;
-    /// # use tonic::transport::Server;
-    /// # use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// # async fn f() {
-    ///
-    /// let worker = Worker::default();
-    /// let server = worker.into_worker_server();
-    ///
-    /// Server::builder()
-    ///     .add_service(Worker::default().into_worker_server())
-    ///     .serve(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
-    ///     .await;
-    ///
-    /// # }
-    /// ```
-    pub fn into_worker_server(self) -> WorkerServiceServer<Self> {
-        WorkerServiceServer::new(self)
-            .max_decoding_message_size(usize::MAX)
-            .max_encoding_message_size(usize::MAX)
-    }
-
-    /// Creates an [`ObservabilityServiceServer`] that exposes task progress and cluster
-    /// worker discovery via the provided [`WorkerResolver`].
-    ///
-    /// The returned server is meant to be added to the same [`tonic::transport::Server`] as the
-    /// Flight service — gRPC multiplexes both services on a single port.
-    pub fn with_observability_service(
-        &self,
-        worker_resolver: Arc<dyn WorkerResolver + Send + Sync>,
-    ) -> ObservabilityServiceServer<ObservabilityServiceImpl> {
-        ObservabilityServiceServer::new(ObservabilityServiceImpl::new(
-            self.task_data_entries.clone(),
-            worker_resolver,
-        ))
-    }
-
     /// Sets a version string reported by the `GetWorkerInfo` gRPC endpoint.
     pub fn with_version(mut self, version: impl Into<Cow<'static, str>>) -> Self {
         self.version = version.into();
         self
+    }
+
+    /// Returns the version set by [Self::with_version].
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     /// Returns the number of cached task entries currently held by this worker.
@@ -185,39 +128,5 @@ impl Worker {
         // `entry_count()` task data.
         self.task_data_entries.run_pending_tasks().await;
         self.task_data_entries.entry_count() as usize
-    }
-}
-
-/// Implementation of the `worker.proto` specification based on the generated Rust stubs.
-///
-/// The methods are delegated to plan `impl Worker` implementations so that they can be implemented
-/// in different files.
-#[async_trait]
-impl WorkerService for Worker {
-    type CoordinatorChannelStream = BoxStream<WorkerToCoordinatorMsg>;
-
-    async fn coordinator_channel(
-        &self,
-        request: Request<Streaming<CoordinatorToWorkerMsg>>,
-    ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        self.impl_coordinator_channel(request).await
-    }
-
-    type ExecuteTaskStream = BoxStream<FlightData>;
-
-    async fn execute_task(
-        &self,
-        request: Request<ExecuteTaskRequest>,
-    ) -> Result<Response<Self::ExecuteTaskStream>, Status> {
-        execute_remote_task(&self.task_data_entries, request).await
-    }
-
-    async fn get_worker_info(
-        &self,
-        _request: Request<GetWorkerInfoRequest>,
-    ) -> Result<Response<GetWorkerInfoResponse>, Status> {
-        Ok(Response::new(GetWorkerInfoResponse {
-            version: self.version.to_string(),
-        }))
     }
 }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 ///
 /// See [`WorkUnitFeedProvider::feed`] for the per-call contract.
 pub trait WorkUnitFeedProvider: Send + Sync + Debug {
-    type WorkUnit: WorkUnit + Default;
+    type WorkUnit: WorkUnit + Default + 'static;
 
     /// Builds a [`WorkUnit`] stream for the given `partition`.
     ///

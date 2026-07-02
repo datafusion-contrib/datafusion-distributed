@@ -1,13 +1,11 @@
-use crate::DistributedTaskContext;
-use crate::common::{TreeNodeExt, serialize_uuid};
+use crate::common::TreeNodeExt;
 use crate::coordinator::{DistributedExec, MetricsStore};
 use crate::distributed_planner::NetworkBoundaryExt;
 use crate::execution_plans::MetricsWrapperExec;
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::collect_plan_metrics;
-use crate::metrics::proto::metrics_set_proto_to_df;
 use crate::stage::{LocalStage, Stage};
-use crate::worker::generated::worker::TaskKey;
+use crate::{DistributedTaskContext, TaskKey};
 use datafusion::common::HashMap;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::Transformed;
@@ -227,9 +225,9 @@ pub fn stage_metrics_rewriter(
             task_count: stage.tasks,
         };
         let task_key = TaskKey {
-            query_id: serialize_uuid(&stage.query_id),
-            stage_id: stage.num as u64,
-            task_number: task_id as u64,
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number: task_id,
         };
         let Some(task_metrics) = metrics_collection.get(&task_key) else {
             return internal_err!(
@@ -248,8 +246,7 @@ pub fn stage_metrics_rewriter(
                 );
             }
 
-            let node_metrics_protos = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
-            let mut node_metrics = metrics_set_proto_to_df(&node_metrics_protos)?;
+            let mut node_metrics = task_metrics.pre_order_plan_metrics[per_task_counter].clone();
             let rewrite_ctx = format.to_rewrite_ctx(task_id as u64);
             node_metrics = rewrite_ctx.maybe_rewrite_node_metics(node_metrics);
 
@@ -284,41 +281,35 @@ pub fn stage_metrics_rewriter(
 
 #[cfg(test)]
 mod tests {
+    use crate::DistributedExt;
     use crate::coordinator::MetricsStore;
     use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
-    use crate::metrics::proto::{df_metrics_set_to_proto, metrics_set_proto_to_df};
+    use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
     use crate::metrics::task_metrics_rewriter::{
         annotate_metrics_set_with_task_id, stage_metrics_rewriter,
     };
     use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
+    use crate::stage::LocalStage;
     use crate::test_utils::in_memory_channel_resolver::{
         InMemoryChannelResolver, InMemoryWorkerResolver,
     };
-    use crate::test_utils::metrics::make_test_metrics_set_proto_from_seed;
+    use crate::test_utils::metrics::make_test_metrics_set_from_seed;
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;
-    use crate::worker::generated::worker as pb;
-    use crate::{DistributedExec, SessionStateBuilderExt};
+    use crate::{DistributedExec, SessionStateBuilderExt, TaskKey, TaskMetrics};
     use datafusion::arrow::array::{Int32Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_plan::metrics::{Count, Label, Metric, MetricValue, MetricsSet};
-    use test_case::test_case;
-
-    use datafusion::physical_plan::{ExecutionPlan, collect};
-    use itertools::Itertools;
-    use uuid::Uuid;
-
-    use crate::DistributedExt;
-    use crate::common::serialize_uuid;
-    use crate::metrics::task_metrics_rewriter::MetricsWrapperExec;
-    use crate::stage::LocalStage;
-    use crate::worker::generated::worker::TaskKey;
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::metrics::{Count, Label, Metric, MetricValue, MetricsSet};
+    use datafusion::physical_plan::{ExecutionPlan, collect};
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
+    use itertools::Itertools;
     use std::sync::Arc;
+    use test_case::test_case;
+    use uuid::Uuid;
 
     async fn make_test_ctx() -> SessionContext {
         make_test_ctx_inner(false).await
@@ -430,8 +421,10 @@ mod tests {
     fn metrics_set_eq(a: &MetricsSet, b: &MetricsSet) -> bool {
         println!("a: {a:?}");
         println!("b: {b:?}");
-        // Check equality by converting to proto representation.
-        df_metrics_set_to_proto(a).unwrap() == df_metrics_set_to_proto(b).unwrap()
+        a.iter().count() == b.iter().count()
+            && a.iter().zip(b.iter()).all(|(a, b)| {
+                a.value() == b.value() && a.partition() == b.partition() && a.labels() == b.labels()
+            })
     }
 
     /// Asserts that we successfully re-write the metrics of a plan generated from the provided SQL query.
@@ -457,20 +450,20 @@ mod tests {
         // Generate metrics for each task and store them in the map.
         let metrics_collection = MetricsStore::from_entries((0..stage.tasks).map(|task_id| {
             let task_key = TaskKey {
-                query_id: serialize_uuid(&stage.query_id),
-                stage_id: stage.num as u64,
-                task_number: task_id as u64,
+                query_id: stage.query_id,
+                stage_id: stage.num,
+                task_number: task_id,
             };
             let metrics = (0..count_plan_nodes_up_to_network_boundary(&plan))
                 .map(|node_id| {
-                    make_test_metrics_set_proto_from_seed(
+                    make_test_metrics_set_from_seed(
                         (node_id * task_id) as u64,
                         num_metrics_per_task_per_node,
                     )
                 })
-                .collect::<Vec<pb::MetricsSet>>();
-            let task_metrics = pb::TaskMetrics {
-                task_metrics: None,
+                .collect::<Vec<MetricsSet>>();
+            let task_metrics = TaskMetrics {
+                task_metrics: MetricsSet::new(),
                 pre_order_plan_metrics: metrics,
             };
             (task_key, task_metrics)
@@ -501,9 +494,9 @@ mod tests {
             {
                 let expected_task_node_metrics = metrics_collection
                     .get(&TaskKey {
-                        query_id: serialize_uuid(&stage.query_id),
-                        stage_id: stage.num as u64,
-                        task_number: task_id as u64,
+                        query_id: stage.query_id,
+                        stage_id: stage.num,
+                        task_number: task_id,
                     })
                     .unwrap()
                     .pre_order_plan_metrics[node_id]
@@ -513,9 +506,7 @@ mod tests {
                 actual_task_node_metrics_set
                     .for_each(|metric| actual_metrics_set.push(metric.clone()));
 
-                // Convert from proto to check for equality.
-                let mut expected_metrics_set =
-                    metrics_set_proto_to_df(&expected_task_node_metrics).unwrap();
+                let mut expected_metrics_set = expected_task_node_metrics;
 
                 if format == DistributedMetricsFormat::PerTask {
                     // Add task ids labels. We expect the actual metrics to be annotated by the

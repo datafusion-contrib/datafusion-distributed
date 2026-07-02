@@ -1,9 +1,22 @@
 use crate::execution_plans::SamplerExec;
-use crate::{BroadcastExec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec, Stage};
+use crate::protocol::ProducerHeadSpec;
+use crate::{
+    BroadcastExec, DistributedCodec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
+    Stage,
+};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
+use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::prelude::SessionConfig;
+use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
+use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::{DefaultPhysicalProtoConverter, PhysicalPlanDecodeContext};
+use datafusion_proto::protobuf;
+use datafusion_proto::protobuf::proto_error;
+use prost::Message;
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -61,6 +74,51 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
 }
 
 impl ProducerHead {
+    pub(crate) fn to_spec(&self, cfg: &SessionConfig) -> Result<ProducerHeadSpec> {
+        match self {
+            Self::None => Ok(ProducerHeadSpec::None),
+            Self::BroadcastExec { output_partitions } => Ok(ProducerHeadSpec::BroadcastExec {
+                output_partitions: *output_partitions,
+            }),
+            Self::RepartitionExec { partitioning } => {
+                let partitioning = serialize_partitioning(
+                    partitioning,
+                    &DistributedCodec::new_combined_with_user(cfg),
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .map(|v| v.encode_to_vec())?;
+                Ok(ProducerHeadSpec::RepartitionExec { partitioning })
+            }
+        }
+    }
+
+    pub(crate) fn from_spec(
+        spec: &ProducerHeadSpec,
+        schema: SchemaRef,
+        ctx: &TaskContext,
+    ) -> Result<Self> {
+        match spec {
+            ProducerHeadSpec::None => Ok(Self::None),
+            ProducerHeadSpec::BroadcastExec { output_partitions } => Ok(Self::BroadcastExec {
+                output_partitions: *output_partitions,
+            }),
+            ProducerHeadSpec::RepartitionExec { partitioning } => {
+                let proto_partitioning = protobuf::Partitioning::decode(partitioning.as_slice())
+                    .map_err(|e| proto_error(e.to_string()))?;
+                let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &codec);
+                let partitioning = parse_protobuf_partitioning(
+                    Some(&proto_partitioning),
+                    &decode_ctx,
+                    &schema,
+                    &DefaultPhysicalProtoConverter {},
+                )?
+                .ok_or_else(|| proto_error("Could not parse partitioning"))?;
+                Ok(Self::RepartitionExec { partitioning })
+            }
+        }
+    }
+
     /// Ensures the head of the provided plan complies with the passed [ProducerHead] definition. This
     /// can be called both during planning and lazily at runtime.
     pub(crate) fn insert(self, input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {

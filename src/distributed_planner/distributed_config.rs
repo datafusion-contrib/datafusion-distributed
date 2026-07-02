@@ -1,6 +1,7 @@
 use crate::distributed_planner::task_estimator::CombinedTaskEstimator;
-use crate::networking::{ChannelResolverExtension, WorkerResolverExtension};
+use crate::protocol::ChannelResolverExtension;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
+use crate::worker_resolver::WorkerResolverExtension;
 use crate::{TaskEstimator, WorkerResolver};
 use datafusion::common::{DataFusionError, extensions_options, not_impl_err, plan_err};
 use datafusion::config::{ConfigExtension, ConfigField, ConfigOptions, Visit};

@@ -1,24 +1,21 @@
 #![deny(clippy::all)]
 
+mod codec;
 mod common;
 mod config_extension_ext;
+mod coordinator;
 mod distributed_ext;
+mod distributed_planner;
 mod execution_plans;
 mod metrics;
 mod passthrough_headers;
+mod protocol;
 mod stage;
-mod worker;
-
-mod distributed_planner;
-mod networking;
-mod observability;
-mod protobuf;
-pub use protobuf::DistributedCodec;
-mod coordinator;
-#[cfg(any(feature = "integration", test))]
-pub mod test_utils;
 mod work_unit_feed;
+mod worker;
+mod worker_resolver;
 
+#[cfg(feature = "grpc")]
 pub use arrow_ipc::CompressionType;
 pub use coordinator::DistributedExec;
 pub use distributed_ext::DistributedExt;
@@ -36,9 +33,21 @@ pub use metrics::{
     MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
     P99LatencyMetric, rewrite_distributed_plan_with_metrics,
 };
-pub use networking::{
-    BoxCloneSyncChannel, ChannelResolver, DefaultChannelResolver, WorkerResolver,
-    create_worker_client, get_distributed_channel_resolver, get_distributed_worker_resolver,
+
+#[cfg(any(feature = "integration", test))]
+pub mod test_utils;
+#[cfg(feature = "grpc")]
+pub use protocol::grpc;
+
+pub use codec::DistributedCodec;
+pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
+
+/// TODO: do not expose this yet.
+pub use protocol::{
+    ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
+    GetWorkerInfoResponse, LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskKey, TaskMetrics,
+    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
@@ -46,19 +55,9 @@ pub use stage::{
 pub use work_unit_feed::{
     DistributedWorkUnitFeedContext, WorkUnit, WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider,
 };
-pub use worker::generated::worker::worker_service_client::WorkerServiceClient;
-pub use worker::generated::worker::worker_service_server::WorkerServiceServer;
-pub use worker::generated::worker::{GetWorkerInfoRequest, GetWorkerInfoResponse, TaskKey};
 pub use worker::{
     DefaultSessionBuilder, MappedWorkerSessionBuilder, MappedWorkerSessionBuilderExt, TaskData,
     Worker, WorkerQueryContext, WorkerSessionBuilder,
-};
-
-pub use observability::{
-    GetClusterWorkersRequest, GetClusterWorkersResponse, GetTaskProgressRequest,
-    GetTaskProgressResponse, ObservabilityService, ObservabilityServiceClient,
-    ObservabilityServiceImpl, ObservabilityServiceServer, PingRequest, PingResponse, TaskProgress,
-    TaskStatus, WorkerMetrics,
 };
 
 #[cfg(any(feature = "integration", test))]

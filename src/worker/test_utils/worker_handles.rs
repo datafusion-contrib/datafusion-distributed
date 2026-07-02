@@ -1,7 +1,7 @@
 use crate::config_extension_ext::set_distributed_option_extension;
-use crate::worker::generated::worker::TaskKey;
+use crate::grpc::BoxCloneSyncChannel;
 use crate::worker::task_data::TaskDataMetrics;
-use crate::{BoxCloneSyncChannel, DistributedConfig, DistributedExt, TaskData, Worker};
+use crate::{DistributedConfig, DistributedExt, TaskData, TaskKey, Worker};
 use arrow_ipc::CompressionType;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -17,9 +17,9 @@ use tonic::transport::{Endpoint, Server};
 use url::Url;
 use uuid::Uuid;
 
-pub fn test_task_key_with_query(query_id: Uuid, task_number: u64) -> TaskKey {
+pub fn test_task_key_with_query(query_id: Uuid, task_number: usize) -> TaskKey {
     TaskKey {
-        query_id: query_id.as_bytes().to_vec(),
+        query_id,
         stage_id: 0,
         task_number,
     }

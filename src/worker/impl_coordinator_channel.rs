@@ -1,82 +1,68 @@
-use crate::common::{TreeNodeExt, deserialize_uuid};
+use crate::common::TreeNodeExt;
 use crate::execution_plans::SamplerExec;
-use crate::metrics::proto::df_metrics_set_to_proto;
-use crate::protobuf::datafusion_error_to_tonic_status;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::LocalWorkerContext;
-use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
-use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
-use crate::worker::generated::worker::worker_service_server::WorkerService;
-use crate::worker::generated::worker::{
-    CoordinatorToWorkerMsg, TaskMetrics, WorkerToCoordinatorMsg, worker_to_coordinator_msg,
-};
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    DistributedCodec, DistributedConfig, DistributedExt, DistributedTaskContext, TaskData, Worker,
-    WorkerQueryContext,
+    CoordinatorToWorkerMsg, DistributedCodec, DistributedConfig, DistributedExt,
+    DistributedTaskContext, TaskData, TaskMetrics, Worker, WorkerQueryContext,
+    WorkerToCoordinatorMsg,
 };
-use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::stream::FuturesUnordered;
+use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt, TryStreamExt};
+use http::HeaderMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
-use tonic::{Request, Response, Status, Streaming};
-use url::Url;
 
 impl Worker {
-    pub(super) async fn impl_coordinator_channel(
+    pub async fn coordinator_channel(
         &self,
-        request: Request<Streaming<CoordinatorToWorkerMsg>>,
-    ) -> Result<Response<<Worker as WorkerService>::CoordinatorChannelStream>, Status> {
-        let (grpc_headers, _ext, mut body) = request.into_parts();
-
+        headers: HeaderMap,
+        mut stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
+    ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
         // The first message must be a SetPlanRequest.
-        let Some(msg) = body.next().await else {
-            return Err(Status::internal("Empty Coordinator stream"));
+        let Some(msg) = stream.try_next().await? else {
+            return internal_err!("Empty Coordinator stream");
         };
-        let Some(Inner::SetPlanRequest(request)) = msg?.inner else {
-            return Err(Status::internal(
-                "First Coordinator message must be SetPlanRequest",
-            ));
+
+        let CoordinatorToWorkerMsg::SetPlanRequest(request) = msg else {
+            return internal_err!("First Coordinator message must be SetPlanRequest");
         };
-        let key = request.task_key.ok_or_else(missing("task_key"))?;
+
+        let key = request.task_key;
 
         let entry = self
             .task_data_entries
-            .get_with(key.clone(), async { Default::default() })
+            .get_with(key, async { Default::default() })
             .await;
 
         let mut remote_work_unit_feed_registry = RemoteWorkUnitFeedRegistry::default();
-        for WorkUnitFeedDeclaration { id, partitions } in &request.work_unit_feed_declarations {
-            if let Ok(id) = deserialize_uuid(id) {
-                remote_work_unit_feed_registry.add(id, *partitions as usize);
-            }
+        for decl in request.work_unit_feed_declarations {
+            remote_work_unit_feed_registry.add(decl.id, decl.partitions);
         }
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
         let mut load_info_rxs = vec![];
 
         let task_data = || async {
-            let headers = grpc_headers.into_headers();
-
             let mut cfg = SessionConfig::default()
                 .with_extension(Arc::new(remote_work_unit_feed_registry.receivers))
                 .with_extension(Arc::new(DistributedTaskContext {
-                    task_index: key.task_number as usize,
-                    task_count: request.task_count as usize,
+                    task_index: request.task_key.task_number,
+                    task_count: request.task_count,
                 }))
                 .with_extension(Arc::new(LocalWorkerContext {
                     task_data_entries: Arc::clone(&self.task_data_entries),
-                    self_url: Url::parse(&request.target_worker_url)
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
+                    self_url: request.target_worker_url,
                 }))
                 .with_distributed_option_extension_from_headers::<DistributedConfig>(&headers)?;
 
@@ -109,7 +95,7 @@ impl Worker {
             load_info_rxs =
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
-            // Initialize partition count to the number of partitions in the stage
+            // Initialize partition count to the number of partitions in the stage.
             let total_partitions = plan.properties().partitioning.partition_count();
             Ok::<_, DataFusionError>(TaskData {
                 base_plan: plan,
@@ -128,13 +114,9 @@ impl Worker {
 
         entry
             .write(task_data_result.clone())
-            .map_err(|_| Status::internal(format!(
-                "Logic error while setting plan for TaskKey {key:?}: the plan was set twice. This is a bug in datafusion-distributed, please report it."
-            )))?;
+            .map_err(|e| exec_datafusion_err!("{e}"))?;
 
-        let task_data = task_data_result
-            .map_err(DataFusionError::Shared)
-            .map_err(datafusion_error_to_tonic_status)?;
+        let task_data = task_data_result.map_err(DataFusionError::Shared)?;
 
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
@@ -153,27 +135,22 @@ impl Worker {
         //    is closed.
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
-            let mut body = body.map_ok(set_work_unit_received_time);
-            while let Some(Ok(msg)) = body.next().await {
-                let Some(msg) = msg.inner else {
-                    continue;
-                };
+            let mut stream = stream.map_ok(set_work_unit_received_time);
+            while let Some(Ok(msg)) = stream.next().await {
                 match msg {
-                    Inner::SetPlanRequest(_) => {
+                    CoordinatorToWorkerMsg::SetPlanRequest(_) => {
                         // SetPlanRequest should be the first already polled message in the stream,
                         // if some reached here it means that something is wrong.
                         continue;
                     }
-                    Inner::WorkUnitBatch(msg) => {
+                    CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) => {
                         let Some(work_unit_senders) = work_unit_senders.as_mut() else {
                             continue;
                         };
-                        for wu in msg.batch {
-                            let Ok(id) = deserialize_uuid(&wu.id) else {
-                                continue;
-                            };
-                            let partition = wu.partition as usize;
-                            let Some(tx) = work_unit_senders.get(&(id, partition)) else {
+                        for wu in work_unit_batch.batch {
+                            let id = wu.id;
+                            let partition = wu.partition;
+                            let Some(tx) = work_unit_senders.get(&(wu.id, partition)) else {
                                 continue;
                             };
                             if tx.send(Ok(wu)).is_err() {
@@ -184,7 +161,7 @@ impl Worker {
                             }
                         }
                     }
-                    Inner::WorkUnitEos(_) => {
+                    CoordinatorToWorkerMsg::WorkUnitEos => {
                         // No further work unit message will be received here, so drop all the
                         // sender sides so that receiver sides see an EOS upon draining the
                         // remaining messages.
@@ -200,8 +177,8 @@ impl Worker {
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
             if let Some(Ok(plan)) = task_data.final_plan.get() {
                 let d_ctx = DistributedTaskContext {
-                    task_index: key.task_number as usize,
-                    task_count: request.task_count as usize,
+                    task_index: key.task_number,
+                    task_count: request.task_count,
                 };
                 let task_data_metrics = &task_data.task_data_metrics;
                 task_data_metrics.mark_execution_finished();
@@ -214,16 +191,12 @@ impl Worker {
 
         let load_info_stream = FuturesUnordered::from_iter(load_info_rxs)
             .filter_map(async |load_info_or_channel_dropped| {
-                // This error can only happen if the pb::LoadInfo sender was dropped, which is fine.
+                // This error can only happen if the LoadInfo sender was dropped, which is fine.
                 let load_info = load_info_or_channel_dropped.ok()?;
-                Some(Ok(WorkerToCoordinatorMsg {
-                    inner: Some(worker_to_coordinator_msg::Inner::LoadInfo(load_info)),
-                }))
+                Some(WorkerToCoordinatorMsg::LoadInfo(load_info))
             })
             .chain(futures::stream::once(async move {
-                Ok(WorkerToCoordinatorMsg {
-                    inner: Some(worker_to_coordinator_msg::Inner::LoadInfoEos(true)),
-                })
+                WorkerToCoordinatorMsg::LoadInfoEos
             }));
 
         // Stream back metrics when the coordinator channel reaches EOS. At that point the
@@ -232,19 +205,13 @@ impl Worker {
         let metrics_stream = metrics_rx.into_stream();
         let metrics_stream = metrics_stream.filter_map(async |task_metrics_or_channel_dropped| {
             let task_metrics = task_metrics_or_channel_dropped.ok()?;
-            Some(Ok(WorkerToCoordinatorMsg {
-                inner: Some(worker_to_coordinator_msg::Inner::TaskMetrics(task_metrics)),
-            }))
+            Some(WorkerToCoordinatorMsg::TaskMetrics(task_metrics))
         });
 
-        Ok(Response::new(
-            futures::stream::select(load_info_stream, metrics_stream).boxed(),
-        ))
+        Ok(futures::stream::select(load_info_stream, metrics_stream)
+            .map(Ok)
+            .boxed())
     }
-}
-
-fn missing(field: &'static str) -> impl FnOnce() -> Status {
-    move || Status::invalid_argument(format!("Missing field '{field}'"))
 }
 
 /// Collects metrics from the plan in pre-order traversal order and sends them via the
@@ -257,17 +224,13 @@ fn send_metrics_via_channel(
 ) {
     let mut pre_order_plan_metrics = vec![];
     let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
-        pre_order_plan_metrics.push(
-            node.metrics()
-                .and_then(|m| df_metrics_set_to_proto(&m).ok())
-                .unwrap_or_default(),
-        );
+        pre_order_plan_metrics.push(node.metrics().unwrap_or_default());
         Ok(TreeNodeRecursion::Continue)
     });
 
     // Ignore send errors — the coordinator channel may have been dropped (e.g. query cancelled).
     let _ = metrics_tx.send(TaskMetrics {
         pre_order_plan_metrics,
-        task_metrics: Some(task_data_metrics.to_proto_metrics_set()),
+        task_metrics: task_data_metrics.to_metrics_set(),
     });
 }

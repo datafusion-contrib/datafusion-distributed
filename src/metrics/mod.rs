@@ -1,7 +1,6 @@
 mod bytes_metric;
 mod latency_metric;
 mod max_gauge_metric;
-pub(crate) mod proto;
 mod task_metrics_collector;
 mod task_metrics_rewriter;
 

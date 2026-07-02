@@ -1,11 +1,11 @@
-use crate::common::{now_ns, serialize_uuid};
-use crate::worker::generated::worker as pb;
-use crate::{BytesMetricExt, LatencyMetricExt, WorkUnit};
+use crate::common::now_ns;
+use crate::{
+    BytesMetricExt, CoordinatorToWorkerMsg, LatencyMetricExt, WorkUnit, WorkUnitBatch, WorkUnitMsg,
+};
 use datafusion::common::{HashMap, Result, exec_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::MetricBuilder;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion_proto::protobuf::proto_error;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::sync::{Arc, Mutex};
@@ -13,8 +13,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
 
-pub(crate) type WorkUnitTx = UnboundedSender<Result<pb::WorkUnit>>;
-pub(crate) type WorkUnitRx = UnboundedReceiver<Result<pb::WorkUnit>>;
+pub(crate) type WorkUnitTx = UnboundedSender<Result<WorkUnitMsg>>;
+pub(crate) type WorkUnitRx = UnboundedReceiver<Result<WorkUnitMsg>>;
 pub(crate) type RemoteWorkUnitFeedRxs = HashMap<(Uuid, usize), Mutex<Option<WorkUnitRx>>>;
 pub(crate) type RemoteWorkUnitFeedTxs = HashMap<(Uuid, usize), WorkUnitTx>;
 
@@ -36,7 +36,7 @@ pub(crate) struct RemoteWorkUnitFeedRegistry {
 }
 
 impl RemoteWorkUnitFeedRegistry {
-    /// Creates all the receivers and senders for a specific [WorkUnit] Feed id. One feed per
+    /// Creates all the receivers and senders for a specific [WorkUnitMsg] Feed id. One feed per
     /// partition is created.
     ///
     /// Calling this twice with the same `id` is a coordinator bug — duplicate declarations
@@ -60,36 +60,27 @@ impl RemoteWorkUnitFeedRegistry {
 pub(crate) fn build_work_unit_batch_msg(
     id: &Uuid,
     work_unit_batch: Vec<(usize, Result<Box<dyn WorkUnit>>)>,
-) -> Result<pb::CoordinatorToWorkerMsg> {
-    Ok(pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(
-            pb::WorkUnitBatch {
-                batch: work_unit_batch
-                    .into_iter()
-                    .map(|(partition, work_unit)| {
-                        Ok(pb::WorkUnit {
-                            id: serialize_uuid(id),
-                            partition: partition as u64,
-                            body: work_unit?.encode_to_bytes(),
-                            created_timestamp_unix_nanos: now_ns(),
-                            sent_timestamp_unix_nanos: 0,
-                            received_timestamp_unix_nanos: 0,
-                            processed_timestamp_unix_nanos: 0,
-                        })
-                    })
-                    .collect::<Result<_>>()?,
-            },
-        )),
-    })
+) -> Result<CoordinatorToWorkerMsg> {
+    Ok(CoordinatorToWorkerMsg::WorkUnitBatch(WorkUnitBatch {
+        batch: work_unit_batch
+            .into_iter()
+            .map(|(partition, work_unit)| {
+                Ok(WorkUnitMsg {
+                    id: *id,
+                    partition,
+                    body: work_unit?.encode_to_bytes(),
+                    created_timestamp_unix_nanos: now_ns(),
+                    sent_timestamp_unix_nanos: 0,
+                    received_timestamp_unix_nanos: 0,
+                    processed_timestamp_unix_nanos: 0,
+                })
+            })
+            .collect::<Result<_>>()?,
+    }))
 }
 
-pub(crate) fn set_work_unit_send_time(
-    mut msg: pb::CoordinatorToWorkerMsg,
-) -> pb::CoordinatorToWorkerMsg {
-    if let pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(work_unit_batch)),
-    } = &mut msg
-    {
+pub(crate) fn set_work_unit_send_time(mut msg: CoordinatorToWorkerMsg) -> CoordinatorToWorkerMsg {
+    if let CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) = &mut msg {
         for work_unit in &mut work_unit_batch.batch {
             work_unit.sent_timestamp_unix_nanos = now_ns();
         }
@@ -98,12 +89,9 @@ pub(crate) fn set_work_unit_send_time(
 }
 
 pub(crate) fn set_work_unit_received_time(
-    mut msg: pb::CoordinatorToWorkerMsg,
-) -> pb::CoordinatorToWorkerMsg {
-    if let pb::CoordinatorToWorkerMsg {
-        inner: Some(pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(work_unit_batch)),
-    } = &mut msg
-    {
+    mut msg: CoordinatorToWorkerMsg,
+) -> CoordinatorToWorkerMsg {
+    if let CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) = &mut msg {
         for work_unit in &mut work_unit_batch.batch {
             work_unit.received_timestamp_unix_nanos = now_ns();
         }
@@ -111,7 +99,7 @@ pub(crate) fn set_work_unit_received_time(
     msg
 }
 
-/// Remove implementation of a [WorkUnitFeedProvider] that pulls [crate::WorkUnit]s coming over
+/// Remove implementation of a [WorkUnitFeedProvider] that pulls [crate::WorkUnitMsg]s coming over
 /// the wire from a [RemoteWorkUnitFeedRegistry].
 ///
 /// Deserializing a [crate::WorkUnitFeed] with [crate::WorkUnitFeed::from_proto] always returns a
@@ -126,7 +114,7 @@ pub(crate) struct RemoteFeedProvider {
 }
 
 impl RemoteFeedProvider {
-    pub(crate) fn feed<T: WorkUnit + Default>(
+    pub(crate) fn feed<T: WorkUnit + Default + 'static>(
         &self,
         partition: usize,
         ctx: Arc<TaskContext>,
@@ -168,36 +156,36 @@ impl RemoteFeedProvider {
         };
 
         Ok(UnboundedReceiverStream::new(receiver)
-            .map(move |work_unit_or_err| {
-                let mut work_unit = work_unit_or_err?;
+            .map(move |work_unit_msg_or_err| {
+                let mut work_unit_msg = work_unit_msg_or_err?;
                 let timer = elapsed_compute.timer();
-                let result = T::decode(work_unit.body.as_slice())
-                    .map_err(|err| proto_error(format!("{err}")));
+                let work_unit = T::decode(work_unit_msg.body.as_slice())
+                    .map_err(|err| datafusion_proto::protobuf::proto_error(format!("{err}")));
                 timer.done();
-                work_unit.processed_timestamp_unix_nanos = now_ns();
+                work_unit_msg.processed_timestamp_unix_nanos = now_ns();
+                let body_len = work_unit_msg.body.len();
 
-                let pb::WorkUnit {
+                let WorkUnitMsg {
                     created_timestamp_unix_nanos: base,
                     sent_timestamp_unix_nanos,
                     received_timestamp_unix_nanos,
                     processed_timestamp_unix_nanos,
-                    body,
                     ..
-                } = work_unit;
+                } = work_unit_msg;
 
-                bytes_transferred.add_bytes(body.len());
+                bytes_transferred.add_bytes(body_len);
                 msg_count.add(1);
 
-                send_latency_max.add_nanos((sent_timestamp_unix_nanos - base) as usize);
-                send_latency_p50.add_nanos((sent_timestamp_unix_nanos - base) as usize);
+                send_latency_max.add_nanos(sent_timestamp_unix_nanos - base);
+                send_latency_p50.add_nanos(sent_timestamp_unix_nanos - base);
 
-                received_latency_max.add_nanos((received_timestamp_unix_nanos - base) as usize);
-                received_latency_p50.add_nanos((received_timestamp_unix_nanos - base) as usize);
+                received_latency_max.add_nanos(received_timestamp_unix_nanos - base);
+                received_latency_p50.add_nanos(received_timestamp_unix_nanos - base);
 
-                processed_latency_max.add_nanos((processed_timestamp_unix_nanos - base) as usize);
-                processed_latency_p50.add_nanos((processed_timestamp_unix_nanos - base) as usize);
+                processed_latency_max.add_nanos(processed_timestamp_unix_nanos - base);
+                processed_latency_p50.add_nanos(processed_timestamp_unix_nanos - base);
 
-                result
+                work_unit
             })
             .boxed())
     }
