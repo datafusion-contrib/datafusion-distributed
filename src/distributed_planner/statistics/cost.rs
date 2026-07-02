@@ -8,7 +8,7 @@ use datafusion::physical_plan::{ExecutionPlan, Statistics};
 use std::ops::AddAssign;
 use std::sync::Arc;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct Cost {
     pub(crate) cpu: Precision<usize>,
     pub(crate) memory: Precision<usize>,
@@ -17,9 +17,18 @@ pub(crate) struct Cost {
 
 impl AddAssign for Cost {
     fn add_assign(&mut self, rhs: Self) {
-        self.cpu = self.cpu.add(&rhs.cpu);
-        self.memory = self.memory.add(&rhs.memory);
-        self.network = self.network.add(&rhs.network);
+        self.cpu = sum_precision(self.cpu, rhs.cpu);
+        self.memory = sum_precision(self.memory, rhs.memory);
+        self.network = sum_precision(self.network, rhs.network);
+    }
+}
+
+fn sum_precision(one: Precision<usize>, other: Precision<usize>) -> Precision<usize> {
+    match (one.get_value(), other.get_value()) {
+        (Some(one), Some(other)) => Precision::Inexact(one + other),
+        (Some(one), None) => Precision::Inexact(*one),
+        (None, Some(other)) => Precision::Inexact(*other),
+        (None, None) => Precision::Absent,
     }
 }
 
@@ -51,5 +60,29 @@ fn inexact_or_absent(value: Option<usize>) -> Precision<usize> {
     match value {
         None => Precision::Absent,
         Some(v) => Precision::Inexact(v),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assert_snapshot;
+    use crate::test_utils::plans::TestPlanBuilder;
+
+    #[tokio::test]
+    async fn smoke_test() -> Result<()> {
+        let plan = TestPlanBuilder::new()
+            .target_partitions(4)
+            .physical_plan(r#"SELECT * FROM weather WHERE "MinTemp" > 5"#)
+            .await;
+        let cost = calculate_cost(&plan)?;
+        assert_snapshot!(format!("{cost:#?}"), @r"
+        Cost {
+            cpu: Inexact(154841),
+            memory: Inexact(0),
+            network: Inexact(0),
+        }
+        ");
+        Ok(())
     }
 }
