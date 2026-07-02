@@ -25,7 +25,7 @@ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
 And the distributed plan for the same query, rendered with `display_plan_ascii`:
 
 ```text
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
 └──────────────────────────────────────────────────

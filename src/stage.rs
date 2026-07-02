@@ -296,18 +296,22 @@ fn display_ascii(
     };
     match stage {
         Either::Left(dist_exec) => {
+            // DistributedExec is the coordinator's single-task head, so its task/partition counts
+            // are always 1; omit them and show only its (coordinator-side) metrics, if any.
             write!(
                 f,
-                "{}{}{} DistributedExec {} {}",
+                "{}{}{} DistributedExec",
                 "  ".repeat(depth),
                 LTCORNER,
                 HORIZONTAL.repeat(5),
-                HORIZONTAL.repeat(2),
-                format_tasks_for_stage(1, plan),
             )?;
             if show_metrics && let Some(metrics) = dist_exec.metrics() {
-                write!(f, " ")?;
-                writeln!(f, "{}", format_metrics_by_task(&metrics))?;
+                writeln!(
+                    f,
+                    " {} {}",
+                    HORIZONTAL.repeat(2),
+                    format_metrics_by_task(&metrics)
+                )?;
             } else {
                 writeln!(f)?;
             }

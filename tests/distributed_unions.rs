@@ -38,7 +38,7 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -90,7 +90,7 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -150,7 +150,7 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=18, input_tasks=3
         └──────────────────────────────────────────────────
@@ -227,7 +227,7 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [MinTemp@0 ASC NULLS LAST, RainToday@1 ASC NULLS LAST]
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=2, input_tasks=2
         └──────────────────────────────────────────────────

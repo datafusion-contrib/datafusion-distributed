@@ -28,7 +28,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [task_index@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=5, input_tasks=5
         └──────────────────────────────────────────────────
@@ -68,7 +68,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [task_index@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=10, input_tasks=5
         └──────────────────────────────────────────────────
@@ -111,7 +111,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [task_index@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=5, input_tasks=5
         └──────────────────────────────────────────────────
@@ -152,7 +152,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -203,7 +203,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [tag@2 ASC NULLS LAST, task_index@1 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -259,7 +259,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [left_index@1 ASC NULLS LAST]
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
@@ -324,7 +324,7 @@ mod tests {
 
         assert_snapshot!(plan + &results,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [left_index@1 ASC NULLS LAST]
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────

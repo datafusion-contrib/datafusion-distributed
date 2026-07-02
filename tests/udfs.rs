@@ -37,7 +37,7 @@ mod tests {
 
         assert_snapshot!(physical_distributed_str,
             @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────

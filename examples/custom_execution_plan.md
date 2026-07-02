@@ -61,7 +61,7 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2
 └──────────────────────────────────────────────────
@@ -92,7 +92,7 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=48, input_tasks=3
 └──────────────────────────────────────────────────
@@ -123,7 +123,7 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ SortPreservingMergeExec: [number@0 ASC NULLS LAST]
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=112, input_tasks=7
 └──────────────────────────────────────────────────

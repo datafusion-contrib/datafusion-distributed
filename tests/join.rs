@@ -108,7 +108,7 @@ mod tests {
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan,
         @"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, timestamp@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
@@ -187,7 +187,7 @@ mod tests {
         // Ensure the distributed plan matches our target plan, registering
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [f_dkey@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
         └──────────────────────────────────────────────────
@@ -264,7 +264,7 @@ mod tests {
         // Ensure the distributed plan matches our target plan, registering
         // hive-style partitioning and avoiding data-shuffling repartitions.
         assert_snapshot!(&distributed_plan, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST]
         │   SortExec: expr=[env@0 ASC NULLS LAST, time_bin@1 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[env@0 as env, time_bin@1 as time_bin, avg(a.max_bin_value)@2 as avg_max_value]

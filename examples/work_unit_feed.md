@@ -51,7 +51,7 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ SortPreservingMergeExec: [task@0 ASC NULLS LAST, partition@1 ASC NULLS LAST]
 │   [Stage 1] => NetworkCoalesceExec: output_partitions=4, input_tasks=2
 └──────────────────────────────────────────────────

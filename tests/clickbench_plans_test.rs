@@ -28,7 +28,7 @@ mod tests {
     async fn test_clickbench_1() -> Result<()> {
         let display = test_clickbench_query("q1").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
@@ -51,7 +51,7 @@ mod tests {
     async fn test_clickbench_2() -> Result<()> {
         let display = test_clickbench_query("q2").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[sum(hits.AdvEngineID)@0 as sum(hits.AdvEngineID), count(Int64(1))@1 as count(*), avg(hits.ResolutionWidth)@2 as avg(hits.ResolutionWidth)]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(hits.AdvEngineID), count(Int64(1)), avg(hits.ResolutionWidth)]
         │     CoalescePartitionsExec
@@ -73,7 +73,7 @@ mod tests {
     async fn test_clickbench_3() -> Result<()> {
         let display = test_clickbench_query("q3").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ AggregateExec: mode=Final, gby=[], aggr=[avg(hits.UserID)]
         │   CoalescePartitionsExec
         │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
@@ -94,7 +94,7 @@ mod tests {
     async fn test_clickbench_4() -> Result<()> {
         let display = test_clickbench_query("q4").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.UserID)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
         │     CoalescePartitionsExec
@@ -122,7 +122,7 @@ mod tests {
     async fn test_clickbench_5() -> Result<()> {
         let display = test_clickbench_query("q5").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[count(alias1)@0 as count(DISTINCT hits.SearchPhrase)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(alias1)]
         │     CoalescePartitionsExec
@@ -158,7 +158,7 @@ mod tests {
     async fn test_clickbench_7() -> Result<()> {
         let display = test_clickbench_query("q7").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 DESC]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -186,7 +186,7 @@ mod tests {
     async fn test_clickbench_8() -> Result<()> {
         let display = test_clickbench_query("q8").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [u@1 DESC], fetch=10
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -219,7 +219,7 @@ mod tests {
     async fn test_clickbench_9() -> Result<()> {
         let display = test_clickbench_query("q9").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -246,7 +246,7 @@ mod tests {
     async fn test_clickbench_10() -> Result<()> {
         let display = test_clickbench_query("q10").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [u@1 DESC], fetch=10
         │   SortExec: TopK(fetch=10), expr=[u@1 DESC], preserve_partitioning=[true]
         │     ProjectionExec: expr=[MobilePhoneModel@0 as MobilePhoneModel, count(alias1)@1 as u]
@@ -277,7 +277,7 @@ mod tests {
     async fn test_clickbench_11() -> Result<()> {
         let display = test_clickbench_query("q11").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [u@2 DESC], fetch=10
         │   SortExec: TopK(fetch=10), expr=[u@2 DESC], preserve_partitioning=[true]
         │     ProjectionExec: expr=[MobilePhone@0 as MobilePhone, MobilePhoneModel@1 as MobilePhoneModel, count(alias1)@2 as u]
@@ -308,7 +308,7 @@ mod tests {
     async fn test_clickbench_12() -> Result<()> {
         let display = test_clickbench_query("q12").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@1 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -336,7 +336,7 @@ mod tests {
     async fn test_clickbench_13() -> Result<()> {
         let display = test_clickbench_query("q13").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [u@1 DESC], fetch=10
         │   SortExec: TopK(fetch=10), expr=[u@1 DESC], preserve_partitioning=[true]
         │     ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase, count(alias1)@1 as u]
@@ -367,7 +367,7 @@ mod tests {
     async fn test_clickbench_14() -> Result<()> {
         let display = test_clickbench_query("q14").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -395,7 +395,7 @@ mod tests {
     async fn test_clickbench_15() -> Result<()> {
         let display = test_clickbench_query("q15").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@1 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -422,7 +422,7 @@ mod tests {
     async fn test_clickbench_16() -> Result<()> {
         let display = test_clickbench_query("q16").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -449,7 +449,7 @@ mod tests {
     async fn test_clickbench_17() -> Result<()> {
         let display = test_clickbench_query("q17").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[UserID@0 as UserID, SearchPhrase@1 as SearchPhrase, count(Int64(1))@2 as count(*)]
         │   CoalescePartitionsExec: fetch=10
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
@@ -476,7 +476,7 @@ mod tests {
     async fn test_clickbench_18() -> Result<()> {
         let display = test_clickbench_query("q18").await?;
         assert_snapshot!(display, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [count(*)@3 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -503,7 +503,7 @@ mod tests {
     async fn test_clickbench_19() -> Result<()> {
         let display = test_clickbench_query("q19").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ CoalescePartitionsExec
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -523,7 +523,7 @@ mod tests {
     async fn test_clickbench_20() -> Result<()> {
         let display = test_clickbench_query("q20").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
         │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
         │     CoalescePartitionsExec
@@ -562,7 +562,7 @@ mod tests {
     async fn test_clickbench_23() -> Result<()> {
         let display = test_clickbench_query("q23").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [EventTime@4 ASC NULLS LAST], fetch=10
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -584,7 +584,7 @@ mod tests {
     async fn test_clickbench_24() -> Result<()> {
         let display = test_clickbench_query("q24").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase]
         │   SortPreservingMergeExec: [EventTime@1 ASC NULLS LAST], fetch=10
         │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
@@ -606,7 +606,7 @@ mod tests {
     async fn test_clickbench_25() -> Result<()> {
         let display = test_clickbench_query("q25").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [SearchPhrase@0 ASC NULLS LAST], fetch=10
         │   [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -627,7 +627,7 @@ mod tests {
     async fn test_clickbench_26() -> Result<()> {
         let display = test_clickbench_query("q26").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[SearchPhrase@0 as SearchPhrase]
         │   SortPreservingMergeExec: [EventTime@1 ASC NULLS LAST, SearchPhrase@0 ASC NULLS LAST], fetch=10
         │     [Stage 1] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
@@ -649,7 +649,7 @@ mod tests {
     async fn test_clickbench_27() -> Result<()> {
         let display = test_clickbench_query("q27").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [l@1 DESC], fetch=25
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -678,7 +678,7 @@ mod tests {
     async fn test_clickbench_28() -> Result<()> {
         let display = test_clickbench_query("q28").await?;
         assert_snapshot!(display, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [l@1 DESC], fetch=25
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -707,7 +707,7 @@ mod tests {
     async fn test_clickbench_29() -> Result<()> {
         let display = test_clickbench_query("q29").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[sum(hits.ResolutionWidth)@0 as sum(hits.ResolutionWidth), sum(hits.ResolutionWidth)@0 + count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(1)), sum(hits.ResolutionWidth)@0 + 2 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(2)), sum(hits.ResolutionWidth)@0 + 3 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(3)), sum(hits.ResolutionWidth)@0 + 4 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(4)), sum(hits.ResolutionWidth)@0 + 5 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(5)), sum(hits.ResolutionWidth)@0 + 6 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(6)), sum(hits.ResolutionWidth)@0 + 7 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(7)), sum(hits.ResolutionWidth)@0 + 8 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(8)), sum(hits.ResolutionWidth)@0 + 9 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(9)), sum(hits.ResolutionWidth)@0 + 10 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(10)), sum(hits.ResolutionWidth)@0 + 11 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(11)), sum(hits.ResolutionWidth)@0 + 12 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(12)), sum(hits.ResolutionWidth)@0 + 13 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(13)), sum(hits.ResolutionWidth)@0 + 14 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(14)), sum(hits.ResolutionWidth)@0 + 15 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(15)), sum(hits.ResolutionWidth)@0 + 16 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(16)), sum(hits.ResolutionWidth)@0 + 17 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(17)), sum(hits.ResolutionWidth)@0 + 18 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(18)), sum(hits.ResolutionWidth)@0 + 19 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(19)), sum(hits.ResolutionWidth)@0 + 20 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(20)), sum(hits.ResolutionWidth)@0 + 21 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(21)), sum(hits.ResolutionWidth)@0 + 22 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(22)), sum(hits.ResolutionWidth)@0 + 23 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(23)), sum(hits.ResolutionWidth)@0 + 24 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(24)), sum(hits.ResolutionWidth)@0 + 25 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(25)), sum(hits.ResolutionWidth)@0 + 26 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(26)), sum(hits.ResolutionWidth)@0 + 27 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(27)), sum(hits.ResolutionWidth)@0 + 28 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(28)), sum(hits.ResolutionWidth)@0 + 29 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(29)), sum(hits.ResolutionWidth)@0 + 30 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(30)), sum(hits.ResolutionWidth)@0 + 31 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(31)), sum(hits.ResolutionWidth)@0 + 32 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(32)), sum(hits.ResolutionWidth)@0 + 33 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(33)), sum(hits.ResolutionWidth)@0 + 34 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(34)), sum(hits.ResolutionWidth)@0 + 35 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(35)), sum(hits.ResolutionWidth)@0 + 36 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(36)), sum(hits.ResolutionWidth)@0 + 37 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(37)), sum(hits.ResolutionWidth)@0 + 38 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(38)), sum(hits.ResolutionWidth)@0 + 39 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(39)), sum(hits.ResolutionWidth)@0 + 40 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(40)), sum(hits.ResolutionWidth)@0 + 41 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(41)), sum(hits.ResolutionWidth)@0 + 42 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(42)), sum(hits.ResolutionWidth)@0 + 43 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(43)), sum(hits.ResolutionWidth)@0 + 44 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(44)), sum(hits.ResolutionWidth)@0 + 45 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(45)), sum(hits.ResolutionWidth)@0 + 46 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(46)), sum(hits.ResolutionWidth)@0 + 47 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(47)), sum(hits.ResolutionWidth)@0 + 48 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(48)), sum(hits.ResolutionWidth)@0 + 49 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(49)), sum(hits.ResolutionWidth)@0 + 50 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(50)), sum(hits.ResolutionWidth)@0 + 51 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(51)), sum(hits.ResolutionWidth)@0 + 52 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(52)), sum(hits.ResolutionWidth)@0 + 53 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(53)), sum(hits.ResolutionWidth)@0 + 54 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(54)), sum(hits.ResolutionWidth)@0 + 55 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(55)), sum(hits.ResolutionWidth)@0 + 56 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(56)), sum(hits.ResolutionWidth)@0 + 57 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(57)), sum(hits.ResolutionWidth)@0 + 58 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(58)), sum(hits.ResolutionWidth)@0 + 59 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(59)), sum(hits.ResolutionWidth)@0 + 60 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(60)), sum(hits.ResolutionWidth)@0 + 61 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(61)), sum(hits.ResolutionWidth)@0 + 62 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(62)), sum(hits.ResolutionWidth)@0 + 63 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(63)), sum(hits.ResolutionWidth)@0 + 64 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(64)), sum(hits.ResolutionWidth)@0 + 65 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(65)), sum(hits.ResolutionWidth)@0 + 66 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(66)), sum(hits.ResolutionWidth)@0 + 67 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(67)), sum(hits.ResolutionWidth)@0 + 68 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(68)), sum(hits.ResolutionWidth)@0 + 69 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(69)), sum(hits.ResolutionWidth)@0 + 70 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(70)), sum(hits.ResolutionWidth)@0 + 71 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(71)), sum(hits.ResolutionWidth)@0 + 72 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(72)), sum(hits.ResolutionWidth)@0 + 73 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(73)), sum(hits.ResolutionWidth)@0 + 74 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(74)), sum(hits.ResolutionWidth)@0 + 75 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(75)), sum(hits.ResolutionWidth)@0 + 76 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(76)), sum(hits.ResolutionWidth)@0 + 77 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(77)), sum(hits.ResolutionWidth)@0 + 78 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(78)), sum(hits.ResolutionWidth)@0 + 79 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(79)), sum(hits.ResolutionWidth)@0 + 80 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(80)), sum(hits.ResolutionWidth)@0 + 81 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(81)), sum(hits.ResolutionWidth)@0 + 82 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(82)), sum(hits.ResolutionWidth)@0 + 83 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(83)), sum(hits.ResolutionWidth)@0 + 84 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(84)), sum(hits.ResolutionWidth)@0 + 85 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(85)), sum(hits.ResolutionWidth)@0 + 86 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(86)), sum(hits.ResolutionWidth)@0 + 87 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(87)), sum(hits.ResolutionWidth)@0 + 88 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(88)), sum(hits.ResolutionWidth)@0 + 89 * count(hits.ResolutionWidth)@1 as sum(hits.ResolutionWidth + Int64(89))]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(hits.ResolutionWidth), count(hits.ResolutionWidth)]
         │     CoalescePartitionsExec
@@ -729,7 +729,7 @@ mod tests {
     async fn test_clickbench_30() -> Result<()> {
         let display = test_clickbench_query("q30").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -757,7 +757,7 @@ mod tests {
     async fn test_clickbench_31() -> Result<()> {
         let display = test_clickbench_query("q31").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -785,7 +785,7 @@ mod tests {
     async fn test_clickbench_32() -> Result<()> {
         let display = test_clickbench_query("q32").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -812,7 +812,7 @@ mod tests {
     async fn test_clickbench_33() -> Result<()> {
         let display = test_clickbench_query("q33").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@1 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -839,7 +839,7 @@ mod tests {
     async fn test_clickbench_34() -> Result<()> {
         let display = test_clickbench_query("q34").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@2 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -866,7 +866,7 @@ mod tests {
     async fn test_clickbench_35() -> Result<()> {
         let display = test_clickbench_query("q35").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [c@4 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -894,7 +894,7 @@ mod tests {
     async fn test_clickbench_36() -> Result<()> {
         let display = test_clickbench_query("q36").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -922,7 +922,7 @@ mod tests {
     async fn test_clickbench_37() -> Result<()> {
         let display = test_clickbench_query("q37").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [pageviews@1 DESC], fetch=10
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -950,7 +950,7 @@ mod tests {
     async fn test_clickbench_38() -> Result<()> {
         let display = test_clickbench_query("q38").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [pageviews@1 DESC], fetch=1010
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -979,7 +979,7 @@ mod tests {
     async fn test_clickbench_39() -> Result<()> {
         let display = test_clickbench_query("q39").await?;
         assert_snapshot!(display, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [pageviews@5 DESC], fetch=1010
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -1008,7 +1008,7 @@ mod tests {
     async fn test_clickbench_40() -> Result<()> {
         let display = test_clickbench_query("q40").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ GlobalLimitExec: skip=100, fetch=10
         │   SortPreservingMergeExec: [pageviews@2 DESC], fetch=110
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -1037,7 +1037,7 @@ mod tests {
     async fn test_clickbench_41() -> Result<()> {
         let display = test_clickbench_query("q41").await?;
         assert_snapshot!(display, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ GlobalLimitExec: skip=10000, fetch=10
         │   SortPreservingMergeExec: [pageviews@2 DESC], fetch=10010
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
@@ -1066,7 +1066,7 @@ mod tests {
     async fn test_clickbench_42() -> Result<()> {
         let display = test_clickbench_query("q42").await?;
         assert_snapshot!(display, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ GlobalLimitExec: skip=1000, fetch=10
         │   SortPreservingMergeExec: [date_trunc(minute, m@0) ASC NULLS LAST], fetch=1010
         │     [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2

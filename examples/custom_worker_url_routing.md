@@ -93,7 +93,7 @@ cargo run --features integration --example custom_worker_url_routing \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ CoalescePartitionsExec
 │   [Stage 2] => NetworkCoalesceExec: output_partitions=32, input_tasks=2
 └──────────────────────────────────────────────────

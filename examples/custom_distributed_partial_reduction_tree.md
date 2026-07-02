@@ -57,7 +57,7 @@ cargo run \
 ```
 
 ```
-┌───── DistributedExec ── tasks=1, partitions=1
+┌───── DistributedExec
 │ ProjectionExec: expr=[RainToday@0 as RainToday, count(Int64(1))@1 as count(*)]
 │   AggregateExec: mode=Final, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
 │     CoalescePartitionsExec

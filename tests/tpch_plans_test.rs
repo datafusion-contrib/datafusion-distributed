@@ -21,7 +21,7 @@ mod tests {
     async fn test_tpch_1() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q1").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST, l_linestatus@1 ASC NULLS LAST]
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -50,7 +50,7 @@ mod tests {
     async fn test_tpch_2() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q2").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST]
         │   [Stage 11] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -171,7 +171,7 @@ mod tests {
     async fn test_tpch_3() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q3").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [revenue@1 DESC, o_orderdate@2 ASC NULLS LAST]
         │   [Stage 4] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -223,7 +223,7 @@ mod tests {
     async fn test_tpch_4() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q4").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [o_orderpriority@0 ASC NULLS LAST]
         │   SortExec: expr=[o_orderpriority@0 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[o_orderpriority@0 as o_orderpriority, count(Int64(1))@1 as order_count]
@@ -253,7 +253,7 @@ mod tests {
     async fn test_tpch_5() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q5").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [revenue@1 DESC]
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -337,7 +337,7 @@ mod tests {
     async fn test_tpch_6() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q6").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[sum(lineitem.l_extendedprice * lineitem.l_discount)@0 as revenue]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice * lineitem.l_discount)]
         │     CoalescePartitionsExec
@@ -360,7 +360,7 @@ mod tests {
     async fn test_tpch_7() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q7").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST]
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -446,7 +446,7 @@ mod tests {
     async fn test_tpch_8() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q8").await?;
         assert_snapshot!(plan, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [o_year@0 ASC NULLS LAST]
         │   [Stage 9] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -554,7 +554,7 @@ mod tests {
     async fn test_tpch_9() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q9").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [nation@0 ASC NULLS LAST, o_year@1 DESC]
         │   [Stage 7] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -638,7 +638,7 @@ mod tests {
     async fn test_tpch_10() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q10").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [revenue@2 DESC]
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -700,7 +700,7 @@ mod tests {
     async fn test_tpch_11() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q11").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [value@1 DESC]
         │   [Stage 8] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -792,7 +792,7 @@ mod tests {
     async fn test_tpch_12() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q12").await?;
         assert_snapshot!(plan, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -831,7 +831,7 @@ mod tests {
     async fn test_tpch_13() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q13").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [custdist@1 DESC, c_count@0 DESC]
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -873,7 +873,7 @@ mod tests {
     async fn test_tpch_14() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q14").await?;
         assert_snapshot!(plan, @r#"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[100 * CAST(sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END)@0 AS Float64) / CAST(sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 AS Float64) as promo_revenue]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(CASE WHEN part.p_type LIKE PROMO% THEN __common_expr_1 ELSE Some(0),38,4 END) as sum(CASE WHEN part.p_type LIKE Utf8("PROMO%") THEN lineitem.l_extendedprice * Int64(1) - lineitem.l_discount ELSE Int64(0) END), sum(__common_expr_1) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
         │     CoalescePartitionsExec
@@ -908,7 +908,7 @@ mod tests {
     async fn test_tpch_15() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q15").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [s_suppkey@0 ASC NULLS LAST]
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
@@ -972,7 +972,7 @@ mod tests {
     async fn test_tpch_16() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q16").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [supplier_cnt@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST]
         │   [Stage 5] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
@@ -1029,7 +1029,7 @@ mod tests {
     async fn test_tpch_17() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q17").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice)]
         │     CoalescePartitionsExec
@@ -1081,7 +1081,7 @@ mod tests {
     async fn test_tpch_18() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q18").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [o_totalprice@4 DESC, o_orderdate@3 ASC NULLS LAST]
         │   [Stage 6] => NetworkCoalesceExec: output_partitions=9, input_tasks=3
         └──────────────────────────────────────────────────
@@ -1147,7 +1147,7 @@ mod tests {
     async fn test_tpch_19() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q19").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ ProjectionExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@0 as revenue]
         │   AggregateExec: mode=Final, gby=[], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
         │     CoalescePartitionsExec
@@ -1182,7 +1182,7 @@ mod tests {
     async fn test_tpch_20() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q20").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [s_name@0 ASC NULLS LAST]
         │   SortExec: expr=[s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
         │     HashJoinExec: mode=CollectLeft, join_type=LeftSemi, on=[(s_suppkey@0, ps_suppkey@0)], projection=[s_name@1, s_address@2]
@@ -1252,7 +1252,7 @@ mod tests {
     async fn test_tpch_21() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q21").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [numwait@1 DESC, s_name@0 ASC NULLS LAST]
         │   SortExec: expr=[numwait@1 DESC, s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[s_name@0 as s_name, count(Int64(1))@1 as numwait]
@@ -1321,7 +1321,7 @@ mod tests {
     async fn test_tpch_22() -> Result<(), Box<dyn Error>> {
         let plan = test_tpch_query("q22").await?;
         assert_snapshot!(plan, @r"
-        ┌───── DistributedExec ── tasks=1, partitions=1
+        ┌───── DistributedExec
         │ SortPreservingMergeExec: [cntrycode@0 ASC NULLS LAST]
         │   SortExec: expr=[cntrycode@0 ASC NULLS LAST], preserve_partitioning=[true]
         │     ProjectionExec: expr=[cntrycode@0 as cntrycode, count(Int64(1))@1 as numcust, sum(custsale.c_acctbal)@2 as totacctbal]
