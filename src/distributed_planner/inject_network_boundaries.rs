@@ -218,6 +218,35 @@ fn plan_ptr_key(plan: &Arc<dyn ExecutionPlan>) -> usize {
     Arc::as_ptr(plan) as *const () as usize
 }
 
+fn collect_left_hash_join_requires_single_task(
+    plan: &dyn ExecutionPlan,
+    processed_children: &[Arc<dyn ExecutionPlan>],
+    broadcast_joins_enabled: bool,
+) -> bool {
+    let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+        return false;
+    };
+    if hash_join.partition_mode() != &PartitionMode::CollectLeft {
+        return false;
+    }
+    if !broadcast_joins_enabled {
+        return true;
+    }
+
+    !processed_children
+        .first()
+        .is_some_and(|child| build_input_is_broadcast(child.as_ref()))
+}
+
+fn build_input_is_broadcast(plan: &dyn ExecutionPlan) -> bool {
+    if plan.is::<NetworkBroadcastExec>() || plan.is::<BroadcastExec>() {
+        return true;
+    }
+
+    plan.downcast_ref::<CoalescePartitionsExec>()
+        .is_some_and(|coalesce| build_input_is_broadcast(coalesce.input().as_ref()))
+}
+
 /// WARNING: every return statement in this function must funnel through
 /// [InjectNetworkBoundaryContext::plan_with_task_count]
 /// (or [InjectNetworkBoundaryContext::set_task_count] on the way through) so the returned node has
@@ -266,12 +295,14 @@ async fn _inject_network_boundaries(
             count += nb_ctx.task_count(processed_child)?.as_usize();
         }
         task_count = Desired(count);
-    } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
-        && node.mode == PartitionMode::CollectLeft
-        && !broadcast_joins_enabled
-    {
-        // Only distribute CollectLeft HashJoins after we broadcast more intelligently or when it
-        // is explicitly enabled.
+    } else if collect_left_hash_join_requires_single_task(
+        plan.as_ref(),
+        &processed_children,
+        broadcast_joins_enabled,
+    ) {
+        // Only distribute CollectLeft HashJoins when the build side was actually broadcast.
+        // Enabling broadcast joins is not enough by itself: join types that cannot safely
+        // broadcast their build side, such as LeftSemi, must keep running in one task.
         task_count = Maximum(1);
     } else {
         // The task count for this plan is decided by the biggest task count from the children; unless
@@ -984,7 +1015,7 @@ mod tests {
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
-            // annotate_test_plan wants this as false so its s a single node plan
+            // annotate_test_plan expects a single-node input plan.
             .distributed_planner(false)
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
@@ -1013,10 +1044,10 @@ mod tests {
             .await
             .physical_plan_as_string(query)
             .await;
-        assert_snapshot!(physical_plan_string, @r"
+        assert_snapshot!(physical_plan_string, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
 
         // With target_partitions=1, there is no CoalescePartitionsExec initially
@@ -1104,6 +1135,33 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         // With broadcast disabled, no broadcast annotation should appear
+        assert!(!annotated.contains("Broadcast"));
+        assert_snapshot!(annotated, @r"
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_collect_left_join_without_broadcast_stays_single_task() {
+        let query = r#"
+        SELECT a."MinTemp"
+        FROM weather a
+        WHERE EXISTS (
+            SELECT 1
+            FROM weather b
+            WHERE a."RainToday" = b."RainToday"
+        )
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
+            .distributed_planner(false)
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert!(!annotated.contains("Broadcast"));
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
