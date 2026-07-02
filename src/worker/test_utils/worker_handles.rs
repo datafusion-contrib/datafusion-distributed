@@ -11,7 +11,6 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use tokio::net::TcpListener;
 use tonic::transport::{Endpoint, Server};
 use url::Url;
@@ -101,13 +100,11 @@ impl MemoryWorkerHandle {
             None,
         )?;
         let plan = build_plan(input)?;
-        let partition_count = plan.properties().partitioning.partition_count();
         register_plan_on_worker(
             &self.worker,
             task_ctx,
             plan,
             test_task_key_with_query(query_id, self.task_index as _),
-            partition_count,
         )
         .await;
         Ok(())
@@ -173,7 +170,6 @@ impl TcpWorkerHandle {
             task_ctx,
             plan,
             test_task_key_with_query(query_id, self.task_index as _),
-            self.partitions_batches.len(),
         )
         .await;
         Ok(())
@@ -205,7 +201,6 @@ pub async fn register_plan_on_worker(
     task_ctx: Arc<datafusion::execution::TaskContext>,
     plan: Arc<dyn ExecutionPlan>,
     task_key: TaskKey,
-    partition_count: usize,
 ) {
     let swmr_task_data = worker
         .task_data_entries
@@ -217,7 +212,6 @@ pub async fn register_plan_on_worker(
             task_ctx,
             base_plan: plan,
             final_plan: Default::default(),
-            num_partitions_remaining: Arc::new(AtomicUsize::new(partition_count)),
             metrics_tx: Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
             task_data_metrics: Arc::new(TaskDataMetrics::new(0)),
         }))

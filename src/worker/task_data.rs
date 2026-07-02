@@ -8,7 +8,6 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::CustomMetricValue;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -20,12 +19,6 @@ pub struct TaskData {
     pub(super) task_ctx: Arc<TaskContext>,
     pub(crate) base_plan: Arc<dyn ExecutionPlan>,
     pub(crate) final_plan: Arc<OnceLockResult<Arc<dyn ExecutionPlan>>>,
-    /// `num_partitions_remaining` is initialized to the total number of partitions in the task (not
-    /// only tasks in the partition group). This is decremented for each request to the endpoint
-    /// for this task. Once this count is zero, the task is likely complete. The task may not be
-    /// complete because it's possible that the same partition was retried and this count was
-    /// decremented more than once for the same partition.
-    pub(super) num_partitions_remaining: Arc<AtomicUsize>,
     /// Sender half of the metrics channel. `impl_execute_task` takes this (via `Option::take`)
     /// once all partitions have finished or been dropped, sending the collected metrics back to
     /// the coordinator through the `CoordinatorChannel` side channel.
@@ -110,11 +103,6 @@ impl TaskDataMetrics {
 }
 
 impl TaskData {
-    /// Returns the number of partitions remaining to be processed.
-    pub(crate) fn num_partitions_remaining(&self) -> usize {
-        self.num_partitions_remaining.load(Ordering::SeqCst)
-    }
-
     /// Returns the total number of partitions in this task.
     pub(crate) fn total_partitions(&self) -> usize {
         match self.final_plan.get() {
@@ -135,13 +123,7 @@ impl TaskData {
             let producer_head =
                 ProducerHead::from_proto(producer_head, &self.base_plan.schema(), &self.task_ctx)?;
 
-            let plan = producer_head.insert(Arc::clone(&self.base_plan))?;
-
-            self.num_partitions_remaining.store(
-                plan.output_partitioning().partition_count(),
-                Ordering::SeqCst,
-            );
-            Ok(plan)
+            Ok(producer_head.insert(Arc::clone(&self.base_plan))?)
         });
         match result {
             Ok(plan) => Ok(Arc::clone(plan)),

@@ -15,8 +15,6 @@ pub struct TaskProgress {
     pub task_key: ::core::option::Option<crate::worker::generated::worker::TaskKey>,
     #[prost(uint64, tag = "2")]
     pub total_partitions: u64,
-    #[prost(uint64, tag = "3")]
-    pub completed_partitions: u64,
     #[prost(enumeration = "TaskStatus", tag = "4")]
     pub status: i32,
     #[prost(uint64, tag = "5")]

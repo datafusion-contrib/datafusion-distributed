@@ -24,7 +24,6 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
@@ -110,12 +109,10 @@ impl Worker {
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 
             // Initialize partition count to the number of partitions in the stage
-            let total_partitions = plan.properties().partitioning.partition_count();
             Ok::<_, DataFusionError>(TaskData {
                 base_plan: plan,
                 final_plan: Arc::new(OnceLock::new()),
                 task_ctx,
-                num_partitions_remaining: Arc::new(AtomicUsize::new(total_partitions)),
                 metrics_tx: match collect_metrics {
                     true => Arc::new(std::sync::Mutex::new(Some(metrics_tx))),
                     false => Arc::new(std::sync::Mutex::new(None)),
