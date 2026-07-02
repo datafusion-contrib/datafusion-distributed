@@ -188,7 +188,14 @@ impl<'a> StageCoordinator<'a> {
                 .map(set_work_unit_send_time)
                 // Keep the request side of the channel open until the query ends: this tail emits
                 // no messages and only completes, once the `Notify` fires. Workers interpret this
-                // EOS of this stream as a query finished/aborted signal.
+                // EOS of this stream as a query finished/aborted signal. The flow looks like this:
+                // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
+                // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
+                // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
+                //    gracefully ended.
+                // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+                // 5. The metrics are send back in the worker->coordinator channel, and then that
+                //    channel is closed.
                 .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier))),
         );
 
