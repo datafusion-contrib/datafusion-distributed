@@ -1,16 +1,16 @@
+use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::distributed_planner::set_distributed_task_estimator;
-use crate::networking::{set_distributed_channel_resolver, set_distributed_worker_resolver};
 use crate::passthrough_headers::set_passthrough_headers;
-use crate::protobuf::{set_distributed_user_codec, set_distributed_user_codec_arc};
+use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
+use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
     ChannelResolver, DistributedConfig, TaskEstimator, WorkUnitFeed, WorkUnitFeedProvider,
     WorkerResolver,
 };
-use arrow_ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -202,7 +202,7 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, WorkerResolver, DistributedExt, SessionStateBuilderExt, WorkerQueryContext};
+    /// # use datafusion_distributed::{WorkerResolver, DistributedExt, SessionStateBuilderExt, WorkerQueryContext};
     ///
     /// struct CustomWorkerResolver;
     ///
@@ -238,14 +238,14 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::prelude::SessionConfig;
     /// # use url::Url;
     /// # use std::sync::Arc;
-    /// # use datafusion_distributed::{BoxCloneSyncChannel, ChannelResolver, DistributedExt, SessionStateBuilderExt, WorkerQueryContext, WorkerServiceClient};
+    /// # use datafusion_distributed::{ChannelResolver, DistributedExt, SessionStateBuilderExt, WorkerChannel, WorkerQueryContext, grpc};
     ///
     /// struct CustomChannelResolver;
     ///
     /// #[async_trait]
     /// impl ChannelResolver for CustomChannelResolver {
-    ///     async fn get_worker_client_for_url(&self, url: &Url) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-    ///         // Build a custom WorkerServiceClient wrapped with tower layers or something similar.
+    ///     async fn get_worker_client_for_url(&self, url: &Url) -> Result<Box<dyn WorkerChannel>, DataFusionError> {
+    ///         // Build a custom worker client wrapped with tower layers or something similar.
     ///         todo!()
     ///     }
     /// }
@@ -451,18 +451,20 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_broadcast_joins_enabled] but with an in-place mutation.
     fn set_distributed_broadcast_joins(&mut self, enabled: bool) -> Result<(), DataFusionError>;
 
+    #[cfg(feature = "grpc")]
     /// The compression type to use for sending data over the wire.
     ///
     /// The default is [CompressionType::LZ4_FRAME].
     fn with_distributed_compression(
         self,
-        compression: Option<CompressionType>,
+        compression: Option<arrow_ipc::CompressionType>,
     ) -> Result<Self, DataFusionError>;
 
+    #[cfg(feature = "grpc")]
     /// Same as [DistributedExt::with_distributed_compression] but with an in-place mutation.
     fn set_distributed_compression(
         &mut self,
-        compression: Option<CompressionType>,
+        compression: Option<arrow_ipc::CompressionType>,
     ) -> Result<(), DataFusionError>;
 
     /// Overrides `datafusion.execution.batch_size` for worker-executed stages, letting users
@@ -678,14 +680,15 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    #[cfg(feature = "grpc")]
     fn set_distributed_compression(
         &mut self,
-        compression: Option<CompressionType>,
+        compression: Option<arrow_ipc::CompressionType>,
     ) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
         d_cfg.compression = match compression {
-            Some(CompressionType::ZSTD) => "zstd".to_string(),
-            Some(CompressionType::LZ4_FRAME) => "lz4".to_string(),
+            Some(arrow_ipc::CompressionType::ZSTD) => "zstd".to_string(),
+            Some(arrow_ipc::CompressionType::LZ4_FRAME) => "lz4".to_string(),
             _ => "none".to_string(),
         };
         Ok(())
@@ -810,7 +813,8 @@ impl DistributedExt for SessionConfig {
 
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
-            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn with_distributed_compression(mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<Self, DataFusionError>;
 
             #[call(set_distributed_shuffle_batch_size)]
             #[expr($?;Ok(self))]
@@ -915,10 +919,12 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn set_distributed_compression(&mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
-            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn with_distributed_compression(mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<Self, DataFusionError>;
 
             fn set_distributed_shuffle_batch_size(&mut self, batch_size: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_shuffle_batch_size)]
@@ -1036,10 +1042,12 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_broadcast_joins(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn set_distributed_compression(&mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
-            fn with_distributed_compression(mut self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn with_distributed_compression(mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<Self, DataFusionError>;
 
             fn set_distributed_shuffle_batch_size(&mut self, batch_size: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_shuffle_batch_size)]
@@ -1157,10 +1165,12 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_broadcast_joins(self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_compression(&mut self, compression: Option<CompressionType>) -> Result<(), DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn set_distributed_compression(&mut self, compression: Option<arrow_ipc::CompressionType>) -> Result<(), DataFusionError>;
             #[call(set_distributed_compression)]
             #[expr($?;Ok(self))]
-            fn with_distributed_compression(self, compression: Option<CompressionType>) -> Result<Self, DataFusionError>;
+            #[cfg(feature = "grpc")]
+            fn with_distributed_compression(self, compression: Option<arrow_ipc::CompressionType>) -> Result<Self, DataFusionError>;
 
             fn set_distributed_shuffle_batch_size(&mut self, batch_size: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_shuffle_batch_size)]

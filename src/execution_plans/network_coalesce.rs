@@ -292,15 +292,14 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
         let target_task = group.start_task + input_task_offset;
 
-        let worker_connection = self.worker_connections.get_or_init_worker_connection(
+        let stream = self.worker_connections.execute(
             remote_stage,
             0..partitions_per_task,
             target_task,
+            target_partition,
             self.producer_head(task_context.task_count),
             &context,
         )?;
-
-        let stream = worker_connection.execute(target_partition)?;
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),

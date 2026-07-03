@@ -1,12 +1,13 @@
-use crate::MaxLatencyMetric;
 use crate::common::OnceLockResult;
 use crate::common::now_ns;
 use crate::distributed_planner::ProducerHead;
-use crate::worker::generated::worker as pb;
+use crate::protocol::ProducerHeadSpec;
+use crate::{MaxLatencyMetric, TaskMetrics};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr_common::metrics::CustomMetricValue;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -16,13 +17,13 @@ use tokio::sync::oneshot;
 /// by concurrent requests for the same task which execute separate partitions.
 pub struct TaskData {
     /// Task context suitable for execute different partitions from the same task.
-    pub(super) task_ctx: Arc<TaskContext>,
+    pub(crate) task_ctx: Arc<TaskContext>,
     pub(crate) base_plan: Arc<dyn ExecutionPlan>,
     pub(crate) final_plan: Arc<OnceLockResult<Arc<dyn ExecutionPlan>>>,
-    /// Sender half of the metrics channel. `impl_execute_task` takes this (via `Option::take`)
-    /// once all partitions have finished or been dropped, sending the collected metrics back to
-    /// the coordinator through the `CoordinatorChannel` side channel.
-    pub(super) metrics_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<pb::TaskMetrics>>>>,
+    /// Sender half of the metrics channel. `impl_coordinator_channel` takes this (via
+    /// `Option::take`) when the coordinator channel reaches EOS, sending the collected metrics
+    /// back to the coordinator through the `CoordinatorChannel` side channel.
+    pub(super) metrics_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<TaskMetrics>>>>,
     /// Metrics related to the execution of a task within a stage. This metrics, instead of being
     /// associated to a specific node, they are global to the task, like the time at which the plan
     /// was fed by the coordinator to the worker.
@@ -35,7 +36,7 @@ pub(crate) const PLAN_FINISHED_AT_METRIC: &str = "plan_finished_at";
 
 #[derive(Debug)]
 pub(super) struct TaskDataMetrics {
-    pub(super) query_start_time_ns: u64,
+    pub(super) query_start_time_ns: usize,
     /// When the plan was set by the coordinator.
     pub(super) plan_added_at: MaxLatencyMetric,
     /// When the plan execution was triggered by the parent worker.
@@ -45,10 +46,10 @@ pub(super) struct TaskDataMetrics {
 }
 
 impl TaskDataMetrics {
-    pub(super) fn new(query_start_time_ns: u64) -> Self {
+    pub(super) fn new(query_start_time_ns: usize) -> Self {
         let plan_added_at = MaxLatencyMetric::default();
         plan_added_at.add_duration(Duration::from_nanos(
-            now_ns().saturating_sub(query_start_time_ns),
+            now_ns::<u64>().saturating_sub(query_start_time_ns as u64),
         ));
         Self {
             query_start_time_ns,
@@ -61,67 +62,57 @@ impl TaskDataMetrics {
     pub(super) fn mark_execution_started_once(&self) {
         if self.plan_executed_at.value() == 0 {
             self.plan_executed_at.add_duration(Duration::from_nanos(
-                now_ns().saturating_sub(self.query_start_time_ns),
+                now_ns::<u64>().saturating_sub(self.query_start_time_ns as u64),
             ))
         }
     }
 
     pub(super) fn mark_execution_finished(&self) {
         self.plan_finished_at.add_duration(Duration::from_nanos(
-            now_ns().saturating_sub(self.query_start_time_ns),
+            now_ns::<u64>().saturating_sub(self.query_start_time_ns as u64),
         ))
     }
 
-    pub(super) fn to_proto_metrics_set(&self) -> pb::MetricsSet {
-        let mut task_metrics_set = pb::MetricsSet { metrics: vec![] };
-
-        fn new_metric(name: &str, value: usize) -> pb::Metric {
-            pb::Metric {
-                partition: None,
-                labels: vec![],
-                value: Some(pb::metric::Value::CustomMaxLatency(pb::MaxLatency {
-                    name: name.to_string(),
-                    value: value as u64,
-                })),
-            }
-        }
-        task_metrics_set.metrics.push(new_metric(
+    pub(super) fn to_metrics_set(&self) -> MetricsSet {
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(max_latency_metric(
             PLAN_ADDED_AT_METRIC,
-            self.plan_added_at.as_usize(),
+            &self.plan_added_at,
         ));
-        task_metrics_set.metrics.push(new_metric(
+        metrics_set.push(max_latency_metric(
             PLAN_EXECUTED_AT_METRIC,
-            self.plan_executed_at.as_usize(),
+            &self.plan_executed_at,
         ));
-        task_metrics_set.metrics.push(new_metric(
+        metrics_set.push(max_latency_metric(
             PLAN_FINISHED_AT_METRIC,
-            self.plan_finished_at.as_usize(),
+            &self.plan_finished_at,
         ));
 
-        task_metrics_set
+        metrics_set
     }
 }
 
-impl TaskData {
-    /// Returns the total number of partitions in this task.
-    pub(crate) fn total_partitions(&self) -> usize {
-        match self.final_plan.get() {
-            Some(Ok(plan)) => plan.output_partitioning().partition_count(),
-            _ => self
-                .base_plan
-                .properties()
-                .output_partitioning()
-                .partition_count(),
-        }
-    }
+fn max_latency_metric(name: &'static str, value: &MaxLatencyMetric) -> Arc<Metric> {
+    Arc::new(Metric::new(
+        MetricValue::Custom {
+            name: Cow::Borrowed(name),
+            value: Arc::new(MaxLatencyMetric::from_nanos(value.value())),
+        },
+        None,
+    ))
+}
 
+impl TaskData {
     pub(crate) fn plan(
         &self,
-        producer_head: pb::execute_task_request::ProducerHead,
+        producer_head_spec: &ProducerHeadSpec,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let result = self.final_plan.get_or_init(|| {
-            let producer_head =
-                ProducerHead::from_proto(producer_head, &self.base_plan.schema(), &self.task_ctx)?;
+            let producer_head = ProducerHead::from_spec(
+                producer_head_spec,
+                self.base_plan.schema(),
+                &self.task_ctx,
+            )?;
 
             Ok(producer_head.insert(Arc::clone(&self.base_plan))?)
         });

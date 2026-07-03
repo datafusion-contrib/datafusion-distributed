@@ -23,13 +23,8 @@ datafusion = { workspace = true, features = [
   "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
-arrow-flight = "58"
-arrow-select = "58"
-arrow-ipc = { version = "58", features = ["zstd"] }
 async-trait = "0.1.89"
 tokio = { version = "1.48", features = ["full"] }
-tonic = { version = "0.14.1", features = ["transport"] }
-tower = "0.5.2"
 http = "1.3.1"
 itertools = "0.14.0"
 futures = "0.3.31"
@@ -52,6 +47,13 @@ num-traits = "0.2"
 bincode = "1"
 tonic-prost = "0.14.2"
 
+# grpc-specific features
+arrow-flight = { version = "58", optional = true }
+arrow-select = { version = "58", optional = true }
+arrow-ipc = { version = "58", features = ["zstd"], optional = true }
+tonic = { version = "0.14.1", features = ["transport"], optional = true }
+tower = { version = "0.5.2", optional = true }
+
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
 parquet = { version = "58", optional = true }
@@ -59,8 +61,17 @@ arrow = { version = "58", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
 
 [features]
+default = ["grpc"]
 avro = ["datafusion/avro"]
-integration = ["insta", "parquet", "arrow", "hyper-util"]
+grpc = [
+    "arrow-flight",
+    "arrow-select",
+    "arrow-ipc",
+    "tonic",
+    "tower"
+]
+
+integration = ["insta", "parquet", "arrow", "hyper-util", "grpc"]
 
 system-metrics = ["sysinfo"]
 

@@ -225,16 +225,14 @@ impl ExecutionPlan for NetworkShuffleExec {
 
         let mut streams = Vec::with_capacity(remote_stage.workers.len());
         for input_task_index in 0..remote_stage.workers.len() {
-            let worker_connection = self.worker_connections.get_or_init_worker_connection(
+            streams.push(self.worker_connections.execute(
                 remote_stage,
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
+                off + partition,
                 self.producer_head(task_context.task_count),
                 &context,
-            )?;
-
-            let stream = worker_connection.execute(off + partition)?;
-            streams.push(stream);
+            )?);
         }
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(

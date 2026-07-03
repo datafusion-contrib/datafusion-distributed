@@ -244,7 +244,7 @@ pub struct AvgLatencyMetric {
 }
 
 impl AvgLatencyMetric {
-    pub(crate) fn from_raw(nanos_sum: usize, count: usize) -> Self {
+    pub fn from_raw(nanos_sum: usize, count: usize) -> Self {
         Self {
             nanos_sum: Arc::new(AtomicUsize::new(nanos_sum)),
             count: Arc::new(AtomicUsize::new(count)),
@@ -255,11 +255,11 @@ impl AvgLatencyMetric {
         self.nanos_sum.load(Relaxed) / self.count.load(Relaxed).max(1)
     }
 
-    pub(crate) fn nanos_sum(&self) -> usize {
+    pub fn nanos_sum(&self) -> usize {
         self.nanos_sum.load(Relaxed)
     }
 
-    pub(crate) fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.count.load(Relaxed)
     }
 
@@ -410,7 +410,7 @@ macro_rules! percentile_latency_metric {
         }
 
         impl $name {
-            pub(crate) fn from_sketch(sketch: DDSketch) -> Self {
+            pub fn from_sketch(sketch: DDSketch) -> Self {
                 Self {
                     inner: Arc::new(Mutex::new(sketch)),
                 }
@@ -421,7 +421,7 @@ macro_rules! percentile_latency_metric {
                 sketch.quantile($percentile).unwrap_or(None).unwrap_or(0.0) as usize
             }
 
-            pub(crate) fn serialize_sketch(&self) -> Result<Vec<u8>> {
+            pub fn serialize_sketch(&self) -> Result<Vec<u8>> {
                 let sketch = self.inner.lock().unwrap();
                 bincode::serialize(&*sketch).map_err(|e| {
                     datafusion::error::DataFusionError::Internal(format!(
@@ -430,7 +430,7 @@ macro_rules! percentile_latency_metric {
                 })
             }
 
-            pub(crate) fn count(&self) -> usize {
+            pub fn count(&self) -> usize {
                 let sketch = self.inner.lock().unwrap();
                 sketch.count() as usize
             }

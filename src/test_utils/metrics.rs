@@ -1,6 +1,7 @@
 use crate::coordinator::DistributedExec;
-use crate::worker::generated::worker as pb;
+use chrono::{DateTime, Utc};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::{Count, Metric, MetricValue, MetricsSet, Time, Timestamp};
 use std::sync::Arc;
 
 /// Waits until all worker tasks have reported their metrics back via the coordinator channel.
@@ -11,43 +12,41 @@ pub async fn wait_for_all_metrics(plan: &Arc<dyn ExecutionPlan>) {
 }
 
 /// creates a "distinct" set of metrics from the provided seed
-pub fn make_test_metrics_set_proto_from_seed(seed: u64, num_metrics: usize) -> pb::MetricsSet {
+pub fn make_test_metrics_set_from_seed(seed: u64, num_metrics: usize) -> MetricsSet {
     const TEST_TIMESTAMP: i64 = 1758200400000000000; // 2025-09-18 13:00:00 UTC
 
-    let mut result = pb::MetricsSet { metrics: vec![] };
+    let mut result = MetricsSet::new();
 
     for i in 0..num_metrics {
-        let value = seed + i as u64;
-        result.metrics.push(match i % 4 {
-            0 => pb::Metric {
-                value: Some(pb::metric::Value::OutputRows(pb::OutputRows { value })),
-                labels: vec![],
-                partition: None,
+        let value = (seed + i as u64) as usize;
+        result.push(Arc::new(Metric::new(
+            match i % 4 {
+                0 => {
+                    let count = Count::new();
+                    count.add(value);
+                    MetricValue::OutputRows(count)
+                }
+                1 => {
+                    let time = Time::new();
+                    time.add_duration(std::time::Duration::from_nanos(value as u64));
+                    MetricValue::ElapsedCompute(time)
+                }
+                2 => MetricValue::StartTimestamp(timestamp_from_nanos(
+                    TEST_TIMESTAMP + (value as i64 * 1_000_000_000),
+                )),
+                3 => MetricValue::EndTimestamp(timestamp_from_nanos(
+                    TEST_TIMESTAMP + (value as i64 * 1_000_000_000),
+                )),
+                _ => unreachable!(),
             },
-
-            1 => pb::Metric {
-                value: Some(pb::metric::Value::ElapsedCompute(pb::ElapsedCompute {
-                    value,
-                })),
-                labels: vec![],
-                partition: None,
-            },
-            2 => pb::Metric {
-                value: Some(pb::metric::Value::StartTimestamp(pb::StartTimestamp {
-                    value: Some(TEST_TIMESTAMP + (value as i64 * 1_000_000_000)),
-                })),
-                labels: vec![],
-                partition: None,
-            },
-            3 => pb::Metric {
-                value: Some(pb::metric::Value::EndTimestamp(pb::EndTimestamp {
-                    value: Some(TEST_TIMESTAMP + (value as i64 * 1_000_000_000)),
-                })),
-                labels: vec![],
-                partition: None,
-            },
-            _ => unreachable!(),
-        })
+            None,
+        )))
     }
     result
+}
+
+fn timestamp_from_nanos(nanos: i64) -> Timestamp {
+    let timestamp = Timestamp::new();
+    timestamp.set(DateTime::<Utc>::from_timestamp_nanos(nanos));
+    timestamp
 }

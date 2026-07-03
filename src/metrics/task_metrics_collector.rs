@@ -186,7 +186,7 @@ mod tests {
             // empty metrics (e.g., custom execution plans without metrics), which is fine - we
             // just verify that a metrics set exists for each node. The count assertion above
             // ensures all nodes are included in the metrics collection.
-            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
+            let stage = stages.get(&expected_task_key.stage_id).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
                 actual_metrics.pre_order_plan_metrics.len(),
@@ -306,7 +306,7 @@ mod tests {
                          sent metrics via the coordinator channel."
                 )
             });
-            let stage = stages.get(&(expected_task_key.stage_id as usize)).unwrap();
+            let stage = stages.get(&expected_task_key.stage_id).unwrap();
             let stage_plan = stage.local_plan().unwrap();
             assert_eq!(
                 actual_metrics.pre_order_plan_metrics.len(),

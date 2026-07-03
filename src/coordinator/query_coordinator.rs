@@ -1,25 +1,22 @@
-use crate::common::{TreeNodeExt, now_ns, serialize_uuid, task_ctx_with_extension};
+use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
-use crate::protobuf::tonic_status_to_datafusion_error;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
-use crate::worker::generated::worker as pb;
-use crate::worker::generated::worker::coordinator_to_worker_msg::Inner;
-use crate::worker::generated::worker::set_plan_request::WorkUnitFeedDeclaration;
 use crate::{
-    BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec,
-    DistributedConfig, DistributedTaskContext, DistributedWorkUnitFeedContext, NetworkBoundaryExt,
-    Stage, TaskEstimator, TaskKey, TaskRoutingContext, get_distributed_channel_resolver,
-    get_distributed_worker_resolver,
+    BytesCounterMetric, BytesMetricExt, CoordinatorToWorkerMsg,
+    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedConfig,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, NetworkBoundaryExt,
+    SetPlanRequest, Stage, TaskEstimator, TaskKey, TaskRoutingContext, WorkUnitFeedDeclaration,
+    WorkerToCoordinatorMsg, get_distributed_channel_resolver, get_distributed_worker_resolver,
 };
+use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, exec_datafusion_err};
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
@@ -27,8 +24,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use futures::{Stream, StreamExt};
-use http::Extensions;
+use futures::{Stream, StreamExt, TryStreamExt};
 use prost::Message;
 use rand::Rng;
 use std::ops::DerefMut;
@@ -36,13 +32,11 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::Request;
-use tonic::metadata::MetadataMap;
 use url::Url;
 use uuid::Uuid;
 
-/// How many [crate::WorkUnit] messages are allowed to be chunked synchronously together in order to
-/// send fewer bigger [crate::WorkUnit] batches over the wire, reducing the overhead of sending many
+/// How many [crate::WorkUnitMsg] messages are allowed to be chunked synchronously together in order to
+/// send fewer bigger [crate::WorkUnitMsg] batches over the wire, reducing the overhead of sending many
 /// small batches. See [StreamExt::ready_chunks] docs for more details about how chunking works.
 const WORK_UNIT_FEED_CHUNK_SIZE: usize = 256;
 
@@ -142,8 +136,8 @@ impl<'a> StageCoordinator<'a> {
         task_i: usize,
         url: Url,
     ) -> Result<(
-        UnboundedSender<pb::CoordinatorToWorkerMsg>,
-        UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
+        UnboundedSender<CoordinatorToWorkerMsg>,
+        UnboundedReceiver<WorkerToCoordinatorMsg>,
     )> {
         let session_config = self.task_ctx.session_config();
         let codec = DistributedCodec::new_combined_with_user(session_config);
@@ -155,20 +149,19 @@ impl<'a> StageCoordinator<'a> {
         let plan_size = plan_proto.len();
 
         let task_key = TaskKey {
-            query_id: serialize_uuid(&self.query_id),
-            stage_id: self.stage_id as u64,
-            task_number: task_i as u64,
+            query_id: self.query_id,
+            stage_id: self.stage_id,
+            task_number: task_i,
         };
-        let msg = pb::CoordinatorToWorkerMsg {
-            inner: Some(Inner::SetPlanRequest(pb::SetPlanRequest {
-                plan_proto,
-                task_count: self.task_count as u64,
-                task_key: Some(task_key.clone()),
-                work_unit_feed_declarations,
-                target_worker_url: url.to_string(),
-                query_start_time_ns: self.metrics.instantiation_time,
-            })),
-        };
+
+        let msg = CoordinatorToWorkerMsg::SetPlanRequest(SetPlanRequest {
+            task_key,
+            task_count: self.task_count,
+            plan_proto,
+            work_unit_feed_declarations,
+            target_worker_url: url.clone(),
+            query_start_time_ns: self.metrics.instantiation_time,
+        });
 
         let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
             tokio::sync::mpsc::unbounded_channel();
@@ -180,44 +173,33 @@ impl<'a> StageCoordinator<'a> {
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
 
-        let request = Request::from_parts(
-            MetadataMap::from_headers(headers),
-            Extensions::default(),
-            futures::stream::once(async { msg })
-                .chain(UnboundedReceiverStream::new(coordinator_to_worker_rx))
-                .map(set_work_unit_send_time)
-                // Keep the request side of the channel open until the query ends: this tail emits
-                // no messages and only completes, once the `Notify` fires. Workers interpret this
-                // EOS of this stream as a query finished/aborted signal. The flow looks like this:
-                // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
-                // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
-                // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
-                //    gracefully ended.
-                // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-                // 5. The metrics are send back in the worker->coordinator channel, and then that
-                //    channel is closed.
-                .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier))),
-        );
+        let coordinator_to_worker_stream = futures::stream::once(async { msg })
+            .chain(UnboundedReceiverStream::new(coordinator_to_worker_rx))
+            .map(set_work_unit_send_time)
+            // Keep the request side of the channel open until the query ends: this tail emits
+            // no messages and only completes, once the `Notify` fires. Workers interpret this
+            // EOS of this stream as a query finished/aborted signal. The flow looks like this:
+            // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
+            // 2. The end stream notifier guard is dropped in `DistributedExec::execute()`.
+            // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
+            //    gracefully ended.
+            // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
+            // 5. The metrics are send back in the worker->coordinator channel, and then that
+            //    channel is closed.
+            .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
+            .boxed();
 
         let metrics = self.metrics.clone();
 
         self.join_set.lock().unwrap().spawn(async move {
             let start = Instant::now();
             let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
-            let response = client.coordinator_channel(request).await.map_err(|e| {
-                tonic_status_to_datafusion_error(&e).unwrap_or_else(|| {
-                    exec_datafusion_err!("Error sending plan to worker {url}: {e}")
-                })
-            })?;
+            let mut worker_to_coordinator_stream = client
+                .coordinator_channel(headers, coordinator_to_worker_stream)
+                .await?;
             metrics.plan_send_latency.record(&start);
             metrics.plan_bytes_sent.add_bytes(plan_size);
-            let mut worker_to_coordinator_stream = response.into_inner();
-            while let Some(msg_or_err) = worker_to_coordinator_stream.next().await {
-                let msg = msg_or_err.map_err(|err| {
-                    tonic_status_to_datafusion_error(&err).unwrap_or_else(|| {
-                        exec_datafusion_err!("Unknown error on worker to coordinator stream: {err}")
-                    })
-                })?;
+            while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 if worker_to_coordinator_tx.send(msg).is_err() {
                     break; // receiver dropped
                 }
@@ -234,12 +216,12 @@ impl<'a> StageCoordinator<'a> {
     pub(super) fn worker_to_coordinator_task(
         &mut self,
         task_i: usize,
-        mut worker_to_coordinator_rx: UnboundedReceiver<pb::WorkerToCoordinatorMsg>,
-    ) -> UnboundedReceiver<pb::LoadInfo> {
+        mut worker_to_coordinator_rx: UnboundedReceiver<WorkerToCoordinatorMsg>,
+    ) -> UnboundedReceiver<LoadInfo> {
         let task_key = TaskKey {
-            query_id: serialize_uuid(&self.query_id),
-            stage_id: self.stage_id as u64,
-            task_number: task_i as u64,
+            query_id: self.query_id,
+            stage_id: self.stage_id,
+            task_number: task_i,
         };
         let task_metrics = self.metrics_store.clone();
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -250,20 +232,18 @@ impl<'a> StageCoordinator<'a> {
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             while let Some(msg) = worker_to_coordinator_rx.recv().await {
-                let Some(inner) = msg.inner else { continue };
-
-                match inner {
-                    pb::worker_to_coordinator_msg::Inner::TaskMetrics(pre_order_metrics) => {
+                match msg {
+                    WorkerToCoordinatorMsg::TaskMetrics(v) => {
                         if let Some(task_metrics) = &task_metrics {
-                            task_metrics.insert(task_key.clone(), pre_order_metrics);
+                            task_metrics.insert(task_key, v);
                         }
                     }
-                    pb::worker_to_coordinator_msg::Inner::LoadInfo(load_info) => {
+                    WorkerToCoordinatorMsg::LoadInfo(load_info) => {
                         if let Some(tx) = &load_info_tx_opt {
                             let _ = tx.send(load_info);
                         }
                     }
-                    pb::worker_to_coordinator_msg::Inner::LoadInfoEos(_) => {
+                    WorkerToCoordinatorMsg::LoadInfoEos => {
                         let _ = load_info_tx_opt.take();
                     }
                 }
@@ -278,7 +258,7 @@ impl<'a> StageCoordinator<'a> {
     pub(super) fn coordinator_to_worker_task(
         &mut self,
         task_i: usize,
-        tx: UnboundedSender<pb::CoordinatorToWorkerMsg>,
+        tx: UnboundedSender<CoordinatorToWorkerMsg>,
     ) -> Result<()> {
         let session_config = self.task_ctx.session_config();
         let d_cfg = DistributedConfig::from_config_options(session_config.options())?;
@@ -329,12 +309,10 @@ impl<'a> StageCoordinator<'a> {
             Ok(TreeNodeRecursion::Continue)
         })?;
 
-        struct WorkUnitEosOnDrop(UnboundedSender<pb::CoordinatorToWorkerMsg>);
+        struct WorkUnitEosOnDrop(UnboundedSender<CoordinatorToWorkerMsg>);
         impl Drop for WorkUnitEosOnDrop {
             fn drop(&mut self) {
-                let _ = self.0.send(pb::CoordinatorToWorkerMsg {
-                    inner: Some(Inner::WorkUnitEos(true)),
-                });
+                let _ = self.0.send(CoordinatorToWorkerMsg::WorkUnitEos);
             }
         }
 
@@ -368,8 +346,8 @@ impl<'a> StageCoordinator<'a> {
         let transformed = plan.transform_down_with_dt_ctx(d_ctx, |plan, d_ctx| {
             if let Some(wuf) = wuf_registry.get_work_unit_feed(&plan) {
                 work_unit_feed_declarations.push(WorkUnitFeedDeclaration {
-                    id: serialize_uuid(&wuf.id()),
-                    partitions: plan.properties().partitioning.partition_count() as u64,
+                    id: wuf.id(),
+                    partitions: plan.properties().partitioning.partition_count(),
                 });
             };
 
@@ -467,7 +445,7 @@ impl Drop for NotifyGuard {
 pub(super) struct CoordinatorToWorkerMetrics {
     pub(super) plan_bytes_sent: BytesCounterMetric,
     pub(super) plan_send_latency: Arc<LatencyMetric>,
-    pub(super) instantiation_time: u64,
+    pub(super) instantiation_time: usize,
 }
 
 impl CoordinatorToWorkerMetrics {

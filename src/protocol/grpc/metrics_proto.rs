@@ -1,3 +1,4 @@
+use super::generated::worker as pb;
 use chrono::DateTime;
 use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
@@ -8,15 +9,12 @@ use sketches_ddsketch::DDSketch;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::bytes_metric::BytesCounterMetric;
-use super::latency_metric::{
-    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric,
-    P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
+use crate::{
+    AvgLatencyMetric, BytesCounterMetric, FirstLatencyMetric, MaxGaugeMetric, MaxLatencyMetric,
+    MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
-use crate::MaxGaugeMetric;
-use crate::worker::generated::worker as pb;
 
-/// df_metrics_set_to_proto converts a [datafusion::physical_plan::metrics::MetricsSet] to a [pb::MetricsSet].
+/// df_metrics_set_to_proto converts a [MetricsSet] to a [pb::MetricsSet].
 /// Custom metrics are filtered out, but any other errors are returned.
 /// TODO(#140): Support custom metrics.
 pub fn df_metrics_set_to_proto(
@@ -44,7 +42,7 @@ pub fn df_metrics_set_to_proto(
     Ok(pb::MetricsSet { metrics })
 }
 
-/// metrics_set_proto_to_df converts a [pb::MetricsSet] to a [datafusion::physical_plan::metrics::MetricsSet].
+/// metrics_set_proto_to_df converts a [pb::MetricsSet] to a [MetricsSet].
 pub fn metrics_set_proto_to_df(
     metrics_set_proto: &pb::MetricsSet,
 ) -> Result<MetricsSet, DataFusionError> {
@@ -64,7 +62,7 @@ const CUSTOM_METRICS_NOT_SUPPORTED: &str =
 /// New DataFusion metrics that are not yet supported in proto conversion.
 const UNSUPPORTED_METRICS: &str = "metric type not supported in proto conversion";
 
-/// df_metric_to_proto converts a `datafusion::physical_plan::metrics::Metric` to a `pb::Metric`. It does not consume the Arc<Metric>.
+/// df_metric_to_proto converts a `Metric` to a `pb::Metric`. It does not consume the Arc<Metric>.
 pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionError> {
     let partition = metric.partition().map(|p| p as u64);
     let labels = metric
@@ -284,7 +282,7 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
     }
 }
 
-/// metric_proto_to_df converts a `pb::Metric` to a `datafusion::physical_plan::metrics::Metric`. It consumes the pb::Metric.
+/// metric_proto_to_df converts a `pb::Metric` to a `Metric`. It consumes the pb::Metric.
 pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionError> {
     let partition = metric.partition.map(|p| p as usize);
     let labels = metric

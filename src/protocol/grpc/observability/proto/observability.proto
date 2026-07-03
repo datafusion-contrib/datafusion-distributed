@@ -24,8 +24,7 @@ message TaskKey {
 // Progress information for a single task
 message TaskProgress {
   TaskKey task_key = 1;
-  uint64 total_partitions = 2;
-  reserved 3;
+  reserved 2, 3;
   TaskStatus status = 4;
   uint64 output_rows = 5;
 }

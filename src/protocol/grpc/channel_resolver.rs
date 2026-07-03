@@ -1,10 +1,7 @@
-use crate::DistributedConfig;
-use crate::config_extension_ext::set_distributed_option_extension;
-use crate::worker::generated::worker::worker_service_client::WorkerServiceClient;
+use crate::protocol::grpc::worker_client::create_worker_client;
+use crate::{ChannelResolver, WorkerChannel};
 use async_trait::async_trait;
 use datafusion::common::{DataFusionError, config_datafusion_err, exec_datafusion_err};
-use datafusion::execution::TaskContext;
-use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::Shared;
 use std::sync::{Arc, LazyLock};
@@ -15,56 +12,6 @@ use tonic::transport::Channel;
 use tower::ServiceExt;
 use url::Url;
 
-/// Allows users to customize the way Worker clients are created. A common use case is to
-/// wrap the client with tower layers or schedule it in an IO-specific tokio runtime.
-///
-/// There is a default implementation of this trait that should be enough for the most common
-/// use-cases.
-///
-/// # Implementation Notes
-/// - This is called per gRPC request, so implementors of this trait should make sure that
-///   clients are reused across method calls instead of building a new Worker client every time.
-///
-/// - When implementing `get_worker_client_for_url`, it is recommended to use the
-///   [`create_worker_client`] helper function to ensure clients are configured with
-///   appropriate message size limits for internal communication. This helps avoid message
-///   size errors when transferring large datasets.
-#[async_trait]
-pub trait ChannelResolver {
-    /// For a given URL, get a Worker gRPC client for communicating to it.
-    ///
-    /// *WARNING*: This method is called for every gRPC request, so to not create
-    /// one client connection for each request, users are required to reuse generated clients.
-    /// It's recommended to rely on [DefaultChannelResolver] either by delegating method calls
-    /// to it or by copying the implementation.
-    ///
-    /// Consider using [`create_worker_client`] to create the client with appropriate
-    /// default message size limits.
-    async fn get_worker_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError>;
-}
-
-pub(crate) fn set_distributed_channel_resolver(
-    cfg: &mut SessionConfig,
-    channel_resolver: impl ChannelResolver + Send + Sync + 'static,
-) {
-    let opts = cfg.options_mut();
-    let channel_resolver = ChannelResolverExtension(Some(Arc::new(channel_resolver)));
-    if let Some(distributed_cfg) = opts.extensions.get_mut::<DistributedConfig>() {
-        distributed_cfg.__private_channel_resolver = channel_resolver;
-    } else {
-        set_distributed_option_extension(
-            cfg,
-            DistributedConfig {
-                __private_channel_resolver: channel_resolver,
-                ..Default::default()
-            },
-        )
-    }
-}
-
 // Unlike TaskContext, a DataFusion RuntimeEnv does not allow to introduce user-defined extensions.
 // For the default implementation of the ChannelResolvers, we cannot inject one DefaultChannelResolver
 // per TaskContext, as this holds reference to Tonic channels that must outlive a single TaskContext.
@@ -72,26 +19,12 @@ pub(crate) fn set_distributed_channel_resolver(
 // The Tonic channels need to be established and reused under a whole RuntimeEnv scope, not a single
 // TaskContext, which forces us to put the default implementation in a static global variable that
 // stores and reuses tonic channels per RuntimeEnv's pointer address.
-static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
+pub(crate) static DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME: LazyLock<
     moka::sync::Cache<
         /* Arc<RuntimeEnv> pointer address */ usize,
         /* ChannelResolver that reuses built channels */ Arc<DefaultChannelResolver>,
     >,
 > = LazyLock::new(|| moka::sync::Cache::builder().max_capacity(256).build());
-
-pub fn get_distributed_channel_resolver(
-    task_ctx: &TaskContext,
-) -> Arc<dyn ChannelResolver + Send + Sync> {
-    let opts = task_ctx.session_config().options();
-    if let Some(distributed_cfg) = opts.extensions.get::<DistributedConfig>()
-        && let Some(cr) = &distributed_cfg.__private_channel_resolver.0
-    {
-        return Arc::clone(cr);
-    }
-    let runtime_addr = Arc::as_ptr(&task_ctx.runtime_env()) as usize;
-    DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME
-        .get_with(runtime_addr, || Arc::new(DefaultChannelResolver::default()))
-}
 
 pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
     http::Request<Body>,
@@ -100,9 +33,6 @@ pub type BoxCloneSyncChannel = tower::util::BoxCloneSyncService<
 >;
 
 type ChannelCacheValue = Shared<BoxFuture<BoxCloneSyncChannel, Arc<DataFusionError>>>;
-
-#[derive(Clone, Default)]
-pub(crate) struct ChannelResolverExtension(Option<Arc<dyn ChannelResolver + Send + Sync>>);
 
 /// Default implementation of a [ChannelResolver] that connects to the workers given the URL once
 /// and stores the connection instance in a TTI cache.
@@ -159,8 +89,8 @@ impl DefaultChannelResolver {
                 })?;
                 Ok(BoxCloneSyncChannel::new(channel))
             }
-            .boxed()
-            .shared()
+                .boxed()
+                .shared()
         });
 
         channel.await.map_err(|err| {
@@ -175,54 +105,9 @@ impl ChannelResolver for DefaultChannelResolver {
     async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ) -> Result<Box<dyn WorkerChannel>, DataFusionError> {
         self.get_channel(url).await.map(create_worker_client)
     }
-}
-
-#[async_trait]
-impl ChannelResolver for Arc<dyn ChannelResolver + Send + Sync> {
-    async fn get_worker_client_for_url(
-        &self,
-        url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-        self.as_ref().get_worker_client_for_url(url).await
-    }
-}
-
-/// Creates a [`WorkerServiceClient`] with high default message size limits.
-///
-/// This is a convenience function that wraps [`WorkerServiceClient::new`] and configures
-/// it with `max_decoding_message_size(usize::MAX)` and `max_encoding_message_size(usize::MAX)`
-/// to avoid message size limitations for internal communication.
-///
-/// Users implementing custom [`ChannelResolver`]s should use this function in their
-/// `get_worker_client_for_url` implementations to ensure consistent behavior with built-in
-/// implementations.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use datafusion_distributed::{create_worker_client, BoxCloneSyncChannel, ChannelResolver};
-/// /// use tonic::transport::Channel;
-///
-/// #[async_trait]
-/// impl ChannelResolver for MyResolver {
-///     async fn get_worker_client_for_url(
-///         &self,
-///         url: &Url,
-///     ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
-///         let channel = Channel::from_shared(url.to_string())?.connect().await?;
-///         Ok(create_worker_client(BoxCloneSyncChannel::new(channel)))
-///     }
-/// }
-/// ```
-pub fn create_worker_client(
-    channel: BoxCloneSyncChannel,
-) -> WorkerServiceClient<BoxCloneSyncChannel> {
-    WorkerServiceClient::new(channel)
-        .max_decoding_message_size(usize::MAX)
-        .max_encoding_message_size(usize::MAX)
 }
 
 #[cfg(test)]

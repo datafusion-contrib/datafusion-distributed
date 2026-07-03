@@ -8,8 +8,7 @@ use crate::distributed_planner::{
 };
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
-use crate::worker::generated::worker as pb;
-use crate::{BytesCounterMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage};
+use crate::{BytesCounterMetric, LoadInfo, NetworkBoundaryExt, NetworkCoalesceExec, Stage};
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -204,7 +203,7 @@ impl PlanReconstructor {
 
 /// Estimates the bytes per second flowing through a stage by reading sample information.
 async fn gather_runtime_statistics(
-    per_task_load_info_stream: Vec<impl Stream<Item = pb::LoadInfo> + Unpin>,
+    per_task_load_info_stream: Vec<impl Stream<Item = LoadInfo> + Unpin>,
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Statistics> {
     const ESTIMATED_QUERY_TIME_S: usize = 10;
@@ -237,8 +236,8 @@ async fn gather_runtime_statistics(
 
     let mut load_info_stream = futures::stream::select_all(per_task_load_info_stream);
     while let Some(load_info) = load_info_stream.next().await {
-        rows_per_second += load_info.rows_per_second as usize;
-        rows_ready += load_info.rows_ready as usize;
+        rows_per_second += load_info.rows_per_second;
+        rows_ready += load_info.rows_ready;
         per_col_bytes_per_second = element_wise_sum(
             per_col_bytes_per_second,
             &load_info.per_column_bytes_per_second,

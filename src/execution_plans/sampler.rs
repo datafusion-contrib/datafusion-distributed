@@ -1,7 +1,6 @@
 use crate::common::{require_one_child, vec_cast};
-use crate::worker::generated::worker as pb;
 use crate::{
-    BytesCounterMetric, BytesMetricExt, GaugeMetricExt, LatencyMetricExt, MaxGaugeMetric,
+    BytesCounterMetric, BytesMetricExt, GaugeMetricExt, LatencyMetricExt, LoadInfo, MaxGaugeMetric,
     MaxLatencyMetric, P50LatencyMetric,
 };
 use datafusion::arrow::array::Array;
@@ -58,7 +57,7 @@ pub(crate) struct SamplerExecMetrics {
     /// the input arrived
     kick_off_to_fist_batch_p50: P50LatencyMetric,
     kick_off_to_fist_batch_max: MaxLatencyMetric,
-    /// Time since [SamplerExec::kick_off_first_sampler] was called until the [pb::LoadInfo] message
+    /// Time since [SamplerExec::kick_off_first_sampler] was called until the [LoadInfo] message
     /// was sent.
     kick_off_to_load_info_sent_p50: P50LatencyMetric,
     kick_off_to_load_info_sent_max: MaxLatencyMetric,
@@ -141,7 +140,7 @@ impl SamplerExec {
     pub(crate) fn kick_off_first_sampler(
         plan: Arc<dyn ExecutionPlan>,
         ctx: Arc<TaskContext>,
-    ) -> Result<Vec<oneshot::Receiver<pb::LoadInfo>>> {
+    ) -> Result<Vec<oneshot::Receiver<LoadInfo>>> {
         let mut receivers = vec![];
         plan.apply(|plan| {
             let Some(sampler) = plan.downcast_ref::<SamplerExec>() else {
@@ -197,7 +196,7 @@ impl PartitionSampler {
             self.metrics.kick_off_to_fist_batch_max.add_duration(delay);
         }
 
-        // Time since the sampler was kicked off until the pb::LoadInfo message was sent.
+        // Time since the sampler was kicked off until the LoadInfo message was sent.
         if let Some(t) = self.load_info_sent_at.get() {
             let delay = t.saturating_duration_since(*kick_off_at);
             self.metrics
@@ -216,7 +215,7 @@ impl PartitionSampler {
         self.stream.lock().unwrap().take()
     }
 
-    fn kick_off(&self, ctx: Arc<TaskContext>) -> Result<oneshot::Receiver<pb::LoadInfo>> {
+    fn kick_off(&self, ctx: Arc<TaskContext>) -> Result<oneshot::Receiver<LoadInfo>> {
         let _ = self.kick_off_at.set(Instant::now());
         let (sampling_tx, sampling_rx) = oneshot::channel();
 
@@ -326,16 +325,16 @@ impl PartitionSampler {
     }
 }
 
-/// Wraps a [pb::LoadInfo] and emits it on [Drop] through the provided [oneshot] channel.
+/// Wraps a [LoadInfo] and emits it on [Drop] through the provided [oneshot] channel.
 ///
 /// Emitting on drop ensures that it's always emitted.
 struct LoadInfoDropHandler {
     omit: Arc<AtomicBool>,
 
-    load_info: pb::LoadInfo,
+    load_info: LoadInfo,
     bytes_ready_metric: BytesCounterMetric,
     bytes_per_second_metric: BytesCounterMetric,
-    sampling_tx: Option<oneshot::Sender<pb::LoadInfo>>,
+    sampling_tx: Option<oneshot::Sender<LoadInfo>>,
     load_info_sent_at: Arc<OnceLock<Instant>>,
 }
 
@@ -359,16 +358,14 @@ impl LoadInfoDropHandler {
     }
 
     fn set_per_col_bytes_per_second(&mut self, total_bytes_per_second: usize) {
-        let per_col_ready: &[u64] = &self.load_info.per_column_bytes_ready;
-        let total_ready: u64 = per_col_ready.iter().sum();
+        let per_col_ready = &self.load_info.per_column_bytes_ready;
+        let total_ready = per_col_ready.iter().sum::<usize>();
         let per_col: Vec<usize> = if total_ready == 0 {
             vec![total_bytes_per_second / per_col_ready.len().max(1); per_col_ready.len()]
         } else {
             per_col_ready
                 .iter()
-                .map(|&ready| {
-                    (ready.saturating_mul(total_bytes_per_second as u64) / total_ready) as usize
-                })
+                .map(|&ready| ready.saturating_mul(total_bytes_per_second) / total_ready)
                 .collect()
         };
         self.load_info.per_column_bytes_per_second = vec_cast(&per_col);
@@ -377,11 +374,11 @@ impl LoadInfoDropHandler {
     }
 
     fn set_rows_ready(&mut self, rows_ready: usize) {
-        self.load_info.rows_ready = rows_ready as u64;
+        self.load_info.rows_ready = rows_ready;
     }
 
     fn set_rows_per_second(&mut self, rows_per_second: usize) {
-        self.load_info.rows_per_second = rows_per_second as u64;
+        self.load_info.rows_per_second = rows_per_second;
     }
 
     fn set_per_col_ndv(&mut self, per_column_ndv: Vec<f32>) {
@@ -405,9 +402,9 @@ impl Drop for LoadInfoDropHandler {
     }
 }
 
-fn zero_load_info(partition_idx: usize, n_cols: usize) -> pb::LoadInfo {
-    pb::LoadInfo {
-        partition: partition_idx as u64,
+fn zero_load_info(partition_idx: usize, n_cols: usize) -> LoadInfo {
+    LoadInfo {
+        partition: partition_idx,
         rows_per_second: 0,
         rows_ready: 0,
         per_column_bytes_per_second: vec![0; n_cols],
