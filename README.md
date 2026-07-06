@@ -1,5 +1,10 @@
 # DataFusion Distributed
 
+[![Crates.io][crates-badge]][crates-url]
+[![Docs][docs-badge]][docs-url]
+[![Apache licensed][license-badge]][license-url]
+[![Discord chat][discord-badge]][discord-url]
+
 Scale [Apache DataFusion](https://github.com/apache/datafusion) across a
 cluster — without leaving the DataFusion you already know.
 
@@ -87,3 +92,12 @@ in the [benchmarks/cdk](./benchmarks/cdk) directory.
 - User guide: https://datafusion-contrib.github.io/datafusion-distributed
 - Contributor
   guide: https://datafusion-contrib.github.io/datafusion-distributed/contributor-guide/01-index.html
+
+[crates-badge]: https://img.shields.io/crates/v/datafusion-distributed.svg
+[crates-url]: https://crates.io/crates/datafusion-distributed
+[docs-badge]: https://img.shields.io/badge/docs-online-blue
+[docs-url]: https://datafusion-contrib.github.io/datafusion-distributed
+[license-badge]: https://img.shields.io/badge/license-Apache%202.0-blue.svg
+[license-url]: https://github.com/datafusion-contrib/datafusion-distributed/blob/main/LICENSE.txt
+[discord-badge]: https://img.shields.io/badge/Chat-Discord-purple
+[discord-url]: https://discord.com/invite/Qw5gKqHxUM
