@@ -21,6 +21,9 @@
 /* Customizing with theme CSS variables */
 
 :root {
+    /* Make the top navbar more compact (theme default is 4rem) */
+    --pst-header-height: 3rem;
+
     --pst-color-active-navigation: 215, 70, 51;
     --pst-color-link-hover: 215, 70, 51;
     --pst-color-headerlink: 215, 70, 51;
@@ -31,8 +34,14 @@
     --pst-color-info: 23, 162, 184;
 }
 
-code {
-    color: rgb(215, 70, 51);
+/* Inline code: gentle, theme-aware. Uses the body text color on a subtle chip
+   instead of the harsh brand red, so it's easy on the eyes and clearly set off
+   from prose. (Code blocks are styled separately via Pygments.) */
+code.literal {
+    color: var(--pst-color-text-base);
+    background-color: rgba(129, 139, 152, 0.15);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
 }
 
 .footer {
@@ -142,3 +151,90 @@ Details: 8rem for search box etc*/
 .bd-content table tbody tr:nth-of-type(odd) {
     background-color: rgba(0, 0, 0, 0.03);
 }
+
+
+/* VS Code "Dark+" inspired code highlighting for dark mode. Layered on top of
+   the base Pygments style so identifiers, keywords, strings, etc. match VS
+   Code's default dark theme. */
+
+html[data-theme="dark"] .highlight { background-color: #1e1e1e; }
+html[data-theme="dark"] .highlight pre { color: #d4d4d4; }
+
+/* comments — green */
+html[data-theme="dark"] .highlight .c,
+html[data-theme="dark"] .highlight .ch,
+html[data-theme="dark"] .highlight .cm,
+html[data-theme="dark"] .highlight .cp,
+html[data-theme="dark"] .highlight .cpf,
+html[data-theme="dark"] .highlight .c1,
+html[data-theme="dark"] .highlight .cs { color: #6a9955; font-style: normal; }
+
+/* keywords — blue */
+html[data-theme="dark"] .highlight .k,
+html[data-theme="dark"] .highlight .kc,
+html[data-theme="dark"] .highlight .kd,
+html[data-theme="dark"] .highlight .kn,
+html[data-theme="dark"] .highlight .kp,
+html[data-theme="dark"] .highlight .kr { color: #569cd6; }
+
+/* types / classes / builtins — teal */
+html[data-theme="dark"] .highlight .kt,
+html[data-theme="dark"] .highlight .nc,
+html[data-theme="dark"] .highlight .nn,
+html[data-theme="dark"] .highlight .nb,
+html[data-theme="dark"] .highlight .bp { color: #4ec9b0; }
+
+/* function names / attributes — yellow */
+html[data-theme="dark"] .highlight .nf,
+html[data-theme="dark"] .highlight .fm,
+html[data-theme="dark"] .highlight .nd { color: #dcdcaa; }
+
+/* plain identifiers — neutral white, so colored tokens stand out */
+html[data-theme="dark"] .highlight .n,
+html[data-theme="dark"] .highlight .nx,
+html[data-theme="dark"] .highlight .nl { color: #d4d4d4; }
+
+/* variables / fields / attributes — light blue */
+html[data-theme="dark"] .highlight .na,
+html[data-theme="dark"] .highlight .nv,
+html[data-theme="dark"] .highlight .vc,
+html[data-theme="dark"] .highlight .vg,
+html[data-theme="dark"] .highlight .vi { color: #9cdcfe; }
+
+/* constants — bright blue */
+html[data-theme="dark"] .highlight .no { color: #4fc1ff; }
+
+/* strings — salmon */
+html[data-theme="dark"] .highlight .s,
+html[data-theme="dark"] .highlight .sa,
+html[data-theme="dark"] .highlight .sb,
+html[data-theme="dark"] .highlight .sc,
+html[data-theme="dark"] .highlight .dl,
+html[data-theme="dark"] .highlight .sd,
+html[data-theme="dark"] .highlight .s2,
+html[data-theme="dark"] .highlight .sh,
+html[data-theme="dark"] .highlight .si,
+html[data-theme="dark"] .highlight .sx,
+html[data-theme="dark"] .highlight .sr,
+html[data-theme="dark"] .highlight .s1,
+html[data-theme="dark"] .highlight .ss { color: #ce9178; }
+
+/* escape sequences — gold */
+html[data-theme="dark"] .highlight .se { color: #d7ba7d; }
+
+/* numbers — light green */
+html[data-theme="dark"] .highlight .m,
+html[data-theme="dark"] .highlight .mb,
+html[data-theme="dark"] .highlight .mf,
+html[data-theme="dark"] .highlight .mh,
+html[data-theme="dark"] .highlight .mi,
+html[data-theme="dark"] .highlight .mo,
+html[data-theme="dark"] .highlight .il { color: #b5cea8; }
+
+/* operators & punctuation — default foreground */
+html[data-theme="dark"] .highlight .o,
+html[data-theme="dark"] .highlight .ow,
+html[data-theme="dark"] .highlight .p { color: #d4d4d4; }
+
+/* never render error tokens as alarming red */
+html[data-theme="dark"] .highlight .err { color: #d4d4d4; border: none; }

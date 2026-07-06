@@ -51,11 +51,17 @@ extensions = [
     "sphinx.ext.napoleon",
     "myst_parser",
     "sphinx_reredirects",
+    "sphinx_design",
 ]
 
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
+}
+
+# Redirects for pages that moved, handled by sphinx_reredirects.
+redirects = {
+    "user-guide/getting-started": "01-quick-start.html",
 }
 
 # Add any paths that contain templates here, relative to this directory.
@@ -86,9 +92,16 @@ html_theme = "pydata_sphinx_theme"
 html_theme_options = {
      "logo": {
     },
-    "use_edit_page_button": True,
+    "use_edit_page_button": False,
     "navbar_center": [],
     "navbar_end": ["theme-switcher"],
+    # Remove the right-hand secondary sidebar (page TOC + "Edit on GitHub")
+    "secondary_sidebar_items": [],
+    # Code highlighting close to VS Code's defaults: Visual Studio (light) and,
+    # for dark, a neutral base that theme_overrides.css recolors to VS Code
+    # "Dark+".
+    "pygments_light_style": "vs",
+    "pygments_dark_style": "material",
 }
 
 html_context = {

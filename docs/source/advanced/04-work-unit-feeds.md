@@ -7,7 +7,7 @@ fully known at planning time.
 ## When to use a work unit feed
 
 Distributed DataFusion already has a mechanism for splitting a leaf node's work across tasks: the
-[`TaskEstimator`](task-estimator.md). With a `TaskEstimator`, all of the work is decided **at planning
+[`TaskEstimator`](../user-guide/04-distribute-custom-plan.md). With a `TaskEstimator`, all of the work is decided **at planning
 time** — `scale_up_leaf_node` produces `N` per-task plan variants, each pre-loaded with the slice of
 data it is responsible for (e.g., a group of files). This is the right tool
 whenever the units of work are known before execution begins.
@@ -36,7 +36,7 @@ planner how many tasks to use; the feed only governs *what work flows into each 
 > **A `TaskEstimator` is always required for a feed-backed leaf.** The feed decides *what* work each
 > partition receives at runtime, but something still has to tell Distributed DataFusion the *desired task
 > count* for the node — that is the `TaskEstimator`'s job (`task_estimation`). Without it the leaf defaults
-> to a single task. See [Building a TaskEstimator](task-estimator.md).
+> to a single task. See [Distribute a custom `ExecutionPlan`](../user-guide/04-distribute-custom-plan.md).
 
 ## How it works
 

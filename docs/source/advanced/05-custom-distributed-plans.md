@@ -1,6 +1,6 @@
 # Building Custom Distributed Plans
 
-By default, the [distributed planner](how-a-distributed-plan-is-built.md) decides where to place network
+By default, the [distributed planner](../learn/02-how-a-distributed-plan-is-built.md) decides where to place network
 boundaries: it walks your single-node physical plan and injects `NetworkShuffleExec`,
 `NetworkCoalesceExec`, and `NetworkBroadcastExec` nodes at the points it thinks make sense.
 
@@ -74,7 +74,7 @@ many tasks into fewer).
 ## Leaf data splitting still happens automatically
 
 Even when you inject the boundaries yourself, the distributed planner runs the registered
-[`TaskEstimator`](task-estimator.md) over each stage's leaves and calls `scale_up_leaf_node` with the
+[`TaskEstimator`](../user-guide/04-distribute-custom-plan.md) over each stage's leaves and calls `scale_up_leaf_node` with the
 stage's task count. So a parquet `DataSourceExec` is wrapped in a `DistributedLeafExec` (with one
 per-task file-group variant) by the default file-scan estimator, and a custom leaf is split by whatever
 `TaskEstimator` you registered for it — exactly as in the automatic path. You only place the boundaries;
