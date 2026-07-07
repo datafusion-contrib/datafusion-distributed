@@ -17,7 +17,7 @@ url = "2.5.7"
 tokio-stream = "0.1.18"
 
 [dev-dependencies]
-arrow = "58"
+arrow = "59"
 async-trait = "0.1.89"
 datafusion-distributed-benchmarks = { path = "../benchmarks" }
 futures = "0.3.31"

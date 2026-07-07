@@ -123,6 +123,14 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
             partition,
             labels,
         }),
+        MetricValue::PeakMemoryUsage { name, gauge } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::Gauge(pb::NamedGauge {
+                name: name.to_string(),
+                value: gauge.value() as u64
+            })),
+            partition,
+            labels,
+        }),
         MetricValue::Time { name, time } => Ok(pb::Metric {
             value: Some(pb::metric::Value::Time(pb::NamedTime {
                 name: name.to_string(),
