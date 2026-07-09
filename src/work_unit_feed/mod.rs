@@ -11,6 +11,7 @@ pub(crate) use remote_work_unit_feed::{
 };
 pub(crate) use work_unit_feed_registry::{WorkUnitFeedRegistry, set_distributed_work_unit_feed};
 
+pub use remote_work_unit_feed::set_received_time;
 pub use work_unit::WorkUnit;
 pub use work_unit_feed::{WorkUnitFeed, WorkUnitFeedProto};
 pub use work_unit_feed_provider::{DistributedWorkUnitFeedContext, WorkUnitFeedProvider};
