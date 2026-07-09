@@ -7,11 +7,15 @@ mod channel_resolver;
 // stack.
 pub(crate) mod generated;
 mod in_process;
+// The metrics codec sits off gRPC for the same reason as the message types: a transport that
+// delivers metrics out-of-band decodes the same frames the gRPC client does.
+pub(crate) mod metrics_proto;
 mod worker_channel;
 
 pub(crate) use channel_resolver::set_distributed_channel_resolver;
 pub use channel_resolver::{ChannelResolver, get_distributed_channel_resolver};
 pub use in_process::InProcessChannelResolver;
+pub use metrics_proto::decode_task_metrics;
 
 pub use worker_channel::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
