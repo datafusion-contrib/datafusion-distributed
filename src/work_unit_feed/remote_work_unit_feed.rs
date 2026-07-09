@@ -99,6 +99,13 @@ pub(crate) fn set_work_unit_received_time(
     msg
 }
 
+/// Stamps the receive time on a bare proto work unit. A transport that hands units across without
+/// going through [set_work_unit_received_time] stamps each one as it crosses into the worker, so the
+/// worker-side latency math has a delivery timestamp; a missing stamp reads as zero latency.
+pub fn set_received_time(work_unit: &mut crate::proto::WorkUnit) {
+    work_unit.received_timestamp_unix_nanos = now_ns();
+}
+
 /// Remove implementation of a [WorkUnitFeedProvider] that pulls [crate::WorkUnitMsg]s coming over
 /// the wire from a [RemoteWorkUnitFeedRegistry].
 ///

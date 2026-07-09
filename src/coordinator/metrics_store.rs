@@ -17,7 +17,9 @@ impl MetricsStore {
         Self { tx, rx }
     }
 
-    pub(crate) fn insert(&self, key: TaskKey, metrics: TaskMetrics) {
+    // Public for a driver whose transport returns worker metrics out-of-band; it files the
+    // decoded frames here before the per-task EXPLAIN rewrite reads them.
+    pub fn insert(&self, key: TaskKey, metrics: TaskMetrics) {
         self.tx.send_modify(|map| {
             map.insert(key, metrics);
         });

@@ -1,4 +1,4 @@
-use crate::protocol::generated::worker as pb;
+use super::generated::worker as pb;
 use chrono::DateTime;
 use datafusion::common::internal_err;
 use datafusion::error::DataFusionError;
@@ -53,6 +53,27 @@ pub fn metrics_set_proto_to_df(
         Ok::<(), DataFusionError>(())
     })?;
     Ok(metrics_set)
+}
+
+/// Decode a wire [`pb::TaskMetrics`] into the in-memory [`crate::TaskMetrics`]. The no-gRPC push
+/// embedder receives metric frames as proto and files them into the plain metrics store, so it
+/// needs the decode direction without the gRPC client.
+pub fn decode_task_metrics(
+    task_metrics: pb::TaskMetrics,
+) -> Result<crate::TaskMetrics, DataFusionError> {
+    Ok(crate::TaskMetrics {
+        pre_order_plan_metrics: task_metrics
+            .pre_order_plan_metrics
+            .iter()
+            .map(metrics_set_proto_to_df)
+            .collect::<Result<_, _>>()?,
+        task_metrics: metrics_set_proto_to_df(
+            task_metrics
+                .task_metrics
+                .as_ref()
+                .ok_or_else(|| DataFusionError::Internal("Missing field 'task_metrics'".into()))?,
+        )?,
+    })
 }
 
 /// Custom metrics are not supported in proto conversion.
@@ -1303,5 +1324,52 @@ mod tests {
             }
             _ => panic!("expected Custom metrics"),
         }
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use crate::TaskKey;
+    use crate::coordinator::MetricsStore;
+    use datafusion::physical_plan::metrics::{Count, Metric, MetricValue, MetricsSet};
+
+    /// Pins the driver-facing decode path: a proto metrics frame (the wire form a transport
+    /// delivers out-of-band) decodes to the plain form and files into the store the per-task
+    /// EXPLAIN rewrite reads.
+    #[test]
+    fn a_metrics_frame_decodes_and_files_into_the_store() {
+        let count = Count::new();
+        count.add(42);
+        let mut set = MetricsSet::new();
+        set.push(Arc::new(Metric::new(
+            MetricValue::OutputRows(count),
+            Some(0),
+        )));
+        let node_metrics = df_metrics_set_to_proto(&set).expect("encode");
+
+        let decoded = decode_task_metrics(pb::TaskMetrics {
+            pre_order_plan_metrics: vec![node_metrics],
+            task_metrics: Some(pb::MetricsSet::default()),
+        })
+        .expect("decode");
+        assert_eq!(decoded.pre_order_plan_metrics.len(), 1);
+        assert_eq!(
+            decoded.pre_order_plan_metrics[0].output_rows(),
+            Some(42),
+            "the counter survives the wire round trip"
+        );
+
+        let store = MetricsStore::new();
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        store.insert(key, decoded);
+        assert!(
+            store.get(&key).is_some(),
+            "the driver-filed entry is readable"
+        );
     }
 }
