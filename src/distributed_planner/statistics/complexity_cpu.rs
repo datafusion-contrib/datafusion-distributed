@@ -50,17 +50,23 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         return n.multiply(m);
     }
 
-    // SortExec: O(n log n) - uses lexsort_to_indices, may spill to disk
-    // https://github.com/apache/datafusion/blob/branch-52/datafusion/physical-plan/src/sorts/sort.rs
+    // SortExec: full sort is O(n log n), but a fetch-bearing SortExec is DataFusion's TopK.
+    // TopK still scans the full input, but heap maintenance is bounded by the output size.
+    // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/sort.rs
     if let Some(node) = node.downcast_ref::<SortExec>() {
-        // All the rows will need to be copied one by one.
-        let mut n = Complexity::Linear(LinearComplexity::AllColumns);
+        // All the input rows still need to be read one by one.
+        let mut input = Complexity::Linear(LinearComplexity::AllColumns);
         // The sort comparators read every sort key on every row, so even a plain column key costs
         // its bytes (a wide UTF8 key is far costlier to compare than an int).
         for expr in node.expr() {
-            n = n.plus(hashed_or_sorted_key_complexity(&expr.expr))
+            input = input.plus(hashed_or_sorted_key_complexity(&expr.expr))
         }
-        return n.clone().log(n);
+
+        if node.fetch().is_some() {
+            return input.log(Complexity::Linear(LinearComplexity::AllOutputColumns));
+        }
+
+        return input.clone().log(input);
     }
 
     // HashJoinExec: hash table build (O(n)) + probe (O(m))
@@ -506,7 +512,7 @@ mod tests {
         ");
     }
 
-    // SortExec: O(n log n) copy + sort-key evaluation.
+    // SortExec: full sort is O(n log n).
     #[tokio::test]
     async fn sort_exec() {
         let plan = TestPlanBuilder::new()
@@ -516,6 +522,19 @@ mod tests {
         assert_snapshot!(plan_costs(plan), @r"
         O((Cols+Col5)*Log((Cols+Col5))) | SortExec: expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
+        ");
+    }
+
+    // TopK still scans the full input, but keeps the log term bounded by fetch/output size.
+    #[tokio::test]
+    async fn topk_sort_exec() {
+        let topk = TestPlanBuilder::new()
+            .target_partitions(1)
+            .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir" LIMIT 10"#)
+            .await;
+        assert_snapshot!(plan_costs(topk), @r"
+        O((Cols+Col5)*Log(out_Cols)) | SortExec: TopK(fetch=10), expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
         ");
     }
 

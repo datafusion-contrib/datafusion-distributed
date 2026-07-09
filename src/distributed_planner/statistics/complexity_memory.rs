@@ -28,8 +28,8 @@ pub(super) fn complexity_memory(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     }
 
     // SortExec buffers input batches. For a full sort, DataFusion may need both input and sorted
-    // output working space before spilling. For TopK, the retained heap is capped by the fetch
-    // output, so use the output statistics instead of full input size.
+    // output working space before spilling. A fetch-bearing SortExec is DataFusion's TopK; its
+    // retained heap is capped by the fetch output, so use output statistics instead of input size.
     // https://github.com/apache/datafusion/blob/branch-54/datafusion/physical-plan/src/sorts/sort.rs
     if let Some(node) = node.downcast_ref::<SortExec>() {
         if node.fetch().is_some() {
@@ -152,16 +152,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sort_buffers_input_and_topk_buffers_output() {
-        let full_sort = TestPlanBuilder::new()
+    async fn sort_buffers_input() {
+        let plan = TestPlanBuilder::new()
             .target_partitions(1)
             .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir""#)
             .await;
-        assert_snapshot!(plan_memory(full_sort), @r"
+        assert_snapshot!(plan_memory(plan), @r"
         M((2*Cols)) | SortExec: expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
          M(0) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
         ");
+    }
 
+    #[tokio::test]
+    async fn topk_sort_buffers_output() {
         let topk = TestPlanBuilder::new()
             .target_partitions(1)
             .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir" LIMIT 10"#)
