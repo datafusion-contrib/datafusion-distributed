@@ -10,6 +10,7 @@ pub(crate) mod test_utils;
 mod worker_connection_pool;
 mod worker_service;
 
+pub use impl_coordinator_channel::collect_plan_metrics_protos;
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
 pub(crate) use worker_connection_pool::WorkerConnectionPool;
 
