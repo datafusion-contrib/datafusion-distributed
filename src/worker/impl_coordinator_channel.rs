@@ -1,5 +1,6 @@
 use crate::common::TreeNodeExt;
 use crate::execution_plans::SamplerExec;
+use crate::protocol::metrics_proto::df_metrics_set_to_proto;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::LocalWorkerContext;
 use crate::worker::task_data::TaskDataMetrics;
@@ -230,4 +231,25 @@ fn send_metrics_via_channel(
         pre_order_plan_metrics,
         task_metrics: task_data_metrics.to_metrics_set(),
     });
+}
+
+/// Collects the per-node metrics of `plan` in pre-order traversal order, encoded as protos. A
+/// push transport reuses this for its metrics frame so the per-node shape matches what the
+/// coordinator channel reports. A node without metrics, or one whose metrics fail to encode,
+/// contributes an empty set in place: the consumer matches entries to plan nodes by pre-order
+/// position, so dropping an entry would mis-attribute every set after it.
+pub fn collect_plan_metrics_protos(
+    plan: &Arc<dyn ExecutionPlan>,
+    dt_ctx: DistributedTaskContext,
+) -> Vec<crate::proto::MetricsSet> {
+    let mut pre_order_plan_metrics = vec![];
+    let _ = plan.apply_with_dt_ctx(dt_ctx, |node, _| {
+        pre_order_plan_metrics.push(
+            node.metrics()
+                .and_then(|m| df_metrics_set_to_proto(&m).ok())
+                .unwrap_or_default(),
+        );
+        Ok(TreeNodeRecursion::Continue)
+    });
+    pre_order_plan_metrics
 }

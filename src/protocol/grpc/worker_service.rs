@@ -1,7 +1,7 @@
 use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
-use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
 use crate::protocol::generated::worker as pb;
+use crate::protocol::metrics_proto::df_metrics_set_to_proto;
 
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::ProducerHeadSpec;

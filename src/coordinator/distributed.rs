@@ -64,6 +64,13 @@ impl DistributedExec {
         }
     }
 
+    /// The store where worker task metrics land at runtime, if metrics collection is enabled.
+    /// Exposed for a driver whose transport returns metrics out-of-band; it files decoded frames
+    /// here before the per-task EXPLAIN rewrite.
+    pub fn metrics_store(&self) -> Option<Arc<MetricsStore>> {
+        self.metrics_store.clone()
+    }
+
     /// Enables task metrics collection from remote workers.
     pub fn with_metrics_collection(mut self, enabled: bool) -> Self {
         self.metrics_store = match enabled {
