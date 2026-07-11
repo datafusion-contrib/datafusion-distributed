@@ -20,26 +20,26 @@ pub trait ChannelResolver {
     async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError>;
+    ) -> Result<Box<dyn WorkerChannel>, DataFusionError>;
 }
 ```
 
 ```{note}
 `get_worker_client_for_url` is called on **every** gRPC request. Reuse clients
 rather than reconnecting each time, or you'll open a fresh connection per request.
-The easiest way is to build on `DefaultChannelResolver` (which caches channels),
-or to use the `create_worker_client` helper.
+The easiest way is to build on `grpc::DefaultChannelResolver` (which caches channels),
+or to use the `grpc::create_worker_client` helper.
 ```
 
 ## Providing your own
 
-The simplest custom resolver wraps `DefaultChannelResolver`, delegating to it for
+The simplest custom resolver wraps `grpc::DefaultChannelResolver`, delegating to it for
 channel caching and only customizing what you need:
 
 ```rust
 #[derive(Clone)]
 struct CustomChannelResolver {
-    inner: DefaultChannelResolver,
+    inner: grpc::DefaultChannelResolver,
 }
 
 #[async_trait]
@@ -47,7 +47,7 @@ impl ChannelResolver for CustomChannelResolver {
     async fn get_worker_client_for_url(
         &self,
         url: &Url,
-    ) -> Result<WorkerServiceClient<BoxCloneSyncChannel>, DataFusionError> {
+    ) -> Result<Box<dyn WorkerChannel>, DataFusionError> {
         // Delegate to the default (cached channels), or build your own client
         // here — e.g. wrapped in tower layers, or on a custom runtime.
         self.inner.get_worker_client_for_url(url).await
@@ -62,7 +62,7 @@ too:
 
 ```rust
 let channel_resolver = CustomChannelResolver {
-    inner: DefaultChannelResolver::default(),
+    inner: grpc::DefaultChannelResolver::default(),
 };
 
 // On the coordinating context:

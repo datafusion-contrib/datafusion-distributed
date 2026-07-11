@@ -27,15 +27,15 @@ let worker = Worker::default()
 
 ## Querying a worker's version
 
-From the coordinating context, use `DefaultChannelResolver` to get a cached
-channel and `create_worker_client` to build a client, then call `get_worker_info`:
+From the coordinating context, use `grpc::DefaultChannelResolver` to get a cached
+channel and `grpc::create_worker_client` to build a client, then call `get_worker_info`:
 
 ```rust
-use datafusion_distributed::{DefaultChannelResolver, GetWorkerInfoRequest, create_worker_client};
+use datafusion_distributed::{grpc, GetWorkerInfoRequest};
 
-let channel_resolver = DefaultChannelResolver::default();
+let channel_resolver = grpc::DefaultChannelResolver::default();
 let channel = channel_resolver.get_channel(&worker_url).await?;
-let mut client = create_worker_client(channel);
+let mut client = grpc::create_worker_client(channel);
 
 let response = client.get_worker_info(GetWorkerInfoRequest {}).await?;
 println!("version: {}", response.into_inner().version);
@@ -66,9 +66,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use url::Url;
 use datafusion::common::{HashMap, DataFusionError};
-use datafusion_distributed::{
-    DefaultChannelResolver, GetWorkerInfoRequest, WorkerResolver, create_worker_client,
-};
+use datafusion_distributed::{grpc, GetWorkerInfoRequest, WorkerResolver};
 
 struct VersionAwareWorkerResolver {
     compatible_urls: Arc<RwLock<Vec<Url>>>,
@@ -80,7 +78,7 @@ async fn background_version_resolver(
     all_worker_urls: Vec<Url>,
     local_version: String,
     compatible_urls: Arc<RwLock<Vec<Url>>>,
-    channel_resolver: Arc<DefaultChannelResolver>,
+    channel_resolver: Arc<grpc::DefaultChannelResolver>,
 ) {
     let mut version_cache: HashMap<Url, String> = HashMap::new();
 
@@ -94,7 +92,7 @@ async fn background_version_resolver(
             let cr = Arc::clone(&channel_resolver);
             async move {
                 let channel = cr.get_channel(url).await.ok()?;
-                let mut client = create_worker_client(channel);
+                let mut client = grpc::create_worker_client(channel);
                 let resp = client.get_worker_info(GetWorkerInfoRequest {}).await.ok()?;
                 Some(resp.into_inner().version)
             }
@@ -122,7 +120,7 @@ impl VersionAwareWorkerResolver {
     fn start_version_filtering(
         all_worker_urls: Vec<Url>,
         expected_version: String,
-        channel_resolver: Arc<DefaultChannelResolver>,
+        channel_resolver: Arc<grpc::DefaultChannelResolver>,
     ) -> Self {
         let compatible_urls = Arc::new(RwLock::new(vec![]));
 

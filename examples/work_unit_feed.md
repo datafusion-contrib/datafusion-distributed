@@ -4,7 +4,7 @@ Demonstrates a **work unit feed**: a distributed leaf node whose work is discove
 coordinator *at runtime* and streamed to the workers as the query executes, instead of being fully
 known at planning time.
 
-See the [Work Unit Feeds user guide](../docs/source/user-guide/work-unit-feeds.md) for the concepts.
+See the [Work Unit Feeds guide](../docs/source/advanced/04-work-unit-feeds.md) for the concepts.
 
 ## Scenario
 

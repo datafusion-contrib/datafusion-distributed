@@ -3,7 +3,7 @@
 Demonstrates **custom task routing** for **cache affinity**: consistently routing each parquet file
 to the *same* worker so that worker can serve it from an in-memory cache on repeat queries. This is
 the
-[`TaskEstimator::route_tasks`](../docs/source/user-guide/task-estimator.md#routing-tasks-to-specific-workers)
+[`TaskEstimator::route_tasks`](../docs/source/advanced/06-worker-routing.md)
 API.
 
 ## Scenario

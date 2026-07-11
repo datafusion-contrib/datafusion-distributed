@@ -3,7 +3,7 @@
 Demonstrates how to **build your own distributed plan by injecting network boundaries directly**,
 instead of relying on the automatic distributed planner to decide where the stages go.
 
-See the [Custom Distributed Plans user guide](../docs/source/user-guide/custom-distributed-plans.md)
+See the [Custom Distributed Plans guide](../docs/source/advanced/05-custom-distributed-plans.md)
 for the concepts.
 
 ## What it shows

@@ -52,7 +52,7 @@ to serialized plans that get executed over the wire.
 Users are expected to build these and spawn them in ports so that the network
 boundary nodes can reach them.
 
-## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/worker_resolver.rs)
+## [WorkerResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/worker_resolver.rs)
 
 Determines the available workers in the Distributed DataFusion cluster by
 returning their URLs.
@@ -87,7 +87,7 @@ logic can select the appropriate data subset. For example, task 0 of 3 might
 return the first third of rows, task 2 the last third, and so on. See the
 `TaskEstimator` documentation for guidance on which approach to use.
 
-## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/networking/channel_resolver.rs)
+## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/protocol/channel_resolver.rs)
 
 Optional extension trait that allows to customize how connections are
 established to workers. Given one of the URLs returned by the `WorkerResolver`,
