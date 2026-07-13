@@ -589,16 +589,16 @@ pub trait DistributedExt: Sized {
 
     /// Target throughput in bytes per partition per second used by the dynamic task count
     /// allocator to decide how many tasks to assign to each stage based on runtime statistics.
-    fn with_distributed_bytes_per_partition_per_second(
+    fn with_distributed_dynamic_bytes_per_partition(
         self,
-        bytes_per_partition_per_second: usize,
+        dynamic_bytes_per_partition: usize,
     ) -> Result<Self, DataFusionError>;
 
-    /// Same as [DistributedExt::with_distributed_bytes_per_partition_per_second] but with an
+    /// Same as [DistributedExt::with_distributed_dynamic_bytes_per_partition] but with an
     /// in-place mutation.
-    fn set_distributed_bytes_per_partition_per_second(
+    fn set_distributed_dynamic_bytes_per_partition(
         &mut self,
-        bytes_per_partition_per_second: usize,
+        dynamic_bytes_per_partition: usize,
     ) -> Result<(), DataFusionError>;
 }
 
@@ -759,12 +759,12 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
-    fn set_distributed_bytes_per_partition_per_second(
+    fn set_distributed_dynamic_bytes_per_partition(
         &mut self,
-        bytes_per_partition_per_second: usize,
+        dynamic_bytes_per_partition: usize,
     ) -> Result<(), DataFusionError> {
         let d_cfg = DistributedConfig::from_config_options_mut(self.options_mut())?;
-        d_cfg.bytes_per_partition_per_second = bytes_per_partition_per_second;
+        d_cfg.dynamic_bytes_per_partition = dynamic_bytes_per_partition;
         Ok(())
     }
 
@@ -856,9 +856,9 @@ impl DistributedExt for SessionConfig {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            #[call(set_distributed_bytes_per_partition_per_second)]
+            #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_bytes_per_partition_per_second(mut self, bytes_per_partition_per_second: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -983,10 +983,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_bytes_per_partition_per_second(&mut self, bytes_per_partition_per_second: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_bytes_per_partition_per_second)]
+            fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_bytes_per_partition_per_second(mut self, bytes_per_partition_per_second: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1113,10 +1113,10 @@ impl DistributedExt for SessionState {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(mut self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_bytes_per_partition_per_second(&mut self, bytes_per_partition_per_second: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_bytes_per_partition_per_second)]
+            fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_bytes_per_partition_per_second(mut self, bytes_per_partition_per_second: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }
@@ -1236,10 +1236,10 @@ impl DistributedExt for SessionContext {
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_task_count(self, enabled: bool) -> Result<Self, DataFusionError>;
 
-            fn set_distributed_bytes_per_partition_per_second(&mut self, bytes_per_partition_per_second: usize) -> Result<(), DataFusionError>;
-            #[call(set_distributed_bytes_per_partition_per_second)]
+            fn set_distributed_dynamic_bytes_per_partition(&mut self, dynamic_bytes_per_partition: usize) -> Result<(), DataFusionError>;
+            #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
-            fn with_distributed_bytes_per_partition_per_second(self, bytes_per_partition_per_second: usize) -> Result<Self, DataFusionError>;
+            fn with_distributed_dynamic_bytes_per_partition(self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
         }
     }
 }

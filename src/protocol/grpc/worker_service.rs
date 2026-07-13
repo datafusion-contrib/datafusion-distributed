@@ -285,19 +285,15 @@ fn encode_load_info(load_info: LoadInfo) -> pb::LoadInfo {
     pb::LoadInfo {
         partition: load_info.partition as u64,
         rows_ready: load_info.rows_ready as u64,
-        rows_per_second: load_info.rows_per_second as u64,
         per_column_bytes_ready: load_info
             .per_column_bytes_ready
             .into_iter()
             .map(|bytes| bytes as u64)
             .collect(),
-        per_column_bytes_per_second: load_info
-            .per_column_bytes_per_second
-            .into_iter()
-            .map(|bytes| bytes as u64)
-            .collect(),
         per_column_ndv_percentage: load_info.per_column_ndv_percentage,
         per_column_null_percentage: load_info.per_column_null_percentage,
+        rows_pulled_from_leaf: load_info.rows_pulled_from_leaf as u64,
+        reached_eos: load_info.reached_eos,
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::common::{require_one_child, vec_cast};
+use crate::common::{TreeNodeExt, require_one_child, vec_cast};
 use crate::{
     BytesCounterMetric, BytesMetricExt, GaugeMetricExt, LatencyMetricExt, LoadInfo, MaxGaugeMetric,
     MaxLatencyMetric, P50LatencyMetric,
@@ -15,8 +15,11 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::{Gauge, MetricValue, MetricsSet};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, Time};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
+use futures::stream::FusedStream;
+use futures::{Stream, StreamExt, TryFutureExt};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
@@ -28,15 +31,7 @@ use tokio::sync::oneshot;
 
 /// How many [RecordBatch]s to allow the input stream to yield synchronously (without yielding back
 /// to tokio) before short-circuiting buffering.
-const READY_CHUNK_LIMIT: usize = 256;
-/// Maximum read of bytes per second allowed to be emitted. Reads greater than this will be
-/// truncated to this max value, as it's assumed that [READY_CHUNK_LIMIT] was hit and no useful
-/// measurement can actually be emitted.
-const MAX_BYTES_PER_SECOND: usize = 512 * 1024 * 1024;
-/// Maximum number of rows per second allowed to be emitted. Reads greater than this will be
-/// truncated to this max value, as it's assumed that [READY_CHUNK_LIMIT] was hit and no useful
-/// measurement can actually be emitted.
-const MAX_ROWS_PER_SECOND: usize = 1024 * 1024;
+const READY_CHUNK_LIMIT: usize = 1024 * 1024;
 /// Maximum number of rows sampled from the peek queue when estimating per-column NDV.
 const NDV_MAX_ROWS_SAMPLE: usize = 1000;
 
@@ -69,8 +64,6 @@ pub(crate) struct SamplerExecMetrics {
     max_batches_peeked: MaxGaugeMetric,
     /// Peak memory accumulated by any partition sampler during the sampling phase.
     max_mem_used: Gauge,
-    /// Bytes per second flowing through the sampler node.
-    bytes_per_sec: BytesCounterMetric,
     /// Bytes ready at the moment of reporting load info.
     bytes_ready: BytesCounterMetric,
     /// Elapsed compute while sampling.
@@ -89,7 +82,6 @@ impl SamplerExecMetrics {
             kick_off_to_execution_max: bdr().max_latency("kick_off_to_execution_max"),
             max_batches_peeked: bdr().max_gauge("max_batches_peeked"),
             max_mem_used: bdr().global_gauge("max_mem_used"),
-            bytes_per_sec: bdr().bytes_counter("bytes_per_sec"),
             bytes_ready: bdr().bytes_counter("bytes_ready"),
             elapsed_compute: {
                 let time = Time::new();
@@ -226,10 +218,10 @@ impl PartitionSampler {
         let first_batch_at = Arc::clone(&self.first_batch_at);
         let n_cols = self.input.schema().fields.len();
 
-        let reporter = LoadInfoDropHandler {
+        let mut reporter = LoadInfoDropHandler {
+            plan: Arc::clone(&self.input),
             load_info: zero_load_info(partition_idx, n_cols),
             sampling_tx: Some(sampling_tx),
-            bytes_per_second_metric: self.metrics.bytes_per_sec.clone(),
             load_info_sent_at: Arc::clone(&self.load_info_sent_at),
             bytes_ready_metric: self.metrics.bytes_ready.clone(),
             omit: Arc::clone(&self.execution_started),
@@ -255,57 +247,28 @@ impl PartitionSampler {
             // First, read at once all the RecordBatches that are ready to be yielded synchronously.
             // Some downstream nodes will accumulate data in-memory, and will then yield several
             // RecordBatches at once synchronously (without Poll::Pending gaps in between).
-            let mut chunked = (&mut input_stream).ready_chunks(READY_CHUNK_LIMIT);
-            let Some(batches) = chunked.next().await else {
-                // Not a single RecordBatch was produced, so let bytes_per_second=0 be sent as-is.
+            let Some(batches) = (&mut input_stream)
+                .ready_chunks(READY_CHUNK_LIMIT)
+                .next()
+                .await
+            else {
+                // The input produced nothing at all: the stream is exhausted, so this partition
+                // reached EOS with zero rows.
+                reporter.load_info.reached_eos = true;
                 return Ok(peek.chain(input_stream).boxed());
             };
-            let _elapsed_compute_timer = elapsed_compute.timer();
+            let _guard = elapsed_compute.timer();
+
+            peek.reserve(batches.len());
+            first_batch_at.get_or_init(Instant::now);
             for batch in batches {
-                let _ = first_batch_at.set(Instant::now());
                 peek.push(batch?);
             }
-
-            // Peek whether there is more data to be produced.
-            if let Some(result) = input_stream.next().now_or_never() {
-                return if let Some(batch) = result {
-                    // A batch was immediately available without hitting an async gap (the input is
-                    // still yielding synchronously). store it so its rows are not lost. We cannot
-                    // measure a meaningful arrival velocity in this case, so as before, assume the
-                    // worst.
-                    peek.push(batch?);
-                    reporter.report(&peek, MAX_BYTES_PER_SECOND, MAX_ROWS_PER_SECOND);
-                    Ok(peek.chain(input_stream).boxed())
-                } else {
-                    // No more batches to read, so no velocity measurement.
-                    reporter.report(&peek, 0, 0);
-                    Ok(peek.chain(input_stream).boxed())
-                };
-            }
-
-            drop(_elapsed_compute_timer);
-
-            // Wait for an async gap in order to measure data velocity.
-            let poll_start = Instant::now();
-            let Some(batch) = input_stream.try_next().await? else {
-                let _elapsed_compute_timer = elapsed_compute.timer();
-                // The last message was somehow the last message in the stream, but the stream did
-                // not end immediately. This is an unlikely scenario.
-                reporter.report(&peek, 0, 0);
-                return Ok(peek.chain(input_stream).boxed());
-            };
-            let _elapsed_compute_timer = elapsed_compute.timer();
-
-            let bytes_per_second =
-                (record_batch_size(&batch) as f32 / poll_start.elapsed().as_secs_f32()) as usize;
-            let rows_per_second =
-                (batch.num_rows() as f32 / poll_start.elapsed().as_secs_f32()) as usize;
-
-            peek.push(batch);
-
-            // Some RecordBatches where buffered, but there's more to be yielded, so both
-            // bytes_per_second and bytes_ready can be reported.
-            reporter.report(&peek, bytes_per_second, rows_per_second);
+            // If the input stream is already terminated, every batch it will ever produce is now in
+            // `peek`, so this partition has reached EOS and its `rows_ready` / `bytes_ready` are
+            // final rather than a partial snapshot.
+            reporter.load_info.reached_eos = input_stream.is_terminated();
+            reporter.report(&peek);
 
             Ok(peek.chain(input_stream).boxed())
         });
@@ -330,16 +293,16 @@ impl PartitionSampler {
 /// Emitting on drop ensures that it's always emitted.
 struct LoadInfoDropHandler {
     omit: Arc<AtomicBool>,
+    plan: Arc<dyn ExecutionPlan>,
 
     load_info: LoadInfo,
     bytes_ready_metric: BytesCounterMetric,
-    bytes_per_second_metric: BytesCounterMetric,
     sampling_tx: Option<oneshot::Sender<LoadInfo>>,
     load_info_sent_at: Arc<OnceLock<Instant>>,
 }
 
 impl LoadInfoDropHandler {
-    fn report(mut self, peek: &RecordBatchPeek, bps: usize, rps: usize) {
+    fn report(mut self, peek: &RecordBatchPeek) {
         if self.omit.load(Ordering::Relaxed) {
             return;
         }
@@ -348,8 +311,6 @@ impl LoadInfoDropHandler {
         self.set_rows_ready(peek.rows_ready());
         self.set_per_col_ndv(peek.per_col_ndv());
         self.set_per_col_null_pct(peek.per_col_null_pct());
-        self.set_per_col_bytes_per_second(bps);
-        self.set_rows_per_second(rps)
     }
 
     fn set_per_col_bytes_ready(&mut self, bytes_ready: Vec<usize>) {
@@ -357,28 +318,8 @@ impl LoadInfoDropHandler {
         self.bytes_ready_metric.add_bytes(bytes_ready.iter().sum());
     }
 
-    fn set_per_col_bytes_per_second(&mut self, total_bytes_per_second: usize) {
-        let per_col_ready = &self.load_info.per_column_bytes_ready;
-        let total_ready = per_col_ready.iter().sum::<usize>();
-        let per_col: Vec<usize> = if total_ready == 0 {
-            vec![total_bytes_per_second / per_col_ready.len().max(1); per_col_ready.len()]
-        } else {
-            per_col_ready
-                .iter()
-                .map(|&ready| ready.saturating_mul(total_bytes_per_second) / total_ready)
-                .collect()
-        };
-        self.load_info.per_column_bytes_per_second = vec_cast(&per_col);
-        self.bytes_per_second_metric
-            .add_bytes(total_bytes_per_second);
-    }
-
     fn set_rows_ready(&mut self, rows_ready: usize) {
         self.load_info.rows_ready = rows_ready;
-    }
-
-    fn set_rows_per_second(&mut self, rows_per_second: usize) {
-        self.load_info.rows_per_second = rows_per_second;
     }
 
     fn set_per_col_ndv(&mut self, per_column_ndv: Vec<f32>) {
@@ -388,6 +329,32 @@ impl LoadInfoDropHandler {
     fn set_per_col_null_pct(&mut self, per_column_null_pct: Vec<f32>) {
         self.load_info.per_column_null_percentage = per_column_null_pct;
     }
+
+    fn set_rows_pulled_from_leaf(&mut self) {
+        let mut rows_pulled_from_leaf = 0;
+        let _ = self.plan.apply_driver_path(|plan| {
+            if plan.children().is_empty()
+                && let Some(metrics) = plan.metrics()
+                && let Some(output_rows) = metrics.output_rows()
+            {
+                let partition_count = self.plan.output_partitioning().partition_count();
+                // Here, we need to divide by `partition_count` because the `output_rows` returned
+                // by the leaf node metrics is not per-partition, is global to the whole node.
+                //
+                // In a perfect scenario, we might be able to map the current SamplerExec partition
+                // in scope to the specific partition of the leaf node, but several things can
+                // happen in between these two nodes that mangle the partitions. For example, the
+                // presence of a RepartitionExec or an InterleaveExec will mess with partition
+                // mapping from SamplerExec to leaf node.
+                //
+                // Just dividing by `partition_count` gives a good approximation, but it's still
+                // not perfect as it will not account for data skews.
+                rows_pulled_from_leaf += output_rows / partition_count;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        self.load_info.rows_pulled_from_leaf = rows_pulled_from_leaf;
+    }
 }
 
 impl Drop for LoadInfoDropHandler {
@@ -395,6 +362,7 @@ impl Drop for LoadInfoDropHandler {
         if self.omit.load(Ordering::Relaxed) {
             return;
         }
+        self.set_rows_pulled_from_leaf();
         if let Some(sampling_tx) = self.sampling_tx.take() {
             let _ = sampling_tx.send(std::mem::take(&mut self.load_info));
             let _ = self.load_info_sent_at.set(Instant::now());
@@ -405,12 +373,12 @@ impl Drop for LoadInfoDropHandler {
 fn zero_load_info(partition_idx: usize, n_cols: usize) -> LoadInfo {
     LoadInfo {
         partition: partition_idx,
-        rows_per_second: 0,
         rows_ready: 0,
-        per_column_bytes_per_second: vec![0; n_cols],
         per_column_bytes_ready: vec![0; n_cols],
         per_column_ndv_percentage: vec![0.0; n_cols],
         per_column_null_percentage: vec![0.0; n_cols],
+        rows_pulled_from_leaf: 0,
+        reached_eos: false,
     }
 }
 
@@ -424,6 +392,10 @@ struct RecordBatchPeek {
 }
 
 impl RecordBatchPeek {
+    fn reserve(&mut self, size: usize) {
+        self.peek.reserve(size)
+    }
+
     fn push(&mut self, batch: RecordBatch) {
         let batch_size = record_batch_size(&batch);
         if self.peek.is_empty() {

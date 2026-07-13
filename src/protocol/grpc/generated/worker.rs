@@ -68,23 +68,22 @@ pub struct LoadInfo {
     /// The amount of rows ready to be returned.
     #[prost(uint64, tag = "2")]
     pub rows_ready: u64,
-    /// The estimated velocity at which rows will flow through the node. If all the rows were
-    /// already accumulated, they will be reported by `rows_ready`, and this field will be 0.
-    #[prost(uint64, tag = "3")]
-    pub rows_per_second: u64,
     /// The amount of bytes ready to be returned per column.
     #[prost(uint64, repeated, tag = "4")]
     pub per_column_bytes_ready: ::prost::alloc::vec::Vec<u64>,
-    /// The estimated velocity at which data will flow through each column. If all the bytes were
-    /// already accumulated, they will be reported by `bytes_ready`, and this field will be 0.
-    #[prost(uint64, repeated, tag = "5")]
-    pub per_column_bytes_per_second: ::prost::alloc::vec::Vec<u64>,
     /// Approximate ratio of NDV for each column.
     #[prost(float, repeated, tag = "6")]
     pub per_column_ndv_percentage: ::prost::alloc::vec::Vec<f32>,
     /// Approximate ratio of null count for each column.
     #[prost(float, repeated, tag = "7")]
     pub per_column_null_percentage: ::prost::alloc::vec::Vec<f32>,
+    /// The amount of rows that were pulled from leaf nodes while this partition was sampling data.
+    #[prost(uint64, tag = "8")]
+    pub rows_pulled_from_leaf: u64,
+    /// Whether the sampled partition stream reached end-of-stream by the time this LoadInfo was
+    /// captured.
+    #[prost(bool, tag = "9")]
+    pub reached_eos: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkerInfoRequest {}

@@ -3,6 +3,7 @@ use crate::{DistributedTaskContext, NetworkBoundaryExt};
 use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeIterator, TreeNodeRecursion};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -26,12 +27,41 @@ pub(crate) trait TreeNodeExt {
         f: F,
     ) -> Result<TreeNodeRecursion>;
 
+    /// Applies `f` top-down (pre-order) to the nodes on the plan's *driver path*: the operators
+    /// whose ongoing data production feeds, batch for batch, into the root's output. The
+    /// [`TreeNodeRecursion`] returned by `f` steers it as in [`TreeNode::apply`].
+    ///
+    /// It differs from a full traversal only at the pipeline-breaking joins ([`HashJoinExec`],
+    /// [`NestedLoopJoinExec`], [`CrossJoinExec`]): it follows the probe side (`right`) and skips the
+    /// build side (`left`), since a join fully materializes its build side before emitting any
+    /// output row, so build-side rows are setup work rather than output progress. Every other
+    /// operator is transparent.
+    ///
+    /// Used to estimate a running stage's completion: the total rows to pull come from the leaves
+    /// on the driver path (see `estimated_driver_path_leaf_rows`).
+    ///
+    /// ```text
+    ///        ┌────────────┐
+    ///        │ HashJoin   │  visited
+    ///        └─────┬──────┘
+    ///        build │ probe
+    ///      (left)  │  │ (right)
+    ///     ┌────────┘  └────────┐
+    ///     ▼                    ▼
+    /// ┌────────┐          ┌────────┐
+    /// │ Scan B │ SKIPPED  │ Scan P │  visited
+    /// └────────┘          └────────┘
+    /// ```
+    fn apply_driver_path<F: FnMut(&Self) -> Result<TreeNodeRecursion>>(
+        &self,
+        f: F,
+    ) -> Result<TreeNodeRecursion>;
+
     /// Recursively rewrite the tree using `f` in a top-down (pre-order) fashion, propagating
     /// the appropriate [DistributedTaskContext] based on the presence of nodes that can isolate
     /// tasks, like [ChildrenIsolatorUnionExec].
     ///
     /// `f` is applied to the node first, and then its children.
-    #[allow(dead_code)] // Used in follow up work.
     fn transform_down_with_dt_ctx<
         F: FnMut(Self, DistributedTaskContext) -> Result<Transformed<Self>>,
     >(
@@ -62,7 +92,6 @@ pub(crate) trait TreeNodeExt {
     /// count.
     ///
     /// `f` is applied to the node first, and then its children.
-    #[allow(dead_code)] // Used in follow up work.
     fn transform_down_with_task_count<F: FnMut(Self, usize) -> Result<Transformed<Self>>>(
         self,
         task_count: usize,
@@ -102,6 +131,32 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             })
         }
         recurse(self, ctx, &mut f)
+    }
+
+    fn apply_driver_path<F: FnMut(&Self) -> Result<TreeNodeRecursion>>(
+        &self,
+        mut f: F,
+    ) -> Result<TreeNodeRecursion> {
+        fn recurse<F: FnMut(&Arc<dyn ExecutionPlan>) -> Result<TreeNodeRecursion>>(
+            plan: &Arc<dyn ExecutionPlan>,
+            f: &mut F,
+        ) -> Result<TreeNodeRecursion> {
+            f(plan)?.visit_children(|| {
+                if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
+                    recurse(hash_join.right(), f)
+                } else if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>() {
+                    recurse(nested_loop_join.right(), f)
+                } else if let Some(cross_join) = plan.downcast_ref::<CrossJoinExec>() {
+                    recurse(cross_join.right(), f)
+                } else {
+                    plan.children()
+                        .into_iter()
+                        .apply_until_stop(|child| recurse(child, f))
+                }
+            })
+        }
+
+        recurse(self, &mut f)
     }
 
     fn transform_down_with_dt_ctx<
@@ -213,9 +268,13 @@ mod tests {
     use crate::execution_plans::ChildWeight;
     use crate::stage::RemoteStage;
     use crate::{NetworkCoalesceExec, Stage};
-    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::{JoinType, NullEquality};
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::joins::PartitionMode;
     use datafusion::physical_plan::union::UnionExec;
     use insta::assert_snapshot;
     // ── apply_with_dt_ctx ────────────────────────────────────────────────────────
@@ -345,6 +404,81 @@ mod tests {
         CIU [ctx=1/2]
         Leaf [ctx=0/1]
         Leaf [ctx=0/1]
+        ");
+    }
+
+    // ── apply_driver_path ────────────────────────────────────────────────────
+
+    #[test]
+    fn driver_path_leaf() {
+        let plan = leaf();
+        assert_snapshot!(trace_driver_path(&plan), @"Leaf");
+    }
+
+    #[test]
+    fn driver_path_top_down_order() {
+        let plan = union(vec![single(leaf()), leaf()]);
+        assert_snapshot!(trace_driver_path(&plan), @r"
+        Union
+        Single
+        Leaf
+        Leaf
+        ");
+    }
+
+    #[test]
+    fn driver_path_jump_skips_subtree() {
+        let child = single(leaf());
+        let plan = single(Arc::clone(&child));
+        assert_snapshot!(
+            trace_driver_path_with(&plan, |p| {
+                if Arc::ptr_eq(p, &child) { TreeNodeRecursion::Jump } else { TreeNodeRecursion::Continue }
+            }),
+            @r"
+        Single
+        Single [->jump]
+        ");
+    }
+
+    #[test]
+    fn driver_path_hash_join_uses_probe_side() {
+        let plan = hash_join(
+            single(leaf_i32("l")),
+            union(vec![leaf_i32("r"), leaf_i32("r")]),
+        );
+        assert_snapshot!(trace_driver_path(&plan), @r"
+        HashJoin
+        Union
+        Leaf
+        Leaf
+        ");
+    }
+
+    #[test]
+    fn driver_path_nested_loop_join_uses_probe_side() {
+        let plan = nested_loop_join(
+            single(leaf_i32("l")),
+            union(vec![leaf_i32("r"), leaf_i32("r")]),
+        );
+        assert_snapshot!(trace_driver_path(&plan), @r"
+        NestedLoopJoin
+        Union
+        Leaf
+        Leaf
+        ");
+    }
+
+    #[test]
+    fn driver_path_cross_join_uses_probe_side() {
+        let plan = cross_join(
+            single(leaf_i32("l")),
+            union(vec![leaf_i32("r"), leaf_i32("r")]),
+        );
+        assert_snapshot!(trace_driver_path(&plan), @r"
+        CrossJoin
+        Union
+        Leaf
+        Leaf
         ");
     }
 
@@ -566,6 +700,14 @@ mod tests {
         Arc::new(EmptyExec::new(Arc::new(Schema::empty())))
     }
 
+    fn leaf_i32(name: &str) -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
+            name,
+            DataType::Int32,
+            true,
+        )]))))
+    }
+
     fn single(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         Arc::new(CoalescePartitionsExec::new(child))
     }
@@ -579,6 +721,47 @@ mod tests {
         producer_tasks: usize,
     ) -> Arc<dyn ExecutionPlan> {
         Arc::new(NetworkCoalesceExec::try_new(input, producer_tasks, 1).unwrap())
+    }
+
+    fn hash_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                join_on(),
+                None,
+                &JoinType::Inner,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                false,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn nested_loop_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(NestedLoopJoinExec::try_new(left, right, None, &JoinType::Inner, None).unwrap())
+    }
+
+    fn cross_join(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(CrossJoinExec::new(left, right))
+    }
+
+    fn join_on() -> Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)> {
+        vec![(
+            Arc::new(Column::new("l", 0)) as Arc<dyn PhysicalExpr>,
+            Arc::new(Column::new("r", 0)) as Arc<dyn PhysicalExpr>,
+        )]
     }
 
     fn remote_network_boundary() -> Arc<dyn ExecutionPlan> {
@@ -630,6 +813,12 @@ mod tests {
             "CIU"
         } else if p.is::<NetworkCoalesceExec>() {
             "Network"
+        } else if p.is::<HashJoinExec>() {
+            "HashJoin"
+        } else if p.is::<NestedLoopJoinExec>() {
+            "NestedLoopJoin"
+        } else if p.is::<CrossJoinExec>() {
+            "CrossJoin"
         } else {
             "?"
         }
@@ -658,6 +847,29 @@ mod tests {
                 c.task_index,
                 c.task_count,
             ));
+            Ok(rec)
+        })
+        .unwrap();
+        lines.join("\n")
+    }
+
+    fn trace_driver_path(root: &Arc<dyn ExecutionPlan>) -> String {
+        trace_driver_path_with(root, |_| TreeNodeRecursion::Continue)
+    }
+
+    fn trace_driver_path_with<F: FnMut(&Arc<dyn ExecutionPlan>) -> TreeNodeRecursion>(
+        root: &Arc<dyn ExecutionPlan>,
+        mut decide: F,
+    ) -> String {
+        let mut lines = vec![];
+        root.apply_driver_path(|p| {
+            let rec = decide(p);
+            let suffix = match rec {
+                TreeNodeRecursion::Continue => "",
+                TreeNodeRecursion::Jump => " [->jump]",
+                TreeNodeRecursion::Stop => " [->stop]",
+            };
+            lines.push(format!("{}{suffix}", plan_label(p)));
             Ok(rec)
         })
         .unwrap();

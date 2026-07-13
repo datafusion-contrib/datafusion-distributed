@@ -68,9 +68,9 @@ extensions_options! {
         /// With this option enabled, the shape of the distributed plan is only known after fully
         /// executing it, as it's dynamically created on the fly during execution.
         pub dynamic_task_count: bool, default = false
-        /// If `dynamic_task_count` is enabled, this value is the amount of bytes/second each
+        /// If `dynamic_task_count` is enabled, this value is the amount of bytes each
         /// partition is expected to handle. Lower values will result in greater parallelism.
-        pub bytes_per_partition_per_second: usize, default = 16 * 1024 * 1024
+        pub dynamic_bytes_per_partition: usize, default = 16 * 1024 * 1024
     }
 }
 

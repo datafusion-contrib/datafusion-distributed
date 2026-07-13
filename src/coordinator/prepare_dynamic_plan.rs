@@ -8,7 +8,9 @@ use crate::distributed_planner::{
 };
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
-use crate::{BytesCounterMetric, LoadInfo, NetworkBoundaryExt, NetworkCoalesceExec, Stage};
+use crate::{
+    BytesCounterMetric, LoadInfo, MaxGaugeMetric, NetworkBoundaryExt, NetworkCoalesceExec, Stage,
+};
 use dashmap::DashMap;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -60,7 +62,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .cpu
                 .get_value()
                 .unwrap_or(&0)
-                .div_ceil(nb_ctx.d_cfg.bytes_per_partition_per_second.max(1))
+                .div_ceil(nb_ctx.d_cfg.dynamic_bytes_per_partition.max(1))
                 .div_ceil(input_stage.plan.output_partitioning().partition_count())
                 .clamp(1, nb_ctx.max_tasks()?);
             let task_count = nb_ctx
@@ -111,12 +113,9 @@ pub(super) async fn prepare_dynamic_plan(
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
                     (None, Maximum(1))
                 } else {
-                    let stats = gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
-                    let sampled_bytes = *stats.total_byte_size.get_value().unwrap_or(&0);
-                    metrics.push(BytesCounterMetric::new_metric(
-                        "sampled_bytes",
-                        sampled_bytes,
-                    ));
+                    let (stats, new_metrics) =
+                        gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
+                    metrics.extend(new_metrics);
                     // returning Desired(1) here is our way to tell the planner that we don't care
                     // about the task count assigned to the network boundary in the consumer stage,
                     // and we don't want it to affect other task count decisions.
@@ -205,11 +204,17 @@ impl PlanReconstructor {
 async fn gather_runtime_statistics(
     per_task_load_info_stream: Vec<impl Stream<Item = LoadInfo> + Unpin>,
     plan: &Arc<dyn ExecutionPlan>,
-) -> Result<Statistics> {
-    const ESTIMATED_QUERY_TIME_S: usize = 10;
+) -> Result<(Statistics, MetricsSet)> {
+    /// How many LoadInfo samples with non-zero sampled bytes should be gathered before considering
+    /// that there's enough samples collected to make a final decision. The higher this value is,
+    /// the more execution is delayed because of sample collection, but better sampling precision.
     const BYTES_READY_SAMPLE_PERCENTAGE: f32 = 0.2;
-    const BYTES_PER_SECOND_SAMPLE_PERCENTAGE: f32 = 0.2;
+    /// If the leaf nodes in the provided `plan` do not provide any row count estimation, there's
+    /// no way for us here to estimate the % of completion of the stage during sampling. This is
+    /// the default % of completion for those cases.
+    const FALLBACK_PCT_COMPLETION: f32 = 0.2;
 
+    let mut new_metrics = MetricsSet::new();
     let Some(sampler) = find_sampler(plan) else {
         return plan_err!("Mising SamplerExec while gathering load report");
     };
@@ -223,46 +228,33 @@ async fn gather_runtime_statistics(
     let task_count = per_task_load_info_stream.len();
     let total_partitions = partitions_per_task * task_count;
 
-    let mut partitions_with_bytes_per_second_done = 0;
     let mut partitions_with_bytes_ready_done = 0;
     let mut partitions_done = 0;
+    let mut partitions_reached_eos = 0;
     let mut rows_ready = 0;
-    let mut rows_per_second = 0;
+    let mut rows_pulled_from_leafs = 0;
     let mut per_col_bytes_ready = vec![0usize; n_cols];
-    let mut per_col_bytes_per_second = vec![0usize; n_cols];
 
     let mut ndv_pct = vec![];
     let mut null_pct = vec![];
 
     let mut load_info_stream = futures::stream::select_all(per_task_load_info_stream);
     while let Some(load_info) = load_info_stream.next().await {
-        rows_per_second += load_info.rows_per_second;
         rows_ready += load_info.rows_ready;
-        per_col_bytes_per_second = element_wise_sum(
-            per_col_bytes_per_second,
-            &load_info.per_column_bytes_per_second,
-        )?;
+        rows_pulled_from_leafs += load_info.rows_pulled_from_leaf;
         per_col_bytes_ready =
             element_wise_sum(per_col_bytes_ready, &load_info.per_column_bytes_ready)?;
         ndv_pct.push(load_info.per_column_ndv_percentage);
         null_pct.push(load_info.per_column_null_percentage);
 
-        partitions_with_bytes_per_second_done +=
-            load_info.per_column_bytes_per_second.iter().any(|v| *v > 0) as usize;
         partitions_with_bytes_ready_done +=
             load_info.per_column_bytes_ready.iter().any(|v| *v > 0) as usize;
+        partitions_reached_eos += load_info.reached_eos as usize;
         partitions_done += 1;
 
         // Short circuit if we collected enough bytes_ready measurements.
         if partitions_with_bytes_ready_done
             >= apply_pct(total_partitions, BYTES_READY_SAMPLE_PERCENTAGE).max(1)
-        {
-            break;
-        }
-
-        // Short circuit if we collected enough bytes_per_second measurements.
-        if partitions_with_bytes_per_second_done
-            >= apply_pct(total_partitions, BYTES_PER_SECOND_SAMPLE_PERCENTAGE).max(1)
         {
             break;
         }
@@ -274,32 +266,51 @@ async fn gather_runtime_statistics(
     }
 
     if partitions_done == 0 {
-        return Ok(zero_stats(plan.schema().fields.len()));
+        return Ok((zero_stats(plan.schema().fields.len()), new_metrics));
     }
 
     let per_col_bytes_ready = vec_div(
         vec_mul(per_col_bytes_ready, total_partitions),
         partitions_done,
     );
-    let per_col_bytes_per_second = vec_div(
-        vec_mul(per_col_bytes_per_second, total_partitions),
-        partitions_done,
-    );
-
     let rows_ready = rows_ready * total_partitions / partitions_done;
-    let rows_per_second = rows_per_second * total_partitions / partitions_done;
+    let rows_pulled_from_leafs = rows_pulled_from_leafs * total_partitions / partitions_done;
 
-    let total_num_rows = rows_ready + rows_per_second * ESTIMATED_QUERY_TIME_S;
+    let estimated_pct_sampled = if partitions_reached_eos == partitions_done {
+        // Every sampled partition's stream reached end-of-stream, so `rows_ready` /
+        // `per_col_bytes_ready` are the partitions' final output rather than a partial snapshot —
+        // the stage is fully sampled. This is the reliable "done" signal, and it correctly covers
+        // legitimately-empty stages (which would otherwise report `rows_pulled_from_leafs == 0` and
+        // make the completion fraction 0, blowing up the `ready / fraction` extrapolation below).
+        1.0
+    } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan) {
+        // The stage is still producing. Estimate how far along it is from the fraction of the
+        // driver-path leaf rows consumed so far.
+        (rows_pulled_from_leafs as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
+    } else {
+        // We can't measure progress (no leaf-row estimate, or nothing pulled from the leaves
+        // yet even though we're not at EOS): fall back rather than dividing by ~0.
+        FALLBACK_PCT_COMPLETION
+    };
+
+    new_metrics.push(MaxGaugeMetric::new_metric(
+        "estimated_pct_sampled",
+        (estimated_pct_sampled * 100.) as usize,
+    ));
+
+    let total_num_rows = (rows_ready as f32 / estimated_pct_sampled) as usize;
 
     if total_num_rows == 0 {
-        return Ok(zero_stats(n_cols));
+        return Ok((zero_stats(n_cols), new_metrics));
     }
 
-    let per_col_byte_size = element_wise_sum(
-        per_col_bytes_ready,
-        &vec_mul(per_col_bytes_per_second, ESTIMATED_QUERY_TIME_S),
-    )?;
+    let per_col_byte_size = vec_mul(per_col_bytes_ready, 1. / estimated_pct_sampled);
     let total_byte_size: usize = per_col_byte_size.iter().sum();
+
+    new_metrics.push(BytesCounterMetric::new_metric(
+        "estimated_output_bytes",
+        total_byte_size,
+    ));
 
     let ndv_pct = vec_avg_reduce(ndv_pct)?;
     if ndv_pct.len() != n_cols {
@@ -310,7 +321,7 @@ async fn gather_runtime_statistics(
         return plan_err!("Expected {n_cols} null values, but got {}", null_pct.len());
     }
 
-    Ok(Statistics {
+    let stats = Statistics {
         num_rows: Precision::Inexact(total_num_rows),
         total_byte_size: Precision::Inexact(total_byte_size),
         column_statistics: ndv_pct
@@ -326,7 +337,27 @@ async fn gather_runtime_statistics(
                 sum_value: Precision::Absent,
             })
             .collect(),
-    })
+    };
+
+    Ok((stats, new_metrics))
+}
+
+fn estimated_driver_path_leaf_rows(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    let mut total_rows = None;
+    let _ = plan.apply_driver_path(|plan| {
+        if plan.children().is_empty() {
+            let stats = plan.partition_statistics(None)?;
+            if let Some(num_rows) = stats.num_rows.get_value() {
+                if let Some(total_rows) = &mut total_rows {
+                    *total_rows += *num_rows;
+                } else {
+                    total_rows = Some(*num_rows);
+                };
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    total_rows
 }
 
 fn find_sampler(plan: &Arc<dyn ExecutionPlan>) -> Option<&SamplerExec> {

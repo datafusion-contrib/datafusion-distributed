@@ -145,18 +145,20 @@ pub struct LoadInfo {
     pub partition: usize,
     /// The amount of rows ready to be returned.
     pub rows_ready: usize,
-    /// The estimated velocity at which rows will flow through the node. If all the rows were
-    /// already accumulated, they will be reported by `rows_ready`, and this field will be 0.
-    pub rows_per_second: usize,
     /// The amount of bytes ready to be returned per column.
     pub per_column_bytes_ready: Vec<usize>,
-    /// The estimated velocity at which data will flow through each column. If all the bytes were
-    /// already accumulated, they will be reported by `bytes_ready`, and this field will be 0.
-    pub per_column_bytes_per_second: Vec<usize>,
     /// Approximate ratio of NDV for each column.
     pub per_column_ndv_percentage: Vec<f32>,
     /// Approximate ratio of null count for each column.
     pub per_column_null_percentage: Vec<f32>,
+    /// The amount of rows that were pulling from leaf nodes while the partition to which this
+    /// LoadInfo belongs to was sampling data. Used for estimating how much data is left by
+    /// comparing this value to the estimated total rows pulled from leaf nodes.
+    pub rows_pulled_from_leaf: usize,
+    /// Whether the sampled partition stream reached end-of-stream (i.e. the partition finished
+    /// producing all of its output) by the time this LoadInfo was captured. When true, `rows_ready`
+    /// and `per_column_bytes_ready` are final rather than a partial snapshot.
+    pub reached_eos: bool,
 }
 
 pub struct ExecuteTaskRequest {

@@ -81,6 +81,7 @@ impl WorkerConnectionPool {
             task_number: target_task,
         };
         let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(target_partition);
+        let output_rows = MetricBuilder::new(&self.metrics).output_rows(target_partition);
 
         // If we are physically in the same worker, short circuit into a local connection without
         // going through the `WorkerChannel`.
@@ -94,6 +95,7 @@ impl WorkerConnectionPool {
             return Ok(result
                 .inspect_ok(move |batch| {
                     output_bytes.add(logical_record_batch_size(batch));
+                    output_rows.add(batch.num_rows());
                 })
                 .boxed());
         }
@@ -163,6 +165,7 @@ impl WorkerConnectionPool {
         .try_flatten_stream()
         .inspect_ok(move |batch| {
             output_bytes.add(logical_record_batch_size(batch));
+            output_rows.add(batch.num_rows());
         })
         .boxed())
     }

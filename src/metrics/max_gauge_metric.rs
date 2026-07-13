@@ -1,3 +1,4 @@
+use datafusion::physical_plan::Metric;
 use datafusion::physical_plan::metrics::{CustomMetricValue, MetricBuilder, MetricValue};
 use std::sync::atomic::Ordering::Relaxed;
 use std::{
@@ -40,6 +41,16 @@ impl Default for MaxGaugeMetric {
 }
 
 impl MaxGaugeMetric {
+    pub fn new_metric(name: impl Into<Cow<'static, str>>, value: usize) -> Arc<Metric> {
+        Arc::new(Metric::new(
+            MetricValue::Custom {
+                name: name.into(),
+                value: Arc::new(MaxGaugeMetric::from_value(value)),
+            },
+            None,
+        ))
+    }
+
     pub fn from_value(bytes: usize) -> Self {
         Self {
             value: Arc::new(AtomicUsize::new(bytes)),
