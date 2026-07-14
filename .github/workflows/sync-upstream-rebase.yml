@@ -1,0 +1,25 @@
+# workflows/sync-upstream-rebase.yml
+#
+# Upstream Rebase
+# Periodically rebase the target patches onto the latest upstream commits and promote the result to main.
+
+name: Upstream Rebase
+
+on:
+  schedule:
+    - cron: "0 14,16,18,20,22 * * 1-5" # Mon-Fri 6am-2pm PST (UTC weekdays)
+    - cron: "0 0,2 * * 2-6" # Mon-Fri 4pm-6pm PST (next UTC day)
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: upstream-rebase
+  cancel-in-progress: false
+
+jobs:
+  call-rebase:
+    uses: paradedb/actions/.github/workflows/reusable-rebase.yml@v5
+    with:
+      github_app_client_id: ${{ vars.PARADEDB_GITHUB_APP_CLIENT_ID }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_GITHUB_CHANNEL_WEBHOOK_URL }}
+      PARADEDB_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PARADEDB_GITHUB_APP_PRIVATE_KEY }}
