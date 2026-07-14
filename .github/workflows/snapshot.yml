@@ -1,0 +1,44 @@
+name: Cut Snapshot Tag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    name: Create Snapshot Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PARADEDB_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PARADEDB_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Configure Git
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config --global user.name "paradedb-github-app[bot]"
+          git config --global user.email "282009505+paradedb-github-app[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Create and Push Tag
+        run: |
+          set -euo pipefail
+          TAG_NAME="snapshot-${{ github.ref_name }}-$(date -u +%Y-%m-%d-%H%M%S)"
+          echo "Creating tag: $TAG_NAME"
+          
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+          
+          echo "✅ Successfully created and pushed tag $TAG_NAME"
