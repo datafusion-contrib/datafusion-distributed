@@ -314,6 +314,20 @@ to the coordinator so they can be displayed.
 
 #### `apply_expressions`
 
+See https://github.com/apache/datafusion/pull/22445
+
+```rust
+fn apply_expressions(
+    &self,
+    f: &mut dyn FnMut(
+        &dyn datafusion::physical_plan::PhysicalExpr,
+    ) -> Result<TreeNodeRecursion>,
+) -> Result<TreeNodeRecursion>
+```
+This API was added to allow for iteration over all expressions in `ExecutionPlan` nodes but was reverted because
+- it was complicated to implement and a required method on all `ExecutionPlan` nodes
+- there was no usage inside of vanilla datafusion, meaning it may grow stale
+
 #### `handle_child_pushdown_result`
 ```
 fn handle_child_pushdown_result(
@@ -342,4 +356,74 @@ fn gather_filters_for_pushdown(
 }
 ```
 
-### Identifying Producers vs Consumers 
+
+#### Registry + Downcasting Pattern
+
+The idea is to have a registry of functions which can be used to extract `&DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes.
+
+Example: implementation for HashJoinExec
+```rust
+fn try_collect(
+  &self,
+  node: &Arc<dyn ExecutionPlan>,
+) -> Result<Option<Vec<Arc<dyn PhysicalExpr>>>> {
+  let Some(join) = node.downcast_ref::<HashJoinExec>() else {
+      return Ok(None);
+  };
+
+  Ok(join
+      .dynamic_filter_expr() // note that this API may be removed
+      .map(|expr| vec![Arc::clone(expr) as Arc<dyn PhysicalExpr>]))
+}
+```
+
+Example: implementation for ParquetSource
+```rust
+fn try_collect(
+  &self,
+  source: &Arc<dyn FileSource>,
+) -> Result<Option<Vec<Arc<dyn PhysicalExpr>>>> {
+    let Some(parquet_source) = source.downcast_ref::<ParquetSource>() else {
+        return Ok(None);
+    };
+
+    let Some(predicate) = parquet_source.filter() else {
+        return Ok(None);
+    };
+    if snapshot_generation(&predicate) == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(vec![snapshot_consumer_expression(predicate)?]))
+}
+```
+
+In datafusion distributed, it's important to be extensible. Rather than hardcoding every implementation, we should allow users to
+specify how to get dynamic filters from their own plan nodes.
+
+Pros:
+- Requires no changes to vanilla datafusion. We can ship this faster.
+
+Cons:
+- Dynamic filtering will not work for users with custom plan nodes with extra steps. Distributed datafusion will not work 
+out of the box.
+- Distributed datafusion has to maintain a registry of all `ExecutionPlan` implementations in vanilla datafusion
+- We rely a lot on downcasting `ExecutionPlan` nodes
+
+### Some Dynamic Filters Do Not Exist During Planning 
+
+
+### Identifying Producers vs Consumers
+
+When collecting dynamic filters from a plan, we need to know if a node is producing or consuming dynamic filters to know
+in which direction to route updates.
+
+### Merging Dynamic Filters
+
+There's no first class support for ORing dynamic filters or combining `CASE` expressions. We would have to assume
+that a toplevel `CASE` expression is used for partition ids. This is a bit of a smell. If dynamic filters were to
+use `CASE` expressions as a part of the filter expression, then this could be a correctness issue.
+
+- Should we make dynamic filters partitioning aware?
+- Should we implement a `merge` method?
+
