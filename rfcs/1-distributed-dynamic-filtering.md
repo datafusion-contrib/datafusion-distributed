@@ -308,7 +308,9 @@ Today, distributed query plans will always show `predicate=DynamicFilter [ empty
 dynamic filter pruning work during execution, we need to make sure to propagate final dynamic filters from data sources
 to the coordinator so they can be displayed.
 
-## Gaps in Vanilla DataFusion 
+
+
+## [WIP DRAFT] Gaps in Vanilla DataFusion
 
 ### Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
 
