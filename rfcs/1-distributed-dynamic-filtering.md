@@ -312,4 +312,34 @@ to the coordinator so they can be displayed.
 
 ### Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
 
+#### `apply_expressions`
+
+#### `handle_child_pushdown_result`
+```
+fn handle_child_pushdown_result(
+    &self,
+    _phase: FilterPushdownPhase,
+    child_pushdown_result: ChildPushdownResult,
+    _config: &ConfigOptions,
+) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>> {
+    Ok(FilterPushdownPropagation::if_all(child_pushdown_result))
+}
+```
+
+#### `gather_filters_for_pushdown`
+
+```
+fn gather_filters_for_pushdown(
+    &self,
+    _phase: FilterPushdownPhase,
+    parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+    _config: &ConfigOptions,
+) -> Result<FilterDescription> {
+    Ok(FilterDescription::all_unsupported(
+        &parent_filters,
+        &self.children(),
+    ))
+}
+```
+
 ### Identifying Producers vs Consumers 
