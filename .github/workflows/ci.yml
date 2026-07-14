@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - 'target-patch-*'
 
 env:
   CARGO_TERM_COLOR: always
