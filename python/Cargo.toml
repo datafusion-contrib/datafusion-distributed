@@ -1,0 +1,21 @@
+[package]
+name = "datafusion-distributed-python"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "datafusion_distributed_internal"
+crate-type = ["cdylib"]
+
+[dependencies]
+async-trait = "0.1.89"
+datafusion = { workspace = true }
+datafusion-distributed = { path = "..", features = ["ffi"] }
+datafusion-ffi = { workspace = true }
+datafusion-proto = { workspace = true }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310"] }
+tokio = { version = "1.48", features = ["full"] }
+tokio-stream = "0.1.17"
+tonic = { version = "0.14.1", features = ["transport"] }
+url = "2.5.7"

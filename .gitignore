@@ -1,5 +1,11 @@
 /.idea
 /target
+/.pi/
+/.pi-subagents/
+python/.venv/
+**/__pycache__/
+*.py[cod]
+*.so
 /benchmarks/data/
 testdata/tpch/*
 !testdata/tpch/queries

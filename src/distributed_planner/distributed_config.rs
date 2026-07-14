@@ -116,6 +116,30 @@ impl DistributedConfig {
         };
         Ok(distributed_cfg)
     }
+
+    /// Gets an owned [DistributedConfig] from the [ConfigOptions]'s extensions.
+    ///
+    /// This prefers a native [DistributedConfig] extension. When compiled with the `ffi` feature,
+    /// it also falls back to extracting a config from `FFI_ExtensionOptions`, which is how a
+    /// config created behind DataFusion FFI can appear to Rust. Private trait-object fields do not
+    /// cross the FFI boundary and are reconstructed at their defaults by the config extension.
+    pub fn from_config_options_owned(cfg: &ConfigOptions) -> Result<Self, DataFusionError> {
+        if let Some(distributed_cfg) = cfg.extensions.get::<DistributedConfig>() {
+            return Ok(distributed_cfg.clone());
+        }
+
+        #[cfg(feature = "ffi")]
+        if let Some(ffi) = cfg
+            .extensions
+            .get::<datafusion_ffi::config::extension_options::FFI_ExtensionOptions>()
+        {
+            return ffi
+                .to_extension::<DistributedConfig>()
+                .map_err(|e| DataFusionError::Execution(format!("{e}")));
+        }
+
+        plan_err!("DistributedConfig is not in ConfigOptions.extensions")
+    }
 }
 
 impl ConfigExtension for DistributedConfig {

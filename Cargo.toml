@@ -1,9 +1,13 @@
 [workspace]
-members = ["benchmarks", "cli", "console"]
+members = ["benchmarks", "cli", "console", "python", "python/tests/ffi_test_package"]
 
 [workspace.dependencies]
-datafusion = { version = "54.0.0", default-features = false }
-datafusion-proto = { version = "54.0.0" }
+datafusion = { path = "../datafusion/datafusion/core", version = "54.0.0", default-features = false }
+datafusion-ffi = { path = "../datafusion/datafusion/ffi", version = "54.0.0" }
+datafusion-functions-aggregate = { path = "../datafusion/datafusion/functions-aggregate", version = "54.0.0" }
+datafusion-functions-window = { path = "../datafusion/datafusion/functions-window", version = "54.0.0" }
+datafusion-proto = { path = "../datafusion/datafusion/proto", version = "54.0.0" }
+datafusion-python-util = { path = "../datafusion-python/crates/util", version = "54.0.0" }
 
 [package]
 name = "datafusion-distributed"
@@ -23,6 +27,7 @@ datafusion = { workspace = true, features = [
   "datetime_expressions",
 ] }
 datafusion-proto = { workspace = true }
+datafusion-ffi = { workspace = true, optional = true }
 arrow-flight = "58"
 arrow-select = "58"
 arrow-ipc = { version = "58", features = ["zstd"] }
@@ -59,6 +64,7 @@ hyper-util = { version = "0.1.16", optional = true }
 
 [features]
 avro = ["datafusion/avro"]
+ffi = ["dep:datafusion-ffi"]
 integration = ["insta", "parquet", "arrow", "hyper-util"]
 
 system-metrics = ["sysinfo"]

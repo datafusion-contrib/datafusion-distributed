@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "datafusion-distributed-ffi-test"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+module-name = "datafusion_distributed_ffi_test"
+features = ["pyo3/extension-module"]

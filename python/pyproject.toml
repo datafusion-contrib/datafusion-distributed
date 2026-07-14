@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "datafusion-distributed"
+version = "0.1.0"
+description = "Python bindings for datafusion-distributed"
+requires-python = ">=3.10"
+dependencies = ["datafusion>=54"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.maturin]
+module-name = "datafusion_distributed._internal"
+python-source = "python"
+features = ["pyo3/extension-module"]
