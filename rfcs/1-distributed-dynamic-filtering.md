@@ -270,9 +270,9 @@ Cons:
 ```
 
 
-### Bookkeeping - Implementation Details
+## Bookkeeping - Implementation Details
 
-#### Collecting And Sending Dynamic Filter Updates Across the Network
+### Extracting Dynamic Filters
 
 The design fundamentally relies on distributed datafusion intercepting and modifying dynamic filter updates. `DynamicFilterPhysicalExpr` already offers APIs
 for this:
@@ -285,11 +285,31 @@ pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>
 pub(crate) fn subscribe(&self) -> DynamicFilterSubscription
 ```
 
-The more challenging part is extracting `DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes. 
+The more challenging part is extracting `DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes. We need a way to get
+`&DynamicFilterPhysicalExpr` from producers like `HashJoinExec`, `SortExec`, `AggregateExec` and consumers like
+`DataSourceExec`. We will talk about this more below in the `Gaps in Vanilla DataFusion` section.
 
-#### Displaying Dyanamic Filters
+### Routing Dynamic Filters
 
-#### Routing Dynamic Filters
+During planning, which entirely happens on the coordinator (even during adaptive query planning), we need to
+be able to traverse the query plan and find the `DynamicFilterPhysicalExpr` producers and consumers. The coordinator
+knows workers will contain the producers nodes and consumers, so it is just a matter of plumbing to send dynamic
+filter updates from the producer workers, to the coordinator (where they can be ORed or merged), and finally
+to the consumers.
 
+`expression_id` may useful to correlate dynamic filters across machines.
+```
+fn expression_id(&self) -> Option<u64> {
+```
+
+### Displaying Dyanamic Filters
+
+Today, distributed query plans will always show `predicate=DynamicFilter [ empty ]`. In addition to making
+dynamic filter pruning work during execution, we need to make sure to propagate final dynamic filters from data sources
+to the coordinator so they can be displayed.
 
 ## Gaps in Vanilla DataFusion 
+
+### Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
+
+### Identifying Producers vs Consumers 
