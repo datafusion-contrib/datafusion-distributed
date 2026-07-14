@@ -43,9 +43,9 @@ def test_distributed_query_planner_injects_network_shuffle_and_coalesce() -> Non
         ctx.register_csv("t", str(path))
 
         resolver = _internal.LocalhostChannelResolver([50051, 50052, 50053, 50054])
-        ctx = _internal.with_distributed_query_planner(
-            ctx, resolver, config=distributed_config
-        )
+        ctx = ctx.with_query_planner(_internal.DistributedQueryPlanner(
+            resolver, ctx, config=distributed_config
+        ))
 
         plan = str(
             ctx.sql("SELECT * FROM t")

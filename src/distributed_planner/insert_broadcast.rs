@@ -118,7 +118,7 @@ pub(super) fn insert_broadcast_execs(
     plan: Arc<dyn ExecutionPlan>,
     cfg: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let d_cfg = DistributedConfig::from_config_options(cfg)?;
+    let d_cfg = DistributedConfig::from_config_options_owned(cfg)?;
     if !d_cfg.broadcast_joins {
         return Ok(plan);
     }

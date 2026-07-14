@@ -10,6 +10,7 @@ mod session_state_builder_ext;
 mod task_estimator;
 
 pub use distributed_config::DistributedConfig;
+pub use distributed_query_planner::distribute_physical_plan;
 pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
 pub(crate) use network_boundary::{ProducerHead, insert_producer_head};
 pub use session_state_builder_ext::SessionStateBuilderExt;

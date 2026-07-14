@@ -140,7 +140,7 @@ pub(crate) async fn inject_network_boundaries(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let ctx = InjectNetworkBoundaryContext {
         cfg,
-        d_cfg: DistributedConfig::from_config_options(cfg)?,
+        d_cfg: &DistributedConfig::from_config_options_owned(cfg)?,
         nb_builder: &nb_builder,
         task_counts: &Mutex::new(HashMap::new()),
         query_id: Uuid::new_v4(),

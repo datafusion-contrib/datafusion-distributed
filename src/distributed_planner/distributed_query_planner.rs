@@ -9,7 +9,8 @@ use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_int
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt, TaskEstimator};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::execution::SessionState;
+use datafusion::config::ConfigOptions;
+use datafusion::execution::Session;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -50,7 +51,7 @@ impl QueryPlanner for DistributedQueryPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session_state: &dyn Session,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let original_plan = match &self.prev {
             None => {
@@ -66,62 +67,70 @@ impl QueryPlanner for DistributedQueryPlanner {
             }
         };
 
-        if original_plan.is::<DistributedExec>() {
-            return Ok(original_plan);
-        }
-
-        let cfg = session_state.config_options().as_ref();
-        let d_cfg = DistributedConfig::from_config_options(cfg)?;
-
-        // The plan already contains network boundaries set by the user. Just ensure they have nice
-        // unique identifiers for each stage, and move forward with it.
-        if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-            // Ensure the leafs are appropriately scaled up.
-            let scaled = original_plan.transform_down_with_task_count(1, |plan, task_count| {
-                if !plan.children().is_empty() {
-                    return Ok(Transformed::no(plan));
-                }
-                let task_estimator = &d_cfg.__private_task_estimator;
-                match task_estimator.scale_up_leaf_node(&plan, task_count, cfg)? {
-                    None => Ok(Transformed::no(plan)),
-                    Some(scaled) => Ok(Transformed::yes(scaled)),
-                }
-            })?;
-            // Ensure the stages in the plan have nice unique identifiers.
-            let plan = prepare_network_boundaries(scaled.data)?;
-            if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-                return Ok(plan);
-            }
-            let plan = push_fetch_into_network_coalesce(plan)?;
-            return Ok(Arc::new(
-                DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
-            ));
-        }
-
-        let mut plan = Arc::clone(&original_plan);
-
-        if plan.output_partitioning().partition_count() > 1 {
-            plan = Arc::new(CoalescePartitionsExec::new(plan));
-        }
-
-        let cfg = session_state.config_options();
-
-        plan = insert_broadcast_execs(plan, cfg)?;
-
-        plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, cfg).await?;
-
-        plan = prepare_network_boundaries(plan)?;
-        if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
-            return Ok(original_plan);
-        }
-
-        let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
-        let plan = push_fetch_into_network_coalesce(plan)?;
-
-        Ok(Arc::new(
-            DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
-        ))
+        distribute_physical_plan(original_plan, session_state.config_options()).await
     }
+}
+
+/// Runs the distributed planning pipeline on an already-created physical plan.
+///
+/// This is the same pipeline used by [`DistributedQueryPlanner`], factored out for FFI callers
+/// that already obtained a physical plan from a planner in another library.
+pub async fn distribute_physical_plan(
+    original_plan: Arc<dyn ExecutionPlan>,
+    cfg: &ConfigOptions,
+) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    if original_plan.is::<DistributedExec>() {
+        return Ok(original_plan);
+    }
+
+    let d_cfg = DistributedConfig::from_config_options_owned(cfg)?;
+
+    // The plan already contains network boundaries set by the user. Just ensure they have nice
+    // unique identifiers for each stage, and move forward with it.
+    if original_plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+        // Ensure the leafs are appropriately scaled up.
+        let scaled = original_plan.transform_down_with_task_count(1, |plan, task_count| {
+            if !plan.children().is_empty() {
+                return Ok(Transformed::no(plan));
+            }
+            let task_estimator = &d_cfg.__private_task_estimator;
+            match task_estimator.scale_up_leaf_node(&plan, task_count, cfg)? {
+                None => Ok(Transformed::no(plan)),
+                Some(scaled) => Ok(Transformed::yes(scaled)),
+            }
+        })?;
+        // Ensure the stages in the plan have nice unique identifiers.
+        let plan = prepare_network_boundaries(scaled.data)?;
+        if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+            return Ok(plan);
+        }
+        let plan = push_fetch_into_network_coalesce(plan)?;
+        return Ok(Arc::new(
+            DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
+        ));
+    }
+
+    let mut plan = Arc::clone(&original_plan);
+
+    if plan.output_partitioning().partition_count() > 1 {
+        plan = Arc::new(CoalescePartitionsExec::new(plan));
+    }
+
+    plan = insert_broadcast_execs(plan, cfg)?;
+
+    plan = inject_network_boundaries(plan, CardinalityBasedNetworkBoundaryBuilder, cfg).await?;
+
+    plan = prepare_network_boundaries(plan)?;
+    if !plan.exists(|plan| Ok(plan.is_network_boundary()))? {
+        return Ok(original_plan);
+    }
+
+    let plan = partial_reduce_below_network_shuffles(plan, cfg)?;
+    let plan = push_fetch_into_network_coalesce(plan)?;
+
+    Ok(Arc::new(
+        DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
+    ))
 }
 
 #[cfg(test)]

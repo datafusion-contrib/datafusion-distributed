@@ -2,23 +2,27 @@ use super::get_distributed_user_codecs;
 use crate::NetworkShuffleExec;
 use crate::common::{deserialize_uuid, serialize_uuid};
 use crate::execution_plans::{
-    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, NetworkBroadcastExec,
-    NetworkCoalesceExec,
+    BroadcastExec, ChildWeight, ChildrenIsolatorUnionExec, DistributedLeafExec,
+    NetworkBroadcastExec, NetworkCoalesceExec,
 };
 use crate::stage::{LocalStage, RemoteStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedExec, DistributedTaskContext, NetworkBoundary};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, PlanProperties};
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::bytes::{
+    physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
+};
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
 use datafusion_proto::physical_plan::{
@@ -34,13 +38,27 @@ use url::Url;
 
 /// DataFusion [PhysicalExtensionCodec] implementation that allows serializing and
 /// deserializing the custom ExecutionPlans in this project
-#[derive(Debug)]
-pub struct DistributedCodec;
+#[derive(Debug, Default, Clone)]
+pub struct DistributedCodec {
+    user_codecs: Vec<Arc<dyn PhysicalExtensionCodec>>,
+}
 
 impl DistributedCodec {
+    pub fn new(user_codecs: Vec<Arc<dyn PhysicalExtensionCodec>>) -> Self {
+        Self { user_codecs }
+    }
+
     pub fn new_combined_with_user(cfg: &SessionConfig) -> ComposedPhysicalExtensionCodec {
-        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(DistributedCodec {})];
-        codecs.extend(get_distributed_user_codecs(cfg));
+        let user_codecs = get_distributed_user_codecs(cfg);
+        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> =
+            vec![Arc::new(DistributedCodec::new(user_codecs.clone()))];
+        codecs.extend(user_codecs);
+        ComposedPhysicalExtensionCodec::new(codecs)
+    }
+
+    fn combined(&self) -> ComposedPhysicalExtensionCodec {
+        let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![Arc::new(self.clone())];
+        codecs.extend(self.user_codecs.iter().cloned());
         ComposedPhysicalExtensionCodec::new(codecs)
     }
 }
@@ -95,6 +113,33 @@ impl PhysicalExtensionCodec for DistributedCodec {
         }
 
         match distributed_exec_node {
+            DistributedExecNode::Distributed(DistributedRootExecProto { collect_metrics }) => {
+                if inputs.len() != 1 {
+                    return Err(proto_error(format!(
+                        "DistributedExec expects exactly one child, got {}",
+                        inputs.len()
+                    )));
+                }
+                Ok(Arc::new(
+                    DistributedExec::new(Arc::clone(&inputs[0]))
+                        .with_metrics_collection(collect_metrics),
+                ))
+            }
+            DistributedExecNode::DistributedLeaf(DistributedLeafExecProto {
+                original,
+                variants,
+            }) => {
+                let codec = self.combined();
+                let original =
+                    physical_plan_from_bytes_with_extension_codec(&original, ctx, &codec)?;
+                let variants = variants
+                    .iter()
+                    .map(|variant| {
+                        physical_plan_from_bytes_with_extension_codec(variant, ctx, &codec)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Arc::new(DistributedLeafExec::try_new(original, variants)?))
+            }
             DistributedExecNode::NetworkHashShuffle(NetworkShuffleExecProto {
                 schema,
                 partitioning,
@@ -105,7 +150,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkShuffleExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
@@ -130,7 +175,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkCoalesceExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
@@ -155,7 +200,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                     .map(|s| s.try_into())
                     .ok_or(proto_error("NetworkBroadcastExec is missing schema"))??;
 
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &DistributedCodec {});
+                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
                 let partitioning = parse_protobuf_partitioning(
                     partitioning.as_ref(),
                     &decode_ctx,
@@ -260,12 +305,46 @@ impl PhysicalExtensionCodec for DistributedCodec {
             })
         }
 
-        if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
+        if let Some(node) = node.downcast_ref::<DistributedExec>() {
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::Distributed(DistributedRootExecProto {
+                    collect_metrics: node.metrics_store.is_some(),
+                })),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.downcast_ref::<DistributedLeafExec>() {
+            let codec = self.combined();
+            let wrapper = DistributedExecProto {
+                node: Some(DistributedExecNode::DistributedLeaf(
+                    DistributedLeafExecProto {
+                        original: physical_plan_to_bytes_with_extension_codec(
+                            Arc::clone(node.original()),
+                            &codec,
+                        )?
+                        .to_vec(),
+                        variants: node
+                            .variants()
+                            .iter()
+                            .map(|variant| {
+                                physical_plan_to_bytes_with_extension_codec(
+                                    Arc::clone(variant),
+                                    &codec,
+                                )
+                                .map(|bytes| bytes.to_vec())
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    },
+                )),
+            };
+
+            wrapper.encode(buf).map_err(|e| proto_error(format!("{e}")))
+        } else if let Some(node) = node.downcast_ref::<NetworkShuffleExec>() {
             let inner = NetworkShuffleExecProto {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
+                    self,
                     &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
@@ -281,7 +360,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
+                    self,
                     &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
@@ -297,7 +376,7 @@ impl PhysicalExtensionCodec for DistributedCodec {
                 schema: Some(node.schema().try_into()?),
                 partitioning: Some(serialize_partitioning(
                     node.properties().output_partitioning(),
-                    &DistributedCodec {},
+                    self,
                     &DefaultPhysicalProtoConverter {},
                 )?),
                 input_stage: Some(encode_stage_proto(node.input_stage())?),
@@ -354,6 +433,27 @@ impl PhysicalExtensionCodec for DistributedCodec {
             Err(proto_error(format!("Unexpected plan {}", node.name())))
         }
     }
+
+    fn try_encode_udf(&self, node: &ScalarUDF, _buf: &mut Vec<u8>) -> Result<()> {
+        Err(proto_error(format!(
+            "Unexpected scalar UDF {}",
+            node.name()
+        )))
+    }
+
+    fn try_encode_udaf(&self, node: &AggregateUDF, _buf: &mut Vec<u8>) -> Result<()> {
+        Err(proto_error(format!(
+            "Unexpected aggregate UDF {}",
+            node.name()
+        )))
+    }
+
+    fn try_encode_udwf(&self, node: &WindowUDF, _buf: &mut Vec<u8>) -> Result<()> {
+        Err(proto_error(format!(
+            "Unexpected window UDF {}",
+            node.name()
+        )))
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -380,7 +480,7 @@ pub struct ExecutionTaskProto {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExecProto {
-    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "DistributedExecNode", tags = "1, 2, 4, 5, 6, 7, 8")]
     pub node: Option<DistributedExecNode>,
 }
 
@@ -397,6 +497,24 @@ pub enum DistributedExecNode {
     NetworkBroadcast(NetworkBroadcastExecProto),
     #[prost(message, tag = "6")]
     Broadcast(BroadcastExecProto),
+    #[prost(message, tag = "7")]
+    Distributed(DistributedRootExecProto),
+    #[prost(message, tag = "8")]
+    DistributedLeaf(DistributedLeafExecProto),
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedRootExecProto {
+    #[prost(bool, tag = "1")]
+    pub collect_metrics: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedLeafExecProto {
+    #[prost(bytes, tag = "1")]
+    pub original: Vec<u8>,
+    #[prost(bytes, repeated, tag = "2")]
+    pub variants: Vec<Vec<u8>>,
 }
 
 /// Protobuf representation of the [NetworkShuffleExec] physical node. It serves as
@@ -573,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_single_flight() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("a");
@@ -592,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_union() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("c");
@@ -622,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_sort_flight() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("d");
@@ -655,7 +773,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_single_flight_coalesce() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("e");
@@ -676,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_single_flight_with_plan() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("a");
@@ -698,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_single_flight_coalesce_with_plan() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("e");
@@ -719,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_flight_coalesce() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("f");
@@ -743,7 +861,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_union_coalesce() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("g");
@@ -773,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_children_isolator_union() -> datafusion::common::Result<()> {
-        let codec = DistributedCodec;
+        let codec = DistributedCodec::default();
         let ctx = create_context();
 
         let schema = schema_i32("h");

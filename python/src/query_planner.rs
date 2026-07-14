@@ -49,11 +49,11 @@ impl PyDistributedQueryPlanner {
         let logical_codec = ffi_logical_codec_from_python(session_ctx.clone())?;
         let physical_codec = ffi_physical_codec_from_python(session_ctx.clone())?;
         let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx.clone())?;
+        let inner = match inner.as_ref() {
+            Some(inner) => Some(ffi_query_planner_from_python(inner)?),
+            None => Some(ffi_query_planner_from_python(&session_ctx)?),
+        };
         let session_ctx = session_ctx.unbind();
-        let inner = inner
-            .as_ref()
-            .map(ffi_query_planner_from_python)
-            .transpose()?;
         Ok(Self {
             resolver: resolver.clone(),
             logical_codec,
@@ -76,7 +76,7 @@ impl PyDistributedQueryPlanner {
         let physical_codec: Arc<dyn PhysicalExtensionCodec + Send> =
             Arc::new(ComposedPhysicalExtensionCodec::new(vec![
                 Arc::clone(&user_codec),
-                Arc::new(DistributedCodec {}),
+                Arc::new(DistributedCodec::new(vec![Arc::clone(&user_codec)])),
             ]));
         let physical_codec = FFI_PhysicalExtensionCodec::new(
             physical_codec,
@@ -166,11 +166,7 @@ pub(crate) fn with_distributed_query_planner(
     resolver: PyRef<'_, PyLocalhostChannelResolver>,
     config: Option<PyRef<'_, PyDistributedConfig>>,
 ) -> PyResult<Py<PyAny>> {
-    let inner = session_ctx
-        .getattr("__datafusion_query_planner__")?
-        .call0()?;
-    let planner =
-        PyDistributedQueryPlanner::new(resolver, session_ctx.clone(), Some(inner), config)?;
+    let planner = PyDistributedQueryPlanner::new(resolver, session_ctx.clone(), None, config)?;
     let planner = Py::new(py, planner)?;
     Ok(session_ctx
         .call_method1("with_query_planner", (planner,))?
