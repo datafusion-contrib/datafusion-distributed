@@ -1,6 +1,7 @@
 use crate::{DATA_PATH, RESULTS_DIR};
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
+use datafusion_distributed_benchmarks::stats::median;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
@@ -13,6 +14,12 @@ use std::time::{Duration, SystemTime};
 pub struct QueryIter {
     pub row_count: usize,
     pub n_tasks: usize,
+    /// P50 q-error of the byte estimates made at dynamic stage boundaries.
+    /// `None` when dynamic planning was disabled or no sampled boundary was present.
+    pub stats_q_error_p50: Option<f64>,
+    /// P95 q-error of the byte estimates made at dynamic stage boundaries.
+    /// `None` when dynamic planning was disabled or no sampled boundary was present.
+    pub stats_q_error_p95: Option<f64>,
     #[serde(
         serialize_with = "serialize_elapsed",
         deserialize_with = "deserialize_elapsed"
@@ -279,6 +286,10 @@ impl BenchResult {
 pub fn print_comparison_total(base: &[BenchResult], new: &[BenchResult]) {
     let mut total_prev: u128 = 0;
     let mut total_new: u128 = 0;
+    let mut stats_q_error_p50_prev = vec![];
+    let mut stats_q_error_p50_new = vec![];
+    let mut stats_q_error_p95_prev = vec![];
+    let mut stats_q_error_p95_new = vec![];
     for query in new {
         let Some(prev) = base.iter().find(|v| v.id == query.id) else {
             continue;
@@ -286,22 +297,56 @@ pub fn print_comparison_total(base: &[BenchResult], new: &[BenchResult]) {
         if let (Some(p), Some(n)) = (prev.representative_time(), query.representative_time()) {
             total_prev += p;
             total_new += n;
+            stats_q_error_p50_prev.extend(
+                prev.iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.stats_q_error_p50),
+            );
+            stats_q_error_p50_new.extend(
+                query
+                    .iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.stats_q_error_p50),
+            );
+            stats_q_error_p95_prev.extend(
+                prev.iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.stats_q_error_p95),
+            );
+            stats_q_error_p95_new.extend(
+                query
+                    .iterations
+                    .iter()
+                    .filter_map(|iteration| iteration.stats_q_error_p95),
+            );
         }
     }
-    if total_prev == 0 && total_new == 0 {
-        return;
+
+    if total_prev != 0 || total_new != 0 {
+        let (f, tag, emoji) = if total_new < total_prev {
+            let f = total_prev as f64 / total_new as f64;
+            (f, "faster", if f > 1.2 { "✅" } else { "✔" })
+        } else {
+            let f = total_new as f64 / total_prev.max(1) as f64;
+            (f, "slower", if f > 1.2 { "❌" } else { "✖" })
+        };
+        println!(
+            "{:>8}: prev={total_prev} ms, new={total_new} ms, diff={f:.2} {tag} {emoji}",
+            "TOTAL"
+        );
     }
-    let (f, tag, emoji) = if total_new < total_prev {
-        let f = total_prev as f64 / total_new as f64;
-        (f, "faster", if f > 1.2 { "✅" } else { "✔" })
-    } else {
-        let f = total_new as f64 / total_prev.max(1) as f64;
-        (f, "slower", if f > 1.2 { "❌" } else { "✖" })
-    };
-    println!(
-        "{:>8}: prev={total_prev} ms, new={total_new} ms, diff={f:.2} {tag} {emoji}",
-        "TOTAL"
-    );
+
+    print_q_error_comparison("QERR P50", stats_q_error_p50_prev, stats_q_error_p50_new);
+    print_q_error_comparison("QERR P95", stats_q_error_p95_prev, stats_q_error_p95_new);
+}
+
+fn print_q_error_comparison(label: &str, prev: Vec<f64>, new: Vec<f64>) {
+    match (median(prev), median(new)) {
+        (Some(prev), Some(new)) => println!("{label:>8}: prev={prev:.2}x, new={new:.2}x"),
+        (Some(prev), None) => println!("{label:>8}: prev={prev:.2}x, new=n/a"),
+        (None, Some(new)) => println!("{label:>8}: prev=n/a, new={new:.2}x"),
+        (None, None) => {}
+    }
 }
 
 fn serialize_bench_results<S: Serializer>(

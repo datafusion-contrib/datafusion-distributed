@@ -25,7 +25,7 @@ use datafusion::common::{config_err, exec_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::collect;
+use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
@@ -37,6 +37,7 @@ use datafusion_distributed::{
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
 use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
+use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -87,14 +88,6 @@ pub struct RunOpt {
     /// Task count scale factor for when nodes in stages change the cardinality of the data
     #[structopt(long)]
     cardinality_task_sf: Option<f64>,
-
-    /// Use children isolator UNIONs for distributing UNION operations.
-    #[structopt(long)]
-    children_isolator_unions: bool,
-
-    /// Turns on broadcast joins.
-    #[structopt(long = "broadcast-joins")]
-    broadcast_joins: bool,
 
     /// Collects metrics across network boundaries
     #[structopt(long)]
@@ -216,9 +209,11 @@ impl RunOpt {
                 "none" => None,
                 v => return config_err!("Unknown compression type {v}"),
             })?
-            .with_distributed_children_isolator_unions(self.children_isolator_unions)?
-            .with_distributed_broadcast_joins(self.broadcast_joins)?
-            .with_distributed_metrics_collection(self.collect_metrics || self.debug)?
+            .with_distributed_children_isolator_unions(true)?
+            .with_distributed_broadcast_joins(true)?
+            .with_distributed_metrics_collection(
+                self.collect_metrics || self.debug || self.dynamic,
+            )?
             .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .with_distributed_user_codec(WorkUnitFileScanCodec)
             .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
@@ -290,18 +285,46 @@ impl RunOpt {
                 }
 
                 match self.execute_query(ctx, query).await {
-                    Ok((result, n_tasks)) => {
+                    Ok((result, n_tasks, physical_plan)) => {
                         let elapsed = start.elapsed();
                         let ms = elapsed.as_secs_f64() * 1000.0;
                         let row_count = result.iter().map(|b| b.num_rows()).sum();
-                        println!(
-                            "Query {id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
-                        );
+                        let physical_plan = if self.dynamic || self.debug {
+                            rewrite_distributed_plan_with_metrics(
+                                physical_plan,
+                                DistributedMetricsFormat::PerTask,
+                            )
+                            .await?
+                        } else {
+                            physical_plan
+                        };
+                        let stats_q_error = match self.dynamic {
+                            true => stats_estimation_q_error(&physical_plan),
+                            false => None,
+                        };
+                        if let Some(q_error) = stats_q_error {
+                            println!(
+                                "Query {id} iteration {i} took {ms:.1} ms, stats q-error P50 {:.2}x, P95 {:.2}x and returned {row_count} rows",
+                                q_error.p50, q_error.p95
+                            );
+                        } else {
+                            println!(
+                                "Query {id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
+                            );
+                        }
+                        if self.debug {
+                            println!(
+                                "=== Physical plan with metrics ===\n{}\n",
+                                display_plan_ascii(physical_plan.as_ref(), true)
+                            );
+                        }
 
                         bench_query.iterations.push(QueryIter {
                             elapsed,
                             row_count,
                             n_tasks,
+                            stats_q_error_p50: stats_q_error.map(|q_error| q_error.p50),
+                            stats_q_error_p95: stats_q_error.map(|q_error| q_error.p95),
                             error: None,
                         });
                     }
@@ -311,6 +334,8 @@ impl RunOpt {
                             elapsed: Duration::from_millis(0),
                             row_count: 0,
                             n_tasks: 0,
+                            stats_q_error_p50: None,
+                            stats_q_error_p95: None,
                             error: Some(err.to_string()),
                         });
                         continue 'outer;
@@ -327,7 +352,7 @@ impl RunOpt {
         &self,
         ctx: &SessionContext,
         sql: &str,
-    ) -> Result<(Vec<RecordBatch>, usize)> {
+    ) -> Result<(Vec<RecordBatch>, usize, Arc<dyn ExecutionPlan>)> {
         let plan = ctx.sql(sql).await?;
         let (state, plan) = plan.into_parts();
 
@@ -341,18 +366,7 @@ impl RunOpt {
             Ok(Transformed::no(node))
         })?;
         let result = collect(physical_plan.clone(), state.task_ctx()).await?;
-        if self.debug {
-            let physical_plan = rewrite_distributed_plan_with_metrics(
-                physical_plan.clone(),
-                DistributedMetricsFormat::PerTask,
-            )
-            .await?;
-            println!(
-                "=== Physical plan with metrics ===\n{}\n",
-                display_plan_ascii(physical_plan.as_ref(), true)
-            );
-        }
-        Ok((result, n_tasks))
+        Ok((result, n_tasks, physical_plan))
     }
 
     fn get_path(&self) -> Result<PathBuf> {

@@ -20,6 +20,7 @@ use datafusion_distributed::{
     get_distributed_channel_resolver, get_distributed_worker_resolver,
     rewrite_distributed_plan_with_metrics,
 };
+use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
 use object_store::aws::AmazonS3Builder;
@@ -48,6 +49,8 @@ struct QueryResult {
     count: usize,
     elapsed_ms: f64,
     tasks: usize,
+    stats_q_error_p50: Option<f64>,
+    stats_q_error_p95: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -208,6 +211,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         )
                         .await
                         .map_err(err)?;
+                        let stats_q_error = stats_estimation_q_error(&physical);
                         let plan = display_plan_ascii(physical.as_ref(), true);
                         drop(task);
 
@@ -233,6 +237,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             plan,
                             elapsed_ms: ms,
                             tasks: task_count,
+                            stats_q_error_p50: stats_q_error.map(|q_error| q_error.p50),
+                            stats_q_error_p95: stats_q_error.map(|q_error| q_error.p95),
                         }))
                     }
                     .inspect_err(|(_, msg)| {

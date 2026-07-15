@@ -13,7 +13,7 @@ use datafusion::physical_expr_common::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::metrics::MetricBuilder;
 use futures::future::{BoxFuture, Shared};
 use futures::stream::BoxStream;
-use futures::{FutureExt, StreamExt, TryFutureExt};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -80,6 +80,7 @@ impl WorkerConnectionPool {
             stage_id: input_stage.num,
             task_number: target_task,
         };
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(target_partition);
 
         // If we are physically in the same worker, short circuit into a local connection without
         // going through the `WorkerChannel`.
@@ -90,7 +91,11 @@ impl WorkerConnectionPool {
             &producer_head,
             ctx,
         )? {
-            return Ok(result);
+            return Ok(result
+                .inspect_ok(move |batch| {
+                    output_bytes.add(logical_record_batch_size(batch));
+                })
+                .boxed());
         }
 
         // Otherwise, we need to reach the remote worker through the `WorkerChannel`. Unlike local
@@ -156,6 +161,9 @@ impl WorkerConnectionPool {
             })
         }
         .try_flatten_stream()
+        .inspect_ok(move |batch| {
+            output_bytes.add(logical_record_batch_size(batch));
+        })
         .boxed())
     }
 
@@ -214,6 +222,15 @@ impl WorkerConnectionPool {
             .boxed(),
         ))
     }
+}
+
+/// Returns the logical size of a batch's slices, excluding unused backing-buffer capacity.
+fn logical_record_batch_size(batch: &RecordBatch) -> usize {
+    batch
+        .columns()
+        .iter()
+        .map(|column| column.to_data().get_slice_memory_size().unwrap_or(0))
+        .sum()
 }
 
 impl Debug for WorkerConnectionPool {

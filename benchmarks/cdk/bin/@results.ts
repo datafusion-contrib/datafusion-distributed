@@ -12,6 +12,8 @@ export interface QueryIter {
     rowCount: number;
     elapsed: number; // Duration in milliseconds
     tasks: number;
+    statsQErrorP50?: number;
+    statsQErrorP95?: number;
     error?: string;
 }
 
@@ -80,6 +82,10 @@ export class BenchmarkRun {
         console.log(`=== Comparing ${this.dataset} results from engine '${other.engine}' [prev] with '${this.engine}' [new] ===`);
         let totalTimePrev = 0
         let totalTimeNew = 0
+        const statsQErrorP50Prev: number[] = []
+        const statsQErrorP50New: number[] = []
+        const statsQErrorP95Prev: number[] = []
+        const statsQErrorP95New: number[] = []
         for (const query of this.results) {
             const prevQuery = other.results.find(v => v.id === query.id);
             if (!prevQuery) {
@@ -87,9 +93,21 @@ export class BenchmarkRun {
             }
             const timePrev = prevQuery.representativeTime()
             const timeNew = query.representativeTime()
-            if (timePrev && timeNew) {
+            if (timePrev !== undefined && timeNew !== undefined) {
                 totalTimePrev += timePrev
                 totalTimeNew += timeNew
+                statsQErrorP50Prev.push(...prevQuery.iterations.flatMap(iter =>
+                    iter.statsQErrorP50 === undefined ? [] : [iter.statsQErrorP50]
+                ))
+                statsQErrorP50New.push(...query.iterations.flatMap(iter =>
+                    iter.statsQErrorP50 === undefined ? [] : [iter.statsQErrorP50]
+                ))
+                statsQErrorP95Prev.push(...prevQuery.iterations.flatMap(iter =>
+                    iter.statsQErrorP95 === undefined ? [] : [iter.statsQErrorP95]
+                ))
+                statsQErrorP95New.push(...query.iterations.flatMap(iter =>
+                    iter.statsQErrorP95 === undefined ? [] : [iter.statsQErrorP95]
+                ))
             }
 
             query.compare(prevQuery);
@@ -108,6 +126,9 @@ export class BenchmarkRun {
         console.log(
             `${"TOTAL".padStart(8)}: prev=${totalTimePrev.toString()} ms, new=${totalTimeNew.toString()} ms, diff=${f.toFixed(2)} ${tag} ${emoji}`
         );
+
+        printQErrorComparison("QERR P50", statsQErrorP50Prev, statsQErrorP50New)
+        printQErrorComparison("QERR P95", statsQErrorP95Prev, statsQErrorP95New)
     }
 
     compareWithPrevious(): void {
@@ -238,6 +259,8 @@ export class BenchResult {
                     error: z.string().optional(),
                     plan: z.string(),
                     tasks: z.number().default(0),
+                    statsQErrorP50: z.number().optional(),
+                    statsQErrorP95: z.number().optional(),
                 }).array(),
             })
             const data = fs.readFileSync(filePath, 'utf-8');
@@ -285,4 +308,25 @@ export class BenchResult {
 
 function numericId(queryName: string): number {
     return parseInt([...queryName.matchAll(/(\d+)/g)][0][0])
+}
+
+function printQErrorComparison(label: string, prev: number[], next: number[]): void {
+    const prevValue = median(prev)
+    const nextValue = median(next)
+    if (prevValue !== undefined && nextValue !== undefined) {
+        console.log(`${label.padStart(8)}: prev=${prevValue.toFixed(2)}x, new=${nextValue.toFixed(2)}x`)
+    } else if (prevValue !== undefined) {
+        console.log(`${label.padStart(8)}: prev=${prevValue.toFixed(2)}x, new=n/a`)
+    } else if (nextValue !== undefined) {
+        console.log(`${label.padStart(8)}: prev=n/a, new=${nextValue.toFixed(2)}x`)
+    }
+}
+
+function median(values: number[]): number | undefined {
+    if (values.length === 0) {
+        return undefined
+    }
+    const sorted = [...values].sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }

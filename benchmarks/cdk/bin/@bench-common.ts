@@ -68,6 +68,8 @@ export interface ExecuteQueryResult {
     plan: string
     elapsed: number
     tasks: number
+    statsQErrorP50?: number
+    statsQErrorP95?: number
 }
 
 export interface BenchmarkRunner {
@@ -193,11 +195,19 @@ export async function runBenchmark(
                 rowCount: response.rowCount,
                 plan: response.plan,
                 tasks: response.tasks,
+                statsQErrorP50: response.statsQErrorP50,
+                statsQErrorP95: response.statsQErrorP95,
             })
 
-            console.log(
-                `Query ${id} iteration ${i} took ${Math.round(response.elapsed)} ms and returned ${response.rowCount} rows`
-            );
+            if (response.statsQErrorP50 !== undefined && response.statsQErrorP95 !== undefined) {
+                console.log(
+                    `Query ${id} iteration ${i} took ${Math.round(response.elapsed)} ms, stats q-error P50 ${response.statsQErrorP50.toFixed(2)}x, P95 ${response.statsQErrorP95.toFixed(2)}x and returned ${response.rowCount} rows`
+                );
+            } else {
+                console.log(
+                    `Query ${id} iteration ${i} took ${Math.round(response.elapsed)} ms and returned ${response.rowCount} rows`
+                );
+            }
         }
 
         console.log(`Query ${id} p50 time: ${result.p50()} ms`);
