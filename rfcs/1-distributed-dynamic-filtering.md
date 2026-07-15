@@ -321,7 +321,7 @@ Cons:
 
 The design fundamentally relies on distributed datafusion intercepting and modifying dynamic filter updates. `DynamicFilterPhysicalExpr` already offers APIs
 for this:
-```
+```rust
 // Write Updates
 pub fn update(&self, new_expr: Arc<dyn PhysicalExpr>) -> Result<()>
 
@@ -345,7 +345,7 @@ to the consumers.
 One open question we discuss below is - how do you know if a node is a producer or consumer of dynamic filters?
 
 `expression_id` may useful to correlate dynamic filters across machines.
-```
+```rust
 fn expression_id(&self) -> Option<u64> {
 ```
 
@@ -357,9 +357,13 @@ dynamic filter pruning work during execution, after execution we must propagate 
 filters from data sources to the coordinator so they can be displayed.
 
 
-## [WIP DRAFT] Gaps in Vanilla DataFusion
+## Gaps in Vanilla DataFusion
 
-### Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
+There are 2 main gaps in vanilla datafusion that we need to address:
+1. How do you get `&DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes?
+2. How do you merge dynamic filters?
+
+### 1. Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
 
 We need to:
 (a) extract `&DynamicFilterPhysicalExpr` from producers like `HashJoinExec`, `SortExec`, `AggregateExec` and consumers like `DataSourceExec`
@@ -368,7 +372,7 @@ We need to:
 
 #### Prior Art
 
-1. `ExecutionPlan::apply_expressions`
+##### `ExecutionPlan::apply_expressions`
 
 See https://github.com/apache/datafusion/pull/22437
 
@@ -396,8 +400,8 @@ Cons:
   - It was complicated to implement and a required method on all `ExecutionPlan` nodes
   - There was no usage inside of vanilla datafusion, meaning it may grow stale
 
-2. `ExecutionPlan::handle_child_pushdown_result` / `ExecutionPlan::gather_filters_for_pushdown`
-```
+##### `ExecutionPlan::handle_child_pushdown_result` / `ExecutionPlan::gather_filters_for_pushdown`
+```rust
 fn handle_child_pushdown_result(
     &self,
     _phase: FilterPushdownPhase,
@@ -432,7 +436,7 @@ There's a few reasons not to use these to collect dynamic filters:
 
 #### Other Ideas
 
-1. Registry + Downcasting Pattern
+##### Registry + Downcasting Pattern
 
 The idea is to have a registry of functions which can be used to extract `&DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes.
 
@@ -485,9 +489,9 @@ out of the box. Users will have to register their custom `ExecutionPlan` impleme
 - Distributed datafusion has to maintain a registry of all `ExecutionPlan` implementations in vanilla datafusion
 - We rely a lot on downcasting `ExecutionPlan` nodes
 
-2. New Non-Required method `ExecutionPlan::dynamic_filter_exprs` 
+##### New Non-Required method `ExecutionPlan::dynamic_filter_exprs` 
 
-```
+```rust
 trait ExecutionPlan {
     fn dynamic_filter_expr(&self) -> Vec<DynamicFilterNodeBehavior(Arc<dyn PhysicalExpr>)> {
         vec![] 
@@ -502,7 +506,7 @@ enum DynamicFilterNodeBehavior {
 
 Note that as of writing, we already have these methods, although they were only added to support serialization and will
 likely be removed by https://github.com/apache/datafusion/issues/23494.
-```
+```rust
 HashJoinExec::dynamic_filter_expr()
 AggregateExec::dynamic_filter_expr()
 SortExec::dynamic_filter_expr()
@@ -515,18 +519,18 @@ Cons:
 - Very specific. We usually treat dynamic filters as any other filter expression. However, this method cuts through the abstraction
   and brings them to the surface.
 
-### Merging Dynamic Filters
+### 2. Merging Dynamic Filters
 
 The highlevel idea is to 
 - merge "global" dynamic filters using OR expressions
 - merge "partition-routed" dynamic filters by merging their `CASE` expressions
 Both of these require mutating the dynamic filter `PhysicalExpr`
 
-It would be interesting to see first class support fo this behavior.
-- Should we make dynamic filters partitioning aware?
+It would be nice to see first class support or this behavior.
+- Should we make dynamic filter to have 2 variants: "global" and "partition-aware"?
 - Should we implement a `merge` method?
 
-Today dynamic filters store one expression which is updated atomically
+Today dynamic filters store one expression which is updated atomically:
 ```rust
 struct Inner {
     expression_id: u64,
@@ -537,28 +541,38 @@ struct Inner {
 }
 
 impl DynamicFilterPhysicalExpr {
-    pub fn update(&self, new_expr: Arc<dyn PhysicalExpr>) -> Result<()>
+    // Atomically update the expression
+    pub fn update(&self, new_expr: Arc<dyn PhysicalExpr>) -> Result<()>;
+    // Atomically get the current expression
+    pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>;
 }
 ```
 
-It would be interesting to make them more partition-aware by
-- store one expression per partition when the dynamic filter is "partition aware"
+It would be interesting to make them more partition-aware by:
+- store one expression per partition when the dynamic filter is "partition aware", otherwise just store one
 - change `update()` to update the expression for a specific partition
 - update `current()` to return a generated `CASE` expression
 - implement a `merge()` operation which only merges compatible dynamic filters
-  (global with global or partition-aware with partition-aware)
 ```rust
 struct Inner {
     expression_id: u64,
     generation: u64,
-    state: LiveFilterExpr,
+    // Instead of one expr, we may have one expr per partition
+    expr: LiveFilterExpr,
     lowered_expr: Arc<dyn PhysicalExpr>,
     is_complete: bool,
 }
 
+// The actual dynamic filter expression
 enum LiveFilterExpr {
     Global(Arc<dyn PhysicalExpr>),
     Partitioned(PartitionedFilterExpr),
+}
+
+impl LiveFilterExpr {
+    // Generates a new expression by either ORing or merging CASES. Errors if the
+    // partitioning is not compatible or if the CASEs overlap.
+    pub fn merge(&self, other: LiveFilterExpr) -> Result<()>;
 }
 
 struct PartitionedFilterExpr {
@@ -567,19 +581,20 @@ struct PartitionedFilterExpr {
     cases: BTreeMap<u64, Arc<dyn PhysicalExpr>>, // map of partition id to filter expr 
 }
 
+impl PartitionedFilterExpr {
+    // In distributed datfusion, we may have to merge a dynamic filter with partitions 0-4 with another
+    // dynamic filter with partitions 0-4, however, we want them to be labelled 0-8. This method
+    // can be used to align the partition ids.
+    pub fn align_partition_cases(&self, offset: u64) -> Result<()>;
+}
 
 impl DynamicFilterPhysicalExpr {
-    pub fn update_global(&self, expr: Arc<dyn PhysicalExpr>) -> Result<()>;
+    // Update takes an optional partition id.
+    // Error if called with a partition id when the dynamic filter is not partition-aware and vice versa.
+    pub fn update(&self, expr: Arc<dyn PhysicalExpr>, partition_id: Option<u64>) -> Result<()>;
 
-    pub fn update_partition(
-        &self,
-        partition_id: u64,
-        expr: Arc<dyn PhysicalExpr>,
-    ) -> Result<()>;
-
-    pub fn merge(&self, other: LiveFilterExpr) -> Result<()>;
-
-    pub fn align_partition_cases(&self, offset: u64) -> Result<()>;
+    // Method is the same but now generates CASE expressions
+    pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>;
 }
 ```
 
@@ -587,16 +602,15 @@ impl DynamicFilterPhysicalExpr {
 
 Distributed dynamic filtering needs the following features from vanilla datafusion. Each of these has a "hacky way" and a "nice way"
 of being implemented.
+
 1. ability to get `&DynamicFilterPhysicalExpr` from `ExecutionPlan` 
 
 Hacky: add a registry of known `&DynamicFilterPhysicalExpr` producers and consumers. Use downcasting to get `&DynamicFilterPhysicalExpr` from each node 
-  (note that even in the registry pattern, the &DynamicFilterPhysicalExpr must be publically accessible)
+  (note that even in the registry pattern, the `&DynamicFilterPhysicalExpr` must be publically accessible)
 Nice: add an explicit method `ExecutionPlan::dynamic_filter_exprs` method
 
 2. ability to merge dynamic filters
 
-Hacky: OR global filters and combine CASE expressions
-Nice: add `Partitioning` into `&DynamicFilterPhysicalExpr` and implement `&DynamicFilterPhysicalExpr::merge` to generate CASE or OR expressions 
-
-
+Hacky: Use ORs to merge filters or combine CASE expressions by mofidying `PhysicalExpr`s
+Nice: add `Partitioning` into `&DynamicFilterPhysicalExpr` and make them more partition-aware 
 
