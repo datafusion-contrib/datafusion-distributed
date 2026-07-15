@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   call-promote:
-    uses: paradedb/actions/.github/workflows/reusable-promote.yml@v5
+    uses: paradedb/actions/.github/workflows/reusable-promote.yml@v7
     with:
       branch_name: ${{ inputs.branch_name }}
       approvers: "philippemnoel,rebasedming,stuhood,mdashti"
