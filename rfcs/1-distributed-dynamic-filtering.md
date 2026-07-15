@@ -27,7 +27,7 @@ CASE hash(expr) % N
     WHEN N-1: ..
 ```
 Ultimately, they are just an optimization over "global" dynamic filters because they make the filters 
-more granular and more selective. 
+more granular, letting us prune more efficiently.
 
 ### "Global" dynamic filter
 ```
@@ -71,7 +71,7 @@ more granular and more selective.
                                                         │                               ▼                           
                                           ┌──────────────────────────┐                                              
                                           │     DataSourceExec:      │  Each partition uses the same DynamicFilterPhysicalExpr, except     
-                                          │ Partitioning=Unknown(10) │  each row will only hash to use one case                                              
+                                          │ Partitioning=Unknown(10) │  each row will only hash to one case                                              
                                           └──────────────────────────┘                                             
 ```
 
@@ -96,22 +96,22 @@ Note that each `HashJoinExec` produces its own dynamic filters, meaning there ar
 #### Global Dynamic Filters
 Each task has its own dynamic filters which do not have `CASE` expressions. They may look like this:
 
-Task 1: `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1`
-Task 2: `DynamicFilterPhysicalExpr: a@0 >= v2`
-Task 3: `DynamicFilterPhysicalExpr: a@0 IN LIST [v3, v4 ...]`
+Task 1: `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1`  
+Task 2: `DynamicFilterPhysicalExpr: a@0 >= v2`  
+Task 3: `DynamicFilterPhysicalExpr: a@0 IN LIST [v3, v4 ...]`  
 
 #### Partition-Aware Dynamic Filters
 Each task has its own dynamic filters which contain `CASE` expressions. They may look like this:
 
 Task 1:
 ```
-CASE Hash(a@0) % 12 
+CASE Hash(a@0) % 4
 WHEN 0: a@0 >= v0 AND a@0 <= v1
 ... 4 cases in total
 ```
 Task 2:
 ```
-CASE Hash(a@0) % 12
+CASE Hash(a@0) % 4
 WHEN 0: a@0 IN LIST [v2, v3, v4 ...] 
 ... 4 cases in total
 ```
