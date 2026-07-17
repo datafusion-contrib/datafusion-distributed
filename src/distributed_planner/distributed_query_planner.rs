@@ -8,15 +8,18 @@ use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_r
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
 use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
 use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
+use crate::explain_analyze::DistributedAnalyzeExec;
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
+use futures::future::BoxFuture;
 use std::sync::Arc;
 
 /// Transforms a single-node physical plan into a distributed plan by injecting network
@@ -71,8 +74,32 @@ impl QueryPlanner for DistributedQueryPlanner {
             }
         };
 
+        create_distributed_plan(original_plan, session_state).await
+    }
+}
+
+/// Applies distributed planning to an already-created physical plan.
+///
+/// Inputs to [`AnalyzeExec`] are planned recursively. When one becomes distributed, the native
+/// node is replaced by [`DistributedAnalyzeExec`]. The future is boxed because recursive `async
+/// fn`s would otherwise have an infinitely-sized return type.
+fn create_distributed_plan(
+    original_plan: Arc<dyn ExecutionPlan>,
+    session_state: &SessionState,
+) -> BoxFuture<'_, datafusion::common::Result<Arc<dyn ExecutionPlan>>> {
+    Box::pin(async move {
         if original_plan.is::<DistributedExec>() {
             return Ok(original_plan);
+        }
+
+        if let Some(analyze) = original_plan.downcast_ref::<AnalyzeExec>() {
+            // Recursively distribute the query being analyzed. Replace `AnalyzeExec` only when its
+            // input became distributed; otherwise retain DataFusion's native implementation.
+            let input = create_distributed_plan(Arc::clone(analyze.input()), session_state).await?;
+            return match input.is::<DistributedExec>() {
+                true => Ok(Arc::new(DistributedAnalyzeExec::new(analyze, input))),
+                false => Arc::new(analyze.clone()).with_new_children(vec![input]),
+            };
         }
 
         let session_cfg = session_state.config();
@@ -141,7 +168,7 @@ impl QueryPlanner for DistributedQueryPlanner {
         Ok(Arc::new(
             DistributedExec::new(plan).with_metrics_collection(d_cfg.collect_metrics),
         ))
-    }
+    })
 }
 
 #[cfg(test)]
