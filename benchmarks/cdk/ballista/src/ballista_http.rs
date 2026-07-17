@@ -31,6 +31,10 @@ struct Cmd {
     /// The bucket name.
     #[structopt(long, default_value = "datafusion-distributed-benchmarks")]
     bucket: String,
+
+    /// Number of partitions used for scans and distributed shuffle stages.
+    #[structopt(long, default_value = "96")]
+    target_partitions: usize,
 }
 
 #[tokio::main]
@@ -59,7 +63,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
-    let config = SessionConfig::new_with_ballista().with_ballista_job_name("Benchmarks");
+    info!(
+        "Configuring Ballista with {} target partitions",
+        cmd.target_partitions
+    );
+    let config = SessionConfig::new_with_ballista()
+        .with_ballista_job_name("Benchmarks")
+        .with_target_partitions(cmd.target_partitions);
 
     let state = SessionStateBuilder::new()
         .with_config(config)

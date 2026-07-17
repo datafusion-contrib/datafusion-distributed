@@ -219,7 +219,7 @@ export function sendCommandsUnconditionally(
     name: string,
     instances: ec2.Instance[],
     commands: string[]
-) {
+): cr.AwsCustomResource {
     const cmd = new cr.AwsCustomResource(construct, name, {
         onUpdate: {
             service: 'SSM',
@@ -247,4 +247,5 @@ export function sendCommandsUnconditionally(
 
     // Ensure instances are created before restarting
     cmd.node.addDependency(...instances)
+    return cmd
 }

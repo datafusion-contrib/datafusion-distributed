@@ -49,12 +49,12 @@ relative to DataFusion Distributed
 <details>
 <summary>Per-dataset totals</summary>
 
-| Dataset     | df-dist |                                                                                Ballista | Spark | Trino | Queries compared |
-|-------------|--------:|----------------------------------------------------------------------------------------:|------:|------:|-----------------:|
-| TPC-H SF1   |  **7s** |                                                                                     11s |   30s |   18s |               22 |
-| TPC-H SF10  | **10s** |                                                                                     57s |   51s |   33s |               22 |
-| TPC-H SF100 | **42s** | N/A ([#1836](https://github.com/datafusion-contrib/datafusion-distributed/issues/1836)) |  261s |   93s |               19 |
-| TPC-DS SF1  | **29s** |                                                                                     72s |  101s |   85s |               67 |
+| Dataset     | df-dist | Ballista | Spark | Trino | Queries compared |
+|-------------|--------:|---------:|------:|------:|-----------------:|
+| TPC-H SF1   |  **7s** |      11s |   30s |   18s |               22 |
+| TPC-H SF10  | **10s** |      42s |   51s |   33s |               22 |
+| TPC-H SF100 | **42s** |     237s |  261s |   93s |               19 |
+| TPC-DS SF1  | **29s** |      72s |  101s |   85s |               67 |
 
 ![TPC-H SF1](./docs/source/_static/images/tpch_sf1.png)
 ![TPC-H SF10](./docs/source/_static/images/tpch_sf10.png)

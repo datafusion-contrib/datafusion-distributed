@@ -16,6 +16,10 @@ let ballistaExecutorBinary: s3assets.Asset
 
 // Ballista is built as a standalone project, separate from the main workspace
 const BALLISTA_DIR = path.join(ROOT, 'benchmarks/cdk/ballista')
+const BALLISTA_TARGET_PARTITIONS = 96 // 12 c5n.2xlarge instances * 8 vCPUs
+const BALLISTA_EXECUTOR_MEMORY_POOL = '16GiB' // leave ~4 GiB for the OS and untracked allocations
+const BALLISTA_JOB_DATA_CLEAN_UP_INTERVAL_SECONDS = 300
+const BALLISTA_JOB_DATA_TTL_SECONDS = 3600
 
 export const BALLISTA_ENGINE: QueryEngine = {
     beforeEc2Machines(ctx: BeforeEc2MachinesContext): void {
@@ -95,7 +99,10 @@ ExecStart=/usr/local/bin/ballista-executor \\
   --bind-port 50051 \\
   --work-dir /var/ballista/executor \\
   --scheduler-host localhost \\
-  --scheduler-port 50050
+  --scheduler-port 50050 \\
+  --memory-pool-size ${BALLISTA_EXECUTOR_MEMORY_POOL} \\
+  --job-data-clean-up-interval-seconds ${BALLISTA_JOB_DATA_CLEAN_UP_INTERVAL_SECONDS} \\
+  --job-data-ttl-seconds ${BALLISTA_JOB_DATA_TTL_SECONDS}
 Restart=on-failure
 RestartSec=5
 User=root
@@ -118,7 +125,9 @@ After=network.target ballista-scheduler.service
 Requires=ballista-scheduler.service
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ballista-http --bucket ${ctx.bucketName}
+ExecStart=/usr/local/bin/ballista-http \\
+  --bucket ${ctx.bucketName} \\
+  --target-partitions ${BALLISTA_TARGET_PARTITIONS}
 Restart=on-failure
 RestartSec=5
 User=root
@@ -159,11 +168,13 @@ BALLISTA_EOF`
 
         // Reconfigure executors on worker nodes to point to scheduler. The executor in the machine holding the scheduler
         // communicates to it using localhost, so no need to update it with scheduler.instancePrivateIp.
-        sendCommandsUnconditionally(
+        const updateExecutors = sendCommandsUnconditionally(
             ctx.scope,
             "ConfigureBallistaExecutors",
             [scheduler, ...executors],
             [
+                `aws s3 cp s3://${ballistaExecutorBinary.s3BucketName}/${ballistaExecutorBinary.s3ObjectKey} /usr/local/bin/ballista-executor`,
+                'chmod +x /usr/local/bin/ballista-executor',
                 `cat > /etc/systemd/system/ballista-executor.service << 'BALLISTA_EOF'
 [Unit]
 Description=Ballista Executor
@@ -175,7 +186,10 @@ ExecStart=/usr/local/bin/ballista-executor \\
   --bind-port 50051 \\
   --work-dir /var/ballista/executor \\
   --scheduler-host ${scheduler.instancePrivateIp} \\
-  --scheduler-port 50050
+  --scheduler-port 50050 \\
+  --memory-pool-size ${BALLISTA_EXECUTOR_MEMORY_POOL} \\
+  --job-data-clean-up-interval-seconds ${BALLISTA_JOB_DATA_CLEAN_UP_INTERVAL_SECONDS} \\
+  --job-data-ttl-seconds ${BALLISTA_JOB_DATA_TTL_SECONDS}
 Restart=on-failure
 RestartSec=5
 User=root
@@ -187,8 +201,21 @@ StandardError=append:/var/ballista/logs/executor.log
 WantedBy=multi-user.target
 BALLISTA_EOF`,
                 'systemctl daemon-reload',
+                'systemctl enable --now ballista-executor',
                 'systemctl restart ballista-executor',
             ]
         )
+
+        const updateHttp = sendCommandsUnconditionally(
+            ctx.scope,
+            "UpdateBallistaHttp",
+            [scheduler],
+            [
+                `aws s3 cp s3://${ballistaServerBinary.s3BucketName}/${ballistaServerBinary.s3ObjectKey} /usr/local/bin/ballista-http`,
+                'chmod +x /usr/local/bin/ballista-http',
+                'systemctl restart ballista-http',
+            ]
+        )
+        updateHttp.node.addDependency(updateExecutors)
     }
 }
