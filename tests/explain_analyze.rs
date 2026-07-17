@@ -2,7 +2,7 @@
 mod tests {
     use datafusion::arrow::array::{Array, StringArray};
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::common::{Result, assert_contains};
+    use datafusion::common::{Result, assert_contains, assert_not_contains};
     use datafusion::physical_plan::execute_stream;
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
@@ -44,6 +44,7 @@ mod tests {
         assert_contains!(&formatted, "DistributedExec");
         assert_contains!(&formatted, "NetworkShuffleExec");
         assert_contains!(&formatted, "metrics=[output_rows=");
+        assert_not_contains!(&formatted, "metrics=[output_rows={");
 
         Ok(())
     }
@@ -85,10 +86,15 @@ mod tests {
             (Some(plan_types), Some(plans)) => (plan_types, plans),
             _ => panic!("EXPLAIN ANALYZE columns should be strings"),
         };
-        let output_rows = (0..plan_types.len())
-            .find(|index| plan_types.value(*index) == "Output Rows")
-            .expect("verbose output should contain an Output Rows entry");
-        assert_eq!(plans.value(output_rows), "2");
+        let plan_for = |plan_type| {
+            let index = (0..plan_types.len())
+                .find(|index| plan_types.value(*index) == plan_type)
+                .unwrap_or_else(|| panic!("verbose output should contain a {plan_type} entry"));
+            plans.value(index)
+        };
+        assert_not_contains!(plan_for("Plan with Metrics"), "metrics=[output_rows={");
+        assert_contains!(plan_for("Plan with Full Metrics"), "metrics=[output_rows={");
+        assert_eq!(plan_for("Output Rows"), "2");
 
         Ok(())
     }

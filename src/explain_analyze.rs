@@ -93,15 +93,13 @@ impl ExecutionPlan for DistributedAnalyzeExec {
                 total_rows += batch.num_rows();
             }
 
-            let plan = explain_analyze(
-                input,
-                match verbose {
-                    true => DistributedMetricsFormat::PerTask,
-                    false => DistributedMetricsFormat::Aggregated,
-                },
-            )
-            .await?;
-            create_output_batch(verbose, total_rows, start.elapsed(), plan, schema)
+            let plan =
+                explain_analyze(Arc::clone(&input), DistributedMetricsFormat::Aggregated).await?;
+            let full_plan = match verbose {
+                true => Some(explain_analyze(input, DistributedMetricsFormat::PerTask).await?),
+                false => None,
+            };
+            create_output_batch(total_rows, start.elapsed(), plan, full_plan, schema)
         };
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -112,10 +110,10 @@ impl ExecutionPlan for DistributedAnalyzeExec {
 }
 
 fn create_output_batch(
-    verbose: bool,
     total_rows: usize,
     duration: std::time::Duration,
     plan: String,
+    full_plan: Option<String>,
     schema: SchemaRef,
 ) -> Result<RecordBatch> {
     let mut type_builder = StringBuilder::with_capacity(1, 1024);
@@ -124,9 +122,9 @@ fn create_output_batch(
     type_builder.append_value("Plan with Metrics");
     plan_builder.append_value(&plan);
 
-    if verbose {
+    if let Some(full_plan) = full_plan {
         type_builder.append_value("Plan with Full Metrics");
-        plan_builder.append_value(&plan);
+        plan_builder.append_value(full_plan);
 
         type_builder.append_value("Output Rows");
         plan_builder.append_value(total_rows.to_string());
