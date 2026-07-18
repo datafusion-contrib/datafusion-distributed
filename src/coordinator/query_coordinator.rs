@@ -8,6 +8,7 @@ use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
+use crate::worker::LocalWorkerContext;
 use crate::{
     BytesCounterMetric, BytesMetricExt, CoordinatorToWorkerMsg,
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedTaskContext,
@@ -406,6 +407,13 @@ impl<'a> StageCoordinator<'a> {
             );
         }
         Ok(routed_urls)
+    }
+
+    pub(super) fn find_self_url(&self) -> Option<Url> {
+        self.task_ctx
+            .session_config()
+            .get_extension::<LocalWorkerContext>()
+            .map(|v| v.self_url.clone())
     }
 
     pub(super) fn find_input_stage_with_single_url(&self) -> Option<Url> {

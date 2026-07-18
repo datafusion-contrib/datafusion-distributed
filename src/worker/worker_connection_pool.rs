@@ -25,7 +25,7 @@ use url::Url;
 ///
 /// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
 /// needs to be remotely executed happens to be owned by this same worker.
-pub(crate) struct LocalWorkerContext {
+pub struct LocalWorkerContext {
     /// The registry of in-flight tasks the [crate::Worker] in the current scope owns.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
     /// The URL of the [crate::Worker] in scope. When trying to reach to a target URL that happens
