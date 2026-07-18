@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   call-rebase:
-    uses: paradedb/actions/.github/workflows/reusable-rebase.yml@v7
+    uses: paradedb/actions/.github/workflows/reusable-rebase.yml@v8
     with:
       github_app_client_id: ${{ vars.PARADEDB_GITHUB_APP_CLIENT_ID }}
       approvers: "philippemnoel,rebasedming,stuhood,mdashti"
