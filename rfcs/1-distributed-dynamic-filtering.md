@@ -2,11 +2,12 @@
 
 ## Contents
 
-1. Background
+1. Background - Dynamic Filtering in Vanilla DataFusion
+2. Background - Dynamic Filtering in Trino and Spark 
 2. Dynamic Filtering in Distributed DataFusion - Proposed Highlevel Design
 3. Gaps to Address in Vanilla DataFusion - What's blocking us?
 
-## Background
+## 1. Background - Dynamic Filtering in Vanilla DataFusion
 
 Dynamic filters come in two flavors:
 - "global" dynamic filters
@@ -67,7 +68,14 @@ more granular, letting us prune more efficiently.
 │     DataSourceExec:      │              │     RepartitionExec:     │                  │                           
 │Partitioning=Hash(a, 12)  │              │ Partitioning=Hash(a, 12) │                  │                           
 └──────────────────────────┘              └──────────────────────────┘                  │                           
-                                                        ▲                               │                           
+                                                        │                               │                           
+                                                        │                               │                           
+                                                        │                               │                           
+                                                        │                               │                           
+                                                ... any number of RepartitionExecs or   │   
+                                                    plan nodes. It does not matter      │ 
+                                                        │                               │                           
+                                                        │                               │                           
                                                         │                               ▼                           
                                           ┌──────────────────────────┐                                              
                                           │     DataSourceExec:      │  Each partition uses the same DynamicFilterPhysicalExpr, except     
@@ -75,9 +83,78 @@ more granular, letting us prune more efficiently.
                                           └──────────────────────────┘                                             
 ```
 
+## 2. Background - Dynamic Filtering in Trino and Spark 
+
+This summary focuses on replicated / collect left / broadcast hash joins and partitioned/shuffled
+hash joins.
+
+Both Trino and Spark ultimately apply a **global filter for each logical join**. Neither sends
+a different filter to probe rows based on the remote shuffle partition that will process them.
+
+### Trino
+
+Trino uses "Domains" to represent a Set of Rows (ie. rows that would pass a dynamic filter)
+
+1. CollectLeft
+
+The build side of the join is identical across each worker, meaning each has the same Domain. The Domain D is sent to the coordinator
+which forwards it to all the data sources.
+
+2. Partitioned:
+
+Each partition in each worker has a unique Domain. Domains are unioned across partitions and across workers. Example:
+```
+  Worker 0:
+    D0 = {1, 4}
+    D1 = {7}
+    W0   = {1, 4, 7}
+
+  Worker 1:
+    D0 = {12}
+    D1 = {20, 25}
+    W1   = {12, 20, 25}
+
+  Global:
+    G = W0 ∪ W1
+      = {1, 4, 7, 12, 20, 25}
+```
+The coordinator sends the global filter to all data sources.
+
+Sources
+- Trino revision [`d4a390f3cbb293d14ee3a2b1152062332f4ec17e`](https://github.com/trinodb/trino/tree/d4a390f3cbb293d14ee3a2b1152062332f4ec17e)
+- [dynamic filtering documentation](https://trino.io/docs/current/admin/dynamic-filtering.html)
+- [dynamic row filtering](https://github.com/trinodb/trino/pull/22411).
 
 
-## Distributed Dyanmic Filters
+### Spark
+
+Spark uses "Dynamic Partition Pruning" (DPP) and "Runtime Bloom Filtering" to implement dynamic filtering.
+
+DPP
+1. Executors compute build keys
+2. Distributed distinct/broadcast stage produces a global key set K
+3. Driver collects global key set K
+4. Driver prunes partition/file listings
+5. Only selected scan tasks are launched
+
+Bloom filtering:
+1. Executors build partial Bloom filters
+2. Spark aggregate merges them
+3. One executor produces the final Bloom byte array
+4. Driver collects that single scalar result
+5. Probe tasks receive/use the same Bloom predicate
+
+Sources
+- Spark revision [`035d510b029be1f08219f5e94585952a655073fd`](https://github.com/apache/spark/tree/035d510b029be1f08219f5e94585952a655073fd)
+- [Spark 3.0 dynamic partition pruning release notes](https://spark.apache.org/releases/spark-release-3-0-0.html)
+- [Spark 3.2 DPP and AQE release notes](https://spark.apache.org/releases/spark-release-3-2-0.html)
+- [`SupportsRuntimeV2Filtering` documentation](https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/connector/read/SupportsRuntimeV2Filtering.html)
+- [Dynamic partition-pruning physical planning](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/core/src/main/scala/org/apache/spark/sql/execution/dynamicpruning/PlanDynamicPruningFilters.scala)
+- [Broadcast key collection for DPP](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/core/src/main/scala/org/apache/spark/sql/execution/SubqueryBroadcastExec.scala)
+- [Runtime Bloom-filter injection](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/optimizer/InjectRuntimeFilter.scala)
+- [Distributed Bloom-filter aggregation and merging](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/BloomFilterAggregate.scala)
+
+## 3. Distributed Dyanmic Filters
 
 Distributed Dyanmic Filtering Falls into 2 cases
 - "local case" - when the producer `ExecutionPlan` node is on the same machine as the consumer/DataSourceExec
@@ -184,14 +261,42 @@ Pros:
 It's simple.
 
 Cons: 
-- At first you may think the resulting filter will have higher selectivity. It does relative to the local case plan above. However, compared to single-node execution,
-the selectivity should be about the same. In single node execution, the dynamic filter accounts for all rows matching the build side. ORing the filters
-combines filters for 4 partitions * 3 tasks should provide similar selectivity.
-  - Note the ORed filter would not be identical to the filter generated during single node execution.
-- It's a bit of a smell to start modifying the `PhysicalExpr` inside the dynamic filter. It's not horrible though. We take the expression from each task and
-wrap them in OR `BinaryExpr`.
+- Less efficient pruning (note: not worse than single node execution, which would have had 1 dynamic filter anyways rather than 3)
+- It's a bit of a smell to start modifying the `PhysicalExpr` inside the dynamic filter. It's not horrible though. We take the expression
+  from each task and wrap them in OR `BinaryExpr`.
 - ORing the filters increases the size of the filter, meaning there's more overhead from serde, parsing, filter evaluation, and network transfer.
-  - Unsure how significant this would be in practice.
+
+##### Idea: Can we preserve selectivity?
+
+For example, this would give us very selective pruning:
+```
+CASE Hash(a@12) % 12:
+  WHEN 0: a@0 >= v0 AND a@0 <= v1
+  WHEN 1: a@0 >= v0 AND a@0 <= v1
+  WHEN 2: a@0 >= v0 AND a@0 <= v1
+  WHEN 3: a@0 >= v0 AND a@0 <= v1
+  
+  WHEN 0: a@0 >= v2
+  WHEN 1: a@0 >= v2
+  WHEN 2: a@0 >= v2
+  WHEN 3: a@0 >= v2
+  
+  WHEN 0: a@0 IN LIST [v3, v4 ...]
+  WHEN 1: a@0 IN LIST [v3, v4 ...]
+  WHEN 2: a@0 IN LIST [v3, v4 ...]
+  WHEN 3: a@0 IN LIST [v3, v4 ...]
+END
+```
+
+The coordinator knows enough information to generate this case statement. It is aware of the `RepartitionExec Hash(x, 12)` and we can use the invariant
+that the `RepartitionExec` always has `num_partitions_per_worker` * `num_workers` partitions. It would be very nice if the partitioning of the `HashJoinExec`
+itself was `Hash(a, 12)` and not `Hash(a, 4)`:
+1. `Hash(a, 4)` is technically wrong. We repartitioned into 12, not 4 partitions. 
+2. This allows the coordinator to avoid searching for the `RepartitionExec` below to determine the partitioning of the `HashJoinExec`. It can just inspect the
+   dynamic filter producer, the `HashJoinExec`, directly.
+
+Pros:
+- More selective than the above
 
 ##### Alternative Idea: Combine the Range and IN LIST expressions
 
@@ -215,46 +320,63 @@ Consider if these "partition-routed" dynamic filters generated in stage 2
 
 Task 1:
 ```
-CASE Hash(a@0) % 12
+CASE Hash(a@0) % 4
 WHEN 0: a@0 >= v0 AND a@0 <= v1
 ... 4 cases in total
 ```
 Task 2:
 ```
-CASE Hash(a@0) % 12
+CASE Hash(a@0) % 4
 WHEN 0: a@0 IN LIST [v2, v3, v4 ...] 
 ... 4 cases in total
 ```
 Task 3:
 ```
-CASE Hash(a@0) % 12
+CASE Hash(a@0) % 4
 WHEN 0: a@0 >= v6
 ... 4 cases in total
 ```
 
-##### Idea: Combine the Cases Together
+##### Idea: OR the Cases Together
 ```
-CASE Hash(a@0) % 12
+CASE Hash(a@0) % 4
 WHEN 0: a@0 >= v0 AND a@0 <= v1
-...
-WHEN 4: a@0 IN LIST [v2, v3, v4 ...] 
-...
-WHEN 8: a@0 >= v6
-...
-... 3 * 4 = 12 cases in total 
+... 4 cases in total
+OR 
+CASE Hash(a@0) % 4
+WHEN 0: a@0 IN LIST [v2, v3, v4 ...] 
+... 4 cases in total
+OR
+CASE Hash(a@0) % 4
+WHEN 0: a@0 >= v6
+... 4 cases in total
 ```
 
-Now we end up with 12 cases and one `PhysicalExpr` which can be pushed down to each task for stage 1. Note that we have to
-offset the cases using the task number. For example, `Hash(a@0) % 12 = 0` in Task 3 becomes `Hash(a@0) % 12 = 8`.
+(Note: This is the same as having 1 case expression and ORing the cases together. ex. `WHEN 0: ... OR ... OR ..., WHEN 1: ... OR ... OR ...`)
+
+Note that the cases are all `% 4` and range from `0` to `4` (as opposed to `% 12` ranging from `0` to `12`). Firstly, distributed datafusion happens to
+set the `partitioning` of the `HashJoinExec` to `Hash(..., 4)`, not `Hash(..., 12)`. That's why each hash join produces dynamic filters with
+`%4` and cases that range from `0` to `4`.
+
+This happens to work due to the property that `(x % M) % N = x % N` when `M` is a multiple of `N`. For example, ORing all the cases
+where `Hash(a) % 4 = 1` correctly covers the cases where `Hash(a) % 12 in (1, 5, 9)`. Even if we have several layers of `NetworkShuffleExec`,
+the property holds `((x % M1) % M2) % N = x % N` so long as `Mi` `N`.
+
+
+Pros:
+- Simple
 
 Cons:
-- Bit of a smell to go into the internals of the `PhysicalExpr` and merge cases.
-- It's actually difficult to differentiate between `CASE` expressions used to represent partitions and `CASE` expressions which
-  are actually a part of the filter itself. In other words, if I see `CASE`, is this a partition-routed filter or a global filter
-  that uses a `CASE` expression?
-  - It happens that hash joins only use `CASE` expressions for partitions and never for probe side pruning. However, this may
-    happen in the future so we may want better interfaces and gurantees here. For example, should `DynamicFilterPhysicalExpr`
-    actually store something about the `Partitioning` rather than baking the partitioning into a `CASE` expression?
+- It's a bit brittle. When will this stop working?
+  - If the `RepartitionExec` below a `NetworkShuffleExec` produces a partition count that is not a multiple of `target_partitions`.
+  [Here](https://github.com/datafusion-contrib/datafusion-distributed/blob/a6c326807fa3a5ff05b4b7e08a1bd1e3cd7bfe53/src/execution_plans/network_shuffle.rs?plain=1#L160) is where we scale up the `RepartitionExec` today
+  - If there are repartitions which do not repartition by `target_partitions`. Unsure if these happen in vanilla datafusion.
+- Are there other options?
+- If anything, we should `HashJoinExec` reflects the correct partitioning, `Hash(..., 12)` rather than `Hash(..., 4)`. To be honest,
+  claiming that the `HashJoinExec` partitioning is `Hash(4)` is incorrect. Finding some way around this will likely (a) be difficult because you will have
+  to track all the repartitions between the `DataSourceExec` and the `HashJoinExec`; or (b) a smell. 
+
+
 ```
                                                                                       ┌───────────────────────────┐ ┌───────────────────────────┐                                                                  
                                                                                       │            ...            │ │             ...           │                                                                  
@@ -281,8 +403,8 @@ Cons:
 └───────┘   │                ┌──────────┘      └───────────┐               │    │                ┌──────────┘      └───────────┐               │    │                ┌──────────┘      └───────────┐              │
             │                │                             │               │    │                │                             │               │    │                │                             │              │
             │  ┌──────────────────────────┐  ┌──────────────────────────┐  │    │  ┌──────────────────────────┐  ┌──────────────────────────┐  │    │  ┌──────────────────────────┐  ┌──────────────────────────┐ │
-            │  │     DataSourceExec:      │  │    NetworkShuffleExec    │  │    │  │     DataSourceExec:      │  │    NetworkShuffleExec    │  │    │  │     DataSourceExec:      │  │    NetworkShuffleExec    │ │
-            │  │ Partitioning=Hash(a, 12) │  │                          │  │    │  │ Partitioning=Hash(a, 12) │  │                          │  │    │  │ Partitioning=Hash(a, 12) │  │                          │ │
+            │  │     DataSourceExec       │  │    NetworkShuffleExec    │  │    │  │     DataSourceExec       │  │    NetworkShuffleExec    │  │    │  │     DataSourceExec       │  │    NetworkShuffleExec    │ │
+            │  │                          │  │                          │  │    │  │                          │  │                          │  │    │  │                          │  │                          │ │
             │  └──────────────────────────┘  └──────────────────────────┘  │    │  └──────────────────────────┘  └──────────────────────────┘  │    │  └──────────────────────────┘  └──────────────────────────┘ │
             └──────────────────────────────────────────────────────────────┘    └──────────────────────────────────────────────────────────────┘    └─────────────────────────────────────────────────────────────┘
                                                                                                                                                                                                                    
@@ -306,11 +428,11 @@ Cons:
                                                                             │               │              │     │               │              │                                                                  
                                                                             │ ┌─────────────┴────────────┐ │     │ ┌─────────────┴────────────┐ │                                                                  
                                                                             │ │     DataSourceExec:      │ │     │ │     DataSourceExec:      │ │                                                                  
-                                                                            │ │ Partitioning=Unknown(10) │ │     │ │ Partitioning=Unknown(10) │ │                                                                  
+                                                                            │ │ Partitioning=Unknown(8)  │ │     │ │ Partitioning=Unknown(8)  │ │                                                                  
                                                                             │ └──────────────────────────┘ │     │ └──────────────────────────┘ │                                                                  
                                                                             └──────────────────────────────┘     └──────────────────────────────┘                                                                  
                                                                                                                                                                                                                    
-                                                                              Task 1 Runs partitions [0, 6)        Task 2 Runs partitions [6, 12)                                                                  
+                                                                              Task 1 Runs partitions [0, 4)        Task 2 Runs partitions [4, 8)                                                                  
                                                                                                                                                                                                                   
 ```
 
@@ -533,7 +655,7 @@ It would be nice to see first class support or this behavior.
 Today dynamic filters store one expression which is updated atomically:
 ```rust
 struct Inner {
-    expression_id: u64,
+    expression_id: u64,.
     generation: u64,
     // The actual dynamic filter expression
     expr: Arc<dyn PhysicalExpr>,
@@ -613,4 +735,16 @@ Nice: add an explicit method `ExecutionPlan::dynamic_filter_exprs` method
 
 Hacky: Use ORs to merge filters or combine CASE expressions by mofidying `PhysicalExpr`s
 Nice: add `Partitioning` into `&DynamicFilterPhysicalExpr` and make them more partition-aware 
+
+
+
+TODO
+### How Significantly Do `CASE` how ORing cases compares to CASE
+
+https://github.com/apache/datafusion/pull/18451 - original PR. No benches.
+https://github.com/apache/datafusion/issues/21207#issuecomment-5005667541
+
+- does case iterate over all the partitions
+yeah it does
+
 
