@@ -15,6 +15,13 @@ concurrency:
   group: upstream-rebase
   cancel-in-progress: false
 
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: read
+
 jobs:
   call-rebase:
     uses: paradedb/actions/.github/workflows/reusable-rebase.yml@v8

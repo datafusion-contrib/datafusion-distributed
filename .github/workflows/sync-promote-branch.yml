@@ -17,6 +17,12 @@ concurrency:
   group: promote-branch
   cancel-in-progress: false
 
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
 jobs:
   call-promote:
     uses: paradedb/actions/.github/workflows/reusable-promote.yml@v8
