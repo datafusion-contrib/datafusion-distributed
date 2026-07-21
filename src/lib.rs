@@ -17,7 +17,9 @@ mod worker_resolver;
 
 #[cfg(feature = "grpc")]
 pub use arrow_ipc::CompressionType;
-pub use coordinator::DistributedExec;
+pub use coordinator::{
+    DistributedExec, ESTIMATED_OUTPUT_BYTES_METRIC, ESTIMATED_PCT_SAMPLED_METRIC,
+};
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
@@ -31,7 +33,7 @@ pub use metrics::{
     AvgLatencyMetric, BytesCounterMetric, BytesMetricExt, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
     DistributedMetricsFormat, FirstLatencyMetric, GaugeMetricExt, LatencyMetricExt, MaxGaugeMetric,
     MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
-    P99LatencyMetric, rewrite_distributed_plan_with_metrics,
+    P99LatencyMetric, QErrorMetric, STATS_Q_ERROR_METRIC, rewrite_distributed_plan_with_metrics,
 };
 
 #[cfg(any(feature = "integration", test))]

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::{
     AvgLatencyMetric, BytesCounterMetric, FirstLatencyMetric, MaxGaugeMetric, MaxLatencyMetric,
     MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
+    QErrorMetric,
 };
 
 /// df_metrics_set_to_proto converts a [MetricsSet] to a [pb::MetricsSet].
@@ -243,6 +244,15 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
                     value: Some(pb::metric::Value::CustomMaxGauge(pb::MaxGauge {
                         name: name.to_string(),
                         value: max_gauge.value() as u64,
+                    })),
+                    partition,
+                    labels,
+                })
+            } else if let Some(q_error) = value.as_any().downcast_ref::<QErrorMetric>() {
+                Ok(pb::Metric {
+                    value: Some(pb::metric::Value::CustomQError(pb::QError {
+                        name: name.to_string(),
+                        value: q_error.value(),
                     })),
                     partition,
                     labels,
@@ -567,6 +577,17 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::Custom {
                     name: Cow::Owned(gauge.name),
+                    value: Arc::new(value),
+                },
+                partition,
+                labels,
+            )))
+        }
+        Some(pb::metric::Value::CustomQError(q_error)) => {
+            let value = QErrorMetric::from_value(q_error.value);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::Custom {
+                    name: Cow::Owned(q_error.name),
                     value: Arc::new(value),
                 },
                 partition,
@@ -1303,5 +1324,43 @@ mod tests {
             }
             _ => panic!("expected Custom metrics"),
         }
+    }
+
+    #[test]
+    fn test_q_error_metric_roundtrip() {
+        let mut metrics_set = MetricsSet::new();
+        metrics_set.push(Arc::new(Metric::new_with_labels(
+            MetricValue::Custom {
+                name: Cow::Borrowed("stats_q_error"),
+                value: Arc::new(QErrorMetric::from_value(std::f64::consts::PI)),
+            },
+            Some(2),
+            vec![Label::new("stage", "4")],
+        )));
+
+        let proto = df_metrics_set_to_proto(&metrics_set).unwrap();
+        let Some(pb::metric::Value::CustomQError(q_error)) = &proto.metrics[0].value else {
+            panic!("expected CustomQError metric");
+        };
+        assert_eq!(q_error.name, "stats_q_error");
+        assert_eq!(q_error.value.to_bits(), std::f64::consts::PI.to_bits());
+
+        let roundtrip = metrics_set_proto_to_df(&proto).unwrap();
+        let metric = roundtrip.iter().next().unwrap();
+        assert_eq!(metric.partition(), Some(2));
+        assert_eq!(metric.labels(), &[Label::new("stage", "4")]);
+        let MetricValue::Custom { name, value } = metric.value() else {
+            panic!("expected Custom metric");
+        };
+        assert_eq!(name, "stats_q_error");
+        assert_eq!(
+            value
+                .as_any()
+                .downcast_ref::<QErrorMetric>()
+                .unwrap()
+                .value()
+                .to_bits(),
+            std::f64::consts::PI.to_bits()
+        );
     }
 }

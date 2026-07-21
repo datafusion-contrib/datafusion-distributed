@@ -1,3 +1,4 @@
+use crate::common::logical_record_batch_size;
 use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
@@ -225,15 +226,6 @@ impl WorkerConnectionPool {
             .boxed(),
         ))
     }
-}
-
-/// Returns the logical size of a batch's slices, excluding unused backing-buffer capacity.
-fn logical_record_batch_size(batch: &RecordBatch) -> usize {
-    batch
-        .columns()
-        .iter()
-        .map(|column| column.to_data().get_slice_memory_size().unwrap_or(0))
-        .sum()
 }
 
 impl Debug for WorkerConnectionPool {

@@ -6,6 +6,7 @@ mod tests {
     use datafusion::common::{Result, assert_contains};
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
+    use datafusion::physical_plan::metrics::MetricValue;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{ExecutionPlan, execute_stream};
     use datafusion::prelude::SessionContext;
@@ -17,7 +18,8 @@ mod tests {
     };
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, DistributedLeafExec, DistributedMetricsFormat,
-        NetworkCoalesceExec, NetworkShuffleExec, WorkerQueryContext, display_plan_ascii,
+        NetworkBoundaryExt, NetworkCoalesceExec, NetworkShuffleExec, QErrorMetric,
+        STATS_Q_ERROR_METRIC, Stage, WorkerQueryContext, display_plan_ascii,
         rewrite_distributed_plan_with_metrics,
     };
     use futures::TryStreamExt;
@@ -368,6 +370,49 @@ mod tests {
             &s_physical,
             &d_physical,
             0,
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_stats_q_error_is_collected_at_stage_level()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut d_ctx, _guard, _) = start_localhost_context(3, DefaultSessionBuilder).await;
+        d_ctx.set_distributed_dynamic_task_count(true)?;
+
+        let query =
+            r#"SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)"#;
+
+        let s_ctx = SessionContext::default();
+        let (_, d_physical) = execute(&s_ctx, &d_ctx, query).await?;
+        let d_physical =
+            rewrite_with_metrics(d_physical, DistributedMetricsFormat::Aggregated).await;
+
+        let mut q_errors = vec![];
+        d_physical.apply(|node| {
+            if let Some(boundary) = node.as_network_boundary()
+                && let Stage::Local(stage) = boundary.input_stage()
+            {
+                q_errors.extend(stage.metrics_set.iter().filter_map(|metric| {
+                    let MetricValue::Custom { name, value } = metric.value() else {
+                        return None;
+                    };
+                    (name == STATS_Q_ERROR_METRIC)
+                        .then(|| value.as_any().downcast_ref::<QErrorMetric>())
+                        .flatten()
+                        .map(QErrorMetric::value)
+                }));
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        assert_eq!(q_errors.len(), 1);
+        assert!(q_errors[0].is_finite());
+        assert!(q_errors[0] >= 1.0);
+        assert_contains!(
+            display_plan_ascii(d_physical.as_ref(), true),
+            "stats_q_error="
         );
 
         Ok(())
