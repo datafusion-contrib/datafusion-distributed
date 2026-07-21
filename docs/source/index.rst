@@ -88,6 +88,7 @@ side of the screen for the answer.
    advanced/05-custom-distributed-plans
    advanced/06-worker-routing
    advanced/07-worker-versioning
+   advanced/08-adaptive-query-execution
 
 .. toctree::
    :maxdepth: 1
@@ -96,6 +97,7 @@ side of the screen for the answer.
 
    learn/01-concepts
    learn/02-how-a-distributed-plan-is-built
+   learn/03-how-adaptive-query-execution-works
 
 .. toctree::
    :maxdepth: 1
