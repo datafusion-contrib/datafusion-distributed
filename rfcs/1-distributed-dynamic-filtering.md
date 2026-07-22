@@ -527,9 +527,9 @@ There are 2 main gaps in vanilla datafusion that we need to address:
 ### 1. Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
 
 Requirements
-(a) identify which dynamic filters are producers and consumers in an `ExecutionPlan` tree
-(b) get access to all `&DynamicFilterPhysicalExpr` in an `ExecutionPlan` (as long as one is holding a reference to a `DynamicFilterPhysicalExpr`, they can read and write updates to it)
-(c) allow easy extension for custom `ExecutionPlan` implementations
+(a) identify which dynamic filters are producers and consumers in an `ExecutionPlan` tree  
+(b) get access to all `&DynamicFilterPhysicalExpr` in an `ExecutionPlan` (as long as one is holding a reference to a `DynamicFilterPhysicalExpr`, they can read and write updates to it)  
+(c) allow easy extension for custom `ExecutionPlan` implementations  
 
 #### Options 1 & 2: Support new APIs In Vanilla DataFusion
 
