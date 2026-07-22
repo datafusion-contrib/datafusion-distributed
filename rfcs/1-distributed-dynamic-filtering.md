@@ -594,70 +594,8 @@ SortExec::dynamic_filter_expr()
 
 ### 2. Merging Dynamic Filters
 
-The highlevel idea is to merge dynamic filters using OR expressions
+The highlevel idea is to merge dynamic filters using OR expressions. It would be nice to see first class support or this
+behavior in vanilla datafusion.
 
-It would be nice to see first class support or this behavior. It would also be nice if dynamic filters stored their `Partitioning`.
+See https://github.com/apache/datafusion/issues/23817.
 
-Today dynamic filters store one expression which is updated atomically:
-```rust
-struct Inner {
-    expression_id: u64,.
-    generation: u64,
-    // The actual dynamic filter expression
-    expr: Arc<dyn PhysicalExpr>,
-    is_complete: bool,
-}
-
-impl DynamicFilterPhysicalExpr {
-    // Atomically update the expression
-    pub fn update(&self, new_expr: Arc<dyn PhysicalExpr>) -> Result<()>;
-    // Atomically get the current expression
-    pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>;
-}
-```
-
-It would be interesting to make them more partition-aware by:
-- store one expression per partition when the dynamic filter is "partition aware", otherwise just store one
-- change `update()` to update the expression for a specific partition
-- update `current()` to return a generated `CASE` expression
-- implement a `union()` operation
-
-```rust
-struct Inner {
-    expression_id: u64,
-    generation: u64,
-    // Instead of one expr, we may have one expr per partition
-    expr: LiveFilterExpr,
-    lowered_expr: Arc<dyn PhysicalExpr>,
-    is_complete: bool,
-}
-
-// The actual dynamic filter expression
-enum LiveFilterExpr {
-    Global(Arc<dyn PhysicalExpr>),
-    Partitioned(PartitionedFilterExpr),
-}
-
-impl LiveFilterExpr {
-    // Generates a new expression by ORing.
-    // For LiveFilterExpr::Global, we can OR the cases together.
-    // For LiveFilterExpr::Partitioned, we can modify the cases as needed (ex. we do a CASE-wise OR for hash partitioned filters).
-    // We may also alter the behavior depending on if the partitioning is hash vs range.
-    pub fn union(&self, other: LiveFilterExpr) -> Result<()>;
-}
-
-struct PartitionedFilterExpr {
-    partitioning: Partitioning, // ex. Partitioning=Hash(column_a, 12)
-    partition_expr: Arc<dyn PhysicalExpr>, // ex. hash(column_a)
-    cases: BTreeMap<u64, Arc<dyn PhysicalExpr>>, // map of partition id to filter expr 
-}
-
-impl DynamicFilterPhysicalExpr {
-    // Update takes an optional partition id.
-    // Error if called with a partition id when the dynamic filter is not partition-aware and vice versa.
-    pub fn update(&self, expr: Arc<dyn PhysicalExpr>, partition_id: Option<u64>) -> Result<()>;
-
-    // Method is the same but now generates CASE expressions
-    pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>;
-}
-```
