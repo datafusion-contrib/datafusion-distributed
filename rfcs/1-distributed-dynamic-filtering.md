@@ -57,7 +57,7 @@ more granular, letting us prune more efficiently.
 ```
                                                                            DynamicFilterPhysicalExpr:               
                         ┌────────────────────────┐                                                                  
-                        │     HashJoinExec:      │                       CASE Hash(a@0) % 12    
+                        │     HashJoinExec:      │                       CASE Hash(a@0) % 4    
                         │mode=Partitioned on=a@0 │                         WHEN 0: a@0 >= v0 AND a@0 <= v1
                         └────────────────────────┘                         WHEN 1: a@0 IN (SET) ([v2, v3, v4 ...])
                                ▲       ▲                                     ... (1 case per partition)                 
@@ -270,7 +270,7 @@ Task 1: `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1`
 Task 2: `DynamicFilterPhysicalExpr: a@0 >= v2`
 Task 3: `DynamicFilterPhysicalExpr: a@0 IN LIST [v3, v4 ...]`
 
-What is the correct filter to push to Stage 1 Task 1 and Stage 1 Task 2? Any row from Stage 1 Task 1 may appear in any task of Stage 2. 
+What is the correct filter to push to Stage 1 Task 1 and Stage 1 Task 2?
 
 ##### Option 1: OR the Filters Together
 
@@ -301,12 +301,13 @@ Pros:
 - Less overhead than ORing
 
 Cons:
-- Is brittle. What if we have to support non-range and non-IN-LIST expressions? It would be nice if dynamic filters natively implemented a `merge` or `union` operation.
+- Is brittle. What if we have to support non-range and non-IN-LIST expressions? It would be nice if dynamic filters in vanilla datafusion natively implemented a `merge` or `union` operation
+  so we didn't have to worry about it.
 
 ##### Proposal
 
 This RFC proposes that we implement Option 1 first in distributed datafusion. Option 2 can be explored later (either in datafusion-distributed
-or in vanilla datafusion as a `merge()` or `union()` API if this sort of change is permitted).
+or in vanilla datafusion as a `merge()` or `union()` API if this sort of change is permitted). This is discussed in the `Merging Dynamic Filters` section below.
 
 #### Partition-Aware Filters
 
@@ -346,14 +347,6 @@ WHEN 0: a@0 >= v6
 ... 4 cases in total
 ```
 
-Note: This is the equivalent to having 1 case expression and ORing the cases together. ex.
-```
-CASE Hash(a@0)
-WHEN 0: a@0 >= v0 AND a@0 <= v1 OR a@0 IN LIST [v2, v3, v4 ...] OR a@0 >= v6
-WHEN 1: ... OR ... OR ...
-```
-In fact, filter evaluation may even be cheaper if implemented this way.
-
 Note: The cases are all `% 4` and range from `0` to `3`. This happens because distributed datafusion's
 execution model sets the `partitioning` of the `HashJoinExec` to `Hash(..., 4)` (`target_partitions=4` in the running example).
 
@@ -392,16 +385,33 @@ Pros:
 - Simple.
 
 Cons:
-- It's brittle. When will this stop working?
-  - If the `RepartitionExec` below a `NetworkShuffleExec` produces a partition count that is not a multiple of `target_partitions`.
+- It relies on some subtle properties. When will this stop working?
+  - If the hash repartitions below `NetworkShuffleExec`s produce a partition count that is not a multiple of `target_partitions`.
   [Here](https://github.com/datafusion-contrib/datafusion-distributed/blob/a6c326807fa3a5ff05b4b7e08a1bd1e3cd7bfe53/src/execution_plans/network_shuffle.rs?plain=1#L160) is where we scale up the `RepartitionExec` today
-  - If there are repartitions which do not repartition by `target_partitions`. Unsure if these happen in vanilla datafusion. 
+  - If there are hash repartitions which do not repartition by `target_partitions`. Unsure if these happen in vanilla datafusion. 
 - Loss of selectivity. We may allow a row to pass a filter due to the dynamic filter from a task, but this row may route to a different task.
+
+
+##### Idea: Case-Wise Merge
+
+Equivalent to the above except with fewer cases:
+```
+CASE Hash(a@0)
+WHEN 0: a@0 >= v0 AND a@0 <= v1 OR a@0 IN LIST [v2, v3, v4 ...] OR a@0 >= v6
+WHEN 1: ... OR ... OR ...
+```
+
+Pros
+- Filter evaluation may be cheaper
+
+Cons
+- It's a bit brittle. We would need to manually modify `PhysicalExpr`s.
 
 ##### Proposal
 
-This RFC proposes that we `OR` the cases together. If loss of selectivity is a conern, this can be addressed in a future implementation of distributed dynamic filtering. Furthermore,
+This RFC proposes that we `OR` the cases together. If loss of selectivity is a conern, this can be addressed in a future implementation of distributed dynamic filtering. In the future,
 supporting an official `union()` or `merge()` operation for dynamic filters in vanilla datafusion would be a nice addition so we don't have to perform "expression surgery" in datafusion-distributed.
+This is discussed in the `Merging Dynamic Filters` section below.
 
 ```
                                                                                       ┌───────────────────────────┐ ┌───────────────────────────┐                                                                  
@@ -480,22 +490,14 @@ pub(crate) fn subscribe(&self) -> DynamicFilterSubscription
 
 The more challenging part is extracting `DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes. We need a way to get
 `&DynamicFilterPhysicalExpr` from producers like `HashJoinExec`, `SortExec`, `AggregateExec` and consumers like
-`DataSourceExec`. We will talk about this more below in the `Gaps in Vanilla DataFusion` section.
+`DataSourceExec`. We will talk about this more below in the `Gaps in Vanilla DataFusion` section below.
 
 ### Routing Dynamic Filters
 
 During planning, which entirely happens on the coordinator (even during adaptive query planning), we need to
-be able to traverse the query plan and find the `DynamicFilterPhysicalExpr` producers and consumers. The coordinator
-knows workers will contain the producers nodes and consumers, so it is just a matter of plumbing to send dynamic
-filter updates from the producer workers, to the coordinator (where they can be ORed or merged), and finally
-to the consumers.
-
-One open question we discuss below is - how do you know if a node is a producer or consumer of dynamic filters?
-
-`expression_id` may useful to correlate dynamic filters across machines.
-```rust
-fn expression_id(&self) -> Option<u64> {
-```
+be able to traverse the query plan and find the `DynamicFilterPhysicalExpr` producers and consumers. One open
+question we discuss in the `Gaps in Vanilla DataFusion` section below is - how do you know if
+a node is a producer or consumer of dynamic filters?
 
 ### Displaying Dyanamic Filters
 
@@ -514,182 +516,14 @@ There are 2 main gaps in vanilla datafusion that we need to address:
 
 Requirements
 (a) identify which dynamic filters are producers and consumers in an `ExecutionPlan` tree
-(b) allow easy extension for custom `ExecutionPlan` implementations
+(b) get access to all `&DynamicFilterPhysicalExpr` in an `ExecutionPlan` (as long as one is holding a reference to a `DynamicFilterPhysicalExpr`, they can read and write updates to it)
+(c) allow easy extension for custom `ExecutionPlan` implementations
 
-#### Prior Art
+#### Options 1 & 2: Support new APIs In Vanilla DataFusion
 
-##### `ExecutionPlan::apply_expressions`
+See https://github.com/apache/datafusion/issues/23814
 
-See https://github.com/apache/datafusion/pull/22437
-
-```rust
-fn apply_expressions(
-    &self,
-    f: &mut dyn FnMut(
-        &dyn datafusion::physical_plan::PhysicalExpr,
-    ) -> Result<TreeNodeRecursion>,
-) -> Result<TreeNodeRecursion>
-```
-
-Pros:
-- Extracts `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
-
-Cons:
-- You still need to downcast to `&DynamicFilterPhysicalExpr` and ignore non-dynamic-filter expressions
-- It doesn't tell you if a node is a producer or consumer. You would have to downcast the `ExecutionPlan`
-  and use the concrete type like `HashJoinExec` to know if it is a producer or consumer
-  - This is potentially brittle because producers / consumers might change. What if a `HashJoinExec`
-    becomes a consumer one day?
-  - What about custom `ExecutionPlan` implementations? We would need some type of registry of known
-    producers and consumers so users can register their own implementations
-- `apply_expressions` was ultimately reverted because
-  - It was complicated to implement and a required method on all `ExecutionPlan` nodes
-  - There was no usage inside of vanilla datafusion, meaning it may grow stale
-
-##### `OptimizerContext` + Session-Scoped Dynamic Filter Registry
-
-[`PhysicalOptimizerRule::optimize_plan`](https://github.com/apache/datafusion/pull/18739) added an
-`OptimizerContext` so optimizer rules could access `SessionConfig` extensions. It began replacing
-the existing optimizer API:
-
-```rust
-// Before
-fn optimize(
-    &self,
-    plan: Arc<dyn ExecutionPlan>,
-    config: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>>;
-
-// After
-fn optimize_plan(
-    &self,
-    plan: Arc<dyn ExecutionPlan>,
-    context: &OptimizerContext,
-) -> Result<Arc<dyn ExecutionPlan>>;
-```
-
-A [prototype](https://github.com/gabotechs/datafusion/pull/7) built on this API by storing a
-`DynamicFilterRegistry` in `SessionConfig`. However, this was subsequently [reverted](https://github.com/apache/datafusion/pull/19186).
-The new public API and deprecation path were considered too broad without a concrete vanilla
-DataFusion use case.
-
-##### `ExecutionPlan::handle_child_pushdown_result` / `ExecutionPlan::gather_filters_for_pushdown`
-```rust
-fn handle_child_pushdown_result(
-    &self,
-    _phase: FilterPushdownPhase,
-    child_pushdown_result: ChildPushdownResult,
-    _config: &ConfigOptions,
-) -> Result<FilterPushdownPropagation<Arc<dyn ExecutionPlan>>>
-
-fn gather_filters_for_pushdown(
-    &self,
-    _phase: FilterPushdownPhase,
-    parent_filters: Vec<Arc<dyn PhysicalExpr>>,
-    _config: &ConfigOptions,
-) -> Result<FilterDescription>
-```
-
-There's a few reasons not to use these to collect dynamic filters:
-- They describe how to perform filter pushdown, they do not really answer "what dynamic filters and producer-consumer relations exist in the optimized plan?". We would have
-  to modify these methods heavily.
-- The required inputs, such as `ChildPushdownResult`, `parent_filters`, and `FilterPushdownPhase`, only make sense inside the original pushdown traversal. Not during
-  distributed planning.
-- Assorted edge cases:
-  - For a `HashJoinExec` that has already pushed down its filter `gather_filters_for_pushdown` will not return the existing dynamic filter again.
-  - For a `HashJoinExec` that was not able to push down its filter, calling `gather_filters_for_pushdown` can create a fresh filter where no `DataSourceExec` uses it.
-  - `handle_child_pushdown_result` doesn't even extract filters. Instead, it returns an `ExecutionPlan` that has filters.
-
-#### Other Ideas
-
-##### Collect Runtime Filter Bindings During Filter Pushdown
-
-Similar to the "Session-Scoped Dynamic Filter Registry" option above, but it avoids breaking changes. The
-goal is to add a `FilterPushdownReport` in the `SessionState` containing dynamic filters.
-
-```rust
-struct FilterPushdownReport {
-    // One logical runtime filter can have multiple producer/consumer plan nodes.
-    bindings: HashMap<u64, Vec<RuntimeFilterBinding>>, // expression_id -> bindings
-}
-
-enum RuntimeFilterBinding {
-    Producer(Arc<dyn PhysicalExpr>),
-    Consumer {
-        expression: Arc<dyn PhysicalExpr>,
-        usage: FilterUsage, // Pruning or FullyEvaluated
-    },
-}
-```
-
-The optimizer `PushdownFilters` rule would change in the following way:
-```text
-1. create report
-2. During the gather self-filters stage, record producer by expression_id
-3. During the upwards pass record retention at consumer
-4. Return report to query planner
-```
-On the downward pass, hook immediately after `gather_filters_for_pushdown`:
-
-```rust
-let description = node.gather_filters_for_pushdown(phase, parent_filters, config)?;
-for filter in description.self_filters().iter().flatten() {
-    if let Some(id) = filter.expression_id() {
-        report.record_producer(id, Arc::clone(filter));
-    }
-}
-```
-
-On the upward pass, record filters retained by the current node:
-
-```rust
-let mut result = node.handle_child_pushdown_result(phase, child_result, config)?;
-for retained in result.retained_here.drain(..) {
-    if let Some(id) = retained.expression_id() {
-        report.record_consumer(id, retained);
-    }
-}
-```
-
-This requires adding `retained_here` to the pushdown result. The existing `PushedDown::Yes/No`
-cannot provide this information: Parquet may retain a filter for statistics pruning while returning
-`No` because it cannot fully evaluate it.
-
-**Session state plumbing.** `DefaultPhysicalPlanner::optimize_physical_plan` has a
-`&SessionState`, but `PhysicalOptimizerRule::optimize` receives only `&ConfigOptions`:
-
-```rust
-new_plan = rule.optimize(new_plan, session_state.config_options())?;
-```
-
-Therefore, the filter-pushdown rule cannot access or modify `SessionState` today. The clean API is
-for filter pushdown to return the report to the physical-planning layer:
-
-```rust
-fn optimize_with_report(...)
-    -> Result<(Arc<dyn ExecutionPlan>, FilterPushdownReport)>;
-```
-
-Datafusion-distributed can then carry the report in its query-planning context alongside the
-optimized plan; it does not need to put it in `SessionState`.
-
-If the report must be exposed through `SessionState`, create a query-owned
-`Arc<Mutex<FilterPushdownReport>>` before optimization and add an optimizer context that passes the
-handle to rules:
-
-```rust
-let mut query_state = session_context.state(); // fresh state for this query
-let report = Arc::new(Mutex::new(FilterPushdownReport::default()));
-query_state.config_mut().set_extension(Arc::clone(&report));
-```
-
-The new optimizer context would retrieve this `SessionConfig` extension and give the handle to the
-rule. Installing it on the long-lived `SessionContext` would incorrectly share one report across
-queries. This approach avoids plan-node downcasts and replaying optimizer callbacks, but requires a
-small upstream optimizer API change and does not report filters created outside the pushdown
-protocol.
-
-##### Registry + Downcasting Pattern
+#### Option 3 - Registry + Downcasting Pattern
 
 The idea is to have a registry of functions which can be used to extract `&DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes. datafusion-distributed
 would have a registry with implementations for `HashJoinExec`, `SortExec`, `AggregateExec`, and `DataSourceExec`. Users would be able to add their own.
@@ -708,13 +542,6 @@ fn try_collect(
       .dynamic_filter_expr() // Note we need the dynamic filters to be public.
       .map(|expr| vec![Arc::clone(expr) as Arc<dyn PhysicalExpr>]))
 }
-```
-Note: Public methods like `dynamic_filter_expr()` were only added to support serialization and will
-likely be removed by https://github.com/apache/datafusion/issues/23494.
-```rust
-HashJoinExec::dynamic_filter_expr()
-AggregateExec::dynamic_filter_expr()
-SortExec::dynamic_filter_expr()
 ```
 
 Example: implementation for ParquetSource
@@ -744,12 +571,14 @@ Cons:
 - Dynamic filtering will not work for users with custom plan nodes unless users register them
 - Distributed datafusion has to maintain a registry of all `ExecutionPlan` implementations in vanilla datafusion. This will need to be updated
   during upgrades.
-- Internal dynamic filter fields to be `pub`
+- Internal dynamic filter fields to be `pub`. Public methods like `dynamic_filter_expr()` were only added to support serialization and will
+likely be removed by https://github.com/apache/datafusion/issues/23494.
+```rust
+HashJoinExec::dynamic_filter_expr()
+AggregateExec::dynamic_filter_expr()
+SortExec::dynamic_filter_expr()
+```
 - Looping over every `try_collect` is costly
-
-
-
-#### Proposal
 
 ### 2. Merging Dynamic Filters
 
@@ -780,6 +609,7 @@ It would be interesting to make them more partition-aware by:
 - change `update()` to update the expression for a specific partition
 - update `current()` to return a generated `CASE` expression
 - implement a `union()` operation
+
 ```rust
 struct Inner {
     expression_id: u64,
@@ -800,7 +630,7 @@ impl LiveFilterExpr {
     // Generates a new expression by ORing.
     // For LiveFilterExpr::Global, we can OR the cases together.
     // For LiveFilterExpr::Partitioned, we can modify the cases as needed (ex. we do a CASE-wise OR for hash partitioned filters).
-    // We may also alter the behavior depending on the partitioning.
+    // We may also alter the behavior depending on if the partitioning is hash vs range.
     pub fn union(&self, other: LiveFilterExpr) -> Result<()>;
 }
 
@@ -819,19 +649,3 @@ impl DynamicFilterPhysicalExpr {
     pub fn current(&self) -> Result<Arc<dyn PhysicalExpr>>;
 }
 ```
-
-## Summary
-
-Distributed dynamic filtering needs the following features from vanilla datafusion. Each of these has a "hacky way" and a "nice way"
-of being implemented. Ideally, other distributed projects like comet and ballista can benefit from these features.
-
-1. ability to get `&DynamicFilterPhysicalExpr` from `ExecutionPlan` 
-
-Hacky: add a registry of known `&DynamicFilterPhysicalExpr` producers and consumers. Use downcasting to get `&DynamicFilterPhysicalExpr` from each node 
-  (note that even in the registry pattern, the `&DynamicFilterPhysicalExpr` must be publically accessible)
-Nice: add an explicit method `ExecutionPlan::dynamic_filter_exprs` method
-
-2. ability to merge dynamic filters
-
-Hacky: Use ORs to merge filters or combine CASE expressions by modifying `PhysicalExpr`s
-Nice: add `Partitioning` into `&DynamicFilterPhysicalExpr` with an explicit `union()` API
