@@ -3,9 +3,21 @@
 ## Contents
 
 1. Background - Dynamic Filtering in Vanilla DataFusion
-2. Background - Dynamic Filtering in Trino and Spark 
-2. Dynamic Filtering in Distributed DataFusion - Proposed Highlevel Design
-3. Gaps to Address in Vanilla DataFusion - What's blocking us?
+   - "Global" Dynamic Filters  
+   - "Partition-Aware" Dynamic Filters  
+2. Background - Dynamic Filtering in Trino and Spark
+   - Trino  
+   - Spark  
+3. Distributed Dynamic Filters
+   - Local Case
+   - Remote Case
+4. Implementation Details
+   - Extracting Dynamic Filters
+   - Routing Dynamic Filters
+   - Displaying Dynamic Filters
+5. Gaps in Vanilla DataFusion
+   - Getting `&DynamicFilterPhysicalExpr` from `ExecutionPlan`
+   - Merging Dynamic Filters
 
 ## 1. Background - Dynamic Filtering in Vanilla DataFusion
 
@@ -30,7 +42,7 @@ CASE hash(expr) % N
 Ultimately, they are just an optimization over "global" dynamic filters because they make the filters 
 more granular, letting us prune more efficiently.
 
-### "Global" dynamic filter
+### "Global" Dynamic Filters
 ```
                                                                                DynamicFilterPhysicalExpr:                
                         ┌────────────────────────┐                                                                       
@@ -53,7 +65,7 @@ more granular, letting us prune more efficiently.
                                           └──────────────────────────┘
 ```
 
-### "Partition-Aware Dynamic Filter"
+### "Partition-Aware" Dynamic Filter
 ```
                                                                            DynamicFilterPhysicalExpr:               
                         ┌────────────────────────┐                                                                  
@@ -266,9 +278,9 @@ consumers may prune rows incorrectly.
 
 Consider if these "global" dynamic filters generated in stage 2
 
-Task 1: `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1`
-Task 2: `DynamicFilterPhysicalExpr: a@0 >= v2`
-Task 3: `DynamicFilterPhysicalExpr: a@0 IN LIST [v3, v4 ...]`
+Task 1: `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1`  
+Task 2: `DynamicFilterPhysicalExpr: a@0 >= v2`  
+Task 3: `DynamicFilterPhysicalExpr: a@0 IN LIST [v3, v4 ...]`  
 
 What is the correct filter to push to Stage 1 Task 1 and Stage 1 Task 2?
 
@@ -276,8 +288,8 @@ What is the correct filter to push to Stage 1 Task 1 and Stage 1 Task 2?
 
 `DynamicFilterPhysicalExpr: a@0 >= v0 AND a@0 <= v1 OR a@0 >= v2 OR a@0 IN LIST [v3, v4 ...]`
 
-Pros:
-It's simple.
+Pros:  
+- It's simple.
 
 Cons: 
 - Loss of selectivity (not worse than single node execution which would have had one filter anyways). We may allow a row to pass a filter due to
@@ -290,17 +302,17 @@ Cons:
 
 Similar to the above except you try to avoid ORing.
 
-We could try converting these filters from this 
-`DynamicFilterPhysicalExpr: a@0 >= 0 AND a@0 <= 5 OR IN LIST [10, 11]`
-`DynamicFilterPhysicalExpr: a@0 >= 1 AND a@0 <= 10 OR IN LIST [12, 13]`  
+We could try converting these filters from this   
+`DynamicFilterPhysicalExpr: a@0 >= 0 AND a@0 <= 5 OR IN LIST [10, 11]`  
+`DynamicFilterPhysicalExpr: a@0 >= 1 AND a@0 <= 10 OR IN LIST [12, 13]`   
 
-To this
+To this  
 `DynamicFilterPhysicalExpr: a@0 >= 0 AND a@0 <= 10 OR IN LIST [10, 11, 12, 13]`
 
-Pros:
+Pros:  
 - Less overhead than ORing
 
-Cons:
+Cons:  
 - Is brittle. What if we have to support non-range and non-IN-LIST expressions? It would be nice if dynamic filters in vanilla datafusion natively implemented a `merge` or `union` operation
   so we didn't have to worry about it.
 
@@ -381,10 +393,10 @@ CASE Range(a@0)
 WHEN 0: v1 <= a@0 < v2 // distinct range
 ```
 
-Pros:
+Pros:  
 - Simple.
 
-Cons:
+Cons:  
 - It relies on some subtle properties. When will this stop working?
   - If the hash repartitions below `NetworkShuffleExec`s produce a partition count that is not a multiple of `target_partitions`.
   [Here](https://github.com/datafusion-contrib/datafusion-distributed/blob/a6c326807fa3a5ff05b4b7e08a1bd1e3cd7bfe53/src/execution_plans/network_shuffle.rs?plain=1#L160) is where we scale up the `RepartitionExec` today
@@ -401,16 +413,16 @@ WHEN 0: a@0 >= v0 AND a@0 <= v1 OR a@0 IN LIST [v2, v3, v4 ...] OR a@0 >= v6
 WHEN 1: ... OR ... OR ...
 ```
 
-Pros
+Pros:  
 - Filter evaluation may be cheaper
 
-Cons
+Cons: 
 - It's a bit brittle. We would need to manually modify `PhysicalExpr`s.
 
 ##### Proposal
 
 This RFC proposes that we `OR` the cases together. If loss of selectivity is a conern, this can be addressed in a future implementation of distributed dynamic filtering. In the future,
-supporting an official `union()` or `merge()` operation for dynamic filters in vanilla datafusion would be a nice addition so we don't have to perform "expression surgery" in datafusion-distributed.
+supporting an official `union()` or `merge()` operation for dynamic filters which does a case-wise merge in vanilla datafusion would be a nice addition so we don't have to perform "expression surgery" in datafusion-distributed.
 This is discussed in the `Merging Dynamic Filters` section below.
 
 ```
@@ -473,7 +485,7 @@ This is discussed in the `Merging Dynamic Filters` section below.
 ```
 
 
-## Implementation Details
+## 4. Implementation Details
 
 ### Extracting Dynamic Filters
 
@@ -506,7 +518,7 @@ dynamic filter pruning work during execution, after execution we must propagate 
 filters from data sources to the coordinator so they can be displayed.
 
 
-## Gaps in Vanilla DataFusion
+## 5. Gaps in Vanilla DataFusion
 
 There are 2 main gaps in vanilla datafusion that we need to address:
 1. How do you get `&DynamicFilterPhysicalExpr` from `ExecutionPlan` nodes?
@@ -564,10 +576,10 @@ fn try_collect(
 }
 ```
 
-Pros:
+Pros:  
 - Requires no changes to vanilla datafusion. We can ship this faster.
 
-Cons:
+Cons:  
 - Dynamic filtering will not work for users with custom plan nodes unless users register them
 - Distributed datafusion has to maintain a registry of all `ExecutionPlan` implementations in vanilla datafusion. This will need to be updated
   during upgrades.
