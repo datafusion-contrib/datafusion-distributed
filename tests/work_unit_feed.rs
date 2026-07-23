@@ -7,7 +7,7 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::test_work_unit_feed::{
         RowGeneratorExec, TestWorkUnitFeedExecCodec, TestWorkUnitFeedFunction,
-        TestWorkUnitFeedTaskEstimator,
+        row_generator_desired_task_count_handler, row_generator_scale_up_leaf_node_handler,
     };
     use datafusion_distributed::{
         DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
@@ -863,7 +863,8 @@ mod tests {
         let (mut ctx, _guard, _) = start_localhost_context(3, build_state).await;
         ctx.set_distributed_work_unit_feed(|p: &RowGeneratorExec| Some(&p.feed));
         ctx.set_distributed_user_codec(TestWorkUnitFeedExecCodec);
-        ctx.set_distributed_task_estimator(TestWorkUnitFeedTaskEstimator);
+        ctx.set_distributed_desired_task_count_handler(row_generator_desired_task_count_handler);
+        ctx.set_distributed_scale_up_leaf_node_handler(row_generator_scale_up_leaf_node_handler);
         ctx.register_udtf("test_work_unit", Arc::new(TestWorkUnitFeedFunction));
 
         let mut df_opt = None;

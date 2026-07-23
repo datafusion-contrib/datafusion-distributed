@@ -1,5 +1,4 @@
 use crate::common::TreeNodeExt;
-use crate::distributed_planner::CombinedTaskEstimator;
 use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
 };
@@ -7,7 +6,8 @@ use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
 use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
-use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt, TaskEstimator};
+use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
+use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::SessionState;
@@ -83,10 +83,14 @@ impl QueryPlanner for DistributedQueryPlanner {
                 if !plan.children().is_empty() {
                     return Ok(Transformed::no(plan));
                 }
-                let task_estimator = CombinedTaskEstimator::from_session_config(session_cfg);
-                match task_estimator.scale_up_leaf_node(&plan, task_count, cfg)? {
+                let ev = ScaleUpLeafNodeEvent {
+                    plan: &plan,
+                    task_count,
+                    session_config: session_cfg,
+                };
+                match ScaleUpLeafNodeHandlers::handle(ev) {
                     None => Ok(Transformed::no(plan)),
-                    Some(scaled) => Ok(Transformed::yes(scaled)),
+                    Some(response) => Ok(Transformed::yes(response?.plan)),
                 }
             })?;
             // Ensure the stages in the plan have nice unique identifiers.
@@ -138,7 +142,7 @@ impl QueryPlanner for DistributedQueryPlanner {
 #[cfg(test)]
 mod tests {
     use crate::assert_snapshot;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
+    use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
     /* schema for the "weather" table
 
      MinTemp [type=DOUBLE] [repetitiontype=OPTIONAL]
@@ -921,7 +925,7 @@ mod tests {
         "#;
         let physical_plan_ascii = TestPlanBuilder::default()
             .broadcast_joins(true)
-            .distributed_task_estimator(BuildSideOneTaskEstimator)
+            .desired_task_count_handler(build_side_one_desired_task_count_handler)
             .physical_plan_as_ascii(query, false)
             .await;
         assert_snapshot!(physical_plan_ascii, @r"

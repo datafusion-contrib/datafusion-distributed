@@ -30,8 +30,9 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedTaskContext, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-    WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider, WorkerQueryContext, display_plan_ascii,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedTaskContext,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkUnitFeed,
+    WorkUnitFeedProto, WorkUnitFeedProvider, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::proto_error;
@@ -242,41 +243,30 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
     }
 }
 
-/// Tells the planner how many tasks the leaf stage gets, and rebuilds the leaf so each task
-/// advertises its share of the partitions.
-#[derive(Debug)]
-struct RemoteScanTaskEstimator;
+fn remote_scan_desired_task_count_handler(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    let task_count = ev
+        .plan
+        .downcast_ref::<RemoteScanExec>()?
+        .feed
+        .inner()?
+        .task_count;
+    Some(DesiredTaskCountEventResponse::desired(task_count))
+}
 
-impl TaskEstimator for RemoteScanTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let task_count = plan
-            .downcast_ref::<RemoteScanExec>()?
-            .feed
-            .inner()?
-            .task_count;
-        Some(TaskEstimation::desired(task_count))
-    }
-
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _: &datafusion::config::ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(exec) = plan.downcast_ref::<RemoteScanExec>() else {
-            return Ok(None);
-        };
-        let partitions_per_task = exec.feed.try_inner()?.per_partition_chunks.len() / task_count;
-        Ok(Some(Arc::new(RemoteScanExec::new(
+fn remote_scan_scale_up_leaf_node_handler(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let exec = ev.plan.downcast_ref::<RemoteScanExec>()?;
+    Some(exec.feed.try_inner().map(|feed| {
+        let partitions_per_task = feed.per_partition_chunks.len() / ev.task_count;
+        ScaleUpLeafNodeEventResponse::new(Arc::new(RemoteScanExec::new(
             exec.feed.clone(),
             partitions_per_task,
             exec.projection.clone(),
-        ))))
-    }
+        )))
+    }))
 }
 
 /// `scan(task_count, 'chunks_p0', 'chunks_p1', ...)` — `task_count` tasks, with one
@@ -392,7 +382,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_distributed_channel_resolver(channel_resolver)
         .with_distributed_planner()
         .with_distributed_user_codec(RemoteScanExecCodec)
-        .with_distributed_task_estimator(RemoteScanTaskEstimator)
+        .with_distributed_desired_task_count_handler(remote_scan_desired_task_count_handler)
+        .with_distributed_scale_up_leaf_node_handler(remote_scan_scale_up_leaf_node_handler)
         // For every `RemoteScanExec`, hand the planner the feed it must drive from the coordinator.
         .with_distributed_work_unit_feed(|exec: &RemoteScanExec| Some(&exec.feed))
         .build();

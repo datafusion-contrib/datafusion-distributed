@@ -2,14 +2,17 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::distributed_planner::set_distributed_task_estimator;
+use crate::events::{
+    DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTasksHandler, RouteTasksHandlers,
+    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers,
+};
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, TaskEstimator, WorkUnitFeed,
-    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
+    WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -276,46 +279,6 @@ pub trait DistributedExt: Sized {
     fn set_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(
         &mut self,
         resolver: T,
-    );
-
-    /// Adds a distributed task count estimator. [TaskEstimator]s are executed on each node
-    /// sequentially until one returns an estimation on the number of tasks that should be
-    /// used for the stage containing that node.
-    ///
-    /// Many nodes might decide to provide an estimation, so a reconciliation between all of them
-    /// is performed internally during planning.
-    ///
-    /// ```text
-    ///     ┌───────────────────────┐
-    ///     │SortPreservingMergeExec│
-    ///     └───────────────────────┘
-    ///                 ▲
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ Stage 2
-    ///     ┌───────────┴───────────┐    │
-    /// │   │       SortExec        │
-    ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐
-    ///     │     AggregateExec     │    │
-    /// │   └───────────────────────┘
-    ///  ─ ─ ─ ─ ─ ─ ─ ─▲─ ─ ─ ─ ─ ─ ─ ─ ┘
-    /// ┌ ─ ─ ─ ─ ─ ─ ─ ┴ ─ ─ ─ ─ ─ ─ ─ ─ Stage 1
-    ///     ┌───────────────────────┐    │
-    /// │   │      FilterExec       │
-    ///     └───────────────────────┘    │
-    /// │   ┌───────────────────────┐       a TaskEstimator estimates the amount of tasks
-    ///     │       SomeExec        │◀───┼──  based on how much data will be pulled.
-    /// │   └───────────────────────┘
-    ///  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-    /// ```
-    fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
-        self,
-        estimator: T,
-    ) -> Self;
-
-    /// Same as [DistributedExt::with_distributed_task_estimator] but with an in-place mutation.
-    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
-        &mut self,
-        estimator: T,
     );
 
     /// Sets the number of bytes each partition in a stage with a FileScanConfig node is
@@ -611,12 +574,127 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_local_worker_context] but with an
     /// in-place mutation.
     fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
+
+    /// Registers a handler that supplies desired or maximum task-count hints for plan nodes.
+    /// The distributed planner reconciles these hints when choosing each stage's task count.
+    ///
+    /// A function with the following signature can be provided as argument:
+    ///
+    /// ```rust
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion::physical_plan::empty::EmptyExec;
+    /// # use datafusion_distributed::{DistributedExt, DesiredTaskCountEvent, DesiredTaskCountEventResponse};
+    ///
+    /// fn handle_custom_desired_task_count(event: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    ///     let _exec = event.plan.downcast_ref::<EmptyExec>()?;
+    ///     Some(DesiredTaskCountEventResponse::desired(3))
+    /// }
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_desired_task_count_handler(handle_custom_desired_task_count);
+    /// ```
+    ///
+    /// ```text
+    /// ┌────────────────┐
+    /// │CustomDataSource│──────────▶ 3 desired tasks
+    /// └────────────────┘
+    /// ```
+    fn with_distributed_desired_task_count_handler<T: DesiredTaskCountHandler>(
+        self,
+        handler: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_desired_task_count_handler] but with an
+    /// in-place mutation.
+    fn set_distributed_desired_task_count_handler<T: DesiredTaskCountHandler>(
+        &mut self,
+        handler: T,
+    );
+
+    /// Registers a handler that can replace leaf nodes with distributed variants once the
+    /// distributed planner has decided a final task count.
+    ///
+    /// A function with the following signature can be provided as argument:
+    ///
+    /// ```rust
+    /// # use std::sync::Arc;
+    /// # use datafusion::error::Result;
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion::physical_plan::empty::EmptyExec;
+    /// # use datafusion_distributed::{DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse};
+    ///
+    /// fn handle_custom_scale_up_leaf_node(event: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    ///     let _exec = event.plan.downcast_ref::<EmptyExec>()?;
+    ///     Some(
+    ///         DistributedLeafExec::try_new(
+    ///             Arc::clone(event.plan),
+    ///             vec![Arc::clone(event.plan); event.task_count],
+    ///         )
+    ///         .map(|exec| ScaleUpLeafNodeEventResponse::new(Arc::new(exec))),
+    ///     )
+    /// }
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_scale_up_leaf_node_handler(handle_custom_scale_up_leaf_node);
+    /// ```
+    ///
+    /// ```text
+    ///                             ┌────────────────────────────────────────────────────────────┐
+    ///                             │                    DistributedLeafExec                     │
+    /// ┌────────────────┐          │┌──────────────────┐┌──────────────────┐┌──────────────────┐│
+    /// │CustomDataSource│─3 tasks─▶││ CustomDataSource ││ CustomDataSource ││ CustomDataSource ││
+    /// └────────────────┘          ││      (1/3)       ││      (2/3)       ││      (3/3)       ││
+    ///                             │└──────────────────┘└──────────────────┘└──────────────────┘│
+    ///                             └────────────────────────────────────────────────────────────┘
+    /// ```
+    fn with_distributed_scale_up_leaf_node_handler<T: ScaleUpLeafNodeHandler>(
+        self,
+        handler: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_scale_up_leaf_node_handler] but with an
+    /// in-place mutation.
+    fn set_distributed_scale_up_leaf_node_handler<T: ScaleUpLeafNodeHandler>(&mut self, handler: T);
+
+    /// Registers a handler that maps a stage's task slots to worker URLs before execution.
+    /// A response must contain one URL per task, in task-index order.
+    ///
+    /// A function with the following signature can be provided as argument:
+    ///
+    /// ```rust
+    /// # use datafusion::error::Result;
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion_distributed::{DistributedExt, DistributedGetterExt, RouteTasksEvent, RouteTasksEventResponse};
+    ///
+    /// fn handle_custom_route_tasks(event: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
+    ///     let routing = event.task_ctx.session_config()
+    ///         .get_distributed_worker_resolver()
+    ///         .and_then(|resolver| resolver.get_urls())
+    ///         .map(|workers| RouteTasksEventResponse::new(
+    ///             workers.into_iter().cycle().take(event.task_count).collect()
+    ///         ));
+    ///     Some(routing)
+    /// }
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_route_tasks_handler(handle_custom_route_tasks);
+    /// ```
+    ///
+    /// ```text
+    /// task 0  ──► http://worker1
+    /// task 1  ──► http://worker2     RouteTasksHandler
+    /// task 2  ──► http://worker3
+    /// ```
+    fn with_distributed_route_tasks_handler<T: RouteTasksHandler>(self, handler: T) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_route_tasks_handler] but with an in-place
+    /// mutation.
+    fn set_distributed_route_tasks_handler<T: RouteTasksHandler>(&mut self, handler: T);
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
 pub trait DistributedGetterExt: Sized {
-    /// Gets the [WorkerResolver] from this session's config. Typically called inside
-    /// [TaskEstimator::route_tasks] to resolve available worker URLs.
+    /// Gets the [WorkerResolver] from this session's config.
     fn get_distributed_worker_resolver(&self) -> Result<Arc<dyn WorkerResolver>, DataFusionError>;
 }
 
@@ -650,13 +728,6 @@ impl DistributedExt for SessionConfig {
         resolver: T,
     ) {
         set_distributed_channel_resolver(self, resolver);
-    }
-
-    fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(
-        &mut self,
-        estimator: T,
-    ) {
-        set_distributed_task_estimator(self, estimator)
     }
 
     fn set_distributed_file_scan_config_bytes_per_partition(
@@ -783,6 +854,18 @@ impl DistributedExt for SessionConfig {
         self.set_extension(Arc::new(local_worker_context));
     }
 
+    fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H) {
+        DesiredTaskCountHandlers::push_custom(self, Arc::new(h))
+    }
+
+    fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H) {
+        ScaleUpLeafNodeHandlers::push_custom(self, Arc::new(h));
+    }
+
+    fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H) {
+        RouteTasksHandlers::push_custom(self, Arc::new(h));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -808,10 +891,6 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
-
-            #[call(set_distributed_task_estimator)]
-            #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -878,6 +957,18 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
+
+            #[call(set_distributed_desired_task_count_handler)]
+            #[expr($;self)]
+            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_scale_up_leaf_node_handler)]
+            #[expr($;self)]
+            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_route_tasks_handler)]
+            #[expr($;self)]
+            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -919,11 +1010,6 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
-
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
-            #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
 
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
@@ -1011,6 +1097,21 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
+
+            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
+            #[call(set_distributed_desired_task_count_handler)]
+            #[expr($;self)]
+            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
+            #[call(set_distributed_scale_up_leaf_node_handler)]
+            #[expr($;self)]
+            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
+            #[call(set_distributed_route_tasks_handler)]
+            #[expr($;self)]
+            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1055,11 +1156,6 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(mut self, resolver: T) -> Self;
 
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
-            #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(mut self, estimator: T) -> Self;
-
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
             #[expr($?;Ok(self))]
@@ -1146,6 +1242,21 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
+
+            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
+            #[call(set_distributed_desired_task_count_handler)]
+            #[expr($;self)]
+            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
+            #[call(set_distributed_scale_up_leaf_node_handler)]
+            #[expr($;self)]
+            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
+            #[call(set_distributed_route_tasks_handler)]
+            #[expr($;self)]
+            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1182,11 +1293,6 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_channel_resolver)]
             #[expr($;self)]
             fn with_distributed_channel_resolver<T: ChannelResolver + Send + Sync + 'static>(self, resolver: T) -> Self;
-
-            fn set_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(&mut self, estimator: T);
-            #[call(set_distributed_task_estimator)]
-            #[expr($;self)]
-            fn with_distributed_task_estimator<T: TaskEstimator + Send + Sync + 'static>(self, estimator: T) -> Self;
 
             fn set_distributed_file_scan_config_bytes_per_partition(&mut self, bytes_per_partition: usize) -> Result<(), DataFusionError>;
             #[call(set_distributed_file_scan_config_bytes_per_partition)]
@@ -1274,6 +1380,21 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_local_worker_context)]
             #[expr($;self)]
             fn with_distributed_local_worker_context(self, local_worker_context: LocalWorkerContext) -> Self;
+
+            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
+            #[call(set_distributed_desired_task_count_handler)]
+            #[expr($;self)]
+            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(self, h: H) -> Self;
+
+            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
+            #[call(set_distributed_scale_up_leaf_node_handler)]
+            #[expr($;self)]
+            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(self, h: H) -> Self;
+
+            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
+            #[call(set_distributed_route_tasks_handler)]
+            #[expr($;self)]
+            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(self, h: H) -> Self;
         }
     }
 }

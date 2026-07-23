@@ -1,4 +1,3 @@
-use crate::TaskCountAnnotation::{Desired, Maximum};
 use crate::common::{TreeNodeExt, element_wise_sum, vec_avg_reduce, vec_div, vec_mul};
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
@@ -6,6 +5,7 @@ use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
 };
+use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
 use crate::{
@@ -70,7 +70,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .merge(Desired(compute_based_task_count));
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
-            // Here is where leaf nodes are scaled up by TaskEstimator::scale_up_leaf_node, and the
+            // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
             // plan is finally left ready for distribution.
             input_stage.plan = nb_ctx
                 .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;

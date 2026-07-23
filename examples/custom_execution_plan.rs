@@ -39,8 +39,9 @@ use datafusion_distributed::test_utils::in_memory_channel_resolver::{
     InMemoryChannelResolver, InMemoryWorkerResolver,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedTaskContext, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-    WorkerQueryContext, display_plan_ascii,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedTaskContext,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext,
+    display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -297,47 +298,36 @@ impl ConfigExtension for NumbersConfig {
     const PREFIX: &'static str = "numbers";
 }
 
-/// Custom TaskEstimator that tells the planner how to distribute NumbersExec.
-#[derive(Debug)]
-struct NumbersTaskEstimator;
+fn numbers_desired_task_count_handler(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    let cfg = ev.session_config;
+    let plan = ev.plan.downcast_ref::<NumbersExec>()?;
+    let cfg: &NumbersConfig = cfg.options().extensions.get()?;
+    let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
+        / cfg.numbers_per_task as f64;
 
-impl TaskEstimator for NumbersTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let plan = plan.downcast_ref::<NumbersExec>()?;
-        let cfg: &NumbersConfig = cfg.extensions.get()?;
-        let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
-            / cfg.numbers_per_task as f64;
+    Some(DesiredTaskCountEventResponse::desired(
+        task_count.ceil() as usize
+    ))
+}
 
-        Some(TaskEstimation::desired(task_count.ceil() as usize))
-    }
+fn numbers_scale_up_leaf_node_handler(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let plan = ev.plan.downcast_ref::<NumbersExec>()?;
+    let range = &plan.ranges_per_task[0];
+    let chunk_size = ((range.end - range.start) as f64 / ev.task_count as f64).ceil() as i64;
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _cfg: &datafusion::config::ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(plan) = plan.downcast_ref::<NumbersExec>() else {
-            return Ok(None);
-        };
-        let range = &plan.ranges_per_task[0];
-        let chunk_size = ((range.end - range.start) as f64 / task_count as f64).ceil() as i64;
+    let ranges_per_task = (0..ev.task_count).map(|i| {
+        let start = range.start + (i as i64 * chunk_size);
+        let end = (start + chunk_size).min(range.end);
+        start..end
+    });
 
-        let ranges_per_task = (0..task_count).map(|i| {
-            let start = range.start + (i as i64 * chunk_size);
-            let end = (start + chunk_size).min(range.end);
-            start..end
-        });
-
-        Ok(Some(Arc::new(NumbersExec::new(
-            ranges_per_task,
-            plan.schema(),
-        ))))
-    }
+    Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
+        NumbersExec::new(ranges_per_task, plan.schema()),
+    ))))
 }
 
 #[derive(StructOpt)]
@@ -381,7 +371,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_distributed_channel_resolver(channel_resolver)
         .with_distributed_planner()
         .with_distributed_user_codec(NumbersExecCodec)
-        .with_distributed_task_estimator(NumbersTaskEstimator)
+        .with_distributed_desired_task_count_handler(numbers_desired_task_count_handler)
+        .with_distributed_scale_up_leaf_node_handler(numbers_scale_up_leaf_node_handler)
         .build();
 
     let ctx = SessionContext::from(state);

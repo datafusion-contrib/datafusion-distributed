@@ -1,5 +1,6 @@
 use crate::{
-    DistributedTaskContext, TaskEstimation, TaskEstimator, WorkUnitFeed, WorkUnitFeedProto,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedTaskContext,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkUnitFeed, WorkUnitFeedProto,
     WorkUnitFeedProvider,
 };
 use async_trait::async_trait;
@@ -10,7 +11,6 @@ use datafusion::catalog::{Session, TableFunctionImpl};
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Result, ScalarValue, Statistics, internal_err, plan_err};
-use datafusion::config::ConfigOptions;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -319,49 +319,35 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
     }
 }
 
-pub struct TestWorkUnitFeedTaskEstimator;
+pub fn row_generator_desired_task_count_handler(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    let exec = ev.plan.downcast_ref::<RowGeneratorExec>()?;
+    let provider = exec.feed.clone().try_into_inner().ok()?;
+    Some(DesiredTaskCountEventResponse::desired(provider.task_count))
+}
 
-impl TaskEstimator for TestWorkUnitFeedTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let exec = plan.downcast_ref::<RowGeneratorExec>()?;
-        let provider = exec.feed.clone().try_into_inner().ok()?;
-        Some(TaskEstimation::desired(provider.task_count))
-    }
+pub fn row_generator_scale_up_leaf_node_handler(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let exec = ev.plan.downcast_ref::<RowGeneratorExec>()?;
+    let provider = exec.feed.clone().try_into_inner().ok()?;
+    let partitions_per_task = provider.per_partition_ops.len() / ev.task_count;
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _cfg: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(exec) = plan.downcast_ref::<RowGeneratorExec>() else {
-            return Ok(None);
+    let transformed = Arc::clone(ev.plan).transform_down(|plan| {
+        if let Some(exec) = plan.downcast_ref::<RowGeneratorExec>() {
+            return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
+                exec.feed.clone(),
+                exec.tag.clone(),
+                partitions_per_task,
+                exec.projection.clone(),
+                exec.total_rows,
+            ))));
         };
-        let Some(provider) = exec.feed.clone().try_into_inner().ok() else {
-            return Ok(None);
-        };
-        let partitions_per_task = provider.per_partition_ops.len() / task_count;
+        Ok(Transformed::no(plan))
+    });
 
-        // Rebuild the exec with the decided task count so its partition count matches.
-        let transformed = Arc::clone(plan).transform_down(|plan| {
-            if let Some(exec) = plan.downcast_ref::<RowGeneratorExec>() {
-                return Ok(Transformed::yes(Arc::new(RowGeneratorExec::new(
-                    exec.feed.clone(),
-                    exec.tag.clone(),
-                    partitions_per_task,
-                    exec.projection.clone(),
-                    exec.total_rows,
-                ))));
-            };
-            Ok(Transformed::no(plan))
-        });
-
-        Ok(Some(transformed?.data))
-    }
+    Some(transformed.map(|transformed| ScaleUpLeafNodeEventResponse::new(transformed.data)))
 }
 
 impl DisplayAs for RowGeneratorExec {

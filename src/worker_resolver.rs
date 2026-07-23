@@ -29,7 +29,7 @@ pub(crate) fn set_distributed_worker_resolver(
 }
 
 /// Gets the [WorkerResolver] from the [SessionConfig]'s extensions. Typically called inside
-/// [TaskEstimator::route_tasks] to resolve the worker URLs available for distributed tasks.
+/// [RouteTasksHandler::route_tasks] to resolve the worker URLs available for distributed tasks.
 pub fn get_distributed_worker_resolver(
     cfg: &SessionConfig,
 ) -> Result<Arc<dyn WorkerResolver>, DataFusionError> {
