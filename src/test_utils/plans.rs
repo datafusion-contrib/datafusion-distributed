@@ -1,24 +1,25 @@
 #[cfg(test)]
 use super::parquet::register_parquet_tables;
 use crate::coordinator::DistributedExec;
+#[cfg(test)]
+use crate::events::{file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node};
 use crate::stage::Stage;
 #[cfg(test)]
 use crate::{
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, TaskEstimation, TaskEstimator,
-    display_plan_ascii, test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
+    DistributedConfig, DistributedExt, SessionStateBuilderExt, display_plan_ascii,
+    test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
 use crate::{NetworkBoundaryExt, TaskKey};
-#[cfg(test)]
-use datafusion::{
-    common::Result,
-    config::ConfigOptions,
-    execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
-    physical_plan::displayable,
-    prelude::SessionConfig,
-};
 use datafusion::{
     common::{HashMap, HashSet},
     physical_plan::ExecutionPlan,
+};
+#[cfg(test)]
+use datafusion::{
+    execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
+    physical_plan::displayable,
+    prelude::SessionConfig,
 };
 use std::sync::Arc;
 
@@ -133,7 +134,7 @@ pub(crate) struct TestPlanBuilder {
     distributed_file_scan_config_bytes_per_partition: Option<usize>,
     information_schema: Option<bool>,
     broadcast_joins: bool,
-    distributed_task_estimator: Option<Arc<dyn TaskEstimator + Send + Sync + 'static>>,
+    desired_task_count_handler: Option<Arc<dyn DesiredTaskCountHandler>>,
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
@@ -153,7 +154,7 @@ impl TestPlanBuilder {
             distributed_file_scan_config_bytes_per_partition: Some(1),
             information_schema: None,
             broadcast_joins: false,
-            distributed_task_estimator: None,
+            desired_task_count_handler: None,
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
@@ -216,11 +217,8 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn distributed_task_estimator(
-        mut self,
-        task_estimator: impl TaskEstimator + Send + Sync + 'static,
-    ) -> Self {
-        self.distributed_task_estimator = Some(Arc::new(task_estimator));
+    pub fn desired_task_count_handler(mut self, handler: impl DesiredTaskCountHandler) -> Self {
+        self.desired_task_count_handler = Some(Arc::new(handler));
         self
     }
 
@@ -296,9 +294,12 @@ impl TestPlanBuilder {
         }
         if self.distributed_planner {
             state = state.with_distributed_planner();
+        } else {
+            state.set_distributed_desired_task_count_handler(file_scan_config_desired_task_count);
+            state.set_distributed_scale_up_leaf_node_handler(file_scan_config_scale_up_leaf_node);
         }
-        if let Some(t) = self.distributed_task_estimator.clone() {
-            state = state.with_distributed_task_estimator(t);
+        if let Some(handler) = self.desired_task_count_handler.clone() {
+            state = state.with_distributed_desired_task_count_handler(handler);
         }
         state.build()
     }
@@ -340,7 +341,7 @@ impl Default for TestPlanBuilder {
             distributed_file_scan_config_bytes_per_partition: Some(1),
             information_schema: Some(false),
             broadcast_joins: false,
-            distributed_task_estimator: None,
+            desired_task_count_handler: None,
             distributed_partial_reduce: None,
             distributed_children_isolator_unions: None,
             distributed_max_tasks_per_stage: None,
@@ -352,35 +353,19 @@ impl Default for TestPlanBuilder {
 }
 
 #[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct BuildSideOneTaskEstimator;
-
-#[cfg(test)]
-impl TaskEstimator for BuildSideOneTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        if !plan.children().is_empty() {
-            return None;
-        }
-        let schema = plan.schema();
-        let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
-        let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
-        if has_min_temp && !has_max_temp {
-            Some(TaskEstimation::maximum(1))
-        } else {
-            None
-        }
+pub(crate) fn build_side_one_desired_task_count_handler(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    let plan = ev.plan;
+    if !plan.children().is_empty() {
+        return None;
     }
-
-    fn scale_up_leaf_node(
-        &self,
-        _: &Arc<dyn ExecutionPlan>,
-        _: usize,
-        _: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        Ok(None)
+    let schema = plan.schema();
+    let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
+    let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
+    if has_min_temp && !has_max_temp {
+        Some(DesiredTaskCountEventResponse::maximum(1))
+    } else {
+        None
     }
 }

@@ -6,9 +6,9 @@
 //! without changes to the table registration.
 //!
 //! Routing is a two-step pipeline:
-//! - [`CachedFileScanConfigTaskEstimator::scale_up_leaf_node`] assigns each file to a task slot by
+//! - `cached_file_scan_scale_up_leaf_node_handler` assigns each file to a task slot by
 //!   hashing its path (mod task_count), so the same file always lands in the same slot.
-//! - [`CachedFileScanConfigTaskEstimator::route_tasks`] maps slot `i` to `sorted_urls[i % n]`,
+//! - `cached_file_scan_route_tasks_handler` maps slot `i` to `sorted_urls[i % n]`,
 //!   so each slot always reaches the same worker URL.
 //!
 //! Together these guarantee that each worker consistently reads the same set of files and its
@@ -41,8 +41,9 @@ use datafusion_distributed::test_utils::localhost::{
     LocalHostWorkerResolver, spawn_worker_service,
 };
 use datafusion_distributed::{
-    DistributedExt, DistributedGetterExt, DistributedLeafExec, SessionStateBuilderExt,
-    TaskEstimation, TaskEstimator, TaskRoutingContext, WorkerQueryContext, display_plan_ascii,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedGetterExt,
+    DistributedLeafExec, RouteTasksEvent, RouteTasksEventResponse, ScaleUpLeafNodeEvent,
+    ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext, display_plan_ascii,
 };
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf;
@@ -55,7 +56,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
 use tokio::net::TcpListener;
-use url::Url;
 
 /// Worker-level cache shared across all task invocations on the same worker, keyed by a stable
 /// hash of the file group being scanned.
@@ -157,68 +157,56 @@ fn hash_key(file_group: &FileGroup) -> usize {
     hasher.finish() as usize
 }
 
-/// Assigns each parquet file to a task slot (by hashing its path) and pins each slot to a worker.
-#[derive(Debug)]
-struct CachedFileScanConfigTaskEstimator;
+fn cached_file_scan_desired_task_count_handler(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    ev.plan.downcast_ref::<CacheExec>()?;
+    Some(DesiredTaskCountEventResponse::desired(usize::MAX))
+}
 
-impl TaskEstimator for CachedFileScanConfigTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        plan.downcast_ref::<CacheExec>()?;
-        Some(TaskEstimation::desired(usize::MAX))
+fn cached_file_scan_scale_up_leaf_node_handler(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let cfg = ev.session_config;
+    let cache_exec = ev.plan.downcast_ref::<CacheExec>()?;
+    let dse = cache_exec.child.downcast_ref::<DataSourceExec>()?;
+    let fsc = dse.data_source().downcast_ref::<FileScanConfig>()?;
+
+    // Hash each file to a slot so that the same file always lands in the same variant
+    // regardless of the original file_groups layout.
+    let mut per_task_files: Vec<Vec<_>> = vec![vec![]; ev.task_count];
+    for file in fsc.file_groups.iter().flat_map(|g| g.files()) {
+        let idx = hash_key(&FileGroup::new(vec![file.clone()])) % ev.task_count;
+        per_task_files[idx].push(file.clone());
     }
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        cfg: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(cache_exec) = plan.downcast_ref::<CacheExec>() else {
-            return Ok(None);
-        };
-        let Some(dse) = cache_exec.child.downcast_ref::<DataSourceExec>() else {
-            return Ok(None);
-        };
-        let Some(fsc) = dse.data_source().downcast_ref::<FileScanConfig>() else {
-            return Ok(None);
-        };
+    let target_partitions = cfg.target_partitions();
+    let variants = (0..ev.task_count)
+        .map(|i| {
+            let files = std::mem::take(&mut per_task_files[i]);
+            // Spread files across up to `target_partitions` FileGroups so DataFusion can
+            // read them in parallel within the task.
+            let n_groups = files.len().clamp(1, target_partitions);
+            let mut groups: Vec<Vec<_>> = vec![vec![]; n_groups];
+            for (j, file) in files.into_iter().enumerate() {
+                groups[j % n_groups].push(file);
+            }
+            let mut new_fsc = fsc.clone();
+            new_fsc.file_groups = groups.into_iter().map(FileGroup::new).collect();
+            CacheExec::new(DataSourceExec::from_data_source(new_fsc)) as Arc<dyn ExecutionPlan>
+        })
+        .collect::<Vec<_>>();
 
-        // Hash each file to a slot so that the same file always lands in the same variant
-        // regardless of the original file_groups layout.
-        let mut per_task_files: Vec<Vec<_>> = vec![vec![]; task_count];
-        for file in fsc.file_groups.iter().flat_map(|g| g.files()) {
-            let idx = hash_key(&FileGroup::new(vec![file.clone()])) % task_count;
-            per_task_files[idx].push(file.clone());
-        }
+    Some(
+        DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
+            .map(|plan| ScaleUpLeafNodeEventResponse::new(Arc::new(plan))),
+    )
+}
 
-        let target_partitions = cfg.execution.target_partitions;
-        let variants = (0..task_count)
-            .map(|i| {
-                let files = std::mem::take(&mut per_task_files[i]);
-                // Spread files across up to `target_partitions` FileGroups so DataFusion can
-                // read them in parallel within the task.
-                let n_groups = files.len().clamp(1, target_partitions);
-                let mut groups: Vec<Vec<_>> = vec![vec![]; n_groups];
-                for (j, file) in files.into_iter().enumerate() {
-                    groups[j % n_groups].push(file);
-                }
-                let mut new_fsc = fsc.clone();
-                new_fsc.file_groups = groups.into_iter().map(FileGroup::new).collect();
-                CacheExec::new(DataSourceExec::from_data_source(new_fsc)) as Arc<dyn ExecutionPlan>
-            })
-            .collect::<Vec<_>>();
-
-        Ok(Some(Arc::new(DistributedLeafExec::try_new(
-            Arc::clone(plan),
-            variants,
-        )?)))
-    }
-
-    fn route_tasks(&self, ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
+fn cached_file_scan_route_tasks_handler(
+    ctx: RouteTasksEvent,
+) -> Option<Result<RouteTasksEventResponse>> {
+    (|| -> Result<Option<RouteTasksEventResponse>> {
         let available_urls = ctx
             .task_ctx
             .session_config()
@@ -242,8 +230,9 @@ impl TaskEstimator for CachedFileScanConfigTaskEstimator {
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
-        Ok(routed)
-    }
+        Ok(routed.map(RouteTasksEventResponse::new))
+    })()
+    .transpose()
 }
 
 /// Codec for [`CacheExec`]. The child (`DataSourceExec(FileScanConfig)`) is encoded by the
@@ -354,7 +343,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_distributed_worker_resolver(LocalHostWorkerResolver::new(ports))
         .with_distributed_planner()
         .with_distributed_user_codec(CachedFileScanCodec)
-        .with_distributed_task_estimator(CachedFileScanConfigTaskEstimator)
+        .with_distributed_desired_task_count_handler(cached_file_scan_desired_task_count_handler)
+        .with_distributed_scale_up_leaf_node_handler(cached_file_scan_scale_up_leaf_node_handler)
+        .with_distributed_route_tasks_handler(cached_file_scan_route_tasks_handler)
         .build();
     state
         .config_mut()

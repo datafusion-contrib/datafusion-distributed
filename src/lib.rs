@@ -21,7 +21,11 @@ pub use coordinator::DistributedExec;
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
-    TaskCountAnnotation, TaskEstimation, TaskEstimator, TaskRoutingContext,
+};
+pub use events::{
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
+    RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,
+    ScaleUpLeafNodeHandler, TaskCountAnnotation,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
@@ -35,8 +39,10 @@ pub use metrics::{
 };
 pub use worker::LocalWorkerContext;
 
+mod events;
 #[cfg(any(feature = "integration", test))]
 pub mod test_utils;
+
 #[cfg(feature = "grpc")]
 pub use protocol::grpc;
 
