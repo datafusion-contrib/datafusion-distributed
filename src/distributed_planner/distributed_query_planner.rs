@@ -4,6 +4,7 @@ use crate::distributed_planner::inject_network_boundaries::{
     CardinalityBasedNetworkBoundaryBuilder, inject_network_boundaries,
 };
 use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
+use crate::distributed_planner::insert_children_isolator_union::insert_children_isolator_unions;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
 use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
@@ -28,6 +29,9 @@ use std::sync::Arc;
 ///    partition-collecting parent and injects a `NetworkCoalesceExec` above its child). Then
 ///    [insert_broadcast_execs] adds `BroadcastExec` nodes on the build side of `CollectLeft`
 ///    hash joins so those build sides can later be wrapped in `NetworkBroadcastExec`.
+///    [insert_children_isolator_unions] replaces `UnionExec` nodes with single-node-correct
+///    `ChildrenIsolatorUnionExec` placeholders whose task maps are finalized during boundary
+///    injection.
 ///
 /// 2. **Boundary injection.** [inject_network_boundaries] walks the plan, computes a task count
 ///    for each node, and inserts `NetworkShuffleExec` / `NetworkBroadcastExec` /
@@ -109,6 +113,7 @@ impl QueryPlanner for DistributedQueryPlanner {
         let cfg = session_state.config_options();
 
         plan = insert_broadcast_execs(plan, cfg)?;
+        plan = insert_children_isolator_unions(plan, cfg)?;
 
         if d_cfg.dynamic_task_count {
             // The task count will be decided dynamically at execution time.

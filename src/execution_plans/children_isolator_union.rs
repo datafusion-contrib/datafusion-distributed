@@ -129,6 +129,15 @@ impl ChildWeight {
 }
 
 impl ChildrenIsolatorUnionExec {
+    /// Creates a single-node union placeholder with every child assigned to the default task.
+    pub(crate) fn new_single_task(
+        children: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
+    ) -> Result<Self, DataFusionError> {
+        let children = children.into_iter().collect_vec();
+        let child_count = children.len();
+        Self::from_children_and_weights(children, vec![ChildWeight::desired(1.0); child_count], 1)
+    }
+
     pub(crate) fn from_children_and_weights(
         children: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,
         children_weights: impl IntoIterator<Item = ChildWeight>,
