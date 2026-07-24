@@ -59,8 +59,8 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use crate::{
     DispatchPlanSource, DistributedConfig, DistributedExec, DistributedExt, DistributedLeafExec,
     DistributedTaskContext, NetworkBoundaryExt, NetworkBroadcastExec, NetworkCoalesceExec,
-    NetworkShuffleExec, PartitionSink, SessionStateBuilderExt, Stage, TaskEstimation,
-    TaskEstimator, TaskKey, WorkerSink, decode_task_metrics,
+    NetworkShuffleExec, PartitionSink, SessionStateBuilderExt, Stage, TaskKey, WorkerSink,
+    decode_task_metrics,
 };
 
 use super::mpsc_ring::Wakeup;
@@ -486,11 +486,11 @@ impl WorkerSink for ShmMqWorkerSink {
 /// `FileScanConfigTaskEstimator` (which only handles file scans). Each task reads a disjoint subset
 /// of the source's partitions, so a gather over the tasks reproduces the serial result exactly.
 #[derive(Debug)]
-struct MemShardEstimator {
+struct MemShardConfig {
     n_tasks: usize,
 }
 
-impl MemShardEstimator {
+impl MemShardConfig {
     fn mem_source(plan: &Arc<dyn ExecutionPlan>) -> Option<&MemorySourceConfig> {
         plan.downcast_ref::<DataSourceExec>()?
             .data_source()
@@ -498,62 +498,51 @@ impl MemShardEstimator {
     }
 }
 
-impl TaskEstimator for MemShardEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        Self::mem_source(plan).map(|_| TaskEstimation::desired(self.n_tasks))
-    }
+fn mem_shard_desired_task_count(
+    ev: crate::events::DesiredTaskCountEvent,
+) -> Option<crate::events::DesiredTaskCountEventResponse> {
+    // Only support testing scenarios where we extract the hardcoded config.
+    // In these tests, we assume n_tasks is always the configured partitions.
+    let n_tasks = ev.session_config.target_partitions();
+    MemShardConfig::mem_source(ev.plan)
+        .map(|_| crate::events::DesiredTaskCountEventResponse::desired(n_tasks))
+}
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _cfg: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        if task_count <= 1 {
-            return Ok(None);
-        }
-        let Some(mem) = Self::mem_source(plan) else {
-            return Ok(None);
-        };
-        let parts = mem.partitions().to_vec();
-        let n_part = parts.len();
-        // The stored batches are unprojected; reuse the source's exact schema + projection so each
-        // variant's projected output schema matches the original leaf.
-        let unprojected_schema: SchemaRef = parts
-            .iter()
-            .flatten()
-            .next()
-            .map(|b| b.schema())
-            .unwrap_or_else(|| plan.schema());
-        let projection = mem.projection().clone();
-        let variants = (0..task_count).map(|i| {
-            // Keep every variant at the original partition count (pad with empties) so
-            // DistributedLeafExec's same-partition-count contract holds; round-robin the
-            // non-empty partitions so each task reads a disjoint slice.
-            let per_task: Vec<Vec<RecordBatch>> = (0..n_part)
-                .map(|j| {
-                    if j % task_count == i {
-                        parts[j].clone()
-                    } else {
-                        Vec::new()
-                    }
-                })
-                .collect();
-            MemorySourceConfig::try_new_exec(
-                &per_task,
-                unprojected_schema.clone(),
-                projection.clone(),
-            )
+fn mem_shard_scale_up_leaf_node(
+    ev: crate::events::ScaleUpLeafNodeEvent,
+) -> Option<Result<crate::events::ScaleUpLeafNodeEventResponse>> {
+    let task_count = ev.task_count;
+    if task_count <= 1 {
+        return None; // Fallback
+    }
+    let mem = MemShardConfig::mem_source(ev.plan)?;
+    let parts = mem.partitions().to_vec();
+    let n_part = parts.len();
+    let unprojected_schema: SchemaRef = parts
+        .iter()
+        .flatten()
+        .next()
+        .map(|b| b.schema())
+        .unwrap_or_else(|| ev.plan.schema());
+    let projection = mem.projection().clone();
+    let variants = (0..task_count).map(|i| {
+        let per_task: Vec<Vec<RecordBatch>> = (0..n_part)
+            .map(|j| {
+                if j % task_count == i {
+                    parts[j].clone()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        MemorySourceConfig::try_new_exec(&per_task, unprojected_schema.clone(), projection.clone())
             .expect("memory variant") as Arc<dyn ExecutionPlan>
-        });
-        Ok(Some(Arc::new(DistributedLeafExec::try_new(
-            Arc::clone(plan),
-            variants,
-        )?)))
+    });
+    match DistributedLeafExec::try_new(Arc::clone(ev.plan), variants) {
+        Ok(plan) => Some(Ok(crate::events::ScaleUpLeafNodeEventResponse {
+            plan: Arc::new(plan),
+        })),
+        Err(e) => Some(Err(e)),
     }
 }
 
@@ -670,9 +659,6 @@ mod tests {
             .with_distributed_option_extension(DistributedConfig::default())
             .with_distributed_worker_resolver(InProcessWorkerResolver::new(N_WORKERS as usize))
             .with_distributed_channel_resolver(ShmChannelResolver::new(mesh))
-            .with_distributed_task_estimator(MemShardEstimator {
-                n_tasks: N_WORKERS as usize,
-            })
             .with_distributed_planner();
         if let Some(captured) = dispatch_capture {
             builder = builder
@@ -680,7 +666,17 @@ mod tests {
                 .with_distributed_metrics_collection(true)
                 .expect("with_distributed_metrics_collection");
         }
-        let ctx = SessionContext::new_with_state(builder.build());
+        let cfg = builder.config().get_or_insert_default();
+        crate::events::DesiredTaskCountHandlers::push_builtin(
+            cfg,
+            Arc::new(mem_shard_desired_task_count),
+        );
+        crate::events::ScaleUpLeafNodeHandlers::push_builtin(
+            cfg,
+            Arc::new(mem_shard_scale_up_leaf_node),
+        );
+        let mut state = builder.build();
+        let ctx = SessionContext::new_with_state(state);
         register_table(&ctx);
         ctx
     }
