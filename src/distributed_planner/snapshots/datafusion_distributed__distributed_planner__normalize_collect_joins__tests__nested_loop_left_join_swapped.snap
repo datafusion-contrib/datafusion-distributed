@@ -1,0 +1,8 @@
+---
+source: src/distributed_planner/normalize_collect_joins.rs
+expression: plan
+---
+ProjectionExec: expr=[MinTemp@1 as MinTemp, MaxTemp@0 as MaxTemp]
+  NestedLoopJoinExec: join_type=Right, filter=MinTemp@0 < MaxTemp@1
+    DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
+    DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
