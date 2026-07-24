@@ -8,8 +8,8 @@ use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, TaskEstimator, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, LocalWorkerContext, TaskEstimator, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -600,6 +600,17 @@ pub trait DistributedExt: Sized {
         &mut self,
         dynamic_bytes_per_partition: usize,
     ) -> Result<(), DataFusionError>;
+
+    /// Target throughput in bytes per partition per second used by the dynamic task count
+    /// allocator to decide how many tasks to assign to each stage based on runtime statistics.
+    fn with_distributed_local_worker_context(
+        self,
+        local_worker_context: LocalWorkerContext,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_local_worker_context] but with an
+    /// in-place mutation.
+    fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -768,6 +779,10 @@ impl DistributedExt for SessionConfig {
         Ok(())
     }
 
+    fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext) {
+        self.set_extension(Arc::new(local_worker_context));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -859,6 +874,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            #[call(set_distributed_local_worker_context)]
+            #[expr($;self)]
+            fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
         }
     }
 }
@@ -987,6 +1006,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
+            #[call(set_distributed_local_worker_context)]
+            #[expr($;self)]
+            fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
         }
     }
 }
@@ -1117,6 +1141,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(mut self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
+            #[call(set_distributed_local_worker_context)]
+            #[expr($;self)]
+            fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
         }
     }
 }
@@ -1240,6 +1269,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_dynamic_bytes_per_partition)]
             #[expr($?;Ok(self))]
             fn with_distributed_dynamic_bytes_per_partition(self, dynamic_bytes_per_partition: usize) -> Result<Self, DataFusionError>;
+
+            fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
+            #[call(set_distributed_local_worker_context)]
+            #[expr($;self)]
+            fn with_distributed_local_worker_context(self, local_worker_context: LocalWorkerContext) -> Self;
         }
     }
 }

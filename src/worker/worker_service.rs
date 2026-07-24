@@ -1,4 +1,4 @@
-use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
+use crate::worker::{LocalWorkerContext, SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -8,6 +8,7 @@ use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
 
@@ -119,6 +120,17 @@ impl Worker {
     /// Returns the version set by [Self::with_version].
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Builds a [LocalWorkerContext] suitable to be injecting into a coordinating [SessionContext].
+    /// Having a [LocalWorkerContext] present in the coordinating [SessionContext] is not strictly
+    /// necessary, but it allows the planner to better colocate small stages near it, avoiding
+    /// unnecessary network hops.
+    pub fn to_local_worker_context(&self, self_url: Url) -> LocalWorkerContext {
+        LocalWorkerContext {
+            task_data_entries: Arc::clone(&self.task_data_entries),
+            self_url,
+        }
     }
 
     /// Returns the number of cached task entries currently held by this worker.

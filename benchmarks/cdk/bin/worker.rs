@@ -88,6 +88,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Starting HTTP listener on {LISTENER_ADDR}...");
     let listener = tokio::net::TcpListener::bind(LISTENER_ADDR).await?;
 
+    let self_url = get_self_url().await?;
+    info!("Resolved self URL as {self_url}");
+
     // Register S3 object store
     let s3_url = Url::parse(&format!("s3://{}", cmd.bucket))?;
 
@@ -100,9 +103,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime_env = Arc::new(RuntimeEnv::default());
     runtime_env.register_object_store(&s3_url, s3);
 
+    let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
+        Ok(ctx
+            .builder
+            .with_distributed_user_codec(WorkUnitFileScanCodec)
+            .build())
+    })
+    .with_runtime_env(Arc::clone(&runtime_env));
+
     let state_builder = SessionStateBuilder::new()
         .with_default_features()
-        .with_runtime_env(Arc::clone(&runtime_env))
+        .with_runtime_env(runtime_env)
+        .with_distributed_local_worker_context(worker.to_local_worker_context(self_url))
         .with_distributed_worker_resolver(Ec2WorkerResolver::new())
         .with_distributed_planner()
         .with_distributed_broadcast_joins(cmd.broadcast_joins)?
@@ -118,14 +130,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = state_builder.build();
     let ctx = SessionContext::from(state);
     let ctx_clone = ctx.clone();
-
-    let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
-        Ok(ctx
-            .builder
-            .with_distributed_user_codec(WorkUnitFileScanCodec)
-            .build())
-    })
-    .with_runtime_env(runtime_env);
 
     let http_server = axum::serve(
         listener,
@@ -293,6 +297,38 @@ impl Drop for AbortNotifier {
 
 fn err(s: impl Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, s.to_string())
+}
+
+async fn get_self_url() -> Result<Url, Box<dyn Error>> {
+    let client = reqwest::Client::new();
+    // AWS EC2 Instance Metadata Service (IMDS) IPv4 endpoint.
+    // AWS docs: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+    // We read the instance's private IPv4 from here so the worker can build its own
+    // gRPC URL as http://<private-ip>:9001.
+    let metadata_base = "http://169.254.169.254/latest/meta-data";
+
+    // Try IMDSv2 first, then fall back to unauthenticated metadata reads if token
+    // acquisition is disabled in the instance configuration.
+    let token = match client
+        .put("http://169.254.169.254/latest/api/token")
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
+        .send()
+        .await
+    {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => response.text().await.ok(),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+
+    let mut request = client.get(format!("{metadata_base}/local-ipv4"));
+    if let Some(token) = token {
+        request = request.header("X-aws-ec2-metadata-token", token);
+    }
+
+    let local_ip = request.send().await?.error_for_status()?.text().await?;
+    Ok(Url::parse(&format!("http://{}:9001", local_ip.trim()))?)
 }
 
 #[derive(Clone)]

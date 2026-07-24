@@ -61,12 +61,14 @@ where
         });
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
+    let first_worker_url = Url::parse(&format!("http://127.0.0.1:{}", ports[0])).unwrap();
 
     let worker_resolver = LocalHostWorkerResolver::new(ports);
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(SessionConfig::new().with_target_partitions(3))
         .with_distributed_planner()
+        .with_distributed_local_worker_context(workers[0].to_local_worker_context(first_worker_url))
         .with_distributed_worker_resolver(worker_resolver)
         // Test datasets are tiny, so budget one byte per partition: the estimator then asks for far
         // more partitions than exist, which gets capped at the worker count, fanning every scan out
