@@ -4,7 +4,7 @@ use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
-    inject_network_boundaries,
+    inject_network_boundaries, validate_stage_plan,
 };
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
@@ -75,6 +75,14 @@ pub(super) async fn prepare_dynamic_plan(
             input_stage.plan = nb_ctx
                 .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;
             input_stage.tasks = task_count.as_usize();
+            // The task count is now final; refuse to dispatch a stage whose plan cannot run
+            // correctly on that many tasks.
+            validate_stage_plan(
+                &input_stage.plan,
+                input_stage.tasks,
+                nb_ctx.task_estimator.as_ref(),
+                nb_ctx.cfg,
+            )?;
             // In order to infer the compute the cost of the stage above this one, here a sampler
             // is injected to gather runtime statistics.
             input_stage.plan = ProducerHead::insert_sampler(input_stage.plan)?;
