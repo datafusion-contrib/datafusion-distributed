@@ -8,18 +8,16 @@ use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
-use crate::worker::LocalWorkerContext;
 use crate::{
     BytesCounterMetric, BytesMetricExt, CoordinatorToWorkerMsg,
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, LoadInfo, NetworkBoundaryExt, SetPlanRequest, Stage, TaskKey,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
-    get_distributed_worker_resolver,
+    DistributedWorkUnitFeedContext, LoadInfo, SetPlanRequest, TaskKey, WorkUnitFeedDeclaration,
+    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
 use datafusion::common::runtime::JoinSet;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
@@ -29,7 +27,6 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::{Stream, StreamExt, TryStreamExt};
 use prost::Message;
-use rand::Rng;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -382,59 +379,18 @@ impl<'a> StageCoordinator<'a> {
             plan: self.plan,
             task_count: self.task_count,
         };
-        let routed_urls = match RouteTasksHandlers::handle(ev) {
-            Some(Ok(response)) => response.urls,
-            // If the user has not defined custom routing with a `route_tasks` implementation, we
-            // default to round-robin task assignation from a randomized starting point.
-            None => {
-                let session_config = self.task_ctx.session_config();
-                let worker_resolver = get_distributed_worker_resolver(session_config)?;
-                let available_urls = worker_resolver.get_urls()?;
-                let start_idx = rand::rng().random_range(0..available_urls.len());
-                (0..self.task_count)
-                    .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())
-                    .collect()
-            }
-            Some(Err(e)) => return exec_err!("error routing tasks to workers: {e}"),
+        let Some(routed) = RouteTasksHandlers::handle(ev).transpose()? else {
+            return exec_err!("No task routing handler was able to resolve URLs for stage");
         };
 
-        if routed_urls.len() != self.task_count {
+        if routed.urls.len() != self.task_count {
             return exec_err!(
                 "number of tasks ({}) was not equal to number of urls ({}) at execution time",
                 self.task_count,
-                routed_urls.len()
+                routed.urls.len()
             );
         }
-        Ok(routed_urls)
-    }
-
-    pub(super) fn find_self_url(&self) -> Option<Url> {
-        self.task_ctx
-            .session_config()
-            .get_extension::<LocalWorkerContext>()
-            .map(|v| v.self_url.clone())
-    }
-
-    pub(super) fn find_input_stage_with_single_url(&self) -> Option<Url> {
-        let mut single_stage_url = None;
-        self.plan
-            .apply(|plan| {
-                let Some(nb) = plan.as_network_boundary() else {
-                    return Ok(TreeNodeRecursion::Continue);
-                };
-
-                if let Stage::Remote(remote) = nb.input_stage()
-                    && remote.workers.len() == 1
-                {
-                    single_stage_url = Some(remote.workers[0].clone());
-                    return Ok(TreeNodeRecursion::Stop);
-                }
-
-                Ok(TreeNodeRecursion::Jump)
-            })
-            .expect("Cannot fail");
-
-        single_stage_url
+        Ok(routed.urls)
     }
 }
 

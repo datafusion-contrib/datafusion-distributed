@@ -84,23 +84,7 @@ pub(super) async fn prepare_dynamic_plan(
             let mut workers = Vec::with_capacity(input_stage.tasks);
             let mut load_info_rxs = Vec::with_capacity(input_stage.tasks);
 
-            let routed_urls = if input_stage.tasks == 1 {
-                match stage_coordinator
-                    // If the current coordinating context is running within the scope of a local
-                    // worker (same coordinating machine happens to also be a worker), we prefer to
-                    // co-locate single-tasked stages on it.
-                    .find_self_url()
-                    // If there's an input stage with a single worker, and the current stage is also
-                    // going to run in a single worker, we want to co-locate them so that unnecessary
-                    // network transfers are avoided.
-                    .or_else(|| stage_coordinator.find_input_stage_with_single_url())
-                {
-                    Some(single_url) => vec![single_url],
-                    None => stage_coordinator.routed_urls()?,
-                }
-            } else {
-                stage_coordinator.routed_urls()?
-            };
+            let routed_urls = stage_coordinator.routed_urls()?;
 
             for (i, routed_url) in routed_urls.into_iter().enumerate() {
                 workers.push(routed_url.clone());
