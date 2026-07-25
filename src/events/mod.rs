@@ -1,6 +1,7 @@
 mod common;
 mod defaults;
 mod desired_task_count;
+mod dynamic_stage_built;
 mod route_tasks;
 mod scale_up_leaf_node;
 mod worker_plan_rewrite;
@@ -15,6 +16,10 @@ pub use desired_task_count::{
     TaskCountAnnotation,
 };
 pub(crate) use desired_task_count::{DesiredTaskCountHandlers, TaskCountRestriction};
+pub(crate) use dynamic_stage_built::DynamicStageBuiltHandlers;
+pub use dynamic_stage_built::{
+    Cost, DynamicStageBuiltEvent, DynamicStageBuiltEventResponse, DynamicStageBuiltHandler,
+};
 pub use route_tasks::{
     CoordinatorToWorkerDialer, RouteTaskEvent, RouteTaskEventResponse, RouteTaskHandler,
 };
