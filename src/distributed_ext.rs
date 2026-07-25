@@ -3,17 +3,17 @@ use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
 use crate::events::{
-    DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTasksHandler, RouteTasksHandlers,
-    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, WorkerPlanRewriteHandler,
-    WorkerPlanRewriteHandlers,
+    DesiredTaskCountHandler, DesiredTaskCountHandlers, DynamicStageBuiltHandlers,
+    RouteTasksHandler, RouteTasksHandlers, ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers,
+    WorkerPlanRewriteHandler, WorkerPlanRewriteHandlers,
 };
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
 use crate::worker_resolver::set_distributed_worker_resolver;
 use crate::{
-    ChannelResolver, DistributedConfig, LocalWorkerContext, WorkUnitFeed, WorkUnitFeedProvider,
-    WorkerResolver, get_distributed_worker_resolver,
+    ChannelResolver, DistributedConfig, DynamicStageBuiltHandler, LocalWorkerContext, WorkUnitFeed,
+    WorkUnitFeedProvider, WorkerResolver, get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::config::ConfigExtension;
@@ -739,6 +739,39 @@ pub trait DistributedExt: Sized {
         &mut self,
         handler: T,
     );
+
+    /// Register an event handler that fires every time a new stage is built during dynamic
+    /// planning.
+    ///
+    /// In this handler, users can inspect the plan that is about to be sent to a remote worker,
+    /// optimize it, or short circuit execution.
+    ///
+    /// ```rust
+    /// # use datafusion::common::{exec_err, Result};
+    /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion_distributed::{DynamicStageBuiltEvent, DynamicStageBuiltEventResponse};
+    ///
+    /// fn handle_dynamic_stage_built(event: DynamicStageBuiltEvent) -> Option<Result<DynamicStageBuiltEventResponse>> {
+    ///     if event.cost.cpu.get_value().unwrap_or(&0) > 1024 * 1024 * 1024 {
+    ///         return Some(exec_err!("Plan is too expensive to execute"))
+    ///     }
+    ///     None
+    /// }
+    ///
+    /// SessionStateBuilder::new()
+    ///     .with_distributed_dynamic_stage_built_handler(handle_dynamic_stage_built);
+    /// ```
+    fn with_distributed_dynamic_stage_built_handler<T: DynamicStageBuiltHandler>(
+        self,
+        handler: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_dynamic_stage_built_handler] but with an
+    /// in-place mutation.
+    fn set_distributed_dynamic_stage_built_handler<T: DynamicStageBuiltHandler>(
+        &mut self,
+        handler: T,
+    );
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -919,6 +952,10 @@ impl DistributedExt for SessionConfig {
         WorkerPlanRewriteHandlers::push_custom(self, Arc::new(h));
     }
 
+    fn set_distributed_dynamic_stage_built_handler<T: DynamicStageBuiltHandler>(&mut self, h: T) {
+        DynamicStageBuiltHandlers::push_custom(self, Arc::new(h));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -1026,6 +1063,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_dynamic_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1174,6 +1215,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_dynamic_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1324,6 +1370,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_dynamic_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1467,6 +1518,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_worker_plan_rewrite_handler)]
             #[expr($;self)]
             fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(self, h: H) -> Self;
+
+            fn set_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(&mut self, h: H);
+            #[call(set_distributed_dynamic_stage_built_handler)]
+            #[expr($;self)]
+            fn with_distributed_dynamic_stage_built_handler<H: DynamicStageBuiltHandler>(self, h: H) -> Self;
         }
     }
 }
