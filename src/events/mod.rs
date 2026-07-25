@@ -3,6 +3,7 @@ mod defaults;
 mod desired_task_count;
 mod route_tasks;
 mod scale_up_leaf_node;
+mod worker_plan_rewrite;
 
 pub(crate) use defaults::{
     file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node, random_routing,
@@ -18,4 +19,8 @@ pub use route_tasks::{RouteTasksEvent, RouteTasksEventResponse, RouteTasksHandle
 pub(crate) use scale_up_leaf_node::ScaleUpLeafNodeHandlers;
 pub use scale_up_leaf_node::{
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler,
+};
+pub(crate) use worker_plan_rewrite::WorkerPlanRewriteHandlers;
+pub use worker_plan_rewrite::{
+    WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
 };

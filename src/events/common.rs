@@ -33,6 +33,17 @@ impl<H: ?Sized> EventHandlerChain<H> {
         // If no user handler handled the event, use the built ins.
         self.builtin.iter().find_map(|handler| f(handler.as_ref()))
     }
+
+    pub(super) fn try_fold<T, E>(
+        &self,
+        mut value: T,
+        mut f: impl FnMut(T, &H) -> Result<T, E>,
+    ) -> Result<T, E> {
+        for handler in self.custom.iter().chain(&self.builtin) {
+            value = f(value, handler.as_ref())?;
+        }
+        Ok(value)
+    }
 }
 
 impl<H: ?Sized + Send + Sync + 'static> EventHandlerChain<H> {

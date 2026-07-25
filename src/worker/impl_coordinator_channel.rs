@@ -1,4 +1,5 @@
 use crate::common::TreeNodeExt;
+use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
 use crate::worker::LocalWorkerContext;
@@ -86,11 +87,11 @@ impl Worker {
             let codec = DistributedCodec::new_combined_with_user(session_state.config());
             let task_ctx = session_state.task_ctx();
             let proto_node = PhysicalPlanNode::try_decode(request.plan_proto.as_ref())?;
-            let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
-
-            for hook in self.hooks.on_plan.iter() {
-                plan = hook(plan, session_state.config())?;
-            }
+            let ev = WorkerPlanRewriteEvent {
+                plan: proto_node.try_into_physical_plan(&task_ctx, &codec)?,
+                session_config: session_state.config(),
+            };
+            let plan = WorkerPlanRewriteHandlers::handle(ev)?.plan;
             load_info_rxs =
                 SamplerExec::kick_off_first_sampler(Arc::clone(&plan), Arc::clone(&task_ctx))?;
 

@@ -109,7 +109,7 @@ object-store registrations (pass them via `Worker::from_session_builder` /
 
 A few more worker capabilities have their own pages:
 
-- [Plan hooks](../advanced/03-plan-hooks.md) — run worker-local rewrites on each decoded plan
+- [Worker plan rewrite handlers](../advanced/03-plan-hooks.md) — run worker-local rewrites on each decoded plan
   before it executes.
 - [Worker versioning](../advanced/07-worker-versioning.md) — tag workers with a version and
   route queries only to compatible workers during rolling deployments.
