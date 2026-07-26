@@ -40,7 +40,7 @@ impl Worker {
             .map_err(DataFusionError::Shared)?;
         task_data.task_data_metrics.mark_execution_started_once();
 
-        let plan = task_data.plan(&request.producer_head_spec)?;
+        let plan = task_data.plan(request.producer_head)?;
         let task_ctx = task_data.task_ctx;
         let partition_count = plan.properties().partitioning.partition_count();
         let plan_name = plan.name();

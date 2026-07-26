@@ -1,4 +1,5 @@
 mod children_helpers;
+mod maybe_encoded;
 mod once_lock;
 mod recursion;
 mod task_context_helpers;
@@ -7,6 +8,7 @@ mod uuid;
 mod vec;
 
 pub(crate) use children_helpers::require_one_child;
+pub use maybe_encoded::MaybeEncoded;
 pub(crate) use once_lock::OnceLockResult;
 pub(crate) use recursion::TreeNodeExt;
 pub(crate) use task_context_helpers::task_ctx_with_extension;

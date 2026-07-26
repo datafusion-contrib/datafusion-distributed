@@ -14,7 +14,6 @@ pub use distributed_config::DistributedConfig;
 pub(crate) use inject_network_boundaries::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, inject_network_boundaries,
 };
-pub(crate) use network_boundary::ProducerHead;
-pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt};
+pub use network_boundary::{NetworkBoundary, NetworkBoundaryExt, ProducerHead};
 pub use session_state_builder_ext::SessionStateBuilderExt;
 pub(crate) use statistics::calculate_cost;
