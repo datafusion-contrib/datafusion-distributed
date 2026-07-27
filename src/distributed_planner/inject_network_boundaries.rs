@@ -17,7 +17,6 @@ use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use datafusion::prelude::SessionConfig;
 use std::any::TypeId;
@@ -259,9 +258,9 @@ async fn _inject_network_boundaries(
     let mut task_count = estimator
         .task_estimation(&plan, nb_ctx.cfg)
         .map_or(Desired(1), |v| v.task_count);
-    if nb_ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
-        // Unions have the chance to decide how many tasks they should run on. If there's a union
-        // with a bunch of children, the user might want to increase parallelism and increase the
+    if plan.is::<ChildrenIsolatorUnionExec>() {
+        // Isolating unions have the chance to decide how many tasks they should run on. If there
+        // is a union with a bunch of children, the user might want to increase parallelism and the
         // task count for the stage running that.
         let mut count = 0;
         for processed_child in processed_children.iter() {
@@ -404,10 +403,8 @@ async fn _inject_network_boundaries(
 ///   stage). Instead, rescale the boundary's input via [network_boundary_scale_input] using the
 ///   *consumer* partition and task counts of this side of the boundary, and stitch the rescaled
 ///   stage back in via [NetworkBoundary::with_input_stage].
-/// - **Eligible `UnionExec`s** (when `children_isolator_unions` is on): rewrite to
-///   [ChildrenIsolatorUnionExec] and recurse into each child with the per-child task count
-///   chosen by [ChildrenIsolatorUnionExec::from_children_and_task_counts] — each child runs
-///   isolated in its own subset of tasks.
+/// - **`ChildrenIsolatorUnionExec`s**: finalize the placeholder's task map and recurse into each
+///   child with the allocated task count. Each child runs isolated in its own subset of tasks.
 /// - **Everything else**: recurse into children with the same `task_count`, then rebuild the
 ///   node with the rebuilt children.
 impl InjectNetworkBoundaryContext<'_> {
@@ -440,8 +437,8 @@ impl InjectNetworkBoundaryContext<'_> {
             // Just annotate the network boundary and stop recursion here.
             Ok(self.plan_with_task_count(Arc::clone(plan), task_count))
 
-        // Handle ChildrenIsolatorUnionExec.
-        } else if self.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
+        // Finalize a pre-inserted ChildrenIsolatorUnionExec.
+        } else if plan.is::<ChildrenIsolatorUnionExec>() {
             // Propagating through ChildrenIsolatorUnionExec is not that easy, each child will
             // be executed in its own task, and therefore, they will act as if they were in executing
             // in a non-distributed context. The ChildrenIsolatorUnionExec itself will make sure to
@@ -629,6 +626,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
 mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
+    use crate::distributed_planner::insert_children_isolator_union::insert_children_isolator_unions;
     use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
     use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
     use datafusion::config::ConfigOptions;
@@ -1264,8 +1262,10 @@ mod tests {
         let plan = test_plan.physical_plan(query).await;
         let session_config = test_plan.get_ctx().copied_config();
 
-        let plan_w_broadcast = insert_broadcast_execs(plan, session_config.options())
+        let plan = insert_broadcast_execs(plan, session_config.options())
             .expect("failed to insert broadcasts");
+        let plan = insert_children_isolator_unions(plan, session_config.options())
+            .expect("failed to insert children isolator unions");
         let network_boundaries_ctx = InjectNetworkBoundaryContext {
             cfg: session_config.options(),
             d_cfg: DistributedConfig::from_config_options(session_config.options()).unwrap(),
@@ -1277,7 +1277,7 @@ mod tests {
             nb_builder: &CardinalityBasedNetworkBoundaryBuilder,
         };
 
-        let annotated = _inject_network_boundaries(plan_w_broadcast, None, &network_boundaries_ctx)
+        let annotated = _inject_network_boundaries(plan, None, &network_boundaries_ctx)
             .await
             .expect("failed to annotate plan");
         debug_annotated(&annotated, 0, &network_boundaries_ctx)
