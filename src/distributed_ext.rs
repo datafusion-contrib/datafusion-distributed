@@ -749,10 +749,10 @@ pub trait DistributedExt: Sized {
     /// ```rust
     /// # use datafusion::common::{exec_err, Result};
     /// # use datafusion::execution::SessionStateBuilder;
-    /// # use datafusion_distributed::{DynamicStageBuiltEvent, DynamicStageBuiltEventResponse};
+    /// # use datafusion_distributed::{DistributedExt, DynamicStageBuiltEvent, DynamicStageBuiltEventResponse};
     ///
     /// fn handle_dynamic_stage_built(event: DynamicStageBuiltEvent) -> Option<Result<DynamicStageBuiltEventResponse>> {
-    ///     if event.cost.cpu.get_value().unwrap_or(&0) > 1024 * 1024 * 1024 {
+    ///     if *event.cost.cpu.get_value().unwrap_or(&0) > 1024 * 1024 * 1024 {
     ///         return Some(exec_err!("Plan is too expensive to execute"))
     ///     }
     ///     None
