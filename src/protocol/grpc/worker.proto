@@ -253,6 +253,7 @@ message Metric {
     PercentileLatency custom_p95_latency = 32;
     PercentileLatency custom_p99_latency = 33;
     MaxGauge custom_max_gauge = 34;
+    PeakMemoryUsage peak_memory_usage = 35;
   }
 }
 
@@ -279,6 +280,10 @@ message SpilledBytes {
 }
 
 message SpilledRows {
+  uint64 value = 1;
+}
+
+message PeakMemoryUsage {
   uint64 value = 1;
 }
 
