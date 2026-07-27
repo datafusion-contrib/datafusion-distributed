@@ -49,6 +49,9 @@ pub(crate) fn single_task_coordinator_routing(
 pub(crate) fn single_task_child_url_routing(
     ev: RouteTasksEvent,
 ) -> Option<Result<RouteTasksEventResponse>> {
+    if ev.task_count != 1 {
+        return None;
+    }
     let mut single_stage_url = None;
     ev.plan
         .apply(|plan| {

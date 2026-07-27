@@ -50,7 +50,7 @@ impl<H: ?Sized + Send + Sync + 'static> EventHandlerChain<H> {
             .get_extension::<Self>()
             .map(|v| v.as_ref().clone())
             .unwrap_or_default();
-        for handler in handler_list.into_iter().rev() {
+        for handler in handler_list {
             handlers.builtin.push(handler);
         }
         cfg.set_extension(Arc::new(handlers));
