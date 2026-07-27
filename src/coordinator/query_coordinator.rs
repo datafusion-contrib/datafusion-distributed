@@ -2,7 +2,7 @@ use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::events::{RouteTasksEvent, RouteTasksHandlers};
+use crate::events::{RouteTasksEvent, RouteTasksHandler};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
@@ -375,14 +375,14 @@ impl<'a> StageCoordinator<'a> {
     /// is managing. These URLs can be:
     /// - assigned randomly, if the user did not provide any custom routing.
     /// - chosen by the user, if they provided an implementation for the
-    ///   [RouteTasksHandler::route_tasks] method.
+    ///   [`crate::EventHandler<crate::RouteTasksHandler>`] implementation.
     pub(super) fn routed_urls(&self) -> Result<Vec<Url>> {
         let ev = RouteTasksEvent {
             task_ctx: Arc::clone(self.task_ctx),
             plan: self.plan,
             task_count: self.task_count,
         };
-        let routed_urls = match RouteTasksHandlers::handle(ev) {
+        let routed_urls = match RouteTasksHandler::handle(ev) {
             Some(Ok(response)) => response.urls,
             // If the user has not defined custom routing with a `route_tasks` implementation, we
             // default to round-robin task assignation from a randomized starting point.

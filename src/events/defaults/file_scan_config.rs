@@ -1,4 +1,6 @@
 use crate::DistributedConfig;
+#[cfg(test)]
+use crate::events::DesiredTaskCountHandler;
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, ScaleUpLeafNodeEvent,
     ScaleUpLeafNodeEventResponse,
@@ -98,7 +100,6 @@ fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> 
 mod tests {
     use super::*;
     use crate::DistributedExt;
-    use crate::events::DesiredTaskCountHandlers;
     use crate::test_utils::parquet::register_parquet_tables;
     use datafusion::error::DataFusionError;
     use datafusion::physical_plan::ExecutionPlan;
@@ -107,11 +108,11 @@ mod tests {
     #[tokio::test]
     async fn test_first_desired_task_count_handler_wins() -> Result<(), DataFusionError> {
         let cfg = SessionConfig::new()
-            .with_distributed_desired_task_count_handler(desired_ten)
-            .with_distributed_desired_task_count_handler(desired_twenty);
+            .with_distributed_event_handler(desired_ten)
+            .with_distributed_event_handler(desired_twenty);
 
         let plan = make_data_source_exec().await?;
-        let response = DesiredTaskCountHandlers::handle(DesiredTaskCountEvent {
+        let response = DesiredTaskCountHandler::handle(DesiredTaskCountEvent {
             plan: &plan,
             session_config: &cfg,
         })
@@ -123,11 +124,11 @@ mod tests {
     #[tokio::test]
     async fn test_desired_task_count_handlers_continue_until_some() -> Result<(), DataFusionError> {
         let cfg = SessionConfig::new()
-            .with_distributed_desired_task_count_handler(no_desired_task_count)
-            .with_distributed_desired_task_count_handler(desired_thirty);
+            .with_distributed_event_handler(no_desired_task_count)
+            .with_distributed_event_handler(desired_thirty);
 
         let plan = make_data_source_exec().await?;
-        let response = DesiredTaskCountHandlers::handle(DesiredTaskCountEvent {
+        let response = DesiredTaskCountHandler::handle(DesiredTaskCountEvent {
             plan: &plan,
             session_config: &cfg,
         })

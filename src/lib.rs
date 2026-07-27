@@ -23,9 +23,9 @@ pub use distributed_planner::{
     DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
 };
 pub use events::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
-    RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,
-    ScaleUpLeafNodeHandler, TaskCountAnnotation,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, EventHandler,
+    RouteTasksEvent, RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent,
+    ScaleUpLeafNodeEventResponse, ScaleUpLeafNodeHandler, TaskCountAnnotation,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,

@@ -1,4 +1,4 @@
-use super::common::EventHandlerChain;
+use super::common::{Event, EventHandler, EventHandlerChain};
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -21,7 +21,7 @@ pub struct RouteTasksEvent<'a> {
     pub task_count: usize,
 }
 
-/// Worker assignments returned by a [`RouteTasksHandler`].
+/// Worker assignments returned by a [`EventHandler<RouteTasksHandler>`].
 pub struct RouteTasksEventResponse {
     /// One worker URL per task, ordered by task index.
     pub urls: Vec<Url>,
@@ -39,35 +39,38 @@ impl RouteTasksEventResponse {
 
 /// Optionally assigns a stage's task slots to worker URLs.
 ///
-/// Handlers are evaluated in reverse registration order. Return `Some(Ok(_))` to select a
-/// complete routing response and stop dispatch, or `None` to defer to earlier handlers. If every
-/// handler returns `None`, the coordinator assigns the tasks round-robin, from a randomized worker
-/// offset. Returning `Some(Err(_))` aborts execution before tasks are submitted.
-pub trait RouteTasksHandler: Send + Sync + 'static {
-    /// Optionally assigns the tasks described by `ev` to specific worker URLs.
-    ///
-    /// Return `None` when this handler does not apply. A successful response must provide exactly
-    /// one URL for every task, in task-index order.
-    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>>;
+/// Custom handlers are evaluated in registration order, followed by built-in handlers. Return
+/// `Some(Ok(_))` to select a complete routing response and stop dispatch, or `None` to let the next
+/// handler try. If every handler returns `None`, the coordinator assigns the tasks round-robin,
+/// from a randomized worker offset. Returning `Some(Err(_))` aborts execution before tasks are
+/// submitted.
+pub struct RouteTasksHandler;
+
+impl RouteTasksHandler {
+    pub(crate) fn handle(ev: RouteTasksEvent<'_>) -> Option<Result<RouteTasksEventResponse>> {
+        let handlers = ev
+            .task_ctx
+            .session_config()
+            .get_extension::<EventHandlerChain<RouteTasksHandler>>()?;
+        handlers.handle(ev)
+    }
 }
 
-impl<F> RouteTasksHandler for F
+impl Event for RouteTasksHandler {
+    type Data<'a> = RouteTasksEvent<'a>;
+    type Response = Result<RouteTasksEventResponse>;
+}
+
+impl<F> EventHandler<RouteTasksHandler> for F
 where
     F: Send + Sync + 'static,
     F: for<'a> Fn(RouteTasksEvent<'a>) -> Option<Result<RouteTasksEventResponse>>,
 {
-    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
+    /// Optionally assigns the tasks described by `ev` to specific worker URLs.
+    ///
+    /// Return `None` when this handler does not apply. A successful response must provide exactly
+    /// one URL for every task, in task-index order.
+    fn handle(&self, ev: RouteTasksEvent<'_>) -> Option<Result<RouteTasksEventResponse>> {
         self(ev)
-    }
-}
-
-pub(crate) type RouteTasksHandlers = EventHandlerChain<dyn RouteTasksHandler>;
-
-impl RouteTasksHandlers {
-    pub(crate) fn handle(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
-        ev.task_ctx
-            .session_config()
-            .get_extension::<RouteTasksHandlers>()?
-            .find_map(|handler| handler.handle(ev.clone()))
     }
 }

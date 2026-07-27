@@ -6,7 +6,7 @@ use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
 use crate::distributed_planner::partial_reduce_below_network_shuffles::partial_reduce_below_network_shuffles;
 use crate::distributed_planner::prepare_network_boundaries::prepare_network_boundaries;
 use crate::distributed_planner::push_fetch_into_network_coalesce::push_fetch_into_network_coalesce;
-use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
+use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandler};
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -88,7 +88,7 @@ impl QueryPlanner for DistributedQueryPlanner {
                     task_count,
                     session_config: session_cfg,
                 };
-                match ScaleUpLeafNodeHandlers::handle(ev) {
+                match ScaleUpLeafNodeHandler::handle(ev) {
                     None => Ok(Transformed::no(plan)),
                     Some(response) => Ok(Transformed::yes(response?.plan)),
                 }

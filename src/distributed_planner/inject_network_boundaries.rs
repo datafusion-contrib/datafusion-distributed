@@ -1,6 +1,6 @@
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
-    DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
+    DesiredTaskCountEvent, DesiredTaskCountHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandler,
     TaskCountAnnotation,
 };
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
@@ -238,7 +238,7 @@ async fn _inject_network_boundaries(
             plan: &plan,
             session_config: nb_ctx.cfg,
         };
-        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev) {
+        return if let Some(estimate) = DesiredTaskCountHandler::handle(ev) {
             Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -262,7 +262,7 @@ async fn _inject_network_boundaries(
         plan: &plan,
         session_config: nb_ctx.cfg,
     };
-    let mut task_count = DesiredTaskCountHandlers::handle(ev).map_or(Desired(1), |v| v.task_count);
+    let mut task_count = DesiredTaskCountHandler::handle(ev).map_or(Desired(1), |v| v.task_count);
     if nb_ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
         // Unions have the chance to decide how many tasks they should run on. If there's a union
         // with a bunch of children, the user might want to increase parallelism and increase the
@@ -427,7 +427,7 @@ impl InjectNetworkBoundaryContext<'_> {
                 task_count: task_count.as_usize(),
                 session_config: self.cfg,
             };
-            match ScaleUpLeafNodeHandlers::handle(ev) {
+            match ScaleUpLeafNodeHandler::handle(ev) {
                 None => Ok(self.plan_with_task_count(Arc::clone(plan), task_count)),
                 Some(response) => {
                     // The scaled up subtree may contain more than 1 node.
