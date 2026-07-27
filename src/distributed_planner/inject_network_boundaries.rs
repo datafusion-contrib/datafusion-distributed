@@ -707,11 +707,11 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @r"
+        assert_snapshot!(annotated, @"
         SortPreservingMergeExec: task_count=Maximum(1)
           NetworkCoalesceExec: task_count=Maximum(1)
-            SortExec: task_count=Desired(3)
-              ProjectionExec: task_count=Desired(3)
+            ProjectionExec: task_count=Desired(3)
+              SortExec: task_count=Desired(3)
                 AggregateExec: task_count=Desired(3)
                   NetworkShuffleExec: task_count=Desired(3)
                     RepartitionExec: task_count=Desired(4)
@@ -1041,10 +1041,10 @@ mod tests {
             .await
             .physical_plan_as_string(query)
             .await;
-        assert_snapshot!(physical_plan_string, @r"
+        assert_snapshot!(physical_plan_string, @"
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
 
         // With target_partitions=1, there is no CoalescePartitionsExec initially

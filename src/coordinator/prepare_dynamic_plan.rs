@@ -17,7 +17,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics,
+    ColumnStatistics, ExecutionPlan, ExecutionPlanProperties, Statistics, StatisticsArgs,
+    StatisticsContext,
 };
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
@@ -360,7 +361,7 @@ fn estimated_driver_path_leaf_rows(plan: &Arc<dyn ExecutionPlan>) -> Option<usiz
     let mut total_rows = None;
     let _ = plan.apply_driver_path(|plan| {
         if plan.children().is_empty() {
-            let stats = plan.partition_statistics(None)?;
+            let stats = StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())?;
             if let Some(num_rows) = stats.num_rows.get_value() {
                 if let Some(total_rows) = &mut total_rows {
                     *total_rows += *num_rows;

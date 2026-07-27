@@ -241,6 +241,7 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _ext: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if !inputs.is_empty() {
             return internal_err!("NumbersExec should have no children, got {}", inputs.len());
@@ -261,7 +262,12 @@ impl PhysicalExtensionCodec for NumbersExecCodec {
         )))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _ext: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(exec) = node.downcast_ref::<NumbersExec>() else {
             return internal_err!("Expected plan to be NumbersExec, but was {}", node.name());
         };

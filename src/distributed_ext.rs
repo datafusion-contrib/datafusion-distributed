@@ -146,18 +146,18 @@ pub trait DistributedExt: Sized {
     /// # use datafusion::execution::{SessionState, FunctionRegistry, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::prelude::SessionConfig;
-    /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    /// # use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
     /// # use datafusion_distributed::{DistributedExt, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
     ///
     /// impl PhysicalExtensionCodec for CustomExecCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext, ext: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     ///         todo!()
     ///     }
     ///
-    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>, ext: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<()> {
     ///         todo!()
     ///     }
     /// }

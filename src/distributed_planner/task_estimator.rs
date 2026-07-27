@@ -259,7 +259,7 @@ impl TaskEstimator for FileScanConfigTaskEstimator {
         };
         let partition_count = plan.output_partitioning().partition_count();
 
-        let rebalanced = if file_scan.partitioned_by_file_group {
+        let rebalanced = if file_scan.output_partitioning.is_some() {
             let all_partitioned_files = file_scan
                 .file_groups
                 .iter()

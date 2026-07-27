@@ -264,8 +264,8 @@ mod tests {
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=5, partitions=3
-          │ SortExec: expr=[left_index@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
+          │ ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
+          │   SortExec: expr=[task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=5
@@ -329,8 +329,8 @@ mod tests {
         │   [Stage 3] => NetworkCoalesceExec: output_partitions=15, input_tasks=5
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=5, partitions=3
-          │ SortExec: expr=[left_index@1 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
+          │ ProjectionExec: expr=[task_count@0 as task_count, task_index@1 as left_index, tag@2 as left_tag, worker_url@3 as worker_left, task_index@4 as right_index, tag@5 as right_tag, worker_url@6 as worker_right]
+          │   SortExec: expr=[task_index@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(task_index@1, task_index@0)]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=5
           │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=5

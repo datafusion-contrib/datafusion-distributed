@@ -2,7 +2,7 @@
 //! executing its plan once per task over the per-task input assignment and unioning the
 //! outputs must be equivalent to executing it once over all the data.
 //!
-//! DataFusion's optimizer discharges each operator's `required_input_distribution()`
+//! DataFusion's optimizer discharges each operator's `input_distribution_requirements()`
 //! obligations *process-locally* (a `SinglePartition` requirement is satisfied by a
 //! `CoalescePartitionsExec`, a `HashPartitioned` one by a `RepartitionExec`). Replicating the
 //! plan across tasks silently reinterprets "all the data" as "this task's slice", invalidating
@@ -20,11 +20,15 @@
 //!
 //! (A) every declared input-distribution requirement must hold *cluster-globally*:
 //!     `SinglePartition` may only be satisfied by a replicated subtree, and
-//!     `HashPartitioned` only by a claim that (1) semantically satisfies the required
-//!     expressions — checked with [Partitioning::satisfaction] against the child's claimed
-//!     output partitioning and equivalence classes, exactly as DataFusion's own
-//!     EnforceDistribution/SanityCheckPlan do process-locally — and (2) is globally true,
-//!     i.e. established by a global exchange rather than a stage-local repartition;
+//!     `KeyPartitioned` only by a claim that (1) semantically satisfies the required
+//!     expressions — checked with [InputDistributionRequirements::child_satisfaction],
+//!     which applies the requirement's own policy (hash or, where the operator opts in,
+//!     range partitioning) against the child's claimed output partitioning and equivalence
+//!     classes, exactly as DataFusion's own EnsureRequirements/SanityCheckPlan do
+//!     process-locally — and (2) is globally true, i.e. established by a global exchange
+//!     rather than a stage-local repartition. Co-partitioned groups (partitioned joins,
+//!     sort-merge joins) are additionally checked with
+//!     [InputDistributionRequirements::unsatisfied_co_partitioned_children];
 //! (B) replicated data may only feed operators that never *emit* rows driven by it —
 //!     N task instances would emit such rows N times, and the machinery that deduplicates
 //!     them in a single process (e.g. the hash join's shared visited bitmap) does not exist
@@ -37,10 +41,12 @@
 use std::sync::Arc;
 
 use datafusion::common::{Result, plan_err};
-use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::{Partitioning, PartitioningSatisfaction};
 use datafusion::physical_plan::joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{Distribution, ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildSatisfactionOptions, Distribution, ExecutionPlan, ExecutionPlanProperties,
+};
 
 use datafusion::config::ConfigOptions;
 use datafusion::prelude::SessionConfig;
@@ -59,7 +65,7 @@ enum DataFlow {
     Replicated,
     /// Every task materializes a task-specific subset; the union across tasks is the whole
     /// dataset. `claims_are_global` records provenance: whether the partitioning this
-    /// subtree *claims* in its `PlanProperties` (e.g. `Partitioning::Hash`) was established
+    /// subtree *claims* in its `PlanProperties` (e.g. `Partitioning::Hash` or `Partitioning::Range`) was established
     /// by a global exchange (or exchange-aligned storage) and merely preserved since — as
     /// opposed to being minted task-locally by a stage-local `RepartitionExec`, where the
     /// same claim only holds within each task's slice of the data.
@@ -137,11 +143,14 @@ fn classify(
     }
     // A DistributedLeafExec resolves to a different slice of the underlying source in every
     // task. (Its per-task variants are children in the plan tree, so check before the leaf
-    // case below.) If the scan preserves a hash partitioning from the storage layout
+    // case below.) If the scan preserves a hash or range partitioning from the storage layout
     // (hive-style pre-partitioned files with `preserve_file_partitions`), the per-task
     // slicing follows those same partitions, so equal keys still co-locate cluster-wide.
     if node.is::<DistributedLeafExec>() {
-        let claims_are_global = matches!(node.output_partitioning(), Partitioning::Hash(..));
+        let claims_are_global = matches!(
+            node.output_partitioning(),
+            Partitioning::Hash(..) | Partitioning::Range(..)
+        );
         return Ok(DataFlow::Partitioned { claims_are_global });
     }
     // A ChildrenIsolatorUnionExec divides the stage's tasks among its children: child `i`
@@ -184,7 +193,10 @@ fn classify(
         // that.
         return Ok(if estimator.task_estimation(node, cfg).is_some() {
             DataFlow::Partitioned {
-                claims_are_global: matches!(node.output_partitioning(), Partitioning::Hash(..)),
+                claims_are_global: matches!(
+                    node.output_partitioning(),
+                    Partitioning::Hash(..) | Partitioning::Range(..)
+                ),
             }
         } else {
             DataFlow::Replicated
@@ -197,13 +209,11 @@ fn classify(
         .collect::<Result<Vec<_>>>()?;
 
     // Obligation (A): declared input-distribution requirements must hold cluster-globally.
-    let requirements = node.required_input_distribution();
-    for (idx, ((child, flow), requirement)) in children
-        .iter()
-        .zip(&child_flows)
-        .zip(&requirements)
-        .enumerate()
-    {
+    let requirements = node.input_distribution_requirements();
+    for (idx, (child, flow)) in children.iter().zip(&child_flows).enumerate() {
+        let Some(requirement) = requirements.child_distribution(idx) else {
+            continue;
+        };
         match requirement {
             Distribution::UnspecifiedDistribution => {}
             Distribution::SinglePartition => {
@@ -219,36 +229,30 @@ fn classify(
                     );
                 }
             }
-            Distribution::HashPartitioned(_) => {
+            #[allow(deprecated)] // HashPartitioned is KeyPartitioned's deprecated alias.
+            Distribution::KeyPartitioned(_) | Distribution::HashPartitioned(_) => {
                 // `Replicated` inputs pass both checks below: every task computes over the
                 // complete data, and whether the resulting duplication is legal is decided
                 // where it mixes into partitioned flow, or at the stage root.
                 if let DataFlow::Partitioned { claims_are_global } = flow {
-                    // Semantic check, delegated to DataFusion: does the child's claimed
-                    // output partitioning satisfy the required expressions? Equivalence
-                    // classes make renamed keys pass; dropped or wrong keys fail. Subset
-                    // satisfaction — partitioned on a subset of the required keys — still
-                    // co-locates equal keys and is accepted, matching what
-                    // EnforceDistribution accepts process-locally (e.g. an aggregate
-                    // grouping on a superset of its input's join keys).
-                    // DataFusion 54 does not export the type `satisfaction` returns, so a
-                    // reference NotSatisfied value (an unknown partitioning can never
-                    // satisfy a hash requirement) stands in for naming the variant.
-                    let eq_properties = child.equivalence_properties();
-                    let not_satisfied = Partitioning::UnknownPartitioning(2).satisfaction(
-                        requirement,
-                        eq_properties,
-                        true,
-                    );
-                    let satisfaction =
-                        child
-                            .output_partitioning()
-                            .satisfaction(requirement, eq_properties, true);
-                    if satisfaction == not_satisfied {
+                    // Semantic check, delegated to DataFusion: the requirement's own
+                    // satisfaction policy compares the child's claimed output partitioning
+                    // (hash, or range where the operator opts in — e.g. inner joins) with
+                    // the required keys through equivalence classes; renamed keys pass,
+                    // dropped or wrong keys fail. Subset satisfaction — partitioned on a
+                    // subset of the required keys — still co-locates equal keys and is
+                    // accepted, matching what EnsureRequirements accepts process-locally
+                    // (e.g. an aggregate grouping on a superset of its input's join keys).
+                    let satisfaction = requirements.child_satisfaction(
+                        idx,
+                        child.as_ref(),
+                        ChildSatisfactionOptions::new().with_allow_subset(true),
+                    )?;
+                    if satisfaction == PartitioningSatisfaction::NotSatisfied {
                         return plan_err!(
-                            "{} requires its input {idx} ({}) to be hash-partitioned on \
-                             specific keys, but that input's claimed partitioning ({}) does \
-                             not satisfy the requirement",
+                            "{} requires its input {idx} ({}) to be key-partitioned, but \
+                             that input's claimed partitioning ({}) does not satisfy the \
+                             requirement",
                             node.name(),
                             child.name(),
                             child.output_partitioning()
@@ -260,7 +264,7 @@ fn classify(
                     // never meet.
                     if !claims_are_global {
                         return plan_err!(
-                            "{} requires its input {idx} ({}) to be hash-partitioned, but \
+                            "{} requires its input {idx} ({}) to be key-partitioned, but \
                              in a {tasks}-task stage that partitioning was established \
                              task-locally: equal keys living in different tasks would never \
                              meet. The input must come through a NetworkShuffleExec",
@@ -273,29 +277,26 @@ fn classify(
         }
     }
 
-    // Partitioned consumers zip partition `i` of every hash-required input within a task,
-    // so all such inputs must agree on partition count — otherwise equal keys land at
-    // different partition indices and never meet.
-    let mut hash_partitioned_counts = children
+    // Co-partitioning, delegated to DataFusion: a consumer with a co-partitioned requirement
+    // zips partition `i` of every grouped input within a task, so their partition layouts
+    // must be compatible — equal partition counts, and for range partitioning identical
+    // split points. Only meaningful when every input is task-partitioned: replicated inputs
+    // hold a complete copy in every task, so there is no cross-task layout to compare.
+    if child_flows
         .iter()
-        .zip(&child_flows)
-        .zip(&requirements)
-        .enumerate()
-        .filter(|(_, ((_, flow), requirement))| {
-            matches!(requirement, Distribution::HashPartitioned(_))
-                && matches!(flow, DataFlow::Partitioned { .. })
-        })
-        .map(|(idx, ((child, _), _))| (idx, child.output_partitioning().partition_count()));
-    if let Some((first_idx, first_count)) = hash_partitioned_counts.next() {
-        for (idx, count) in hash_partitioned_counts {
-            if count != first_count {
-                return plan_err!(
-                    "{} requires co-partitioned inputs, but input {first_idx} claims \
-                     {first_count} partitions while input {idx} claims {count}: equal keys \
-                     would land at different partition indices and never meet",
-                    node.name()
-                );
-            }
+        .all(|flow| matches!(flow, DataFlow::Partitioned { .. }))
+    {
+        let child_refs: Vec<&dyn ExecutionPlan> =
+            children.iter().map(|child| child.as_ref()).collect();
+        let unsatisfied =
+            requirements.unsatisfied_co_partitioned_children(node.name(), &child_refs)?;
+        if let Some(idx) = unsatisfied.first() {
+            return plan_err!(
+                "{} requires co-partitioned inputs, but input {idx}'s partition layout is \
+                 incompatible with its siblings: matching partition indexes would not hold \
+                 matching keys across tasks",
+                node.name()
+            );
         }
     }
 
@@ -498,9 +499,10 @@ mod tests {
 
     use crate::stage::LocalStage;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-    use datafusion::common::{JoinType, NullEquality};
+    use datafusion::common::{JoinType, NullEquality, ScalarValue, SplitPoint};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning};
     use datafusion::physical_plan::PlanProperties;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::empty::EmptyExec;
@@ -547,6 +549,7 @@ mod tests {
         left: Arc<dyn ExecutionPlan>,
         right: Arc<dyn ExecutionPlan>,
         key: &str,
+        join_type: JoinType,
     ) -> Arc<dyn ExecutionPlan> {
         let on = vec![(column(key, &left.schema()), column(key, &right.schema()))];
         Arc::new(
@@ -555,7 +558,7 @@ mod tests {
                 right,
                 on,
                 None,
-                &JoinType::Inner,
+                &join_type,
                 None,
                 PartitionMode::Partitioned,
                 NullEquality::NullEqualsNothing,
@@ -571,7 +574,12 @@ mod tests {
 
     #[test]
     fn accepts_partitioned_join_over_matching_global_shuffles() {
-        let join = partitioned_join(fake_shuffle("a", 4), fake_shuffle("a", 4), "a");
+        let join = partitioned_join(
+            fake_shuffle("a", 4),
+            fake_shuffle("a", 4),
+            "a",
+            JoinType::Inner,
+        );
         validate(&join).expect("expected validation to pass");
     }
 
@@ -580,7 +588,12 @@ mod tests {
         // Both sides are globally partitioned — but the left one on `b`, while the join
         // requires partitioning on `a`. The provenance bit alone cannot see this; the
         // claim-satisfaction check must.
-        let join = partitioned_join(fake_shuffle("b", 4), fake_shuffle("a", 4), "a");
+        let join = partitioned_join(
+            fake_shuffle("b", 4),
+            fake_shuffle("a", 4),
+            "a",
+            JoinType::Inner,
+        );
         let err = validate(&join).expect_err("expected validation to fail");
         assert!(
             err.to_string().contains("does not satisfy"),
@@ -596,7 +609,7 @@ mod tests {
         let hash = Partitioning::Hash(vec![column("a", &test_schema())], 4);
         let repartition: Arc<dyn ExecutionPlan> =
             Arc::new(RepartitionExec::try_new(leaf, hash).unwrap());
-        let join = partitioned_join(repartition, fake_shuffle("a", 4), "a");
+        let join = partitioned_join(repartition, fake_shuffle("a", 4), "a", JoinType::Inner);
         let err = validate(&join).expect_err("expected validation to fail");
         assert!(
             err.to_string().contains("established task-locally"),
@@ -606,7 +619,12 @@ mod tests {
 
     #[test]
     fn rejects_partitioned_join_with_mismatched_partition_counts() {
-        let join = partitioned_join(fake_shuffle("a", 4), fake_shuffle("a", 8), "a");
+        let join = partitioned_join(
+            fake_shuffle("a", 4),
+            fake_shuffle("a", 8),
+            "a",
+            JoinType::Inner,
+        );
         let err = validate(&join).expect_err("expected validation to fail");
         assert!(
             err.to_string().contains("co-partitioned"),
@@ -624,7 +642,85 @@ mod tests {
             let exprs = vec![(column("a", &shuffle.schema()), "x".to_string())];
             Arc::new(ProjectionExec::try_new(exprs, shuffle).unwrap())
         };
-        let join = partitioned_join(renamed(), renamed(), "x");
+        let join = partitioned_join(renamed(), renamed(), "x", JoinType::Inner);
         validate(&join).expect("expected validation to pass");
+    }
+
+    /// A stand-in for a range shuffle: a [NetworkShuffleExec] whose stage claims
+    /// `Partitioning::Range` ordered on `key` with the given split points.
+    fn fake_range_shuffle(key: &str, split_values: &[i64]) -> Arc<dyn ExecutionPlan> {
+        let schema = test_schema();
+        let ordering =
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(column(key, &schema))]).unwrap();
+        let split_points = split_values
+            .iter()
+            .map(|value| SplitPoint::new(vec![ScalarValue::Int64(Some(*value))]))
+            .collect();
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::Range(RangePartitioning::new(ordering, split_points)),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Arc::new(NetworkShuffleExec::from_stage(
+            Stage::Local(LocalStage {
+                query_id: Uuid::default(),
+                num: 1,
+                plan: Arc::new(EmptyExec::new(schema)),
+                tasks: 4,
+                metrics_set: Default::default(),
+            }),
+            properties,
+        ))
+    }
+
+    #[test]
+    fn accepts_range_partitioned_inner_join() {
+        // Inner equi joins opt into range satisfaction of their key requirement
+        // (DataFusion 55's co-partitioned range joins): with identical split points on
+        // both sides, equal keys co-locate at matching partition indexes.
+        let join = partitioned_join(
+            fake_range_shuffle("a", &[25, 50, 75]),
+            fake_range_shuffle("a", &[25, 50, 75]),
+            "a",
+            JoinType::Inner,
+        );
+        validate(&join).expect("expected validation to pass");
+    }
+
+    #[test]
+    fn rejects_range_partitioning_for_semi_join() {
+        // Range satisfaction is opt-in per operator; a Partitioned LeftSemi join's
+        // requirement policy does not accept it, so the semantic check fails even though
+        // the provenance is a genuine global exchange.
+        let join = partitioned_join(
+            fake_range_shuffle("a", &[25, 50, 75]),
+            fake_range_shuffle("a", &[25, 50, 75]),
+            "a",
+            JoinType::LeftSemi,
+        );
+        let err = validate(&join).expect_err("expected validation to fail");
+        assert!(
+            err.to_string().contains("does not satisfy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_range_co_partitioning_with_mismatched_split_points() {
+        // Both sides have the same partition COUNT — a count-equality check would pass
+        // this — but different split points, so partition `i` covers different key ranges
+        // on each side. Only DataFusion's co-partitioning check catches it.
+        let join = partitioned_join(
+            fake_range_shuffle("a", &[25, 50, 75]),
+            fake_range_shuffle("a", &[20, 40, 60]),
+            "a",
+            JoinType::Inner,
+        );
+        let err = validate(&join).expect_err("expected validation to fail");
+        assert!(
+            err.to_string().contains("co-partitioned"),
+            "unexpected error: {err}"
+        );
     }
 }
