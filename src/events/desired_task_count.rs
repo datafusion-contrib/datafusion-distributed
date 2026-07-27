@@ -1,5 +1,6 @@
 use super::TaskCountAnnotation::{Desired, Maximum};
 use super::common::EventHandlerChain;
+use async_trait::async_trait;
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
@@ -73,9 +74,13 @@ impl DesiredTaskCountEventResponse {
     }
 }
 
+#[async_trait]
 pub trait DesiredTaskCountHandler: Send + Sync + 'static {
     /// Function applied to each node that returns a [DesiredTaskCountEventResponse] hinting how
     /// many tasks should be used in the [Stage] containing that node.
+    ///
+    /// Handlers are asynchronous and may await metadata or external services. Handler functions
+    /// return a [`DesiredTaskCountFuture`] so their futures can borrow from the event.
     ///
     /// All the [TaskEstimator] registered in the session will be applied to the node
     /// until one returns an estimation.
@@ -86,7 +91,7 @@ pub trait DesiredTaskCountHandler: Send + Sync + 'static {
     ///   that the leaf node cannot be distributed across tasks.
     /// - If the node is a normal node in the plan, then the maximum task count from its children
     ///   is inherited.
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse>;
+    async fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse>;
 }
 
 impl From<TaskCountAnnotation> for usize {
@@ -120,18 +125,20 @@ impl TaskCountAnnotation {
     }
 }
 
+#[async_trait]
 impl<F> DesiredTaskCountHandler for F
 where
     F: Send + Sync + 'static,
     F: for<'a> Fn(DesiredTaskCountEvent<'a>) -> Option<DesiredTaskCountEventResponse>,
 {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    async fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
         self(ev)
     }
 }
 
+#[async_trait]
 impl DesiredTaskCountHandler for usize {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    async fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
         ev.plan
             .children()
             .is_empty()
@@ -139,18 +146,27 @@ impl DesiredTaskCountHandler for usize {
     }
 }
 
+#[async_trait]
 impl DesiredTaskCountHandler for Arc<dyn DesiredTaskCountHandler> {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        self.as_ref().handle(ev)
+    async fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
+        self.as_ref().handle(ev).await
     }
 }
 
 pub(crate) type DesiredTaskCountHandlers = EventHandlerChain<dyn DesiredTaskCountHandler>;
 
 impl DesiredTaskCountHandlers {
-    pub(crate) fn handle(ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        ev.session_config
-            .get_extension::<DesiredTaskCountHandlers>()?
-            .find_map(|handler| handler.handle(ev))
+    pub(crate) async fn handle(
+        ev: DesiredTaskCountEvent<'_>,
+    ) -> Option<DesiredTaskCountEventResponse> {
+        let handlers = ev
+            .session_config
+            .get_extension::<DesiredTaskCountHandlers>()?;
+        for handler in handlers.iter() {
+            if let Some(response) = handler.handle(ev).await {
+                return Some(response);
+            }
+        }
+        None
     }
 }

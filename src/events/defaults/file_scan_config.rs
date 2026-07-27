@@ -115,6 +115,7 @@ mod tests {
             plan: &plan,
             session_config: &cfg,
         })
+        .await
         .expect("a handler should respond");
         assert_eq!(response.task_count.as_usize(), 10);
         Ok(())
@@ -131,6 +132,7 @@ mod tests {
             plan: &plan,
             session_config: &cfg,
         })
+        .await
         .expect("a handler should respond");
         assert_eq!(response.task_count.as_usize(), 30);
         Ok(())

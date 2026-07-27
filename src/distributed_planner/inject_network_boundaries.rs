@@ -237,7 +237,7 @@ async fn _inject_network_boundaries(
             plan: &plan,
             session_config: nb_ctx.cfg,
         };
-        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev) {
+        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev).await {
             Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -261,10 +261,12 @@ async fn _inject_network_boundaries(
         plan: &plan,
         session_config: nb_ctx.cfg,
     };
-    let mut task_count = DesiredTaskCountHandlers::handle(ev).map_or(Desired(1), |v| v.task_count);
-    if plan.is::<ChildrenIsolatorUnionExec>() {
-        // Isolating unions have the chance to decide how many tasks they should run on. If there
-        // is a union with a bunch of children, the user might want to increase parallelism and the
+    let mut task_count = DesiredTaskCountHandlers::handle(ev)
+        .await
+        .map_or(Desired(1), |v| v.task_count);
+    if nb_ctx.d_cfg.children_isolator_unions && plan.is::<UnionExec>() {
+        // Unions have the chance to decide how many tasks they should run on. If there's a union
+        // with a bunch of children, the user might want to increase parallelism and increase the
         // task count for the stage running that.
         let mut count = 0;
         for processed_child in processed_children.iter() {
