@@ -1,3 +1,4 @@
+use crate::TaskCountAnnotation;
 use crate::events::common::EventHandlerChain;
 use datafusion::common::{Result, stats::Precision};
 use datafusion::physical_plan::ExecutionPlan;
@@ -32,11 +33,23 @@ pub struct DynamicStageBuiltEvent<'a> {
 pub struct DynamicStageBuiltEventResponse {
     /// A potentially modified plan (e.g., optimizations applied).
     pub plan: Arc<dyn ExecutionPlan>,
+    /// The optional task count annotation for the stage being built. If provided, it will be
+    /// reconciled with the existing task count calculated during stage planning.
+    pub task_count: Option<TaskCountAnnotation>,
 }
 
 impl DynamicStageBuiltEventResponse {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self { plan }
+        Self {
+            plan,
+            task_count: None,
+        }
+    }
+
+    /// Adds a [TaskCountAnnotation] to the handler outcome.
+    pub fn with_task_count(mut self, task_count: TaskCountAnnotation) -> Self {
+        self.task_count = Some(task_count);
+        self
     }
 }
 
