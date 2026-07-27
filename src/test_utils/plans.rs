@@ -2,7 +2,10 @@
 use super::parquet::register_parquet_tables;
 use crate::coordinator::DistributedExec;
 #[cfg(test)]
-use crate::events::{file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node};
+use crate::events::{
+    DesiredTaskCountHandlers, ScaleUpLeafNodeHandlers, file_scan_config_desired_task_count,
+    file_scan_config_scale_up_leaf_node,
+};
 use crate::stage::Stage;
 #[cfg(test)]
 use crate::{
@@ -295,8 +298,15 @@ impl TestPlanBuilder {
         if self.distributed_planner {
             state = state.with_distributed_planner();
         } else {
-            state.set_distributed_desired_task_count_handler(file_scan_config_desired_task_count);
-            state.set_distributed_scale_up_leaf_node_handler(file_scan_config_scale_up_leaf_node);
+            let cfg = state.config().get_or_insert_default();
+            DesiredTaskCountHandlers::push_builtin(
+                cfg,
+                Arc::new(file_scan_config_desired_task_count),
+            );
+            ScaleUpLeafNodeHandlers::push_builtin(
+                cfg,
+                Arc::new(file_scan_config_scale_up_leaf_node),
+            );
         }
         if let Some(handler) = self.desired_task_count_handler.clone() {
             state = state.with_distributed_desired_task_count_handler(handler);
