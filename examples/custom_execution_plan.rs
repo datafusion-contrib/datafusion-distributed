@@ -300,16 +300,16 @@ impl ConfigExtension for NumbersConfig {
 
 fn numbers_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let cfg = ev.session_config;
     let plan = ev.plan.downcast_ref::<NumbersExec>()?;
     let cfg: &NumbersConfig = cfg.options().extensions.get()?;
     let task_count = (plan.ranges_per_task[0].end - plan.ranges_per_task[0].start) as f64
         / cfg.numbers_per_task as f64;
 
-    Some(DesiredTaskCountEventResponse::desired(
-        task_count.ceil() as usize
-    ))
+    Some(Ok(DesiredTaskCountEventResponse::desired(
+        task_count.ceil() as usize,
+    )))
 }
 
 fn numbers_scale_up_leaf_node_handler(

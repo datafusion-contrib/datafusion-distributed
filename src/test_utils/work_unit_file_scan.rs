@@ -355,7 +355,7 @@ impl PhysicalOptimizerRule for WorkUnitFileScanRule {
 /// `file_scan_config_bytes_per_partition * target_partitions` bytes.
 pub fn work_unit_file_scan_desired_task_count(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let cfg = ev.session_config;
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
@@ -373,7 +373,7 @@ pub fn work_unit_file_scan_desired_task_count(
         .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
         .div_ceil(cfg.target_partitions());
 
-    Some(DesiredTaskCountEventResponse::desired(task_count))
+    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
 
 /// Rebuilds a work-unit file scan after the stage task count is finalized.

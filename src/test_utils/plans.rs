@@ -14,15 +14,16 @@ use crate::{
     test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
 use crate::{NetworkBoundaryExt, TaskKey};
-use datafusion::{
-    common::{HashMap, HashSet},
-    physical_plan::ExecutionPlan,
-};
 #[cfg(test)]
 use datafusion::{
+    common::Result,
     execution::{SessionState, context::SessionContext, session_state::SessionStateBuilder},
     physical_plan::displayable,
     prelude::SessionConfig,
+};
+use datafusion::{
+    common::{HashMap, HashSet},
+    physical_plan::ExecutionPlan,
 };
 use std::sync::Arc;
 
@@ -365,7 +366,7 @@ impl Default for TestPlanBuilder {
 #[cfg(test)]
 pub(crate) fn build_side_one_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let plan = ev.plan;
     if !plan.children().is_empty() {
         return None;
@@ -374,7 +375,7 @@ pub(crate) fn build_side_one_desired_task_count_handler(
     let has_min_temp = schema.fields().iter().any(|f| f.name() == "MinTemp");
     let has_max_temp = schema.fields().iter().any(|f| f.name() == "MaxTemp");
     if has_min_temp && !has_max_temp {
-        Some(DesiredTaskCountEventResponse::maximum(1))
+        Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
     } else {
         None
     }

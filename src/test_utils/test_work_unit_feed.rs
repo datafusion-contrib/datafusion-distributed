@@ -321,10 +321,12 @@ impl TableProvider for TestWorkUnitFeedTableProvider {
 
 pub fn row_generator_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let exec = ev.plan.downcast_ref::<RowGeneratorExec>()?;
     let provider = exec.feed.clone().try_into_inner().ok()?;
-    Some(DesiredTaskCountEventResponse::desired(provider.task_count))
+    Some(Ok(DesiredTaskCountEventResponse::desired(
+        provider.task_count,
+    )))
 }
 
 pub fn row_generator_scale_up_leaf_node_handler(

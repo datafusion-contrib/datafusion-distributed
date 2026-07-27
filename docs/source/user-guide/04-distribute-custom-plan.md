@@ -107,13 +107,15 @@ many tasks the stage containing your leaf should run on.
 For a sharded scan, one task per shard is a natural choice:
 
 ```rust
+use datafusion::common::Result;
+
 fn sharded_scan_desired_task_count(
     event: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     // Only handle our own node; returning None lets other handlers try.
     let scan = event.plan.downcast_ref::<ShardedScanExec>()?;
     // One task per shard — the planner caps this at the number of workers.
-    Some(DesiredTaskCountEventResponse::desired(scan.shards.len()))
+    Some(Ok(DesiredTaskCountEventResponse::desired(scan.shards.len())))
 }
 ```
 
@@ -126,6 +128,7 @@ What the return value means:
   cannot be distributed."
 - `None` — defer to the other registered handlers (and finally the built-in
   file-scan handler).
+- `Some(Err(...))` — stop planning and return the error to the caller.
 
 To send each task to a specific worker instead of the default round-robin, see
 [Routing tasks to workers](../advanced/06-worker-routing.md).

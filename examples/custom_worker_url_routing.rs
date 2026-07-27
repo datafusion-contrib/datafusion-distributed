@@ -159,9 +159,9 @@ fn hash_key(file_group: &FileGroup) -> usize {
 
 fn cached_file_scan_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     ev.plan.downcast_ref::<CacheExec>()?;
-    Some(DesiredTaskCountEventResponse::desired(usize::MAX))
+    Some(Ok(DesiredTaskCountEventResponse::desired(usize::MAX)))
 }
 
 fn cached_file_scan_scale_up_leaf_node_handler(
