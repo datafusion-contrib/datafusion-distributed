@@ -2,8 +2,8 @@
 members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
-datafusion = { version = "54.0.0", default-features = false }
-datafusion-proto = { version = "54.0.0", default-features = false }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "8d680db14a9134837bbd3d53497dd58c985c51a7", default-features = false }
+datafusion-proto = { git = "https://github.com/apache/datafusion", rev = "8d680db14a9134837bbd3d53497dd58c985c51a7", default-features = false }
 
 [package]
 name = "datafusion-distributed"
@@ -15,7 +15,7 @@ documentation = "https://datafusion-contrib.github.io/datafusion-distributed/"
 repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 
 [dependencies]
-chrono = { version = "0.4.44" }
+chrono = { version = "0.4.45" }
 datafusion = { workspace = true, features = [
   "unicode_expressions",
   "datetime_expressions",
@@ -46,16 +46,16 @@ bincode = "1"
 tonic-prost = "0.14.2"
 
 # grpc-specific features
-arrow-flight = { version = "58", optional = true }
-arrow-select = { version = "58", optional = true }
-arrow-ipc = { version = "58", features = ["zstd"], optional = true }
+arrow-flight = { version = "59", optional = true }
+arrow-select = { version = "59", optional = true }
+arrow-ipc = { version = "59", features = ["zstd"], optional = true }
 tonic = { version = "0.14.1", features = ["transport"], optional = true }
 tower = { version = "0.5.2", optional = true }
 
 # integration_tests deps
 insta = { version = "1.46.0", features = ["filters"], optional = true }
-parquet = { version = "58", optional = true }
-arrow = { version = "58", optional = true, features = ["test_utils"] }
+parquet = { version = "59", optional = true }
+arrow = { version = "59", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
 
 [features]
@@ -72,7 +72,7 @@ grpc = [
     "arrow-select",
     "arrow-ipc",
     "tonic",
-    "tower"
+    "tower",
 ]
 
 integration = ["insta", "dep:parquet", "arrow", "hyper-util", "grpc", "parquet", "sql"]
@@ -94,8 +94,8 @@ datafusion = { workspace = true, features = ["parquet", "sql"] }
 datafusion-proto = { workspace = true, features = ["parquet"] }
 structopt = "0.3"
 insta = { version = "1.46.0", features = ["filters"] }
-parquet = "58"
-arrow = { version = "58", features = ["test_utils"] }
+parquet = "59"
+arrow = { version = "59", features = ["test_utils"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"

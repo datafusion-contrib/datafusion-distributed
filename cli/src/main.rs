@@ -18,8 +18,7 @@
 // File mainly copied from https://github.com/apache/datafusion/blob/main/datafusion-cli/src/main.rs
 
 use clap::Parser;
-use datafusion::common::config_err;
-use datafusion::config::ConfigOptions;
+use datafusion::config::{ConfigNonZeroUsize, ConfigOptions};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SessionConfig;
@@ -211,10 +210,7 @@ fn get_session_config(args: &Args) -> Result<SessionConfig> {
     let mut config_options = ConfigOptions::from_env()?;
 
     if let Some(batch_size) = args.batch_size {
-        if batch_size == 0 {
-            return config_err!("batch_size must be greater than 0");
-        }
-        config_options.execution.batch_size = batch_size;
+        config_options.execution.batch_size = ConfigNonZeroUsize::try_new(batch_size)?;
     };
 
     // use easier to understand "tree" mode by default
