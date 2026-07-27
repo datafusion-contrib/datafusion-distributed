@@ -50,7 +50,6 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, HashMap, Result};
-use datafusion::config::ConfigOptions;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -486,9 +485,7 @@ impl WorkerSink for ShmMqWorkerSink {
 /// `FileScanConfigTaskEstimator` (which only handles file scans). Each task reads a disjoint subset
 /// of the source's partitions, so a gather over the tasks reproduces the serial result exactly.
 #[derive(Debug)]
-struct MemShardConfig {
-    n_tasks: usize,
-}
+struct MemShardConfig {}
 
 impl MemShardConfig {
     fn mem_source(plan: &Arc<dyn ExecutionPlan>) -> Option<&MemorySourceConfig> {
@@ -675,7 +672,7 @@ mod tests {
             cfg,
             Arc::new(mem_shard_scale_up_leaf_node),
         );
-        let mut state = builder.build();
+        let state = builder.build();
         let ctx = SessionContext::new_with_state(state);
         register_table(&ctx);
         ctx

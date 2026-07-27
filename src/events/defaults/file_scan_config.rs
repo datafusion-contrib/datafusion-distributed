@@ -5,7 +5,7 @@ use crate::events::{
 };
 use crate::execution_plans::DistributedLeafExec;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::datasource::physical_plan::{FileGroup, FileGroupPartitioner, FileScanConfig};
+use datafusion::datasource::physical_plan::{FileGroupPartitioner, FileScanConfig};
 use datafusion::error::Result;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use std::sync::Arc;
@@ -40,26 +40,14 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.partitioned_by_file_group {
-        let all_partitioned_files = file_scan
-            .file_groups
-            .iter()
-            .flat_map(|file_group| file_group.iter().cloned())
-            .collect::<Vec<_>>();
-        rebalance_round_robin(all_partitioned_files, partition_count * ev.task_count)
-            .into_iter()
-            .map(FileGroup::new)
-            .collect::<Vec<_>>()
-    } else {
-        FileGroupPartitioner::new()
-            .with_target_partitions(partition_count * ev.task_count)
-            .with_repartition_file_min_size(0)
-            .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
-            .repartition_file_groups(&file_scan.file_groups)
-            .unwrap_or_else(|| file_scan.file_groups.clone())
-            .into_iter()
-            .collect()
-    };
+    let rebalanced = FileGroupPartitioner::new()
+        .with_target_partitions(partition_count * ev.task_count)
+        .with_repartition_file_min_size(0)
+        .with_preserve_order_within_groups(!file_scan.output_ordering.is_empty())
+        .repartition_file_groups(&file_scan.file_groups)
+        .unwrap_or_else(|| file_scan.file_groups.clone())
+        .into_iter()
+        .collect::<Vec<_>>();
 
     let mut file_scan_template = file_scan.clone();
     file_scan_template.file_groups.clear();
@@ -82,16 +70,6 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     Some(Ok(ScaleUpLeafNodeEventResponse::new(Arc::new(
         distributed_leaf,
     ))))
-}
-
-fn rebalance_round_robin<T>(items: Vec<T>, target_groups: usize) -> Vec<Vec<T>> {
-    let mut groups = (0..target_groups)
-        .map(|_| Vec::new())
-        .collect::<Vec<Vec<T>>>();
-    for (idx, item) in items.into_iter().enumerate() {
-        groups[idx % target_groups].push(item);
-    }
-    groups
 }
 
 #[cfg(test)]
@@ -152,24 +130,6 @@ mod tests {
         .expect("a file scan should be recognized");
         assert_eq!(response.task_count.as_usize(), 3);
         Ok(())
-    }
-
-    #[test]
-    fn test_rebalance_round_robin_fixes_group_boundary_skew() {
-        let groups = rebalance_round_robin((0..8).collect(), 5);
-        assert_eq!(
-            groups.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![2, 2, 2, 1, 1]
-        );
-    }
-
-    #[test]
-    fn test_rebalance_round_robin_pads_with_empty_groups() {
-        let groups = rebalance_round_robin(vec![10, 20, 30], 5);
-        assert_eq!(
-            groups.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![1, 1, 1, 0, 0]
-        );
     }
 
     fn total_scan_bytes(plan: &Arc<dyn ExecutionPlan>) -> usize {

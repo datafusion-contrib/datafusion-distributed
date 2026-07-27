@@ -25,18 +25,18 @@ pub trait WorkerSessionBuilder {
     /// # use datafusion::error::DataFusionError;
     /// # use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder, TaskContext};
     /// # use datafusion::physical_plan::ExecutionPlan;
-    /// # use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    /// # use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
     /// # use datafusion_distributed::{DistributedExt, WorkerSessionBuilder, WorkerQueryContext};
     ///
     /// #[derive(Debug)]
     /// struct CustomExecCodec;
     ///
     /// impl PhysicalExtensionCodec for CustomExecCodec {
-    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ///     fn try_decode(&self, buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>], ctx: &TaskContext, ext: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     ///         todo!()
     ///     }
     ///
-    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> datafusion::common::Result<()> {
+    ///     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>, ext: &dyn PhysicalProtoConverterExtension) -> datafusion::common::Result<()> {
     ///         todo!()
     ///     }
     /// }

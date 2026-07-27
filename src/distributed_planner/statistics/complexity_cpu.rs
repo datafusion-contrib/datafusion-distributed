@@ -235,6 +235,13 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
                     n = n.plus(hashed_or_sorted_key_complexity(expr))
                 }
             }
+            // Routing a row to its range requires evaluating and comparing the ordering key,
+            // which costs about the same as hashing it.
+            Partitioning::Range(range) => {
+                for sort_expr in range.ordering() {
+                    n = n.plus(hashed_or_sorted_key_complexity(&sort_expr.expr))
+                }
+            }
             Partitioning::RoundRobinBatch(_) => {}
             Partitioning::UnknownPartitioning(_) => {}
         };
@@ -532,9 +539,9 @@ mod tests {
             .target_partitions(1)
             .physical_plan(r#"SELECT * FROM weather ORDER BY "WindGustDir" LIMIT 10"#)
             .await;
-        assert_snapshot!(plan_costs(topk), @r"
+        assert_snapshot!(plan_costs(topk), @"
         O((Cols+Col5)*Log(out_Cols)) | SortExec: TopK(fetch=10), expr=[WindGustDir@5 ASC NULLS LAST], preserve_partitioning=[false]
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, MaxTemp, Rainfall, Evaporation, Sunshine, WindGustDir, WindGustSpeed, WindDir9am, WindDir3pm, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Pressure9am, Pressure3pm, Cloud9am, Cloud3pm, Temp9am, Temp3pm, RainToday, RISK_MM, RainTomorrow], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[WindGustDir@5 ASC NULLS LAST], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -581,10 +588,10 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1)) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -605,10 +612,10 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1+(left_Col0+right_Col0))) | HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], filter=MinTemp@0 > MaxTemp@1, projection=[MinTemp@0, MaxTemp@2]
          O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
-         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+         O(out_Cols) | DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet, /testdata/weather/result-000001.parquet, /testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 
@@ -809,12 +816,12 @@ mod tests {
         "#,
             )
             .await;
-        assert_snapshot!(plan_costs(plan), @r"
+        assert_snapshot!(plan_costs(plan), @"
         O(((2*left_Cols)+left_Col1+right_Cols+right_Col1)) | HashJoinExec: mode=Partitioned, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
           O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
          O((Cols+Col1)) | RepartitionExec: partitioning=Hash([RainToday@1], 4), input_partitions=3
-          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+          O(out_Cols) | DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
         ");
     }
 

@@ -126,6 +126,11 @@ pub fn df_metric_to_proto(metric: Arc<Metric>) -> Result<pb::Metric, DataFusionE
             partition,
             labels,
         }),
+         MetricValue::PeakMemoryUsage { gauge, .. } => Ok(pb::Metric {
+            value: Some(pb::metric::Value::PeakMemoryUsage(pb::PeakMemoryUsage { value: gauge.value() as u64 })),
+            partition,
+            labels,
+        }),
         MetricValue::Count { name, count } => Ok(pb::Metric {
             value: Some(pb::metric::Value::Count(pb::NamedCount {
                 name: name.to_string(),
@@ -363,6 +368,18 @@ pub fn metric_proto_to_df(metric: pb::Metric) -> Result<Arc<Metric>, DataFusionE
             gauge.set(memory.value as usize);
             Ok(Arc::new(Metric::new_with_labels(
                 MetricValue::CurrentMemoryUsage(gauge),
+                partition,
+                labels,
+            )))
+        }
+        Some(pb::metric::Value::PeakMemoryUsage(memory)) => {
+            let gauge = Gauge::new();
+            gauge.set(memory.value as usize);
+            Ok(Arc::new(Metric::new_with_labels(
+                MetricValue::PeakMemoryUsage {
+                    name: Cow::Borrowed("peak_memory_usage"),
+                    gauge,
+                },
                 partition,
                 labels,
             )))
@@ -666,6 +683,16 @@ mod tests {
                 }
                 (MetricValue::CurrentMemoryUsage(orig), MetricValue::CurrentMemoryUsage(rt)) => {
                     assert_eq!(orig.value(), rt.value());
+                }
+                (
+                    MetricValue::PeakMemoryUsage {
+                        gauge: orig_gauge, ..
+                    },
+                    MetricValue::PeakMemoryUsage {
+                        gauge: rt_gauge, ..
+                    },
+                ) => {
+                    assert_eq!(orig_gauge.value(), rt_gauge.value());
                 }
                 (
                     MetricValue::Count {

@@ -11,7 +11,7 @@ datafusion-distributed = { path = "..", features = [
   "system-metrics",
 ] }
 tokio = { version = "1.48", features = ["full"] }
-parquet = { version = "58" }
+parquet = { version = "59" }
 structopt = { version = "0.3.26" }
 log = "0.4.27"
 serde = "1.0.219"
@@ -20,10 +20,10 @@ env_logger = "0.11.8"
 async-trait = "0.1.89"
 futures = "0.3.31"
 url = "2.5.7"
-arrow = { version = "58", features = ["test_utils"] }
+arrow = { version = "59", features = ["test_utils"] }
 tonic = { version = "0.14.1", features = ["transport"] }
-tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
-tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "438e9c2dbc25b2fff82c0efc08b3f13b5707874f" }
+tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "0f6747e592dbdf9dadd5cd3c5a43e867267bb62f" }
+tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs", rev = "0f6747e592dbdf9dadd5cd3c5a43e867267bb62f" }
 reqwest = "0.12"
 zip = "6.0"
 axum = "0.7"
