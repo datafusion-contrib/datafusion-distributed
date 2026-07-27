@@ -105,7 +105,7 @@ mod tests {
     use datafusion::prelude::{SessionConfig, SessionContext};
 
     #[tokio::test]
-    async fn test_most_recent_desired_task_count_handler_wins() -> Result<(), DataFusionError> {
+    async fn test_first_desired_task_count_handler_wins() -> Result<(), DataFusionError> {
         let cfg = SessionConfig::new()
             .with_distributed_desired_task_count_handler(desired_ten)
             .with_distributed_desired_task_count_handler(desired_twenty);
@@ -116,7 +116,7 @@ mod tests {
             session_config: &cfg,
         })
         .expect("a handler should respond");
-        assert_eq!(response.task_count.as_usize(), 20);
+        assert_eq!(response.task_count.as_usize(), 10);
         Ok(())
     }
 

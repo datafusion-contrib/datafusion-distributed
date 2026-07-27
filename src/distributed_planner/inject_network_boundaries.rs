@@ -632,9 +632,6 @@ mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::distributed_planner::insert_children_isolator_union::insert_children_isolator_unions;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
-    use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
-    use datafusion::config::ConfigOptions;
     use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
     use crate::{DesiredTaskCountEvent, DesiredTaskCountEventResponse, assert_snapshot};
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
