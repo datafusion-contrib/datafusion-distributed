@@ -26,6 +26,7 @@ use futures::{StreamExt, TryFutureExt};
 use log::{error, info, warn};
 use object_store::aws::AmazonS3Builder;
 use serde::Serialize;
+#[allow(clippy::disallowed_types)]
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
@@ -173,6 +174,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .route(
                 "/",
+                #[allow(clippy::disallowed_types)]
                 get(move |Query(params): Query<HashMap<String, String>>| {
                     let ctx = ctx.clone();
 
