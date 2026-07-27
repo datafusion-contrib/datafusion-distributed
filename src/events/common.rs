@@ -1,12 +1,38 @@
 use datafusion::execution::config::SessionConfig;
 use std::sync::Arc;
 
-pub(crate) struct EventHandlerChain<H: ?Sized> {
-    builtin: Vec<Arc<H>>,
-    custom: Vec<Arc<H>>,
+/// An event which occurs during distributed planning (which may occur at planning time or execution
+/// time if using adaptive query execution).
+pub trait Event: Send + Sync + 'static {
+    /// Data contained in the event.
+    type Data<'a>: Clone;
+    /// Result returned when a handler accepts the event.
+    type Response;
 }
 
-impl<H: ?Sized> Default for EventHandlerChain<H> {
+/// Handles [`Event`] data.
+pub trait EventHandler<E: Event>: Send + Sync + 'static {
+    /// Returns `None` when this handler does not accept the event, allowing the next handler in
+    /// the chain to try. Returns `Some` to stop dispatch and select that response.
+    fn handle(&self, ev: E::Data<'_>) -> Option<E::Response>;
+}
+
+impl<E, H> EventHandler<E> for Arc<H>
+where
+    E: Event,
+    H: EventHandler<E> + ?Sized,
+{
+    fn handle(&self, ev: E::Data<'_>) -> Option<E::Response> {
+        self.as_ref().handle(ev)
+    }
+}
+
+pub(crate) struct EventHandlerChain<E: Event> {
+    pub(crate) builtin: Vec<Arc<dyn EventHandler<E>>>,
+    pub(crate) custom: Vec<Arc<dyn EventHandler<E>>>,
+}
+
+impl<E: Event> Default for EventHandlerChain<E> {
     fn default() -> Self {
         Self {
             builtin: Vec::new(),
@@ -15,7 +41,7 @@ impl<H: ?Sized> Default for EventHandlerChain<H> {
     }
 }
 
-impl<H: ?Sized> Clone for EventHandlerChain<H> {
+impl<E: Event> Clone for EventHandlerChain<E> {
     fn clone(&self) -> Self {
         Self {
             builtin: self.builtin.clone(),
@@ -24,19 +50,23 @@ impl<H: ?Sized> Clone for EventHandlerChain<H> {
     }
 }
 
-impl<H: ?Sized> EventHandlerChain<H> {
-    pub(super) fn find_map<T>(&self, mut f: impl FnMut(&H) -> Option<T>) -> Option<T> {
+impl<E: Event> EventHandlerChain<E> {
+    pub(crate) fn handle(&self, ev: E::Data<'_>) -> Option<E::Response> {
         // Give priority to custom handlers registered by users.
-        if let Some(res) = self.custom.iter().find_map(|handler| f(handler.as_ref())) {
+        if let Some(res) = self
+            .custom
+            .iter()
+            .find_map(|handler| handler.handle(ev.clone()))
+        {
             return Some(res);
         }
         // If no user handler handled the event, use the built ins.
-        self.builtin.iter().find_map(|handler| f(handler.as_ref()))
+        self.builtin
+            .iter()
+            .find_map(|handler| handler.handle(ev.clone()))
     }
-}
 
-impl<H: ?Sized + Send + Sync + 'static> EventHandlerChain<H> {
-    pub(crate) fn push_builtin(cfg: &mut SessionConfig, handler: Arc<H>) {
+    pub(crate) fn push_builtin(cfg: &mut SessionConfig, handler: Arc<dyn EventHandler<E>>) {
         let mut handlers = cfg
             .get_extension::<Self>()
             .map(|v| v.as_ref().clone())
@@ -45,7 +75,7 @@ impl<H: ?Sized + Send + Sync + 'static> EventHandlerChain<H> {
         cfg.set_extension(Arc::new(handlers));
     }
 
-    pub(crate) fn push_custom(cfg: &mut SessionConfig, handler: Arc<H>) {
+    pub(crate) fn push_custom(cfg: &mut SessionConfig, handler: Arc<dyn EventHandler<E>>) {
         let mut handlers = cfg
             .get_extension::<Self>()
             .map(|v| v.as_ref().clone())

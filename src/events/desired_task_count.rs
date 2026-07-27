@@ -1,5 +1,5 @@
 use super::TaskCountAnnotation::{Desired, Maximum};
-use super::common::EventHandlerChain;
+use super::common::{Event, EventHandler, EventHandlerChain};
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
@@ -73,22 +73,6 @@ impl DesiredTaskCountEventResponse {
     }
 }
 
-pub trait DesiredTaskCountHandler: Send + Sync + 'static {
-    /// Function applied to each node that returns a [DesiredTaskCountEventResponse] hinting how
-    /// many tasks should be used in the [Stage] containing that node.
-    ///
-    /// All the [TaskEstimator] registered in the session will be applied to the node
-    /// until one returns an estimation.
-    ///
-    ///
-    /// If no estimation is returned from any of the registered [TaskEstimator]s, then:
-    /// - If the node is a leaf node,`Maximum(1)` is assumed, hinting the distributed planner
-    ///   that the leaf node cannot be distributed across tasks.
-    /// - If the node is a normal node in the plan, then the maximum task count from its children
-    ///   is inherited.
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse>;
-}
-
 impl From<TaskCountAnnotation> for usize {
     fn from(annotation: TaskCountAnnotation) -> Self {
         annotation.as_usize()
@@ -120,37 +104,49 @@ impl TaskCountAnnotation {
     }
 }
 
-impl<F> DesiredTaskCountHandler for F
+/// Function applied to each node that returns a [DesiredTaskCountEventResponse] hinting how
+/// many tasks should be used in the [Stage] containing that node.
+///
+/// All the [TaskEstimator] registered in the session will be applied to the node
+/// until one returns an estimation.
+///
+///
+/// If no estimation is returned from any of the registered [TaskEstimator]s, then:
+/// - If the node is a leaf node,`Maximum(1)` is assumed, hinting the distributed planner
+///   that the leaf node cannot be distributed across tasks.
+/// - If the node is a normal node in the plan, then the maximum task count from its children
+///   is inherited.
+pub struct DesiredTaskCountHandler;
+
+impl DesiredTaskCountHandler {
+    pub(crate) fn handle(ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
+        let handlers = ev
+            .session_config
+            .get_extension::<EventHandlerChain<DesiredTaskCountHandler>>()?;
+        handlers.handle(ev)
+    }
+}
+
+impl Event for DesiredTaskCountHandler {
+    type Data<'a> = DesiredTaskCountEvent<'a>;
+    type Response = DesiredTaskCountEventResponse;
+}
+
+impl<F> EventHandler<DesiredTaskCountHandler> for F
 where
     F: Send + Sync + 'static,
     F: for<'a> Fn(DesiredTaskCountEvent<'a>) -> Option<DesiredTaskCountEventResponse>,
 {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
         self(ev)
     }
 }
 
-impl DesiredTaskCountHandler for usize {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+impl EventHandler<DesiredTaskCountHandler> for usize {
+    fn handle(&self, ev: DesiredTaskCountEvent<'_>) -> Option<DesiredTaskCountEventResponse> {
         ev.plan
             .children()
             .is_empty()
             .then(|| DesiredTaskCountEventResponse::desired(*self))
-    }
-}
-
-impl DesiredTaskCountHandler for Arc<dyn DesiredTaskCountHandler> {
-    fn handle(&self, ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        self.as_ref().handle(ev)
-    }
-}
-
-pub(crate) type DesiredTaskCountHandlers = EventHandlerChain<dyn DesiredTaskCountHandler>;
-
-impl DesiredTaskCountHandlers {
-    pub(crate) fn handle(ev: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        ev.session_config
-            .get_extension::<DesiredTaskCountHandlers>()?
-            .find_map(|handler| handler.handle(ev))
     }
 }

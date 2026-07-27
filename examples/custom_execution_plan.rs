@@ -371,8 +371,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_distributed_channel_resolver(channel_resolver)
         .with_distributed_planner()
         .with_distributed_user_codec(NumbersExecCodec)
-        .with_distributed_desired_task_count_handler(numbers_desired_task_count_handler)
-        .with_distributed_scale_up_leaf_node_handler(numbers_scale_up_leaf_node_handler)
+        .with_distributed_event_handler(numbers_desired_task_count_handler)
+        .with_distributed_event_handler(numbers_scale_up_leaf_node_handler)
         .build();
 
     let ctx = SessionContext::from(state);

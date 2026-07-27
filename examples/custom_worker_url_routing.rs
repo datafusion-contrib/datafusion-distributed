@@ -343,9 +343,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_distributed_worker_resolver(LocalHostWorkerResolver::new(ports))
         .with_distributed_planner()
         .with_distributed_user_codec(CachedFileScanCodec)
-        .with_distributed_desired_task_count_handler(cached_file_scan_desired_task_count_handler)
-        .with_distributed_scale_up_leaf_node_handler(cached_file_scan_scale_up_leaf_node_handler)
-        .with_distributed_route_tasks_handler(cached_file_scan_route_tasks_handler)
+        .with_distributed_event_handler(cached_file_scan_desired_task_count_handler)
+        .with_distributed_event_handler(cached_file_scan_scale_up_leaf_node_handler)
+        .with_distributed_event_handler(cached_file_scan_route_tasks_handler)
         .build();
     state
         .config_mut()

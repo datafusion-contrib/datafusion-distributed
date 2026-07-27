@@ -1,4 +1,4 @@
-use super::common::EventHandlerChain;
+use super::common::{Event, EventHandler, EventHandlerChain};
 use datafusion::error::Result;
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
@@ -20,7 +20,7 @@ pub struct ScaleUpLeafNodeEvent<'a> {
     pub session_config: &'a SessionConfig,
 }
 
-/// A replacement plan returned by a [`ScaleUpLeafNodeHandler`].
+/// A replacement plan returned by a [`EventHandler<ScaleUpLeafNodeHandler>`].
 ///
 /// The distributed planner annotates every node in this plan with the final stage task count, so
 /// the replacement may be a small subtree rather than only a single leaf node.
@@ -38,34 +38,39 @@ impl ScaleUpLeafNodeEventResponse {
 
 /// Handles optional leaf rewrites after a stage's task count is final.
 ///
-/// Handlers are evaluated in reverse registration order. Return `Ok(Some(_))` to select a
-/// replacement and stop dispatch, or `Ok(None)` to let earlier handlers try the same leaf. If all
-/// handlers return `None`, the original leaf is left unchanged. Returning an error aborts planning.
-pub trait ScaleUpLeafNodeHandler: Send + Sync + 'static {
+/// Custom handlers are evaluated in registration order, followed by built-in handlers. Return
+/// `Some(Ok(_))` to select a replacement and stop dispatch, or `None` to let the next handler try
+/// the same leaf. If all handlers return `None`, the original leaf is left unchanged. Returning
+/// `Some(Err(_))` aborts planning.
+pub struct ScaleUpLeafNodeHandler;
+
+impl ScaleUpLeafNodeHandler {
+    pub(crate) fn handle(
+        ev: ScaleUpLeafNodeEvent<'_>,
+    ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+        let handlers = ev
+            .session_config
+            .get_extension::<EventHandlerChain<ScaleUpLeafNodeHandler>>()?;
+        handlers.handle(ev)
+    }
+}
+
+impl Event for ScaleUpLeafNodeHandler {
+    type Data<'a> = ScaleUpLeafNodeEvent<'a>;
+    type Response = Result<ScaleUpLeafNodeEventResponse>;
+}
+
+impl<F> EventHandler<ScaleUpLeafNodeHandler> for F
+where
+    F: Send + Sync + 'static,
+    F: for<'a> Fn(ScaleUpLeafNodeEvent<'a>) -> Option<Result<ScaleUpLeafNodeEventResponse>>,
+{
     /// Optionally replaces the leaf described by `ev`.
     ///
     /// `ev.task_count` already accounts for the constraints and desired counts of every leaf in
     /// the stage. Implementations should use it when creating the per-task variants of the
     /// replacement plan.
-    fn handle(&self, ev: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>>;
-}
-
-impl<F> ScaleUpLeafNodeHandler for F
-where
-    F: Send + Sync + 'static,
-    F: for<'a> Fn(ScaleUpLeafNodeEvent<'a>) -> Option<Result<ScaleUpLeafNodeEventResponse>>,
-{
-    fn handle(&self, ev: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    fn handle(&self, ev: ScaleUpLeafNodeEvent<'_>) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
         self(ev)
-    }
-}
-
-pub(crate) type ScaleUpLeafNodeHandlers = EventHandlerChain<dyn ScaleUpLeafNodeHandler>;
-
-impl ScaleUpLeafNodeHandlers {
-    pub(crate) fn handle(ev: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
-        ev.session_config
-            .get_extension::<ScaleUpLeafNodeHandlers>()?
-            .find_map(|handler| handler.handle(ev))
     }
 }

@@ -3,14 +3,14 @@ use super::parquet::register_parquet_tables;
 use crate::coordinator::DistributedExec;
 #[cfg(test)]
 use crate::events::{
-    DesiredTaskCountHandlers, ScaleUpLeafNodeHandlers, file_scan_config_desired_task_count,
-    file_scan_config_scale_up_leaf_node,
+    EventHandlerChain, file_scan_config_desired_task_count, file_scan_config_scale_up_leaf_node,
 };
 use crate::stage::Stage;
 #[cfg(test)]
 use crate::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler,
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, display_plan_ascii,
+    DistributedConfig, DistributedExt, EventHandler, ScaleUpLeafNodeHandler,
+    SessionStateBuilderExt, display_plan_ascii,
     test_utils::in_memory_channel_resolver::InMemoryWorkerResolver,
 };
 use crate::{NetworkBoundaryExt, TaskKey};
@@ -137,7 +137,7 @@ pub(crate) struct TestPlanBuilder {
     distributed_file_scan_config_bytes_per_partition: Option<usize>,
     information_schema: Option<bool>,
     broadcast_joins: bool,
-    desired_task_count_handler: Option<Arc<dyn DesiredTaskCountHandler>>,
+    desired_task_count_handler: Option<Arc<dyn EventHandler<DesiredTaskCountHandler>>>,
     distributed_partial_reduce: Option<bool>,
     distributed_children_isolator_unions: Option<bool>,
     distributed_max_tasks_per_stage: Option<usize>,
@@ -220,7 +220,10 @@ impl TestPlanBuilder {
         self
     }
 
-    pub fn desired_task_count_handler(mut self, handler: impl DesiredTaskCountHandler) -> Self {
+    pub fn desired_task_count_handler(
+        mut self,
+        handler: impl EventHandler<DesiredTaskCountHandler>,
+    ) -> Self {
         self.desired_task_count_handler = Some(Arc::new(handler));
         self
     }
@@ -299,17 +302,17 @@ impl TestPlanBuilder {
             state = state.with_distributed_planner();
         } else {
             let cfg = state.config().get_or_insert_default();
-            DesiredTaskCountHandlers::push_builtin(
+            EventHandlerChain::<DesiredTaskCountHandler>::push_builtin(
                 cfg,
                 Arc::new(file_scan_config_desired_task_count),
             );
-            ScaleUpLeafNodeHandlers::push_builtin(
+            EventHandlerChain::<ScaleUpLeafNodeHandler>::push_builtin(
                 cfg,
                 Arc::new(file_scan_config_scale_up_leaf_node),
             );
         }
         if let Some(handler) = self.desired_task_count_handler.clone() {
-            state = state.with_distributed_desired_task_count_handler(handler);
+            state = state.with_distributed_event_handler(handler);
         }
         state.build()
     }

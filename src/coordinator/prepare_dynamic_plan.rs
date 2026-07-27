@@ -70,7 +70,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .merge(Desired(compute_based_task_count));
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
-            // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
+            // Here is where leaf nodes are scaled up by EventHandler<ScaleUpLeafNodeHandler>, and the
             // plan is finally left ready for distribution.
             input_stage.plan = nb_ctx
                 .propagate_task_count_until_network_boundaries(&input_stage.plan, task_count)?;

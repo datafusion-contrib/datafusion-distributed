@@ -2,10 +2,7 @@ use crate::codec::{set_distributed_user_codec, set_distributed_user_codec_arc};
 use crate::config_extension_ext::{
     set_distributed_option_extension, set_distributed_option_extension_from_headers,
 };
-use crate::events::{
-    DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTasksHandler, RouteTasksHandlers,
-    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers,
-};
+use crate::events::{Event, EventHandler, EventHandlerChain};
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
 use crate::work_unit_feed::set_distributed_work_unit_feed;
@@ -575,8 +572,25 @@ pub trait DistributedExt: Sized {
     /// in-place mutation.
     fn set_distributed_local_worker_context(&mut self, local_worker_context: LocalWorkerContext);
 
-    /// Registers a handler that supplies desired or maximum task-count hints for plan nodes.
-    /// The distributed planner reconciles these hints when choosing each stage's task count.
+    /// Registers a distributed-planning event handler.
+    ///
+    /// The event type is inferred from the handler. Three event types are supported:
+    ///
+    /// 1. [`DesiredTaskCountHandler`](crate::DesiredTaskCountHandler) supplies desired or maximum task-count
+    ///    hints while stages are being planned.
+    /// 2. [`ScaleUpLeafNodeHandler`](crate::ScaleUpLeafNodeHandler) replaces leaf nodes with variants specialized
+    ///    for the final number of stage tasks.
+    /// 3. [`RouteTasksHandler`](crate::RouteTasksHandler) assigns each task in a stage to a worker URL.
+    ///
+    /// Custom handlers are called in registration order before built-in handlers. Returning `None`
+    /// means that the handler does not accept the event and dispatch should continue. The first
+    /// `Some` response stops dispatch.
+    ///
+    /// # 1. Desired task count
+    ///
+    /// A desired-task-count handler is called for plan nodes while the distributed planner is
+    /// choosing each stage's task count. It returns a desired or maximum task-count hint, or
+    /// `None` when it does not handle the node.
     ///
     /// A function with the following signature can be provided as argument:
     ///
@@ -591,7 +605,7 @@ pub trait DistributedExt: Sized {
     /// }
     ///
     /// SessionStateBuilder::new()
-    ///     .with_distributed_desired_task_count_handler(handle_custom_desired_task_count);
+    ///     .with_distributed_event_handler(handle_custom_desired_task_count);
     /// ```
     ///
     /// ```text
@@ -599,20 +613,12 @@ pub trait DistributedExt: Sized {
     /// │CustomDataSource│──────────▶ 3 desired tasks
     /// └────────────────┘
     /// ```
-    fn with_distributed_desired_task_count_handler<T: DesiredTaskCountHandler>(
-        self,
-        handler: T,
-    ) -> Self;
-
-    /// Same as [DistributedExt::with_distributed_desired_task_count_handler] but with an
-    /// in-place mutation.
-    fn set_distributed_desired_task_count_handler<T: DesiredTaskCountHandler>(
-        &mut self,
-        handler: T,
-    );
-
-    /// Registers a handler that can replace leaf nodes with distributed variants once the
-    /// distributed planner has decided a final task count.
+    ///
+    /// # 2. Scale up leaf node
+    ///
+    /// A scale-up handler is called after the distributed planner has chosen the final task count
+    /// for a leaf's stage. It can replace the leaf with a distributed variant specialized for
+    /// that task count.
     ///
     /// A function with the following signature can be provided as argument:
     ///
@@ -635,7 +641,7 @@ pub trait DistributedExt: Sized {
     /// }
     ///
     /// SessionStateBuilder::new()
-    ///     .with_distributed_scale_up_leaf_node_handler(handle_custom_scale_up_leaf_node);
+    ///     .with_distributed_event_handler(handle_custom_scale_up_leaf_node);
     /// ```
     ///
     /// ```text
@@ -647,17 +653,11 @@ pub trait DistributedExt: Sized {
     ///                             │└──────────────────┘└──────────────────┘└──────────────────┘│
     ///                             └────────────────────────────────────────────────────────────┘
     /// ```
-    fn with_distributed_scale_up_leaf_node_handler<T: ScaleUpLeafNodeHandler>(
-        self,
-        handler: T,
-    ) -> Self;
-
-    /// Same as [DistributedExt::with_distributed_scale_up_leaf_node_handler] but with an
-    /// in-place mutation.
-    fn set_distributed_scale_up_leaf_node_handler<T: ScaleUpLeafNodeHandler>(&mut self, handler: T);
-
-    /// Registers a handler that maps a stage's task slots to worker URLs before execution.
-    /// A response must contain one URL per task, in task-index order.
+    ///
+    /// # 3. Route tasks
+    ///
+    /// A routing handler is called before a stage starts execution. It maps the stage's task slots
+    /// to worker URLs; a successful response must contain one URL per task, in task-index order.
     ///
     /// A function with the following signature can be provided as argument:
     ///
@@ -677,19 +677,18 @@ pub trait DistributedExt: Sized {
     /// }
     ///
     /// SessionStateBuilder::new()
-    ///     .with_distributed_route_tasks_handler(handle_custom_route_tasks);
+    ///     .with_distributed_event_handler(handle_custom_route_tasks);
     /// ```
     ///
     /// ```text
     /// task 0  ──► http://worker1
-    /// task 1  ──► http://worker2     RouteTasksHandler
+    /// task 1  ──► http://worker2     EventHandler<RouteTasksHandler>
     /// task 2  ──► http://worker3
     /// ```
-    fn with_distributed_route_tasks_handler<T: RouteTasksHandler>(self, handler: T) -> Self;
+    fn with_distributed_event_handler<E: Event, H: EventHandler<E>>(self, handler: H) -> Self;
 
-    /// Same as [DistributedExt::with_distributed_route_tasks_handler] but with an in-place
-    /// mutation.
-    fn set_distributed_route_tasks_handler<T: RouteTasksHandler>(&mut self, handler: T);
+    /// Same as [DistributedExt::with_distributed_event_handler] but with an in-place mutation.
+    fn set_distributed_event_handler<E: Event, H: EventHandler<E>>(&mut self, handler: H);
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -854,16 +853,8 @@ impl DistributedExt for SessionConfig {
         self.set_extension(Arc::new(local_worker_context));
     }
 
-    fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H) {
-        DesiredTaskCountHandlers::push_custom(self, Arc::new(h))
-    }
-
-    fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H) {
-        ScaleUpLeafNodeHandlers::push_custom(self, Arc::new(h));
-    }
-
-    fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H) {
-        RouteTasksHandlers::push_custom(self, Arc::new(h));
+    fn set_distributed_event_handler<E: Event, H: EventHandler<E>>(&mut self, h: H) {
+        EventHandlerChain::<E>::push_custom(self, Arc::new(h));
     }
 
     delegate! {
@@ -958,20 +949,13 @@ impl DistributedExt for SessionConfig {
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
 
-            #[call(set_distributed_desired_task_count_handler)]
+            #[call(set_distributed_event_handler)]
             #[expr($;self)]
-            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
-
-            #[call(set_distributed_scale_up_leaf_node_handler)]
-            #[expr($;self)]
-            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
-
-            #[call(set_distributed_route_tasks_handler)]
-            #[expr($;self)]
-            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+            fn with_distributed_event_handler<E: Event, H: EventHandler<E>>(mut self, h: H) -> Self;
         }
     }
 }
+
 impl DistributedGetterExt for SessionConfig {
     fn get_distributed_worker_resolver(&self) -> Result<Arc<dyn WorkerResolver>, DataFusionError> {
         get_distributed_worker_resolver(self)
@@ -1098,20 +1082,10 @@ impl DistributedExt for SessionStateBuilder {
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
 
-            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
-            #[call(set_distributed_desired_task_count_handler)]
+            fn set_distributed_event_handler<E: Event, H: EventHandler<E>>(&mut self, h: H);
+            #[call(set_distributed_event_handler)]
             #[expr($;self)]
-            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
-
-            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
-            #[call(set_distributed_scale_up_leaf_node_handler)]
-            #[expr($;self)]
-            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
-
-            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
-            #[call(set_distributed_route_tasks_handler)]
-            #[expr($;self)]
-            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+            fn with_distributed_event_handler<E: Event, H: EventHandler<E>>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1243,20 +1217,10 @@ impl DistributedExt for SessionState {
             #[expr($;self)]
             fn with_distributed_local_worker_context(mut self, local_worker_context: LocalWorkerContext) -> Self;
 
-            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
-            #[call(set_distributed_desired_task_count_handler)]
+            fn set_distributed_event_handler<E: Event, H: EventHandler<E>>(&mut self, h: H);
+            #[call(set_distributed_event_handler)]
             #[expr($;self)]
-            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(mut self, h: H) -> Self;
-
-            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
-            #[call(set_distributed_scale_up_leaf_node_handler)]
-            #[expr($;self)]
-            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(mut self, h: H) -> Self;
-
-            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
-            #[call(set_distributed_route_tasks_handler)]
-            #[expr($;self)]
-            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+            fn with_distributed_event_handler<E: Event, H: EventHandler<E>>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1381,20 +1345,10 @@ impl DistributedExt for SessionContext {
             #[expr($;self)]
             fn with_distributed_local_worker_context(self, local_worker_context: LocalWorkerContext) -> Self;
 
-            fn set_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(&mut self, h: H);
-            #[call(set_distributed_desired_task_count_handler)]
+            fn set_distributed_event_handler<E: Event, H: EventHandler<E>>(&mut self, h: H);
+            #[call(set_distributed_event_handler)]
             #[expr($;self)]
-            fn with_distributed_desired_task_count_handler<H: DesiredTaskCountHandler>(self, h: H) -> Self;
-
-            fn set_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(&mut self, h: H);
-            #[call(set_distributed_scale_up_leaf_node_handler)]
-            #[expr($;self)]
-            fn with_distributed_scale_up_leaf_node_handler<H: ScaleUpLeafNodeHandler>(self, h: H) -> Self;
-
-            fn set_distributed_route_tasks_handler<H: RouteTasksHandler>(&mut self, h: H);
-            #[call(set_distributed_route_tasks_handler)]
-            #[expr($;self)]
-            fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(self, h: H) -> Self;
+            fn with_distributed_event_handler<E: Event, H: EventHandler<E>>(self, h: H) -> Self;
         }
     }
 }
