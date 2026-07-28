@@ -40,8 +40,8 @@ The coordinator walks this plan from the leaves upward. When it reaches the
 first point where a network boundary is required, it has enough information to
 close the plan below that boundary as the first stage. Because this stage
 contains a data-source leaf, its cost is calculated from
-`ExecutionPlan::partition_statistics`. The cost model and the registered
-`TaskEstimator` are then used to choose its task count:
+`ExecutionPlan::partition_statistics`. The cost model and the registered desired
+task-count handlers are then used to choose its task count:
 
 ```text
 SortPreservingMergeExec

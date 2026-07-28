@@ -61,9 +61,12 @@ Different organizations have different networking requirements—from Kubernetes
 deployments to cloud provider solutions. This trait allows Distributed
 DataFusion to adapt to various scenarios.
 
-## [TaskEstimator](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/distributed_planner/task_estimator.rs)
+## [Planner event handlers](https://github.com/datafusion-contrib/datafusion-distributed/tree/main/src/events)
 
-Estimates the number of tasks required in the leaf stage of a distributed query.
+Event handlers let applications participate in distinct distributed-planning lifecycle phases:
+`DesiredTaskCountHandler` supplies task-count hints, `ScaleUpLeafNodeHandler`
+specializes leaves after the final count is known, and `RouteTasksHandler` assigns
+task slots to workers.
 
 The number of tasks each stage has is determined from bottom to top. This means
 that leaf stages will decide how many tasks they need to execute based on the
@@ -84,8 +87,9 @@ is needed.
 For custom leaf nodes that need to dispatch work themselves,
 `DistributedTaskContext` exposes `task_index` and `task_count` so execution
 logic can select the appropriate data subset. For example, task 0 of 3 might
-return the first third of rows, task 2 the last third, and so on. See the
-`TaskEstimator` documentation for guidance on which approach to use.
+return the first third of rows, task 2 the last third, and so on. See
+[Distribute a custom `ExecutionPlan`](../user-guide/04-distribute-custom-plan.md)
+for guidance on which approach to use.
 
 ## [ChannelResolver](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/src/protocol/channel_resolver.rs)
 

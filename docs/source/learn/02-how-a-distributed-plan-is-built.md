@@ -79,12 +79,17 @@ The first step is to split the leaf node into different tasks:
 
 Each task will handle a different non-overlapping piece of data.
 
-The number of tasks that will be used for executing leaf nodes is determined by a `TaskEstimator` implementation.
-A default implementation exists for file-based `DataSourceExec` nodes. However, since `DataSourceExec` can be
-customized to represent any data source, users with custom implementations should also provide a corresponding
-`TaskEstimator`.
+The number of tasks that will be used for executing leaf nodes is determined by
+`DesiredTaskCountHandler` implementations. Default handlers exist for file-based
+`DataSourceExec` nodes. However, since `DataSourceExec` can be customized to represent
+any data source, users with custom implementations should also provide corresponding
+desired task-count and leaf-scale handlers.
 
-In the case above, a `TaskEstimator` decided to use four tasks for the leaf node. Note that even if we are distributing
+the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
+partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a
+In the case above, a desired task-count handler decided to use four tasks for the leaf node. Note that even if we are distributing
+the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
+partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a
 the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
 partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a 
 task is a split of data processed by an entire machine within a cluster.
@@ -122,7 +127,7 @@ Flight, and each `NetworkShuffleExec` instance will know from which partitions a
 Note how this means that we have just built the first stage, as the first network boundary was introduced. We are now
 in the process of building the second stage, and note how it has just two tasks.
 
-If the number of tasks in a leaf stage is driven by the hints given by `TaskEstimator`s, the number of tasks in upper
+If the number of tasks in a leaf stage is driven by the hints given by desired task-count handlers, the number of tasks in upper
 stages is driven by the nodes in between that reduce or increase the cardinality of the data.
 
 In this case, the leaf stage is performing a partial aggregation before sending data to the next stage, so we can

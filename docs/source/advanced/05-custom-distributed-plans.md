@@ -73,14 +73,14 @@ many tasks into fewer).
 
 ## Leaf data splitting still happens automatically
 
-Even when you inject the boundaries yourself, the distributed planner runs the registered
-[`TaskEstimator`](../user-guide/04-distribute-custom-plan.md) over each stage's leaves and calls `scale_up_leaf_node` with the
-stage's task count. So a parquet `DataSourceExec` is wrapped in a `DistributedLeafExec` (with one
-per-task file-group variant) by the default file-scan estimator, and a custom leaf is split by whatever
-`TaskEstimator` you registered for it — exactly as in the automatic path. You only place the boundaries;
-the leaves are scaled for you.
+Even when you inject the boundaries yourself, the distributed planner evaluates
+the registered [desired task-count handler](../user-guide/04-distribute-custom-plan.md) and then calls the
+registered `ScaleUpLeafNodeHandler` with each stage's final task count. So a parquet
+`DataSourceExec` is wrapped in a `DistributedLeafExec` (with one per-task file-group variant) by the
+default file-scan handlers, and a custom leaf is split by its registered handlers — exactly as in the
+automatic path. You only place the boundaries; the leaves are scaled for you.
 
-This means a custom leaf node still needs its `TaskEstimator` (and its `scale_up_leaf_node` /
+This means a custom leaf node still needs its desired task-count and leaf-scale handlers (or
 `DistributedTaskContext`-based dispatch) registered, just as it would for automatic planning — you do
 **not** need to hand-build `DistributedLeafExec` in your boundary-injection rule.
 
@@ -110,5 +110,5 @@ There is a complete, runnable example in the `examples/` folder:
 - [custom_distributed_partial_reduction_tree.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/custom_distributed_partial_reduction_tree.rs) —
   a `PhysicalOptimizerRule` that rewrites a `GROUP BY` aggregation over a parquet table into the tree
   above (`Partial → NetworkCoalesce → PartialReduce → NetworkCoalesce → Final`). It only injects the
-  boundaries; the planner's `TaskEstimator` splits the parquet leaf across the leaf-stage tasks
+  boundaries; the planner's default event handlers split the parquet leaf across the leaf-stage tasks
   automatically.
