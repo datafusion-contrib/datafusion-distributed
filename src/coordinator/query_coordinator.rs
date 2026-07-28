@@ -2,7 +2,7 @@ use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
 use crate::coordinator::latency_metric::LatencyMetric;
-use crate::distributed_planner::CombinedTaskEstimator;
+use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::LocalStage;
@@ -12,9 +12,9 @@ use crate::worker::LocalWorkerContext;
 use crate::{
     BytesCounterMetric, BytesMetricExt, CoordinatorToWorkerMsg,
     DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, LoadInfo, NetworkBoundaryExt, SetPlanRequest, Stage,
-    TaskEstimator, TaskKey, TaskRoutingContext, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver, get_distributed_worker_resolver,
+    DistributedWorkUnitFeedContext, LoadInfo, NetworkBoundaryExt, SetPlanRequest, Stage, TaskKey,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    get_distributed_worker_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -375,28 +375,27 @@ impl<'a> StageCoordinator<'a> {
     /// is managing. These URLs can be:
     /// - assigned randomly, if the user did not provide any custom routing.
     /// - chosen by the user, if they provided an implementation for the
-    ///   [TaskEstimator::route_tasks] method.
+    ///   [RouteTasksHandler::route_tasks] method.
     pub(super) fn routed_urls(&self) -> Result<Vec<Url>> {
-        let session_config = self.task_ctx.session_config();
-        let worker_resolver = get_distributed_worker_resolver(session_config)?;
-        let task_estimator = CombinedTaskEstimator::from_session_config(session_config);
-
-        let routed_urls = match task_estimator.route_tasks(&TaskRoutingContext {
+        let ev = RouteTasksEvent {
             task_ctx: Arc::clone(self.task_ctx),
             plan: self.plan,
             task_count: self.task_count,
-        }) {
-            Ok(Some(routed_urls)) => routed_urls,
+        };
+        let routed_urls = match RouteTasksHandlers::handle(ev) {
+            Some(Ok(response)) => response.urls,
             // If the user has not defined custom routing with a `route_tasks` implementation, we
             // default to round-robin task assignation from a randomized starting point.
-            Ok(None) => {
+            None => {
+                let session_config = self.task_ctx.session_config();
+                let worker_resolver = get_distributed_worker_resolver(session_config)?;
                 let available_urls = worker_resolver.get_urls()?;
                 let start_idx = rand::rng().random_range(0..available_urls.len());
                 (0..self.task_count)
                     .map(|i| available_urls[(start_idx + i) % available_urls.len()].clone())
                     .collect()
             }
-            Err(e) => return exec_err!("error routing tasks to workers: {e}"),
+            Some(Err(e)) => return exec_err!("error routing tasks to workers: {e}"),
         };
 
         if routed_urls.len() != self.task_count {

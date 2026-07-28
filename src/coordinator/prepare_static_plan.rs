@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// Prepares the distributed plan for execution, which implies:
 /// 1. Perform some worker URL assignation, choosing either:
-///    - The URLs set by the user with [crate::TaskEstimator::route_tasks].
+///    - The URLs set by the user with [crate::RouteTasksHandler].
 ///    - Randomly otherwise
 /// 2. Sending the sliced subplans to the assigned URLs. For each URL assigned to a task, a
 ///    network call feeding the subplan is necessary.

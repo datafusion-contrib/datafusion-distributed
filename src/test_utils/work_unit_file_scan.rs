@@ -5,7 +5,10 @@
 //! the latency impact of routing file scan inputs through the work unit
 //! pipeline as compared to the regular [`FileScanConfig`] path.
 
-use crate::{DistributedConfig, TaskCountAnnotation, TaskEstimation, TaskEstimator};
+use crate::{
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig, ScaleUpLeafNodeEvent,
+    ScaleUpLeafNodeEventResponse,
+};
 use crate::{WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -344,78 +347,61 @@ impl PhysicalOptimizerRule for WorkUnitFileScanRule {
     }
 }
 
-/// [`TaskEstimator`] for [`WorkUnitFileScanConfig`] leaves that delegates to
-/// the built-in [`FileScanConfigTaskEstimator`]: we synthesize a regular
-/// `DataSourceExec(FileScanConfig)` carrying the same files currently stored
-/// in the work-unit feed, hand it to the underlying estimator, and then
-/// re-wrap the result back into our work-unit-flavored data source.
+/// Computes a soft task-count hint from the total size of the files held by a
+/// [`WorkUnitFileScanConfig`]'s feed.
 ///
-/// `FileScanConfigTaskEstimator::scale_up_leaf_node` returns a
-/// `PartitionIsolatorExec(DataSourceExec(FileScanConfig))`. We unwrap that
-/// here: the `PartitionIsolatorExec` itself must not appear in the final plan
-/// because the per-task feed routing already handles per-task isolation. We
-/// only keep the inner `FileScanConfig`'s file groups, flatten them back into
-/// one `PartitionedFile` per feed slot, and feed them into a freshly built
-/// `WorkUnitFileScanConfig`.
-#[derive(Debug, Default)]
-pub struct WorkUnitFileScanTaskEstimator;
+/// This follows the same byte-budget calculation as the default file-scan
+/// handler: each task may scan up to
+/// `file_scan_config_bytes_per_partition * target_partitions` bytes.
+pub fn work_unit_file_scan_desired_task_count(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    let cfg = ev.session_config;
+    let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
+    let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
 
-impl TaskEstimator for WorkUnitFileScanTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        let dse = plan.downcast_ref::<DataSourceExec>()?;
-        let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
+    let d_cfg = DistributedConfig::from_session_config(cfg).ok()?;
 
-        // Same as FileScanConfigTaskEstimator.task_estimation.
-        let d_cfg = cfg.extensions.get::<DistributedConfig>()?;
-
-        let mut total_bytes = 0;
-        for file_group in &wfs.feed.inner()?.file_groups {
-            for file in file_group.files() {
-                total_bytes += file.effective_size() as usize;
-            }
+    let mut total_bytes = 0;
+    for file_group in &wfs.feed.inner()?.file_groups {
+        for file in file_group.files() {
+            total_bytes += file.effective_size() as usize;
         }
-
-        let task_count = total_bytes
-            .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
-            .div_ceil(cfg.execution.target_partitions);
-
-        Some(TaskEstimation {
-            task_count: TaskCountAnnotation::Desired(task_count),
-        })
     }
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _cfg: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(dse) = plan.downcast_ref::<DataSourceExec>() else {
-            return Ok(None);
-        };
-        let Some(wfs) = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>() else {
-            return Ok(None);
-        };
+    let task_count = total_bytes
+        .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
+        .div_ceil(cfg.target_partitions());
 
-        let wuf_provider = wfs.feed.try_inner()?;
+    Some(DesiredTaskCountEventResponse::desired(task_count))
+}
 
-        // Same as FileScanConfigTaskEstimator.scale_up_leaf_node
-        let mut new_file_groups = vec![];
-        for file_group in wuf_provider.file_groups.clone() {
-            new_file_groups.extend(file_group.split_files(task_count));
-        }
+/// Rebuilds a work-unit file scan after the stage task count is finalized.
+///
+/// The work-unit feed owns task-local file assignment, so this handler splits
+/// the feed's file groups across the selected tasks and builds a fresh
+/// [`WorkUnitFileScanConfig`]. It deliberately does not introduce the default
+/// file-scan partition isolator: that wrapper would be redundant, because the
+/// work-unit feed already isolates each task's files.
+pub fn work_unit_file_scan_scale_up_leaf_node(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
+    let wfs = dse.data_source().downcast_ref::<WorkUnitFileScanConfig>()?;
 
-        let new_provider = FileScanWorkUnitProvider::new(new_file_groups);
-        Ok(Some(
-            DataSourceExec::from_data_source(WorkUnitFileScanConfig {
-                feed: WorkUnitFeed::new(new_provider),
-                fsc: wfs.fsc.clone(),
-                partitions: wfs.partitions,
-            }) as Arc<dyn ExecutionPlan>,
-        ))
+    let wuf_provider = wfs.feed.inner()?;
+
+    let mut new_file_groups = vec![];
+    for file_group in wuf_provider.file_groups.clone() {
+        new_file_groups.extend(file_group.split_files(ev.task_count));
     }
+
+    let new_provider = FileScanWorkUnitProvider::new(new_file_groups);
+    Some(Ok(ScaleUpLeafNodeEventResponse::new(
+        DataSourceExec::from_data_source(WorkUnitFileScanConfig {
+            feed: WorkUnitFeed::new(new_provider),
+            fsc: wfs.fsc.clone(),
+            partitions: wfs.partitions,
+        }) as Arc<dyn ExecutionPlan>,
+    )))
 }

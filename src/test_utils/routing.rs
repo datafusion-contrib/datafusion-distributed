@@ -20,11 +20,13 @@ use futures::stream;
 use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
 use tonic::async_trait;
-use url::Url;
 
 use crate::execution_plans::DistributedLeafExec;
 use crate::worker::LocalWorkerContext;
-use crate::{DistributedTaskContext, TaskEstimation, TaskEstimator, WorkerResolver};
+use crate::{
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedTaskContext, RouteTasksEvent,
+    RouteTasksEventResponse, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver,
+};
 
 use crate::distributed_ext::DistributedGetterExt;
 // Table function that creates a `URLEmitterExec` for testing task routing.
@@ -243,54 +245,47 @@ fn url_emitter_schema() -> SchemaRef {
     ]))
 }
 
-#[derive(Clone)]
-pub struct URLEmitterTaskEstimator;
+pub fn url_emitter_desired_task_count(
+    ev: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    ev.plan
+        .downcast_ref::<URLEmitterExec>()
+        .map(|exec| DesiredTaskCountEventResponse::desired(exec.task_count))
+}
 
-impl TaskEstimator for URLEmitterTaskEstimator {
-    fn task_estimation(
-        &self,
-        plan: &std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-        _cfg: &datafusion::config::ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        plan.downcast_ref::<URLEmitterExec>()
-            .map(|exec| TaskEstimation::desired(exec.task_count))
-    }
+pub fn url_emitter_scale_up_leaf_node(
+    ev: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let exec = ev.plan.downcast_ref::<URLEmitterExec>()?;
+    let p = exec.properties.partitioning.partition_count();
+    // Expose ceil(p / task_count) partitions per task so the network boundary
+    // computes a consistent output partition count.
+    let visible = p.div_ceil(ev.task_count).max(1);
+    let template = Arc::new(exec.clone().with_partitions(visible, visible));
 
-    fn scale_up_leaf_node(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        task_count: usize,
-        _cfg: &datafusion::config::ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(exec) = plan.downcast_ref::<URLEmitterExec>() else {
-            return Ok(None);
-        };
-        let p = exec.properties.partitioning.partition_count();
-        // Expose ceil(p / task_count) partitions per task so the network boundary
-        // computes a consistent output partition count.
-        let visible = p.div_ceil(task_count).max(1);
-        let template = Arc::new(exec.clone().with_partitions(visible, visible));
+    // Distribute p partitions across task_count tasks using the floor/remainder algorithm:
+    // the first (p % task_count) tasks get ceil(p/task_count) effective partitions, the rest
+    // get floor — using the floor/remainder distribution algorithm.
+    let q = p / ev.task_count;
+    let r = p % ev.task_count;
+    let per_task: Vec<Arc<dyn ExecutionPlan>> = (0..ev.task_count)
+        .map(|task_idx| {
+            let effective = q + if task_idx < r { 1 } else { 0 };
+            Arc::new(exec.clone().with_partitions(visible, effective)) as _
+        })
+        .collect();
 
-        // Distribute p partitions across task_count tasks using the floor/remainder algorithm:
-        // the first (p % task_count) tasks get ceil(p/task_count) effective partitions, the rest
-        // get floor — using the floor/remainder distribution algorithm.
-        let q = p / task_count;
-        let r = p % task_count;
-        let per_task: Vec<Arc<dyn ExecutionPlan>> = (0..task_count)
-            .map(|task_idx| {
-                let effective = q + if task_idx < r { 1 } else { 0 };
-                Arc::new(exec.clone().with_partitions(visible, effective)) as _
-            })
-            .collect();
+    Some(Ok(ScaleUpLeafNodeEventResponse::new(
+        match DistributedLeafExec::try_new(template as _, per_task) {
+            Ok(exec) => Arc::new(exec),
+            Err(err) => return Some(Err(err)),
+        },
+    )))
+}
 
-        Ok(Some(Arc::new(DistributedLeafExec::try_new(
-            template as _,
-            per_task,
-        )?)))
-    }
-
-    fn route_tasks(&self, routing_ctx: &crate::TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>> {
-        let mut routed_urls = routing_ctx
+pub fn url_emitter_route_tasks(ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
+    Some((|| {
+        let mut routed_urls = ev
             .task_ctx
             .session_config()
             .get_distributed_worker_resolver()?
@@ -298,9 +293,9 @@ impl TaskEstimator for URLEmitterTaskEstimator {
 
         // Trivial routing policy: Assign tasks to URLs in reverse order.
         routed_urls.reverse();
-        routed_urls.truncate(routing_ctx.task_count);
-        Ok(Some(routed_urls))
-    }
+        routed_urls.truncate(ev.task_count);
+        Ok(RouteTasksEventResponse::new(routed_urls))
+    })())
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

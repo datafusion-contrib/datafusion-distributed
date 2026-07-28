@@ -1,16 +1,18 @@
-use crate::TaskCountAnnotation::{Desired, Maximum};
-use crate::distributed_planner::{CombinedTaskEstimator, TaskEstimator};
+use crate::events::TaskCountAnnotation::{Desired, Maximum};
+use crate::events::{
+    DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
+    TaskCountAnnotation,
+};
 use crate::execution_plans::{ChildWeight, ChildrenIsolatorUnionExec};
 use crate::stage::LocalStage;
 use crate::worker_resolver::WorkerResolverExtension;
 use crate::{
     BroadcastExec, DistributedConfig, NetworkBoundaryExt, NetworkBroadcastExec,
-    NetworkCoalesceExec, NetworkShuffleExec, Stage, TaskCountAnnotation,
+    NetworkCoalesceExec, NetworkShuffleExec, Stage,
 };
 use async_trait::async_trait;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, plan_err};
-use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -140,12 +142,10 @@ pub(crate) async fn inject_network_boundaries(
     nb_builder: impl NetworkBoundaryBuilder + Send + Sync,
     session_cfg: &SessionConfig,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let cfg = session_cfg.options();
     let ctx = InjectNetworkBoundaryContext {
-        cfg,
-        d_cfg: DistributedConfig::from_config_options(cfg)?,
+        cfg: session_cfg,
+        d_cfg: DistributedConfig::from_session_config(session_cfg)?,
         worker_resolver: WorkerResolverExtension::from_session_config(session_cfg),
-        task_estimator: CombinedTaskEstimator::from_session_config(session_cfg),
         nb_builder: &nb_builder,
         task_counts: &Mutex::new(HashMap::new()),
         query_id: Uuid::new_v4(),
@@ -159,9 +159,8 @@ pub(crate) async fn inject_network_boundaries(
 pub(crate) struct InjectNetworkBoundaryContext<'a> {
     pub(crate) d_cfg: &'a DistributedConfig,
 
-    cfg: &'a ConfigOptions,
+    cfg: &'a SessionConfig,
     worker_resolver: Arc<WorkerResolverExtension>,
-    task_estimator: Arc<CombinedTaskEstimator>,
     nb_builder: &'a (dyn NetworkBoundaryBuilder + Send + Sync),
     task_counts: &'a Mutex<HashMap<usize, TaskCountAnnotation>>,
     query_id: Uuid,
@@ -229,13 +228,16 @@ async fn _inject_network_boundaries(
     nb_ctx: &InjectNetworkBoundaryContext<'_>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let broadcast_joins_enabled = nb_ctx.d_cfg.broadcast_joins;
-    let estimator = nb_ctx.task_estimator.as_ref();
 
     if plan.children().is_empty() {
         // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
         // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
         // this decision into account when deciding how many tasks will be actually used.
-        return if let Some(estimate) = estimator.task_estimation(&plan, nb_ctx.cfg) {
+        let ev = DesiredTaskCountEvent {
+            plan: &plan,
+            session_config: nb_ctx.cfg,
+        };
+        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev) {
             Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -255,9 +257,11 @@ async fn _inject_network_boundaries(
     }
     let processed_children = futures::future::try_join_all(futures).await?;
 
-    let mut task_count = estimator
-        .task_estimation(&plan, nb_ctx.cfg)
-        .map_or(Desired(1), |v| v.task_count);
+    let ev = DesiredTaskCountEvent {
+        plan: &plan,
+        session_config: nb_ctx.cfg,
+    };
+    let mut task_count = DesiredTaskCountHandlers::handle(ev).map_or(Desired(1), |v| v.task_count);
     if plan.is::<ChildrenIsolatorUnionExec>() {
         // Isolating unions have the chance to decide how many tasks they should run on. If there
         // is a union with a bunch of children, the user might want to increase parallelism and the
@@ -415,15 +419,16 @@ impl InjectNetworkBoundaryContext<'_> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Handle leaf nodes.
         if plan.children().is_empty() {
-            let scaled_up = self.task_estimator.as_ref().scale_up_leaf_node(
+            let ev = ScaleUpLeafNodeEvent {
                 plan,
-                task_count.as_usize(),
-                self.cfg,
-            )?;
-            match scaled_up {
+                task_count: task_count.as_usize(),
+                session_config: self.cfg,
+            };
+            match ScaleUpLeafNodeHandlers::handle(ev) {
                 None => Ok(self.plan_with_task_count(Arc::clone(plan), task_count)),
-                Some(scaled_up) => {
+                Some(response) => {
                     // The scaled up subtree may contain more than 1 node.
+                    let scaled_up = response?.plan;
                     scaled_up.apply(|plan| {
                         self.set_task_count(plan, task_count);
                         Ok(TreeNodeRecursion::Continue)
@@ -627,9 +632,8 @@ mod tests {
     use super::*;
     use crate::distributed_planner::insert_broadcast::insert_broadcast_execs;
     use crate::distributed_planner::insert_children_isolator_union::insert_children_isolator_unions;
-    use crate::test_utils::plans::{BuildSideOneTaskEstimator, TestPlanBuilder};
-    use crate::{TaskEstimation, TaskEstimator, assert_snapshot};
-    use datafusion::config::ConfigOptions;
+    use crate::test_utils::plans::{TestPlanBuilder, build_side_one_desired_task_count_handler};
+    use crate::{DesiredTaskCountEvent, DesiredTaskCountEventResponse, assert_snapshot};
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     /* schema for the "weather" table
 
@@ -922,17 +926,13 @@ mod tests {
         let query = r#"
         SELECT DISTINCT "RainToday" FROM weather
         "#;
-        let task_estimator: Arc<dyn TaskEstimator + Send + Sync + 'static> =
-            Arc::new(CallbackEstimator::new(|_: &RepartitionExec| {
-                Some(TaskEstimation::maximum(1))
-            }));
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
-            .distributed_task_estimator(task_estimator);
+            .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         AggregateExec: task_count=Desired(1)
@@ -950,17 +950,13 @@ mod tests {
         UNION ALL
         SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
         "#;
-        let task_estimator: Arc<dyn TaskEstimator + Send + Sync + 'static> =
-            Arc::new(CallbackEstimator::new(|_: &RepartitionExec| {
-                Some(TaskEstimation::maximum(1))
-            }));
         let test_plan_builder = TestPlanBuilder::new()
             .target_partitions(4)
             .num_workers(4)
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(false)
-            .distributed_task_estimator(task_estimator);
+            .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(2)
@@ -1052,7 +1048,7 @@ mod tests {
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
-            .distributed_task_estimator(BuildSideOneTaskEstimator);
+            .desired_task_count_handler(build_side_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Desired(3)
@@ -1077,7 +1073,7 @@ mod tests {
             // annotate_test_plan wants this as false so its s a single node plan
             .distributed_planner(false)
             .broadcast_joins(true)
-            .distributed_task_estimator(BroadcastBuildCoalesceMaxEstimator);
+            .desired_task_count_handler(broadcast_build_coalesce_max_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
@@ -1191,70 +1187,22 @@ mod tests {
         ");
     }
 
-    #[allow(clippy::type_complexity)]
-    struct CallbackEstimator {
-        f: Arc<dyn Fn(&dyn ExecutionPlan) -> Option<TaskEstimation> + Send + Sync>,
+    fn repartition_max_one_desired_task_count_handler(
+        ev: DesiredTaskCountEvent,
+    ) -> Option<DesiredTaskCountEventResponse> {
+        ev.plan
+            .is::<RepartitionExec>()
+            .then(|| DesiredTaskCountEventResponse::maximum(1))
     }
 
-    impl CallbackEstimator {
-        fn new<T: ExecutionPlan + 'static>(
-            f: impl Fn(&T) -> Option<TaskEstimation> + Send + Sync + 'static,
-        ) -> Self {
-            let f = Arc::new(move |plan: &dyn ExecutionPlan| -> Option<TaskEstimation> {
-                if let Some(plan) = plan.downcast_ref::<T>() {
-                    f(plan)
-                } else {
-                    None
-                }
-            });
-            Self { f }
-        }
-    }
-
-    impl TaskEstimator for CallbackEstimator {
-        fn task_estimation(
-            &self,
-            plan: &Arc<dyn ExecutionPlan>,
-            _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            (self.f)(plan.as_ref())
-        }
-
-        fn scale_up_leaf_node(
-            &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-            Ok(None)
-        }
-    }
-
-    #[derive(Debug)]
-    struct BroadcastBuildCoalesceMaxEstimator;
-
-    impl TaskEstimator for BroadcastBuildCoalesceMaxEstimator {
-        fn task_estimation(
-            &self,
-            plan: &Arc<dyn ExecutionPlan>,
-            _: &ConfigOptions,
-        ) -> Option<TaskEstimation> {
-            let coalesce = plan.downcast_ref::<CoalescePartitionsExec>()?;
-            if coalesce.input().is::<BroadcastExec>() {
-                Some(TaskEstimation::maximum(1))
-            } else {
-                None
-            }
-        }
-
-        fn scale_up_leaf_node(
-            &self,
-            _: &Arc<dyn ExecutionPlan>,
-            _: usize,
-            _: &ConfigOptions,
-        ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-            Ok(None)
-        }
+    fn broadcast_build_coalesce_max_desired_task_count_handler(
+        ev: DesiredTaskCountEvent,
+    ) -> Option<DesiredTaskCountEventResponse> {
+        ev.plan
+            .downcast_ref::<CoalescePartitionsExec>()?
+            .input()
+            .is::<BroadcastExec>()
+            .then(|| DesiredTaskCountEventResponse::maximum(1))
     }
 
     async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {
@@ -1267,10 +1215,9 @@ mod tests {
         let plan = insert_children_isolator_unions(plan, session_config.options())
             .expect("failed to insert children isolator unions");
         let network_boundaries_ctx = InjectNetworkBoundaryContext {
-            cfg: session_config.options(),
+            cfg: &session_config,
             d_cfg: DistributedConfig::from_config_options(session_config.options()).unwrap(),
             worker_resolver: WorkerResolverExtension::from_session_config(&session_config),
-            task_estimator: CombinedTaskEstimator::from_session_config(&session_config),
             task_counts: &Mutex::new(HashMap::new()),
             query_id: Uuid::new_v4(),
             stage_id: &AtomicUsize::new(1),

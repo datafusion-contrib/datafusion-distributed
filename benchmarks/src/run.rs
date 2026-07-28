@@ -30,7 +30,7 @@ use datafusion::prelude::*;
 use datafusion_distributed::test_utils::localhost::LocalHostWorkerResolver;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
     WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanRule,
-    WorkUnitFileScanTaskEstimator,
+    work_unit_file_scan_desired_task_count, work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
@@ -216,7 +216,8 @@ impl RunOpt {
             )?
             .with_distributed_max_tasks_per_stage(self.max_tasks_per_stage)?
             .with_distributed_user_codec(WorkUnitFileScanCodec)
-            .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
+            .with_distributed_desired_task_count_handler(work_unit_file_scan_desired_task_count)
+            .with_distributed_scale_up_leaf_node_handler(work_unit_file_scan_scale_up_leaf_node)
             .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
                 dse.data_source()
                     .downcast_ref::<WorkUnitFileScanConfig>()

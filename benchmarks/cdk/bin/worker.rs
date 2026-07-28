@@ -12,7 +12,8 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::execute_stream;
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::test_utils::work_unit_file_scan::{
-    WorkUnitFileScanCodec, WorkUnitFileScanConfig, WorkUnitFileScanTaskEstimator,
+    WorkUnitFileScanCodec, WorkUnitFileScanConfig, work_unit_file_scan_desired_task_count,
+    work_unit_file_scan_scale_up_leaf_node,
 };
 use datafusion_distributed::{
     ChannelResolver, DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt,
@@ -121,7 +122,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Uncomment for enabling WorkUnitFileScans.
         // .with_physical_optimizer_rule(Arc::new(WorkUnitFileScanRule))
         .with_distributed_user_codec(WorkUnitFileScanCodec)
-        .with_distributed_task_estimator(WorkUnitFileScanTaskEstimator)
+        .with_distributed_desired_task_count_handler(work_unit_file_scan_desired_task_count)
+        .with_distributed_scale_up_leaf_node_handler(work_unit_file_scan_scale_up_leaf_node)
         .with_distributed_work_unit_feed(|dse: &DataSourceExec| {
             dse.data_source()
                 .downcast_ref::<WorkUnitFileScanConfig>()
