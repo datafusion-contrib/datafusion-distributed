@@ -5,6 +5,7 @@ use crate::common::serialize_uuid;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::protocol::generated::worker as pb;
 use crate::protocol::generated::worker::FlightAppMetadata;
+use crate::protocol::generated::worker_grpc::worker_service_client::WorkerServiceClient;
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
     FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
@@ -43,7 +44,7 @@ use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
 
 #[async_trait]
-impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSyncChannel> {
+impl WorkerChannel for WorkerServiceClient<BoxCloneSyncChannel> {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
@@ -567,7 +568,7 @@ fn fanout(o_txs: &[UnboundedSender<WorkerMsg>], err: Status) {
 /// ```
 pub fn create_worker_client(channel: BoxCloneSyncChannel) -> Box<dyn WorkerChannel> {
     Box::new(
-        pb::worker_service_client::WorkerServiceClient::new(channel)
+        WorkerServiceClient::new(channel)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX),
     )

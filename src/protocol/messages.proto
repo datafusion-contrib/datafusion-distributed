@@ -1,16 +1,6 @@
 syntax = "proto3";
 package worker;
 
-service WorkerService {
-  // Establishes a bidirectional message stream between a coordinator and a worker, over which messages
-  // will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
-  // per task.
-  rpc CoordinatorChannel(stream CoordinatorToWorkerMsg) returns (stream WorkerToCoordinatorMsg);
-  // Executes the requested partition range of a subplan previously sent by the coordinator channel.
-  rpc ExecuteTask(ExecuteTaskRequest) returns (stream FlightData);
-  // Returns metadata about a worker. Currently only used for worker versioning.
-  rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
-}
 
 message CoordinatorToWorkerMsg {
   oneof inner {
