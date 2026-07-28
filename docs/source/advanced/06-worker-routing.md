@@ -5,25 +5,28 @@ round-robin. When a task's data has a *home* — a worker that already holds it 
 cache or on local disk — you can send the task **there** instead, so it reads
 locally instead of pulling data over the network.
 
-Routing is the third method of the
-[`TaskEstimator`](../user-guide/04-distribute-custom-plan.md) trait, `route_tasks`. It receives
-a `TaskRoutingContext` (the head plan of the stage, the task count, and the active
+Routing is handled by a registered `RouteTasksHandler`. It receives a
+`RouteTasksEvent` (the head plan of the stage, the task count, and the active
 `TaskContext`) and returns one worker URL per task, in task order:
 
 ```rust
-fn route_tasks(&self, routing_ctx: &TaskRoutingContext<'_>) -> Result<Option<Vec<Url>>>;
+fn route_tasks(event: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>>;
 ```
 
-- `Ok(Some(urls))` — task `i` is sent to `urls[i]`.
-- `Ok(None)` — the default; keep the round-robin behaviour.
+- `Some(Ok(RouteTasksEventResponse::new(urls)))` — task `i` is sent to `urls[i]`.
+- `None` — defer to the next handler; the built-in fallback keeps the round-robin behaviour.
 
-Because `route_tasks` is part of `TaskEstimator`, you implement it on the same
-estimator you register with `with_distributed_task_estimator`.
+Register it on the coordinating session builder:
 
-Routing pairs naturally with `scale_up_leaf_node`: that decides *what* data task
-`i` reads, and `route_tasks` decides *where* it runs. If your estimator returned a
-`DistributedLeafExec`, its `variants()` are in task order too, so you can line up
-each task's data with the worker that should serve it.
+```rust
+SessionStateBuilder::new()
+    .with_distributed_route_tasks_handler(route_tasks);
+```
+
+Routing pairs naturally with `ScaleUpLeafNodeHandler`: that decides *what* data
+task `i` reads, and `RouteTasksHandler` decides *where* it runs. If the leaf-scale
+handler returns a `DistributedLeafExec`, its `variants()` are in task order too,
+so you can line up each task's data with the worker that should serve it.
 
 For a complete, runnable walkthrough — parquet files consistently routed to
 workers by rendezvous hashing of the file path, so each worker can serve them from

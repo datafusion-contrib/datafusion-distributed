@@ -101,73 +101,63 @@ node is encoded on one side and decoded on the other.
 
 ## 2. Choose how many tasks to use
 
-Implement `TaskEstimator` and register it with
-`.with_distributed_task_estimator(...)`. Its first method, `task_estimation`,
-tells the planner how many tasks the stage containing your leaf should run on.
+Register a `DesiredTaskCountHandler` with
+`.with_distributed_desired_task_count_handler(...)`. It tells the planner how
+many tasks the stage containing your leaf should run on.
 For a sharded scan, one task per shard is a natural choice:
 
 ```rust
-impl TaskEstimator for ShardedScanEstimator {
-    fn task_estimation(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _cfg: &ConfigOptions,
-    ) -> Option<TaskEstimation> {
-        // Only estimate for our own node; returning None lets other estimators try.
-        let scan = plan.downcast_ref::<ShardedScanExec>()?;
-        // One task per shard — the planner caps this at the number of workers.
-        Some(TaskEstimation::desired(scan.shards.len()))
-    }
-
-    // scale_up_leaf_node: see the next section.
+fn sharded_scan_desired_task_count(
+    event: DesiredTaskCountEvent,
+) -> Option<DesiredTaskCountEventResponse> {
+    // Only handle our own node; returning None lets other handlers try.
+    let scan = event.plan.downcast_ref::<ShardedScanExec>()?;
+    // One task per shard — the planner caps this at the number of workers.
+    Some(DesiredTaskCountEventResponse::desired(scan.shards.len()))
 }
 ```
 
 What the return value means:
 
-- `TaskEstimation::desired(n)` — a **soft** hint. The planner may land on a
+- `DesiredTaskCountEventResponse::desired(n)` — a **soft** hint. The planner may land on a
   different number: within a stage the largest `desired` wins, and the count is
   capped at the number of available workers.
-- `TaskEstimation::maximum(n)` — a **hard** cap. `maximum(1)` means "this node
+- `DesiredTaskCountEventResponse::maximum(n)` — a **hard** cap. `maximum(1)` means "this node
   cannot be distributed."
-- `None` — defer to the other registered estimators (and finally the built-in
-  file-scan estimator).
+- `None` — defer to the other registered handlers (and finally the built-in
+  file-scan handler).
 
 To send each task to a specific worker instead of the default round-robin, see
 [Routing tasks to workers](../advanced/06-worker-routing.md).
 
 ## 3. Split the work across tasks
 
-Once the final task count is settled, the planner calls
-`scale_up_leaf_node(plan, task_count, cfg)` on your estimator. This is where you
-divide the leaf's work into `task_count` **non-overlapping** pieces — here, by
-handing each task its own subset of shards.
+Once the final task count is settled, the planner calls the registered
+`ScaleUpLeafNodeHandler`. This is where you divide the leaf's work into
+`event.task_count` **non-overlapping** pieces — here, by handing each task its
+own subset of shards.
 
 The recommended approach is to return a `DistributedLeafExec` wrapping one
 **variant** of your node per task:
 
 ```rust
-fn scale_up_leaf_node(
-    &self,
-    plan: &Arc<dyn ExecutionPlan>,
-    task_count: usize,
-    _cfg: &ConfigOptions,
-) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-    let Some(scan) = plan.downcast_ref::<ShardedScanExec>() else {
-        return Ok(None);
-    };
+fn sharded_scan_scale_up_leaf_node(
+    event: ScaleUpLeafNodeEvent,
+) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+    let scan = event.plan.downcast_ref::<ShardedScanExec>()?;
 
-    // Spread the shards across `task_count` tasks, one variant each.
-    let mut per_task: Vec<Vec<String>> = vec![Vec::new(); task_count];
+    // Spread the shards across `event.task_count` tasks, one variant each.
+    let mut per_task: Vec<Vec<String>> = vec![Vec::new(); event.task_count];
     for (i, shard) in scan.shards.iter().enumerate() {
-        per_task[i % task_count].push(shard.clone());
+        per_task[i % event.task_count].push(shard.clone());
     }
     let variants = per_task.into_iter().map(|shards| {
         Arc::new(ShardedScanExec::new(shards, scan.schema())) as Arc<dyn ExecutionPlan>
     });
 
-    let leaf = DistributedLeafExec::try_new(Arc::clone(plan), variants)?;
-    Ok(Some(Arc::new(leaf)))
+    let leaf = DistributedLeafExec::try_new(Arc::clone(event.plan), variants)
+        .map(|leaf| ScaleUpLeafNodeEventResponse::new(Arc::new(leaf)));
+    Some(leaf)
 }
 ```
 
@@ -205,13 +195,14 @@ let state = SessionStateBuilder::new()
     .with_distributed_worker_resolver(resolver)
     .with_distributed_planner()
     .with_distributed_user_codec(ShardedScanCodec)
-    .with_distributed_task_estimator(ShardedScanEstimator)
+    .with_distributed_desired_task_count_handler(sharded_scan_desired_task_count)
+    .with_distributed_scale_up_leaf_node_handler(sharded_scan_scale_up_leaf_node)
     .build();
 ```
 
 Each worker only needs the codec — the planner, worker resolver, and task
-estimator are coordinating-context concerns; workers just decode and run the plan
-variants they receive:
+event handlers are coordinating-context concerns; workers just decode and run
+the plan variants they receive:
 
 ```rust
 let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
@@ -223,7 +214,7 @@ let worker = Worker::from_session_builder(|ctx: WorkerQueryContext| async move {
 ```
 
 For a complete, runnable program that follows this same pattern — a custom leaf
-split across tasks, with its own codec and `TaskEstimator` — see
+split across tasks, with its own codec and event handlers — see
 [`custom_execution_plan.rs`](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/examples/custom_execution_plan.rs),
 which distributes a `numbers(start, end)` source.
 

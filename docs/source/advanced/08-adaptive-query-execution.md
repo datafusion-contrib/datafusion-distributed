@@ -40,9 +40,9 @@ The following settings affect AQE decisions:
 AQE depends on both planning-time statistics and execution-time metrics. A
 custom leaf should provide all of the following:
 
-- A registered `TaskEstimator` that implements `scale_up_leaf_node` for the task
-  count selected by AQE. Without an estimator, the planner treats an unknown
-  leaf as limited to one task.
+- Registered desired task-count and leaf-scale handlers. The desired handler supplies a task-count
+  hint; the leaf-scale handler specializes the leaf for the count selected by AQE. Without a desired
+  handler, the planner treats an unknown leaf as limited to one task.
 - A useful implementation of `ExecutionPlan::partition_statistics` in the custom
   data source. The more accurate the statistics are, the better the decisions
   AQE can make.

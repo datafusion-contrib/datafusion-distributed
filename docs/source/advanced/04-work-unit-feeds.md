@@ -7,8 +7,8 @@ fully known at planning time.
 ## When to use a work unit feed
 
 Distributed DataFusion already has a mechanism for splitting a leaf node's work across tasks: the
-[`TaskEstimator`](../user-guide/04-distribute-custom-plan.md). With a `TaskEstimator`, all of the work is decided **at planning
-time** — `scale_up_leaf_node` produces `N` per-task plan variants, each pre-loaded with the slice of
+[desired task-count and leaf-scale handlers](../user-guide/04-distribute-custom-plan.md). With these handlers, all of the work is decided **at planning
+time** — `ScaleUpLeafNodeHandler` produces `N` per-task plan variants, each pre-loaded with the slice of
 data it is responsible for (e.g., a group of files). This is the right tool
 whenever the units of work are known before execution begins.
 
@@ -24,18 +24,19 @@ work-unit descriptors from your provider and streams each one — over gRPC — 
 owns that partition. The worker turns each descriptor into rows. Slow partitions don't block fast ones,
 and back-pressure is handled per partition.
 
-|                         | `TaskEstimator`                             | Work unit feed                                |
+|                         | Event handlers                              | Work unit feed                                |
 |-------------------------|---------------------------------------------|-----------------------------------------------|
 | When work is known      | Planning time                               | Runtime                                       |
 | How work is distributed | Pre-built per-task plan variants            | Streamed per-partition from the coordinator   |
 | Good for                | Files, ranges, anything enumerable up front | Paginated APIs, queues, progressive discovery |
 
-The two mechanisms are complementary. A feed-backed leaf still provides a `TaskEstimator` to tell the
-planner how many tasks to use; the feed only governs *what work flows into each partition at runtime*.
+The two mechanisms are complementary. A feed-backed leaf still provides a
+`DesiredTaskCountHandler` to tell the planner how many tasks to use; the feed only
+governs *what work flows into each partition at runtime*.
 
-> **A `TaskEstimator` is always required for a feed-backed leaf.** The feed decides *what* work each
+> **A desired task-count handler is always required for a feed-backed leaf.** The feed decides *what* work each
 > partition receives at runtime, but something still has to tell Distributed DataFusion the *desired task
-> count* for the node — that is the `TaskEstimator`'s job (`task_estimation`). Without it the leaf defaults
+> count* for the node — that is the `DesiredTaskCountHandler`'s job. Without it the leaf defaults
 > to a single task. See [Distribute a custom `ExecutionPlan`](../user-guide/04-distribute-custom-plan.md).
 
 ## How it works
@@ -199,7 +200,8 @@ let state = SessionStateBuilder::new()
     .with_distributed_worker_resolver(/* ... */)
     .with_distributed_planner()
     .with_distributed_user_codec(MyExecCodec)        // so workers can deserialize the node
-    .with_distributed_task_estimator(MyTaskEstimator) // how many tasks the leaf gets
+    .with_distributed_desired_task_count_handler(my_desired_task_count) // how many tasks the leaf gets
+    .with_distributed_scale_up_leaf_node_handler(my_scale_up_leaf_node) // per-task plan variants
     .with_distributed_work_unit_feed(|exec: &MyExec| Some(&exec.feed))
     .build();
 ```
@@ -218,7 +220,8 @@ distributed node, plus the feed registration:
    `feed.feed(partition, ctx)?` to produce `RecordBatch`es.
 3. A `PhysicalExtensionCodec` that serializes the node, encoding the feed handle with `to_proto()` /
    `from_proto()`.
-4. A `TaskEstimator` so the planner knows how many tasks the leaf stage should use.
+4. A `DesiredTaskCountHandler` so the planner knows how many tasks the leaf stage should use, and a
+   `ScaleUpLeafNodeHandler` when the leaf needs per-task plan variants.
 
 There is a complete, runnable example in the `examples/` folder:
 
