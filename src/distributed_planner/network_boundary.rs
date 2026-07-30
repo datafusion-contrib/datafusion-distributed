@@ -1,7 +1,6 @@
 use crate::execution_plans::SamplerExec;
-use crate::protocol::ProducerHeadSpec;
 use crate::{
-    BroadcastExec, DistributedCodec, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
+    BroadcastExec, MaybeEncoded, NetworkBroadcastExec, NetworkCoalesceExec, NetworkShuffleExec,
     Stage,
 };
 use datafusion::arrow::datatypes::SchemaRef;
@@ -10,13 +9,6 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
-use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{DefaultPhysicalProtoConverter, PhysicalPlanDecodeContext};
-use datafusion_proto::protobuf;
-use datafusion_proto::protobuf::proto_error;
-use prost::Message;
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -40,13 +32,16 @@ pub trait NetworkBoundary: ExecutionPlan {
 
 /// Defines what shape should the head node of a stage have upon getting executed. Depending
 /// on the [NetworkBoundary] implementation, the stage below should have different head nodes.
+#[derive(Clone)]
 pub enum ProducerHead {
     /// No specific head node is necessary.
     None,
     /// The head node should be a [BroadcastExec].
     BroadcastExec { output_partitions: usize },
     /// The head node should be a [RepartitionExec].
-    RepartitionExec { partitioning: Partitioning },
+    RepartitionExec {
+        partitioning: MaybeEncoded<Partitioning>,
+    },
 }
 
 /// Extension trait for downcasting dynamic types to [NetworkBoundary].
@@ -74,49 +69,13 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
 }
 
 impl ProducerHead {
-    pub(crate) fn to_spec(&self, cfg: &SessionConfig) -> Result<ProducerHeadSpec> {
-        match self {
-            Self::None => Ok(ProducerHeadSpec::None),
-            Self::BroadcastExec { output_partitions } => Ok(ProducerHeadSpec::BroadcastExec {
-                output_partitions: *output_partitions,
-            }),
-            Self::RepartitionExec { partitioning } => {
-                let partitioning = serialize_partitioning(
-                    partitioning,
-                    &DistributedCodec::new_combined_with_user(cfg),
-                    &DefaultPhysicalProtoConverter {},
-                )
-                .map(|v| v.encode_to_vec())?;
-                Ok(ProducerHeadSpec::RepartitionExec { partitioning })
-            }
-        }
-    }
-
-    pub(crate) fn from_spec(
-        spec: &ProducerHeadSpec,
-        schema: SchemaRef,
-        ctx: &TaskContext,
-    ) -> Result<Self> {
-        match spec {
-            ProducerHeadSpec::None => Ok(Self::None),
-            ProducerHeadSpec::BroadcastExec { output_partitions } => Ok(Self::BroadcastExec {
-                output_partitions: *output_partitions,
-            }),
-            ProducerHeadSpec::RepartitionExec { partitioning } => {
-                let proto_partitioning = protobuf::Partitioning::decode(partitioning.as_slice())
-                    .map_err(|e| proto_error(e.to_string()))?;
-                let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-                let decode_ctx = PhysicalPlanDecodeContext::new(ctx, &codec);
-                let partitioning = parse_protobuf_partitioning(
-                    Some(&proto_partitioning),
-                    &decode_ctx,
-                    &schema,
-                    &DefaultPhysicalProtoConverter {},
-                )?
-                .ok_or_else(|| proto_error("Could not parse partitioning"))?;
-                Ok(Self::RepartitionExec { partitioning })
-            }
-        }
+    pub(crate) fn resolve(self, schema: SchemaRef, ctx: &TaskContext) -> Result<Self> {
+        Ok(match self {
+            Self::RepartitionExec { partitioning } => Self::RepartitionExec {
+                partitioning: MaybeEncoded::Decoded(partitioning.decode(schema, ctx)?),
+            },
+            v => v,
+        })
     }
 
     /// Ensures the head of the provided plan complies with the passed [ProducerHead] definition. This
@@ -135,9 +94,10 @@ impl ProducerHead {
                 let partitions = input.output_partitioning().partition_count();
                 Arc::new(BroadcastExec::new(input, output_partitions / partitions))
             }
-            ProducerHead::RepartitionExec { partitioning } => {
-                Arc::new(RepartitionExec::try_new(input, partitioning)?)
-            }
+            ProducerHead::RepartitionExec { partitioning } => Arc::new(RepartitionExec::try_new(
+                input,
+                partitioning.try_decoded()?,
+            )?),
         };
         Ok(plan)
     }

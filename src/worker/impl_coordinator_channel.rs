@@ -4,17 +4,14 @@ use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_t
 use crate::worker::LocalWorkerContext;
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
-    CoordinatorToWorkerMsg, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedTaskContext, TaskData, TaskMetrics, Worker, WorkerQueryContext,
-    WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
+    SetPlanRequest, TaskData, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, Result, exec_datafusion_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::AsExecutionPlan;
-use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
@@ -26,17 +23,9 @@ impl Worker {
     pub async fn coordinator_channel(
         &self,
         headers: HeaderMap,
-        mut stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
+        request: SetPlanRequest,
+        stream: BoxStream<'static, Result<CoordinatorToWorkerMsg>>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
-        // The first message must be a SetPlanRequest.
-        let Some(msg) = stream.try_next().await? else {
-            return internal_err!("Empty Coordinator stream");
-        };
-
-        let CoordinatorToWorkerMsg::SetPlanRequest(request) = msg else {
-            return internal_err!("First Coordinator message must be SetPlanRequest");
-        };
-
         let key = request.task_key;
 
         let entry = self
@@ -83,10 +72,8 @@ impl Worker {
                 })
                 .await?;
 
-            let codec = DistributedCodec::new_combined_with_user(session_state.config());
             let task_ctx = session_state.task_ctx();
-            let proto_node = PhysicalPlanNode::try_decode(request.plan_proto.as_ref())?;
-            let mut plan = proto_node.try_into_physical_plan(&task_ctx, &codec)?;
+            let mut plan = request.plan.decode(&task_ctx)?;
 
             for hook in self.hooks.on_plan.iter() {
                 plan = hook(plan, session_state.config())?;
@@ -135,11 +122,6 @@ impl Worker {
             let mut stream = stream.map_ok(set_work_unit_received_time);
             while let Some(Ok(msg)) = stream.next().await {
                 match msg {
-                    CoordinatorToWorkerMsg::SetPlanRequest(_) => {
-                        // SetPlanRequest should be the first already polled message in the stream,
-                        // if some reached here it means that something is wrong.
-                        continue;
-                    }
                     CoordinatorToWorkerMsg::WorkUnitBatch(work_unit_batch) => {
                         let Some(work_unit_senders) = work_unit_senders.as_mut() else {
                             continue;

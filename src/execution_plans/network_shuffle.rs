@@ -3,7 +3,7 @@ use crate::distributed_planner::ProducerHead;
 use crate::execution_plans::common::scale_partitioning;
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
-use crate::{DistributedTaskContext, NetworkBoundary};
+use crate::{DistributedTaskContext, MaybeEncoded, NetworkBoundary};
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -156,9 +156,10 @@ impl NetworkBoundary for NetworkShuffleExec {
 
     fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
         ProducerHead::RepartitionExec {
-            partitioning: scale_partitioning(&self.properties.partitioning, |prev| {
-                prev * consumer_task_count
-            }),
+            partitioning: MaybeEncoded::Decoded(scale_partitioning(
+                &self.properties.partitioning,
+                |prev| prev * consumer_task_count,
+            )),
         }
     }
 }
