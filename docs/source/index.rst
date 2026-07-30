@@ -108,3 +108,4 @@ side of the screen for the answer.
    contributor-guide/02-setup
    contributor-guide/03-tests
    contributor-guide/04-benchmarks
+   contributor-guide/05-code-review
