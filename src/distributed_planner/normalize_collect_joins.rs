@@ -138,19 +138,6 @@ mod tests {
     use crate::test_utils::plans::TestPlanBuilder;
     use datafusion::physical_plan::displayable;
 
-    async fn sql_to_normalized_plan(query: &str, broadcast_enabled: bool) -> String {
-        let test_plan = TestPlanBuilder::new()
-            .target_partitions(3)
-            .broadcast_joins(broadcast_enabled)
-            .build()
-            .await;
-        let ctx = test_plan.get_ctx();
-        let plan = test_plan.physical_plan(query).await;
-        let plan = normalize_collect_joins(plan, ctx.state_ref().read().config_options().as_ref())
-            .expect("failed to normalize collect joins");
-        format!("{}", displayable(plan.as_ref()).indent(true))
-    }
-
     #[tokio::test]
     async fn test_left_hash_join_converted_to_partitioned() {
         let query = r#"
@@ -160,7 +147,13 @@ mod tests {
         "#;
         let plan = sql_to_normalized_plan(query, true).await;
         assert!(plan.contains("HashJoinExec: mode=Partitioned, join_type=Left"));
-        assert_snapshot!(plan);
+        assert_snapshot!(plan, @"
+        HashJoinExec: mode=Partitioned, join_type=Left, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=3
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp, RainToday], file_type=parquet
+          RepartitionExec: partitioning=Hash([RainToday@1], 3), input_partitions=3
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        ");
     }
 
     #[tokio::test]
@@ -172,7 +165,12 @@ mod tests {
         "#;
         let plan = sql_to_normalized_plan(query, true).await;
         assert!(plan.contains("NestedLoopJoinExec: join_type=Right"));
-        assert_snapshot!(plan);
+        assert_snapshot!(plan, @r"
+        ProjectionExec: expr=[MinTemp@1 as MinTemp, MaxTemp@0 as MaxTemp]
+          NestedLoopJoinExec: join_type=Right, filter=MinTemp@0 < MaxTemp@1
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp], file_type=parquet
+            DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MinTemp], file_type=parquet
+        ");
     }
 
     #[tokio::test]
@@ -211,5 +209,18 @@ mod tests {
         "#;
         let plan = sql_to_normalized_plan(query, false).await;
         assert!(plan.contains("NestedLoopJoinExec: join_type=Left"));
+    }
+
+    async fn sql_to_normalized_plan(query: &str, broadcast_enabled: bool) -> String {
+        let test_plan = TestPlanBuilder::new()
+            .target_partitions(3)
+            .broadcast_joins(broadcast_enabled)
+            .build()
+            .await;
+        let ctx = test_plan.get_ctx();
+        let plan = test_plan.physical_plan(query).await;
+        let plan = normalize_collect_joins(plan, ctx.state_ref().read().config_options().as_ref())
+            .expect("failed to normalize collect joins");
+        format!("{}", displayable(plan.as_ref()).indent(true))
     }
 }

@@ -13,8 +13,8 @@
 //! rotated one file forward. A task therefore sees *different* ids from each table, and any
 //! cross-task match is silently lost.
 //!
-//! These shapes are now handled by plan shaping (ported from the rj.use-datafusion-55
-//! branch): `normalize_collect_joins` rewrites build-side-emitting CollectLeft HashJoins to
+//! These shapes are now handled by plan shaping:
+//! `normalize_collect_joins` rewrites build-side-emitting CollectLeft HashJoins to
 //! PartitionMode::Partitioned and swaps build-side-emitting NestedLoopJoins so the emitting
 //! side becomes the probe side, while the task-count gate in `inject_network_boundaries`
 //! caps whatever has no distributed rewrite (Full joins, null-aware anti joins, and any of
@@ -43,11 +43,76 @@ mod tests {
     const IDS_PER_FILE: i64 = 25;
     const PROBE_DUPLICATES: usize = 50;
 
+    static INIT: OnceCell<()> = OnceCell::const_new();
+
+    /// Case 1: CollectLeft HashJoin with a build-side-emitting join type (LeftSemi).
+    /// Broadcast joins are ON, but `insert_broadcast_execs` skips LeftSemi, and nothing caps
+    /// the stage to one task. Every id matches on a single node; distributed, a build id only
+    /// survives if its probe rows landed in the same task.
+    #[tokio::test]
+    async fn capped_collect_left_semi_hash_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT id FROM build_side WHERE id IN (SELECT id FROM probe_side)",
+            true,
+        )
+        .await
+    }
+
+    /// Case 2: anti join (`NOT IN`). Single-node: every build id exists in probe_side,
+    /// so zero rows. Distributed, each task only sees a slice of probe_side, so most build ids
+    /// look unmatched and phantom rows are emitted.
+    #[tokio::test]
+    async fn capped_not_in_anti_hash_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT id FROM build_side WHERE id NOT IN (SELECT id FROM probe_side)",
+            true,
+        )
+        .await
+    }
+
+    /// Case 3: NestedLoopJoin with a build-side-emitting join type (LeftSemi), produced
+    /// by a correlated EXISTS with a non-equi predicate (`p.id > b.id - 1 AND p.id < b.id + 1`
+    /// is `p.id = b.id` for integers, but expressed as inequalities so no hash join is possible).
+    #[tokio::test]
+    async fn capped_nested_loop_left_semi_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT b.id FROM build_side b WHERE EXISTS ( \
+                SELECT 1 FROM probe_side p WHERE p.id > b.id - 1 AND p.id < b.id + 1)",
+            true,
+        )
+        .await
+    }
+
+    /// Case 4: Full NestedLoopJoin. Emits unmatched rows from BOTH sides, so no
+    /// broadcast orientation can ever be correct. Single-node: every row matches, no NULL
+    /// padding. Distributed: cross-task matches are lost and spurious NULL-padded rows appear.
+    #[tokio::test]
+    async fn capped_nested_loop_full_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p \
+                ON p.id > b.id - 1 AND p.id < b.id + 1",
+            true,
+        )
+        .await
+    }
+
+    /// Case 5: CrossJoin with broadcast joins DISABLED, so no BroadcastExec exists at
+    /// all. Single-node: all 100 x 5000 = 500_000 pairs contribute to the sum. Distributed:
+    /// each task only pairs its slice of each side, so most pairs are never produced.
+    /// (A bare `count(*)` is folded to a constant from parquet statistics, so sum an
+    /// expression the optimizer cannot answer from metadata.)
+    #[tokio::test]
+    async fn capped_cross_join_broadcast_disabled_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT sum(b.id + p.id) AS pair_sum FROM build_side b CROSS JOIN probe_side p",
+            false,
+        )
+        .await
+    }
+
     fn data_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("target/multi_task_collect_join_repros")
     }
-
-    static INIT: OnceCell<()> = OnceCell::const_new();
 
     async fn ensure_data() {
         INIT.get_or_init(|| async {
@@ -159,70 +224,5 @@ mod tests {
         let d_rows: usize = d_batches.iter().map(|b| b.num_rows()).sum();
         println!("single-node rows: {s_rows}, distributed rows: {d_rows}");
         compare_result_set(&Ok(d_batches), &Ok(s_batches))
-    }
-
-    /// Case 1: CollectLeft HashJoin with a build-side-emitting join type (LeftSemi).
-    /// Broadcast joins are ON, but `insert_broadcast_execs` skips LeftSemi, and nothing caps
-    /// the stage to one task. Every id matches on a single node; distributed, a build id only
-    /// survives if its probe rows landed in the same task.
-    #[tokio::test]
-    async fn capped_collect_left_semi_hash_join_is_correct() -> Result<()> {
-        assert_distributed_matches_single_node(
-            "SELECT id FROM build_side WHERE id IN (SELECT id FROM probe_side)",
-            true,
-        )
-        .await
-    }
-
-    /// Case 2: anti join (`NOT IN`). Single-node: every build id exists in probe_side,
-    /// so zero rows. Distributed, each task only sees a slice of probe_side, so most build ids
-    /// look unmatched and phantom rows are emitted.
-    #[tokio::test]
-    async fn capped_not_in_anti_hash_join_is_correct() -> Result<()> {
-        assert_distributed_matches_single_node(
-            "SELECT id FROM build_side WHERE id NOT IN (SELECT id FROM probe_side)",
-            true,
-        )
-        .await
-    }
-
-    /// Case 3: NestedLoopJoin with a build-side-emitting join type (LeftSemi), produced
-    /// by a correlated EXISTS with a non-equi predicate (`p.id > b.id - 1 AND p.id < b.id + 1`
-    /// is `p.id = b.id` for integers, but expressed as inequalities so no hash join is possible).
-    #[tokio::test]
-    async fn capped_nested_loop_left_semi_join_is_correct() -> Result<()> {
-        assert_distributed_matches_single_node(
-            "SELECT b.id FROM build_side b WHERE EXISTS ( \
-                SELECT 1 FROM probe_side p WHERE p.id > b.id - 1 AND p.id < b.id + 1)",
-            true,
-        )
-        .await
-    }
-
-    /// Case 4: Full NestedLoopJoin. Emits unmatched rows from BOTH sides, so no
-    /// broadcast orientation can ever be correct. Single-node: every row matches, no NULL
-    /// padding. Distributed: cross-task matches are lost and spurious NULL-padded rows appear.
-    #[tokio::test]
-    async fn capped_nested_loop_full_join_is_correct() -> Result<()> {
-        assert_distributed_matches_single_node(
-            "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p \
-                ON p.id > b.id - 1 AND p.id < b.id + 1",
-            true,
-        )
-        .await
-    }
-
-    /// Case 5: CrossJoin with broadcast joins DISABLED, so no BroadcastExec exists at
-    /// all. Single-node: all 100 x 5000 = 500_000 pairs contribute to the sum. Distributed:
-    /// each task only pairs its slice of each side, so most pairs are never produced.
-    /// (A bare `count(*)` is folded to a constant from parquet statistics, so sum an
-    /// expression the optimizer cannot answer from metadata.)
-    #[tokio::test]
-    async fn capped_cross_join_broadcast_disabled_is_correct() -> Result<()> {
-        assert_distributed_matches_single_node(
-            "SELECT sum(b.id + p.id) AS pair_sum FROM build_side b CROSS JOIN probe_side p",
-            false,
-        )
-        .await
     }
 }
