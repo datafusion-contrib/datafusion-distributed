@@ -23,10 +23,12 @@ use super::insert_broadcast::is_left_broadcast_safe;
 /// side, which silently loses rows. This pass rewrites the affected joins instead of leaving
 /// them to run in a single task:
 ///
-/// - CollectLeft [HashJoinExec]s with a build-side-emitting join type become
+/// - CollectLeft [HashJoinExec]s with a build-side-emitting join type (including Full) become
 ///   [PartitionMode::Partitioned], hash-repartitioning both sides on the join keys. Every
-///   matching row pair then meets in exactly one partition, owned by exactly one task, so each
-///   build-side row is emitted exactly once with complete match information.
+///   row pair that could match then meets in exactly one partition, owned by exactly one
+///   task, so matched pairs and unmatched rows — on either side — are decided with complete
+///   information and emitted exactly once. This is the same mode swap DataFusion's own
+///   JoinSelection performs when the build side crosses the CollectLeft size threshold.
 /// - [NestedLoopJoinExec]s with a build-side-emitting join type are swapped (Left becomes
 ///   Right, LeftSemi becomes RightSemi, and so on), so the emitting side becomes the
 ///   partitioned probe side and the other side can be broadcast as usual. There is no
@@ -36,10 +38,14 @@ use super::insert_broadcast::is_left_broadcast_safe;
 /// Two shapes have no distributed rewrite and are left untouched for
 /// [inject_network_boundaries] to cap at a single task:
 ///
-/// - Null-aware anti joins: their NULL-existence checks require global knowledge held in
-///   process-local shared state, which cannot span tasks in any orientation.
-/// - Full joins: they emit unmatched rows from both sides, so they need global match knowledge
-///   on both sides at once.
+/// - Null-aware anti joins: their NULL-existence checks ("did the probe side contain any
+///   NULL at all?") are global facts kept in shared state that is only global while a single
+///   build is shared by every probe partition. Per-partition builds lose them, so not even
+///   [PartitionMode::Partitioned] is equivalent — this is a semantic restriction, not a
+///   distribution one.
+/// - Full [NestedLoopJoinExec]s: a NestedLoopJoin only has replication strategies, and a
+///   Full join emits unmatched rows from both sides, so every orientation replicates an
+///   emitting side.
 ///
 /// [insert_broadcast_execs]: super::insert_broadcast::insert_broadcast_execs
 /// [inject_network_boundaries]: super::inject_network_boundaries::inject_network_boundaries
@@ -54,7 +60,6 @@ pub(super) fn normalize_collect_joins(
         if let Some(join) = node.downcast_ref::<HashJoinExec>()
             && join.mode == PartitionMode::CollectLeft
             && !is_left_broadcast_safe(join.join_type())
-            && join.join_type() != &JoinType::Full
             && !join.null_aware
         {
             return Ok(Transformed::yes(collect_left_to_partitioned(
@@ -183,6 +188,34 @@ mod tests {
         let plan = sql_to_normalized_plan(query, true).await;
         assert!(plan.contains("NestedLoopJoinExec: join_type=Full"));
         assert!(!plan.contains("RepartitionExec: partitioning=Hash"));
+    }
+
+    #[tokio::test]
+    async fn test_full_hash_join_converted_to_partitioned() {
+        // Key co-location gives complete match information on BOTH sides at once, so Full
+        // hash joins convert like the other build-side-emitting types. (Contrast with
+        // test_nested_loop_full_join_untouched: NLJs only have replication strategies, and
+        // Full has an emitting side in every orientation, so Full NLJs stay capped.)
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a FULL JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+
+        // Pin the pre-normalization shape: this must start as a CollectLeft Full join, or
+        // the conversion assertion below would pass vacuously.
+        let raw_plan = TestPlanBuilder::new()
+            .target_partitions(3)
+            .broadcast_joins(true)
+            .build()
+            .await
+            .physical_plan_as_string(query)
+            .await;
+        assert!(raw_plan.contains("HashJoinExec: mode=CollectLeft, join_type=Full"));
+
+        let plan = sql_to_normalized_plan(query, true).await;
+        assert!(plan.contains("HashJoinExec: mode=Partitioned, join_type=Full"));
+        assert!(plan.contains("RepartitionExec: partitioning=Hash"));
     }
 
     #[tokio::test]

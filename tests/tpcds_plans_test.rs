@@ -6629,16 +6629,17 @@ mod tests {
         │           SortExec: expr=[item_sk@0 ASC NULLS LAST, d_date@1 ASC NULLS LAST], preserve_partitioning=[true]
         │             RepartitionExec: partitioning=Hash([item_sk@0], 3), input_partitions=3
         │               ProjectionExec: expr=[CASE WHEN item_sk@0 IS NOT NULL THEN item_sk@0 ELSE item_sk@3 END as item_sk, CASE WHEN d_date@1 IS NOT NULL THEN d_date@1 ELSE d_date@4 END as d_date, cume_sales@2 as web_sales, cume_sales@5 as store_sales]
-        │                 HashJoinExec: mode=CollectLeft, join_type=Full, on=[(item_sk@0, item_sk@0), (d_date@1, d_date@1)]
-        │                   CoalescePartitionsExec
+        │                 HashJoinExec: mode=Partitioned, join_type=Full, on=[(item_sk@0, item_sk@0), (d_date@1, d_date@1)]
+        │                   RepartitionExec: partitioning=Hash([item_sk@0, d_date@1], 3), input_partitions=3
         │                     ProjectionExec: expr=[ws_item_sk@0 as item_sk, d_date@1 as d_date, sum(sum(web_sales.ws_sales_price)) PARTITION BY [web_sales.ws_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@3 as cume_sales]
         │                       BoundedWindowAggExec: wdw=[sum(sum(web_sales.ws_sales_price)) PARTITION BY [web_sales.ws_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(sum(web_sales.ws_sales_price)) PARTITION BY [web_sales.ws_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Decimal128(27, 2) }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
         │                         SortExec: expr=[ws_item_sk@0 ASC NULLS LAST, d_date@1 ASC NULLS LAST], preserve_partitioning=[true]
         │                           [Stage 3] => NetworkShuffleExec: output_partitions=3, input_tasks=2
-        │                   ProjectionExec: expr=[ss_item_sk@0 as item_sk, d_date@1 as d_date, sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@3 as cume_sales]
-        │                     BoundedWindowAggExec: wdw=[sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Decimal128(27, 2) }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
-        │                       SortExec: expr=[ss_item_sk@0 ASC NULLS LAST, d_date@1 ASC NULLS LAST], preserve_partitioning=[true]
-        │                         [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=2
+        │                   RepartitionExec: partitioning=Hash([item_sk@0, d_date@1], 3), input_partitions=3
+        │                     ProjectionExec: expr=[ss_item_sk@0 as item_sk, d_date@1 as d_date, sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@3 as cume_sales]
+        │                       BoundedWindowAggExec: wdw=[sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "sum(sum(store_sales.ss_sales_price)) PARTITION BY [store_sales.ss_item_sk] ORDER BY [date_dim.d_date ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": nullable Decimal128(27, 2) }, frame: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
+        │                         SortExec: expr=[ss_item_sk@0 ASC NULLS LAST, d_date@1 ASC NULLS LAST], preserve_partitioning=[true]
+        │                           [Stage 6] => NetworkShuffleExec: output_partitions=3, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=2, partitions=3
           │ RepartitionExec: partitioning=Hash([ws_item_sk@0], 3), input_partitions=3

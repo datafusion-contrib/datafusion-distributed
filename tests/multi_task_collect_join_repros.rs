@@ -17,9 +17,9 @@
 //! `normalize_collect_joins` rewrites build-side-emitting CollectLeft HashJoins to
 //! PartitionMode::Partitioned and swaps build-side-emitting NestedLoopJoins so the emitting
 //! side becomes the probe side, while the task-count gate in `inject_network_boundaries`
-//! caps whatever has no distributed rewrite (Full joins, null-aware anti joins, and any of
-//! these joins when broadcasts are disabled) to a single task. Every test here asserts
-//! distributed results match single-node execution.
+//! caps whatever has no distributed rewrite (Full NestedLoopJoins, null-aware anti joins,
+//! and any of these joins when broadcasts are disabled) to a single task. Every test here
+//! asserts distributed results match single-node execution.
 
 #[cfg(all(feature = "integration", test))]
 mod tests {
@@ -92,6 +92,19 @@ mod tests {
         assert_distributed_matches_single_node(
             "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p \
                 ON p.id > b.id - 1 AND p.id < b.id + 1",
+            true,
+        )
+        .await
+    }
+
+    /// Full HASH join (equi keys): converted to Partitioned like the other
+    /// build-side-emitting types — key co-location gives complete match information on both
+    /// sides at once. Contrast with the non-equi Full NLJ above, which has no distributed
+    /// rewrite and stays capped to a single task.
+    #[tokio::test]
+    async fn converted_full_hash_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p ON b.id = p.id",
             true,
         )
         .await
