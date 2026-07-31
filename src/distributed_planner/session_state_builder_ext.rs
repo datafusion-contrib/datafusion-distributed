@@ -36,7 +36,7 @@ impl SessionStateBuilderExt for SessionStateBuilder {
         RouteTasksHandlers::extend_builtin(
             cfg,
             vec![
-                // 1. If there's a single task to route, plate it in the coordinator if it can also act as
+                // 1. If there's a single task to route, place it in the coordinator if it can also act as
                 //    a worker.
                 Arc::new(single_task_coordinator_routing),
                 // 2. If there's a single task to route, and it cannot be placed in the coordinator,
