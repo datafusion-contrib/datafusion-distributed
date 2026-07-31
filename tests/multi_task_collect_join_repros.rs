@@ -74,6 +74,7 @@ mod tests {
     /// by a correlated EXISTS with a non-equi predicate (`p.id > b.id - 1 AND p.id < b.id + 1`
     /// is `p.id = b.id` for integers, but expressed as inequalities so no hash join is possible).
     #[tokio::test]
+    #[ignore = "Until we upgrade to DF 54.1.0 or greater, this is flaky. See apache/datafusion#22791"]
     async fn capped_nested_loop_left_semi_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT b.id FROM build_side b WHERE EXISTS ( \
