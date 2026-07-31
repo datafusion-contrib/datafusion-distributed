@@ -4,7 +4,7 @@ use super::spawn_select_all::spawn_select_all;
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::ProducerHeadSpec;
 use crate::protocol::generated::worker as pb;
-use crate::protocol::generated::worker_grpc::worker_service_server::{
+use crate::protocol::grpc::generated::worker_grpc::worker_service_server::{
     WorkerService, WorkerServiceServer,
 };
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};

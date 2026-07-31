@@ -95,10 +95,12 @@ pub mod worker_service_client {
         pub async fn coordinator_channel(
             &mut self,
             request: impl tonic::IntoStreamingRequest<
-                Message = super::super::worker::CoordinatorToWorkerMsg,
+                Message = crate::protocol::generated::worker::CoordinatorToWorkerMsg,
             >,
         ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::super::worker::WorkerToCoordinatorMsg>>,
+            tonic::Response<
+                tonic::codec::Streaming<crate::protocol::generated::worker::WorkerToCoordinatorMsg>,
+            >,
             tonic::Status,
         > {
             self.inner.ready().await.map_err(|e| {
@@ -118,7 +120,7 @@ pub mod worker_service_client {
         /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
         pub async fn execute_task(
             &mut self,
-            request: impl tonic::IntoRequest<super::super::worker::ExecuteTaskRequest>,
+            request: impl tonic::IntoRequest<crate::protocol::generated::worker::ExecuteTaskRequest>,
         ) -> std::result::Result<
             tonic::Response<tonic::codec::Streaming<::arrow_flight::FlightData>>,
             tonic::Status,
@@ -137,9 +139,9 @@ pub mod worker_service_client {
         /// Returns metadata about a worker. Currently only used for worker versioning.
         pub async fn get_worker_info(
             &mut self,
-            request: impl tonic::IntoRequest<super::super::worker::GetWorkerInfoRequest>,
+            request: impl tonic::IntoRequest<crate::protocol::generated::worker::GetWorkerInfoRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::super::worker::GetWorkerInfoResponse>,
+            tonic::Response<crate::protocol::generated::worker::GetWorkerInfoResponse>,
             tonic::Status,
         > {
             self.inner.ready().await.map_err(|e| {
@@ -173,7 +175,7 @@ pub mod worker_service_server {
         /// Server streaming response type for the CoordinatorChannel method.
         type CoordinatorChannelStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
-                    super::super::worker::WorkerToCoordinatorMsg,
+                    crate::protocol::generated::worker::WorkerToCoordinatorMsg,
                     tonic::Status,
                 >,
             > + std::marker::Send
@@ -183,7 +185,9 @@ pub mod worker_service_server {
         /// per task.
         async fn coordinator_channel(
             &self,
-            request: tonic::Request<tonic::Streaming<super::super::worker::CoordinatorToWorkerMsg>>,
+            request: tonic::Request<
+                tonic::Streaming<crate::protocol::generated::worker::CoordinatorToWorkerMsg>,
+            >,
         ) -> std::result::Result<tonic::Response<Self::CoordinatorChannelStream>, tonic::Status>;
         /// Server streaming response type for the ExecuteTask method.
         type ExecuteTaskStream: tonic::codegen::tokio_stream::Stream<
@@ -193,14 +197,14 @@ pub mod worker_service_server {
         /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
         async fn execute_task(
             &self,
-            request: tonic::Request<super::super::worker::ExecuteTaskRequest>,
+            request: tonic::Request<crate::protocol::generated::worker::ExecuteTaskRequest>,
         ) -> std::result::Result<tonic::Response<Self::ExecuteTaskStream>, tonic::Status>;
         /// Returns metadata about a worker. Currently only used for worker versioning.
         async fn get_worker_info(
             &self,
-            request: tonic::Request<super::super::worker::GetWorkerInfoRequest>,
+            request: tonic::Request<crate::protocol::generated::worker::GetWorkerInfoRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::super::worker::GetWorkerInfoResponse>,
+            tonic::Response<crate::protocol::generated::worker::GetWorkerInfoResponse>,
             tonic::Status,
         >;
     }
@@ -282,17 +286,19 @@ pub mod worker_service_server {
                     struct CoordinatorChannelSvc<T: WorkerService>(pub Arc<T>);
                     impl<T: WorkerService>
                         tonic::server::StreamingService<
-                            super::super::worker::CoordinatorToWorkerMsg,
+                            crate::protocol::generated::worker::CoordinatorToWorkerMsg,
                         > for CoordinatorChannelSvc<T>
                     {
-                        type Response = super::super::worker::WorkerToCoordinatorMsg;
+                        type Response = crate::protocol::generated::worker::WorkerToCoordinatorMsg;
                         type ResponseStream = T::CoordinatorChannelStream;
                         type Future =
                             BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                tonic::Streaming<super::super::worker::CoordinatorToWorkerMsg>,
+                                tonic::Streaming<
+                                    crate::protocol::generated::worker::CoordinatorToWorkerMsg,
+                                >,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
@@ -329,7 +335,7 @@ pub mod worker_service_server {
                     struct ExecuteTaskSvc<T: WorkerService>(pub Arc<T>);
                     impl<T: WorkerService>
                         tonic::server::ServerStreamingService<
-                            super::super::worker::ExecuteTaskRequest,
+                            crate::protocol::generated::worker::ExecuteTaskRequest,
                         > for ExecuteTaskSvc<T>
                     {
                         type Response = ::arrow_flight::FlightData;
@@ -338,7 +344,9 @@ pub mod worker_service_server {
                             BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::super::worker::ExecuteTaskRequest>,
+                            request: tonic::Request<
+                                crate::protocol::generated::worker::ExecuteTaskRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -373,14 +381,17 @@ pub mod worker_service_server {
                     #[allow(non_camel_case_types)]
                     struct GetWorkerInfoSvc<T: WorkerService>(pub Arc<T>);
                     impl<T: WorkerService>
-                        tonic::server::UnaryService<super::super::worker::GetWorkerInfoRequest>
-                        for GetWorkerInfoSvc<T>
+                        tonic::server::UnaryService<
+                            crate::protocol::generated::worker::GetWorkerInfoRequest,
+                        > for GetWorkerInfoSvc<T>
                     {
-                        type Response = super::super::worker::GetWorkerInfoResponse;
+                        type Response = crate::protocol::generated::worker::GetWorkerInfoResponse;
                         type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::super::worker::GetWorkerInfoRequest>,
+                            request: tonic::Request<
+                                crate::protocol::generated::worker::GetWorkerInfoRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {

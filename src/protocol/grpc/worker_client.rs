@@ -5,7 +5,7 @@ use crate::common::serialize_uuid;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::protocol::generated::worker as pb;
 use crate::protocol::generated::worker::FlightAppMetadata;
-use crate::protocol::generated::worker_grpc::worker_service_client::WorkerServiceClient;
+use crate::protocol::grpc::generated::worker_grpc::worker_service_client::WorkerServiceClient;
 use crate::{
     BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
     FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
