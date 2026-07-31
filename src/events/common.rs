@@ -45,6 +45,17 @@ impl<H: ?Sized + Send + Sync + 'static> EventHandlerChain<H> {
         cfg.set_extension(Arc::new(handlers));
     }
 
+    pub(crate) fn extend_builtin(cfg: &mut SessionConfig, handler_list: Vec<Arc<H>>) {
+        let mut handlers = cfg
+            .get_extension::<Self>()
+            .map(|v| v.as_ref().clone())
+            .unwrap_or_default();
+        for handler in handler_list {
+            handlers.builtin.push(handler);
+        }
+        cfg.set_extension(Arc::new(handlers));
+    }
+
     pub(crate) fn push_custom(cfg: &mut SessionConfig, handler: Arc<H>) {
         let mut handlers = cfg
             .get_extension::<Self>()
