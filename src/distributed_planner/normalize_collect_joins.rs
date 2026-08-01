@@ -123,17 +123,13 @@ fn collect_left_to_partitioned(
         Partitioning::Hash(right_keys, target_partitions),
     )?);
 
-    Ok(Arc::new(HashJoinExec::try_new(
-        left,
-        right,
-        join.on().to_vec(),
-        join.filter().cloned(),
-        join.join_type(),
-        join.projection.as_ref().map(|p| p.to_vec()),
-        PartitionMode::Partitioned,
-        join.null_equality(),
-        join.null_aware,
-    )?))
+    let new_join = join
+        .builder()
+        .with_partition_mode(PartitionMode::Partitioned)
+        .with_new_children(vec![left, right])?
+        .build()?;
+
+    Ok(Arc::new(new_join))
 }
 
 #[cfg(test)]
@@ -142,6 +138,7 @@ mod tests {
     use crate::assert_snapshot;
     use crate::test_utils::plans::TestPlanBuilder;
     use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::expressions::DynamicFilterPhysicalExpr;
 
     #[tokio::test]
     async fn test_left_hash_join_converted_to_partitioned() {
@@ -242,6 +239,123 @@ mod tests {
         "#;
         let plan = sql_to_normalized_plan(query, false).await;
         assert!(plan.contains("NestedLoopJoinExec: join_type=Left"));
+    }
+
+    #[test]
+    fn collect_left_to_partitioned_preserves_every_field() {
+        // Tripwire: `collect_left_to_partitioned` rebuilds the join through `try_new`,
+        // copying each field explicitly — a forgotten field silently resets to its default.
+        // Every field below is set to a NON-default value so any reset fails an assertion.
+        // If `HashJoinExec` grows a new field, thread it through the conversion and set it
+        // to a non-default value here.
+        //
+        // The join is a LeftAnti with a single key because that is the one shape where all
+        // fields can be non-default at once (`null_aware` is only valid there). The caller's
+        // guard never converts null-aware joins — this exercises the helper directly so the
+        // policy stays in one place while the helper remains faithful.
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::common::{JoinSide, NullEquality, ScalarValue};
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, true),
+        ]));
+
+        // Keep direct handles to the original inputs to assert identity after the rewrite.
+        let build_input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let probe_input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let build_side: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(Arc::clone(&build_input)));
+
+        let key = |name: &str| -> Arc<dyn PhysicalExpr> {
+            Arc::new(Column::new_with_schema(name, &schema).unwrap())
+        };
+        // Residual filter over one intermediate column: left-side `b` > 5.
+        let filter = JoinFilter::new(
+            Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("b", 0)),
+                Operator::Gt,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(5)))),
+            )),
+            vec![ColumnIndex {
+                index: 1,
+                side: JoinSide::Left,
+            }],
+            Arc::new(Schema::new(vec![Field::new("b", DataType::Int64, true)])),
+        );
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            Vec::new(),
+            Arc::new(Literal::new(ScalarValue::Boolean(Some(true)))),
+        ));
+
+        let original = HashJoinExec::try_new(
+            build_side,
+            Arc::clone(&probe_input),
+            vec![(key("a"), key("a"))],
+            Some(filter),
+            &JoinType::LeftAnti,
+            Some(vec![0]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNull,
+            true,
+        )
+        .unwrap();
+        let original = original.with_dynamic_filter_expr(dynamic_filter).unwrap();
+        let original = original.with_fetch(Some(7)).unwrap();
+        let original = original.downcast_ref::<HashJoinExec>().unwrap();
+
+        let converted = collect_left_to_partitioned(original, 7).unwrap();
+        let converted = converted
+            .downcast_ref::<HashJoinExec>()
+            .expect("conversion must produce a HashJoinExec");
+
+        // The one intentional change:
+        assert_eq!(converted.mode, PartitionMode::Partitioned);
+
+        // Everything else must survive verbatim.
+        // left_fut, random_state, and column_indices are unreachable by any public API
+        // equivalence properties (HashJoinExec.cache) necessarily change.
+
+        assert_eq!(converted.on, original.on);
+        // using debug output as means of getting around lack of PartialEq
+        assert_eq!(
+            format!("{:?}", converted.filter),
+            format!("{:?}", original.filter)
+        );
+        assert_eq!(converted.join_schema(), original.join_schema());
+        assert_eq!(
+            format!("{:?}", converted.metrics()),
+            format!("{:?}", original.metrics())
+        );
+        assert_eq!(converted.projection, original.projection);
+        assert_eq!(converted.null_equality, original.null_equality);
+        assert_eq!(
+            converted.dynamic_filter_expr(),
+            original.dynamic_filter_expr()
+        );
+        assert_eq!(converted.fetch(), original.fetch());
+
+        // Both inputs get re-wrapped in hash repartitions on the join keys with the
+        // requested partition count; the build side's CoalescePartitionsExec is stripped,
+        // and the ORIGINAL input nodes sit directly underneath (same Arcs, not rebuilt).
+        for (child, original_input) in [
+            (converted.left(), &build_input),
+            (converted.right(), &probe_input),
+        ] {
+            let repartition = child
+                .downcast_ref::<RepartitionExec>()
+                .expect("both inputs must be re-wrapped in a RepartitionExec");
+            assert!(matches!(
+                repartition.partitioning(),
+                Partitioning::Hash(_, 7)
+            ));
+            assert!(Arc::ptr_eq(repartition.input(), original_input));
+        }
     }
 
     async fn sql_to_normalized_plan(query: &str, broadcast_enabled: bool) -> String {
