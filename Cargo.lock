@@ -2199,6 +2199,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "datafusion",
+ "datafusion-distributed-benchmarks",
  "datafusion-proto",
  "delegate",
  "futures",
