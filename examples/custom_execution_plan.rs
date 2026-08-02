@@ -35,9 +35,8 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_distributed::test_utils::in_memory_channel_resolver::{
-    InMemoryChannelResolver, InMemoryWorkerResolver,
-};
+use datafusion_distributed::test_utils::InMemoryChannelResolver;
+use datafusion_distributed::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use datafusion_distributed::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedExt, DistributedTaskContext,
     ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerQueryContext,

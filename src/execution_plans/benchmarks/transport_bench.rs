@@ -2,8 +2,8 @@ use super::fixture::{
     InMemoryChannelsResolver, benchmark_schema, make_input_partitions, rows_for_producer,
 };
 use crate::common::task_ctx_with_extension;
+use crate::protocol::grpc::test_utils::worker_handles::{MemoryWorkerHandle, TcpWorkerHandle};
 use crate::stage::RemoteStage;
-use crate::worker::test_utils::worker_handles::{MemoryWorkerHandle, TcpWorkerHandle};
 use crate::{DistributedExt, DistributedTaskContext, NetworkShuffleExec, Stage, grpc};
 use arrow::datatypes::Schema;
 use arrow_ipc::CompressionType;

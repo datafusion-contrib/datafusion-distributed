@@ -10,8 +10,8 @@ mod tests {
     use datafusion::execution::SessionState;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_configured_in_memory_context;
     use datafusion_distributed::test_utils::session_context::register_temp_parquet_table;
+    use datafusion_distributed::test_utils::start_configured_in_memory_context;
     use datafusion_distributed::{DistributedExt, Worker, WorkerQueryContext, assert_snapshot};
     use std::sync::Arc;
     use std::sync::Mutex;

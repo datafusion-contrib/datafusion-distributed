@@ -30,9 +30,8 @@ mod tests {
     use futures::StreamExt;
 
     use crate::coordinator::DistributedExec;
-    use crate::test_utils::in_memory_channel_resolver::{
-        InMemoryChannelResolver, InMemoryWorkerResolver,
-    };
+    use crate::test_utils::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::parquet::register_parquet_tables;
     use crate::test_utils::plans::{
         count_plan_nodes_up_to_network_boundary, get_stages_and_task_keys,

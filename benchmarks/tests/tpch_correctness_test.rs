@@ -2,7 +2,7 @@
 mod tests {
     use datafusion::physical_plan::execute_stream;
     use datafusion::prelude::SessionContext;
-    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
+    use datafusion_distributed::test_utils::start_in_memory_context;
     use datafusion_distributed::{DefaultSessionBuilder, DistributedExt};
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpch};
     use futures::TryStreamExt;

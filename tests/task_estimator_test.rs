@@ -7,11 +7,11 @@ mod tests {
     use datafusion_distributed::{
         DistributedExt, WorkerQueryContext, assert_snapshot, display_plan_ascii,
         test_utils::{
-            in_memory_channel_resolver::start_in_memory_context,
             routing::{
                 URLEmitterExtensionCodec, URLEmitterFunction, url_emitter_desired_task_count,
                 url_emitter_route_tasks, url_emitter_scale_up_leaf_node,
             },
+            start_in_memory_context,
         },
     };
 
