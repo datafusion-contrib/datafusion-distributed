@@ -2,9 +2,8 @@ mod impl_coordinator_channel;
 mod impl_execute_task;
 mod session_builder;
 mod single_write_multi_read;
-mod task_data;
-#[cfg(any(test, feature = "integration"))]
-pub(crate) mod test_utils;
+pub(crate) mod task_data;
+
 mod worker_connection_pool;
 mod worker_service;
 

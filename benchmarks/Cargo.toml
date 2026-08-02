@@ -34,9 +34,13 @@ openssl = { version = "0.10", features = ["vendored"] } # Keep this. Necessary f
 mimalloc = "0.1"
 sketches-ddsketch = "0.3"
 
+
+
 [dev-dependencies]
 criterion = "0.5"
 sysinfo = "0.30"
+pretty_assertions = "1.4"
+test-case = "3.3.1"
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2", "chrono"] }

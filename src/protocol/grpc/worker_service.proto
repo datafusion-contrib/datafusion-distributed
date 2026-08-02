@@ -1,0 +1,15 @@
+syntax = "proto3";
+package worker_grpc;
+
+import "messages.proto";
+
+service WorkerService {
+  // Establishes a bidirectional message stream between a coordinator and a worker, over which messages
+  // will be exchanged at any time during a query's lifetime. It's expected to be one coordinator channel
+  // per task.
+  rpc CoordinatorChannel(stream worker.CoordinatorToWorkerMsg) returns (stream worker.WorkerToCoordinatorMsg);
+  // Executes the requested partition range of a subplan previously sent by the coordinator channel.
+  rpc ExecuteTask(worker.ExecuteTaskRequest) returns (stream worker.FlightData);
+  // Returns metadata about a worker. Currently only used for worker versioning.
+  rpc GetWorkerInfo(worker.GetWorkerInfoRequest) returns (worker.GetWorkerInfoResponse);
+}

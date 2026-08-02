@@ -1,7 +1,7 @@
-#[cfg(all(feature = "integration", feature = "tpcds", test))]
+#[cfg(all(feature = "tpcds", test))]
 mod tests {
     use datafusion::error::Result;
-    use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
+    use datafusion_distributed::test_utils::start_in_memory_context;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };

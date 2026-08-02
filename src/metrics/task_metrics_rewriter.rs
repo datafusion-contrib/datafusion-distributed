@@ -280,7 +280,8 @@ pub fn stage_metrics_rewriter(
         .map(|v| v.data)
 }
 
-#[cfg(test)]
+// These tests execute over the in-memory gRPC transport, so they need that transport compiled in.
+#[cfg(all(test, feature = "grpc"))]
 mod tests {
     use crate::DistributedExt;
     use crate::coordinator::MetricsStore;
@@ -291,9 +292,8 @@ mod tests {
     };
     use crate::metrics::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
     use crate::stage::LocalStage;
-    use crate::test_utils::in_memory_channel_resolver::{
-        InMemoryChannelResolver, InMemoryWorkerResolver,
-    };
+    use crate::test_utils::InMemoryChannelResolver;
+    use crate::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
     use crate::test_utils::metrics::make_test_metrics_set_from_seed;
     use crate::test_utils::plans::count_plan_nodes_up_to_network_boundary;
     use crate::test_utils::session_context::register_temp_parquet_table;

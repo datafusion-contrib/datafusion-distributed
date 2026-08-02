@@ -1,10 +1,12 @@
 use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
-use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
-
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::ProducerHeadSpec;
+use crate::protocol::generated::worker as pb;
+use crate::protocol::grpc::generated::worker_grpc::worker_service_server::{
+    WorkerService, WorkerServiceServer,
+};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, SetPlanRequest,
@@ -59,8 +61,8 @@ impl Worker {
     ///
     /// # }
     /// ```
-    pub fn into_worker_server(self) -> pb::worker_service_server::WorkerServiceServer<Self> {
-        pb::worker_service_server::WorkerServiceServer::new(self)
+    pub fn into_worker_server(self) -> WorkerServiceServer<Self> {
+        WorkerServiceServer::new(self)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
@@ -86,7 +88,7 @@ impl Worker {
 /// The methods are delegated to plan `impl Worker` implementations so that they can be implemented
 /// in different files.
 #[async_trait]
-impl pb::worker_service_server::WorkerService for Worker {
+impl WorkerService for Worker {
     type CoordinatorChannelStream = BoxStream<'static, Result<pb::WorkerToCoordinatorMsg, Status>>;
 
     async fn coordinator_channel(

@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .out_dir(&out_dir)
         .extern_path(
             ".observability.TaskKey",
-            "crate::protocol::grpc::generated::worker::TaskKey",
+            "crate::protocol::generated::worker::TaskKey",
         )
         .compile_protos(&[proto_file], &[proto_dir])?;
 

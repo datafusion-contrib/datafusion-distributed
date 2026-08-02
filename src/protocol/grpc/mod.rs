@@ -1,10 +1,12 @@
 mod channel_resolver;
 mod errors;
-mod generated;
+pub mod generated;
 mod metrics_proto;
 mod observability;
 mod on_drop_stream;
 mod spawn_select_all;
+#[cfg(any(test, feature = "integration"))]
+pub mod test_utils;
 mod worker_client;
 mod worker_service;
 

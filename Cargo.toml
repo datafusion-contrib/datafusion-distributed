@@ -45,7 +45,7 @@ sysinfo = { version = "0.30", optional = true }
 sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
 bincode = "1"
-tonic-prost = "0.14.2"
+tonic-prost = { version = "0.14.2", optional = true }
 
 # grpc-specific features
 arrow-flight = { version = "58", optional = true }
@@ -68,6 +68,7 @@ grpc = [
     "arrow-select",
     "arrow-ipc",
     "tonic",
+    "tonic-prost",
     "tower"
 ]
 
@@ -91,6 +92,43 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 test-case = "3.3.1"
+
+# Every example drives the gRPC transport, so a no-grpc build skips them.
+[[example]]
+name = "custom_distributed_partial_reduction_tree"
+required-features = ["integration"]
+
+[[example]]
+name = "custom_execution_plan"
+required-features = ["integration"]
+
+[[example]]
+name = "custom_worker_url_routing"
+required-features = ["integration"]
+
+[[example]]
+name = "work_unit_feed"
+required-features = ["integration"]
+
+[[example]]
+name = "in_memory_cluster"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_run"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_versioned_run"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_worker"
+required-features = ["grpc"]
+
+[[example]]
+name = "localhost_versioned_worker"
+required-features = ["grpc"]
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

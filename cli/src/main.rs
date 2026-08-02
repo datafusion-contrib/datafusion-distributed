@@ -33,9 +33,8 @@ use datafusion_cli::{
     print_format::PrintFormat,
     print_options::{MaxRows, PrintOptions},
 };
-use datafusion_distributed::test_utils::in_memory_channel_resolver::{
-    InMemoryChannelResolver, InMemoryWorkerResolver,
-};
+use datafusion_distributed::test_utils::InMemoryChannelResolver;
+use datafusion_distributed::test_utils::in_memory_channel_resolver::InMemoryWorkerResolver;
 use datafusion_distributed::{DistributedExt, SessionStateBuilderExt};
 use std::env;
 use std::path::Path;

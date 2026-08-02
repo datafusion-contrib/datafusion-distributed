@@ -4,7 +4,7 @@ use super::{
 };
 use crate::common::serialize_uuid;
 use crate::grpc::{GetClusterWorkersRequest, GetClusterWorkersResponse};
-use crate::protocol::grpc::generated::worker as worker_pb;
+use crate::protocol::generated::worker as worker_pb;
 use crate::worker::{SingleWriteMultiRead, TaskData};
 use crate::{TaskKey, WorkerResolver};
 use datafusion::error::DataFusionError;

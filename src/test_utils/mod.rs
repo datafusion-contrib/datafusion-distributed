@@ -1,6 +1,13 @@
 pub mod in_memory_channel_resolver;
 pub mod insta;
-pub mod localhost;
+
+#[cfg(feature = "grpc")]
+pub use crate::protocol::grpc::test_utils::localhost;
+
+#[cfg(feature = "grpc")]
+pub use crate::protocol::grpc::test_utils::in_memory_channel_resolver::{
+    InMemoryChannelResolver, start_configured_in_memory_context, start_in_memory_context,
+};
 pub mod metrics;
 pub mod mock_exec;
 pub mod parquet;

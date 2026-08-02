@@ -46,14 +46,19 @@ pub mod test_utils;
 #[cfg(feature = "grpc")]
 pub use protocol::grpc;
 
+/// The worker-protocol prost message types, independent of any transport. A non-gRPC transport
+/// reaches for these to speak the same wire shape the gRPC path serializes. Unstable: this
+/// mirrors `worker.proto`, which is regenerated freely.
+pub use protocol::generated::worker as proto;
+
 pub use codec::DistributedCodec;
 pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskKey, TaskMetrics,
-    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    GetWorkerInfoResponse, InProcessChannelResolver, LoadInfo, ProducerHeadSpec, SetPlanRequest,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,
@@ -66,7 +71,7 @@ pub use worker::{
     Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
 
-#[cfg(any(feature = "integration", test))]
+#[cfg(all(feature = "grpc", any(feature = "integration", test)))]
 pub use execution_plans::benchmarks::{
     LocalRepartitionBench, LocalRepartitionFixture, LocalRepartitionMode, ShuffleBench,
     ShuffleFixture, TransportBench, TransportBenchMode, TransportFixture,
