@@ -8,6 +8,7 @@ pub(crate) mod test_utils;
 mod worker_connection_pool;
 mod worker_service;
 
+pub(crate) use impl_execute_task::UnregisteredTaskDuringDrain;
 pub(crate) use single_write_multi_read::SingleWriteMultiRead;
 pub(crate) use worker_connection_pool::WorkerConnectionPool;
 

@@ -6,6 +6,7 @@ use super::spawn_select_all::spawn_select_all;
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::ProducerHeadSpec;
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
+use crate::worker::UnregisteredTaskDuringDrain;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, SetPlanRequest,
     TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
@@ -128,7 +129,7 @@ impl pb::worker_service_server::WorkerService for Worker {
         let (arrow_streams, task_ctx) = self
             .execute_task(request)
             .await
-            .map_err(datafusion_error_to_tonic_status)?;
+            .map_err(execute_task_error_to_tonic_status)?;
 
         let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())
             .map_err(datafusion_error_to_tonic_status)?;
@@ -178,6 +179,18 @@ impl pb::worker_service_server::WorkerService for Worker {
             version: self.version().to_string(),
         }))
     }
+}
+
+fn execute_task_error_to_tonic_status(error: DataFusionError) -> Status {
+    if let DataFusionError::External(source) = &error
+        && source
+            .downcast_ref::<UnregisteredTaskDuringDrain>()
+            .is_some()
+    {
+        return Status::unavailable(error.to_string());
+    }
+
+    datafusion_error_to_tonic_status(error)
 }
 
 fn decode_coordinator_to_worker_msg(
@@ -415,4 +428,39 @@ fn garbage_collect_arrays(
         arrays,
         &RecordBatchOptions::new().with_row_count(Some(row_count)),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ProducerHeadSpec;
+    use tonic::Code;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn unregistered_task_during_drain_maps_to_unavailable() {
+        let worker = Worker::default();
+        worker.reject_unregistered_execute_tasks();
+
+        let result = worker
+            .execute_task(ExecuteTaskRequest {
+                task_key: TaskKey {
+                    query_id: Uuid::nil(),
+                    stage_id: 0,
+                    task_number: 0,
+                },
+                target_partition_start: 0,
+                target_partition_end: 1,
+                producer_head_spec: ProducerHeadSpec::None,
+            })
+            .await;
+        let Err(error) = result else {
+            panic!("unregistered task should be rejected during drain");
+        };
+
+        assert_eq!(
+            execute_task_error_to_tonic_status(error).code(),
+            Code::Unavailable
+        );
+    }
 }
