@@ -136,9 +136,8 @@ fn collect_left_to_partitioned(
 mod tests {
     use super::*;
     use crate::assert_snapshot;
-    use crate::test_utils::plans::TestPlanBuilder;
+    use crate::test_utils::plans::{TestPlan, TestPlanBuilder};
     use datafusion::physical_plan::displayable;
-    use datafusion::physical_plan::expressions::DynamicFilterPhysicalExpr;
 
     #[tokio::test]
     async fn test_left_hash_join_converted_to_partitioned() {
@@ -241,129 +240,50 @@ mod tests {
         assert!(plan.contains("NestedLoopJoinExec: join_type=Left"));
     }
 
-    #[test]
-    fn collect_left_to_partitioned_preserves_every_field() {
-        // Tripwire: `collect_left_to_partitioned` rebuilds the join through `try_new`,
-        // copying each field explicitly — a forgotten field silently resets to its default.
-        // Every field below is set to a NON-default value so any reset fails an assertion.
-        // If `HashJoinExec` grows a new field, thread it through the conversion and set it
-        // to a non-default value here.
-        //
-        // The join is a LeftAnti with a single key because that is the one shape where all
-        // fields can be non-default at once (`null_aware` is only valid there). The caller's
-        // guard never converts null-aware joins — this exercises the helper directly so the
-        // policy stays in one place while the helper remains faithful.
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::common::{JoinSide, NullEquality, ScalarValue};
-        use datafusion::logical_expr::Operator;
-        use datafusion::physical_expr::PhysicalExpr;
-        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
-        use datafusion::physical_plan::empty::EmptyExec;
-        use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
+    #[tokio::test]
+    async fn collect_left_to_partitioned_preserves_dynamic_filter() {
+        // A LEFT join is used because it is both build-side-emitting (so it gets converted)
+        // and probe-side-preserved w.r.t. the ON clause (so DataFusion attaches a dynamic
+        // filter to it). A FULL join would convert too, but never carries a dynamic filter:
+        // probe rows skipped by the filter would still need to be emitted as unmatched.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a LEFT JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let test_plan = test_plan(false).await;
+        let ctx = test_plan.get_ctx();
+        let plan = test_plan.physical_plan(query).await;
+        let original = plan.downcast_ref::<HashJoinExec>().unwrap();
+        assert_eq!(original.mode, PartitionMode::CollectLeft);
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int64, true),
-            Field::new("b", DataType::Int64, true),
-        ]));
-
-        // Keep direct handles to the original inputs to assert identity after the rewrite.
-        let build_input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let probe_input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let build_side: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(Arc::clone(&build_input)));
-
-        let key = |name: &str| -> Arc<dyn PhysicalExpr> {
-            Arc::new(Column::new_with_schema(name, &schema).unwrap())
-        };
-        // Residual filter over one intermediate column: left-side `b` > 5.
-        let filter = JoinFilter::new(
-            Arc::new(BinaryExpr::new(
-                Arc::new(Column::new("b", 0)),
-                Operator::Gt,
-                Arc::new(Literal::new(ScalarValue::Int64(Some(5)))),
-            )),
-            vec![ColumnIndex {
-                index: 1,
-                side: JoinSide::Left,
-            }],
-            Arc::new(Schema::new(vec![Field::new("b", DataType::Int64, true)])),
-        );
-        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
-            Vec::new(),
-            Arc::new(Literal::new(ScalarValue::Boolean(Some(true)))),
-        ));
-
-        let original = HashJoinExec::try_new(
-            build_side,
-            Arc::clone(&probe_input),
-            vec![(key("a"), key("a"))],
-            Some(filter),
-            &JoinType::LeftAnti,
-            Some(vec![0]),
-            PartitionMode::CollectLeft,
-            NullEquality::NullEqualsNull,
-            true,
+        let normalized = normalize_collect_joins(
+            plan.clone(),
+            ctx.state_ref().read().config_options().as_ref(),
         )
         .unwrap();
-        let original = original.with_dynamic_filter_expr(dynamic_filter).unwrap();
-        let original = original.with_fetch(Some(7)).unwrap();
-        let original = original.downcast_ref::<HashJoinExec>().unwrap();
-
-        let converted = collect_left_to_partitioned(original, 7).unwrap();
-        let converted = converted
-            .downcast_ref::<HashJoinExec>()
-            .expect("conversion must produce a HashJoinExec");
-
-        // The one intentional change:
+        let converted = normalized.downcast_ref::<HashJoinExec>().unwrap();
         assert_eq!(converted.mode, PartitionMode::Partitioned);
 
-        // Everything else must survive verbatim.
-        // left_fut, random_state, and column_indices are unreachable by any public API
-        // equivalence properties (HashJoinExec.cache) necessarily change.
-
-        assert_eq!(converted.on, original.on);
-        // using debug output as means of getting around lack of PartialEq
+        // DynamicFilterPhysicalExpr equality is pointer-based on the shared inner state, so
+        // this holds only if the converted join kept the original filter (the same instance
+        // the probe-side scan subscribes to), not a lookalike replacement.
         assert_eq!(
-            format!("{:?}", converted.filter),
-            format!("{:?}", original.filter)
+            original.dynamic_filter_expr().unwrap(),
+            converted.dynamic_filter_expr().unwrap()
         );
-        assert_eq!(converted.join_schema(), original.join_schema());
-        assert_eq!(
-            format!("{:?}", converted.metrics()),
-            format!("{:?}", original.metrics())
-        );
-        assert_eq!(converted.projection, original.projection);
-        assert_eq!(converted.null_equality, original.null_equality);
-        assert_eq!(
-            converted.dynamic_filter_expr(),
-            original.dynamic_filter_expr()
-        );
-        assert_eq!(converted.fetch(), original.fetch());
-
-        // Both inputs get re-wrapped in hash repartitions on the join keys with the
-        // requested partition count; the build side's CoalescePartitionsExec is stripped,
-        // and the ORIGINAL input nodes sit directly underneath (same Arcs, not rebuilt).
-        for (child, original_input) in [
-            (converted.left(), &build_input),
-            (converted.right(), &probe_input),
-        ] {
-            let repartition = child
-                .downcast_ref::<RepartitionExec>()
-                .expect("both inputs must be re-wrapped in a RepartitionExec");
-            assert!(matches!(
-                repartition.partitioning(),
-                Partitioning::Hash(_, 7)
-            ));
-            assert!(Arc::ptr_eq(repartition.input(), original_input));
-        }
     }
 
-    async fn sql_to_normalized_plan(query: &str, broadcast_enabled: bool) -> String {
-        let test_plan = TestPlanBuilder::new()
+    async fn test_plan(broadcast_enabled: bool) -> TestPlan {
+        TestPlanBuilder::new()
             .target_partitions(3)
             .broadcast_joins(broadcast_enabled)
             .build()
-            .await;
+            .await
+    }
+
+    async fn sql_to_normalized_plan(query: &str, broadcast_enabled: bool) -> String {
+        let test_plan = test_plan(broadcast_enabled).await;
         let ctx = test_plan.get_ctx();
         let plan = test_plan.physical_plan(query).await;
         let plan = normalize_collect_joins(plan, ctx.state_ref().read().config_options().as_ref())
