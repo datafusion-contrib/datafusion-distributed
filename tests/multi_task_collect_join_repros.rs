@@ -88,6 +88,7 @@ mod tests {
     /// broadcast orientation can ever be correct. Single-node: every row matches, no NULL
     /// padding. Distributed: cross-task matches are lost and spurious NULL-padded rows appear.
     #[tokio::test]
+    #[ignore = "Until we upgrade to DF 54.1.0 or greater, this is flaky. See apache/datafusion#22791"]
     async fn capped_nested_loop_full_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p \
