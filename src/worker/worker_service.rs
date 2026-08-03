@@ -2,8 +2,6 @@ use crate::worker::{LocalWorkerContext, SingleWriteMultiRead, WorkerSessionBuild
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionConfig;
 use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -11,16 +9,6 @@ use std::time::Duration;
 use url::Url;
 
 const TASK_CACHE_TTI: Duration = Duration::from_mins(10);
-
-#[allow(clippy::type_complexity)]
-type OnPlanHook = dyn Fn(Arc<dyn ExecutionPlan>, &SessionConfig) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>
-    + Sync
-    + Send;
-
-#[derive(Clone, Default)]
-pub(super) struct WorkerHooks {
-    pub(super) on_plan: Vec<Arc<OnPlanHook>>,
-}
 
 pub(crate) type ResultTaskData = Result<TaskData, Arc<DataFusionError>>;
 pub(crate) type TaskDataEntries = Cache<TaskKey, Arc<SingleWriteMultiRead<ResultTaskData>>>;
@@ -33,7 +21,6 @@ pub struct Worker {
     /// while allowing concurrent access to task results across multiple partition requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
-    pub(super) hooks: WorkerHooks,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
 }
@@ -45,7 +32,6 @@ impl Default for Worker {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
             session_builder: Arc::new(DefaultSessionBuilder),
-            hooks: WorkerHooks::default(),
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
         }
@@ -69,31 +55,6 @@ impl Worker {
     pub fn with_runtime_env(mut self, runtime_env: Arc<RuntimeEnv>) -> Self {
         self.runtime = runtime_env;
         self
-    }
-
-    /// Adds a callback for when an [ExecutionPlan] is received in the `set_plan` call.
-    ///
-    /// The callback runs after worker session construction and plan decoding, and before task
-    /// registration and execution. It receives the per-query [SessionConfig], so it can use
-    /// propagated options or config extensions when rewriting the plan.
-    ///
-    /// The callback is trusted to preserve the worker stage contract already planned by the
-    /// coordinator: row semantics, output schema, partitioning, and ordering requirements. It is
-    /// intended for transparent wrappers, such as instrumentation, or semantics-preserving physical
-    /// rewrites. Do not use it to add or remove rows or columns, repartition the stage, or otherwise
-    /// re-plan distributed execution. Returned errors are propagated as worker plan-registration
-    /// failures.
-    pub fn add_on_plan_hook(
-        &mut self,
-        hook: impl Fn(
-            Arc<dyn ExecutionPlan>,
-            &SessionConfig,
-        ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError>
-        + Sync
-        + Send
-        + 'static,
-    ) {
-        self.hooks.on_plan.push(Arc::new(hook));
     }
 
     /// Set the maximum message size for FlightData chunks.

@@ -4,7 +4,8 @@ use crate::config_extension_ext::{
 };
 use crate::events::{
     DesiredTaskCountHandler, DesiredTaskCountHandlers, RouteTasksHandler, RouteTasksHandlers,
-    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers,
+    ScaleUpLeafNodeHandler, ScaleUpLeafNodeHandlers, WorkerPlanRewriteHandler,
+    WorkerPlanRewriteHandlers,
 };
 use crate::passthrough_headers::set_passthrough_headers;
 use crate::protocol::set_distributed_channel_resolver;
@@ -690,6 +691,52 @@ pub trait DistributedExt: Sized {
     /// Same as [DistributedExt::with_distributed_route_tasks_handler] but with an in-place
     /// mutation.
     fn set_distributed_route_tasks_handler<T: RouteTasksHandler>(&mut self, handler: T);
+
+    /// Registers a handler that rewrites a decoded worker stage plan before it is executed.
+    ///
+    /// Handlers registered with this method need to meet the following criteria:
+    ///
+    /// - The topology of the plan must remain the same: no nodes or edges may be added or removed.
+    /// - Each output partition must produce the same rows, including their multiplicity.
+    /// - The output schema, partitioning, ordering, boundedness, and emission type of the head
+    ///   node must remain unchanged. Intermediate nodes may change their output schema.
+    ///
+    /// Handlers run in registration order, each receiving the plan returned by the preceding
+    /// handler. Returning an error aborts worker plan registration.
+    ///
+    /// Register this handler on the [`SessionStateBuilder`] used by each
+    /// [`crate::WorkerSessionBuilder`]. Registering it on the coordinating session has no effect:
+    /// the coordinator session context is not used by workers
+    ///
+    /// ```rust
+    /// # use datafusion::common::Result;
+    /// # use datafusion::execution::SessionState;
+    /// # use datafusion_distributed::{DistributedExt, Worker, WorkerPlanRewriteEvent, WorkerPlanRewriteEventResponse, WorkerQueryContext};
+    ///
+    /// async fn build_worker_session(ctx: WorkerQueryContext) -> Result<SessionState> {
+    ///     Ok(ctx
+    ///         .builder
+    ///         .with_distributed_worker_plan_rewrite_handler(
+    ///             |event: WorkerPlanRewriteEvent<'_>| {
+    ///                 Ok(WorkerPlanRewriteEventResponse::new(event.plan))
+    ///             },
+    ///         )
+    ///         .build())
+    /// }
+    ///
+    /// let _worker = Worker::from_session_builder(build_worker_session);
+    /// ```
+    fn with_distributed_worker_plan_rewrite_handler<T: WorkerPlanRewriteHandler>(
+        self,
+        handler: T,
+    ) -> Self;
+
+    /// Same as [DistributedExt::with_distributed_worker_plan_rewrite_handler] but with an
+    /// in-place mutation.
+    fn set_distributed_worker_plan_rewrite_handler<T: WorkerPlanRewriteHandler>(
+        &mut self,
+        handler: T,
+    );
 }
 
 /// Trait to have a unified interface for getting structs & properties from SessionConfig that are used in distributed context.
@@ -866,6 +913,10 @@ impl DistributedExt for SessionConfig {
         RouteTasksHandlers::push_custom(self, Arc::new(h));
     }
 
+    fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H) {
+        WorkerPlanRewriteHandlers::push_custom(self, Arc::new(h));
+    }
+
     delegate! {
         to self {
             #[call(set_distributed_option_extension)]
@@ -969,6 +1020,10 @@ impl DistributedExt for SessionConfig {
             #[call(set_distributed_route_tasks_handler)]
             #[expr($;self)]
             fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+
+            #[call(set_distributed_worker_plan_rewrite_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1112,6 +1167,11 @@ impl DistributedExt for SessionStateBuilder {
             #[call(set_distributed_route_tasks_handler)]
             #[expr($;self)]
             fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_plan_rewrite_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1257,6 +1317,11 @@ impl DistributedExt for SessionState {
             #[call(set_distributed_route_tasks_handler)]
             #[expr($;self)]
             fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(mut self, h: H) -> Self;
+
+            fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_plan_rewrite_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(mut self, h: H) -> Self;
         }
     }
 }
@@ -1395,6 +1460,11 @@ impl DistributedExt for SessionContext {
             #[call(set_distributed_route_tasks_handler)]
             #[expr($;self)]
             fn with_distributed_route_tasks_handler<H: RouteTasksHandler>(self, h: H) -> Self;
+
+            fn set_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(&mut self, h: H);
+            #[call(set_distributed_worker_plan_rewrite_handler)]
+            #[expr($;self)]
+            fn with_distributed_worker_plan_rewrite_handler<H: WorkerPlanRewriteHandler>(self, h: H) -> Self;
         }
     }
 }

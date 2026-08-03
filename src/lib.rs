@@ -25,7 +25,8 @@ pub use distributed_planner::{
 pub use events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
     RouteTasksEventResponse, RouteTasksHandler, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse,
-    ScaleUpLeafNodeHandler, TaskCountAnnotation,
+    ScaleUpLeafNodeHandler, TaskCountAnnotation, WorkerPlanRewriteEvent,
+    WorkerPlanRewriteEventResponse, WorkerPlanRewriteHandler,
 };
 pub use execution_plans::{
     BroadcastExec, DistributedLeafExec, NetworkBroadcastExec, NetworkCoalesceExec,
