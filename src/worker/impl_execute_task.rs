@@ -1,4 +1,5 @@
 use crate::ExecuteTaskRequest;
+use crate::worker::errors::UnregisteredTaskDuringDrainError;
 use crate::worker::SingleWriteMultiRead;
 use crate::worker::worker_service::{ResultTaskData, TaskDataEntries, Worker};
 use datafusion::common::exec_datafusion_err;
@@ -6,35 +7,10 @@ use datafusion::common::{Result, exec_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 
 const WAIT_PLAN_TIMEOUT_SECS: u64 = 10;
-
-#[derive(Debug)]
-pub(crate) struct UnregisteredTaskDuringDrain {
-    task_key: crate::TaskKey,
-}
-
-impl UnregisteredTaskDuringDrain {
-    fn new(task_key: crate::TaskKey) -> Self {
-        Self { task_key }
-    }
-}
-
-impl Display for UnregisteredTaskDuringDrain {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "worker is draining and task key {:?} is not registered",
-            self.task_key
-        )
-    }
-}
-
-impl Error for UnregisteredTaskDuringDrain {}
 
 /// Builds several per-partition streams by retrieving the appropriate entry from [TaskDataEntries]
 /// based on the task key extracted from [ExecuteTaskRequest].
@@ -51,7 +27,7 @@ impl Worker {
                 .get(&request.task_key)
                 .await
                 .ok_or_else(|| {
-                    DataFusionError::External(Box::new(UnregisteredTaskDuringDrain::new(
+                    DataFusionError::External(Box::new(UnregisteredTaskDuringDrainError::new(
                         request.task_key,
                     )))
                 })?
@@ -156,7 +132,7 @@ mod tests {
         let DataFusionError::External(source) = error else {
             panic!("expected external drain error");
         };
-        assert!(source.is::<UnregisteredTaskDuringDrain>());
+        assert!(source.is::<UnregisteredTaskDuringDrainError>());
         assert_eq!(worker.tasks_running().await, 1);
     }
 
