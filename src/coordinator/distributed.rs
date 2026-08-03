@@ -4,6 +4,8 @@ use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::NetworkBoundaryExt;
+#[cfg(feature = "grpc")]
+use crate::protocol::grpc::plan_snapshot;
 use crate::{DistributedConfig, TaskKey};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -134,6 +136,10 @@ impl DistributedExec {
             .map_err(|e| internal_datafusion_err!("Failed to lock head stage: {}", e))?
             .clone()
             .ok_or_else(|| internal_datafusion_err!("No head stage found. Was execute() called?"))
+    }
+    #[cfg(feature = "grpc")]
+    pub fn decode_plan_snapshot(encoded: &str) -> Result<String> {
+        plan_snapshot::decode(encoded)
     }
 }
 
