@@ -51,6 +51,15 @@ where
     }
 }
 
+impl WorkerPlanRewriteHandler for Arc<dyn WorkerPlanRewriteHandler> {
+    fn rewrite_worker_plan(
+        &self,
+        ev: WorkerPlanRewriteEvent,
+    ) -> Result<WorkerPlanRewriteEventResponse> {
+        self.as_ref().rewrite_worker_plan(ev)
+    }
+}
+
 pub(crate) type WorkerPlanRewriteHandlers = EventHandlerChain<dyn WorkerPlanRewriteHandler>;
 
 impl WorkerPlanRewriteHandlers {
