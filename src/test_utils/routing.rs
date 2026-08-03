@@ -4,9 +4,8 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
-    common::{ScalarValue, Statistics, internal_err, plan_err},
+    common::{Result, ScalarValue, Statistics, internal_err, plan_err},
     datasource::TableType,
-    error::Result,
     execution::TaskContext,
     physical_expr::EquivalenceProperties,
     physical_plan::{
@@ -247,10 +246,10 @@ fn url_emitter_schema() -> SchemaRef {
 
 pub fn url_emitter_desired_task_count(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     ev.plan
         .downcast_ref::<URLEmitterExec>()
-        .map(|exec| DesiredTaskCountEventResponse::desired(exec.task_count))
+        .map(|exec| Ok(DesiredTaskCountEventResponse::desired(exec.task_count)))
 }
 
 pub fn url_emitter_scale_up_leaf_node(

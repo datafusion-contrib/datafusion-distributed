@@ -25,6 +25,10 @@ impl<H: ?Sized> Clone for EventHandlerChain<H> {
 }
 
 impl<H: ?Sized> EventHandlerChain<H> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = &H> {
+        self.custom.iter().chain(&self.builtin).map(AsRef::as_ref)
+    }
+
     pub(super) fn find_map<T>(&self, mut f: impl FnMut(&H) -> Option<T>) -> Option<T> {
         // Give priority to custom handlers registered by users.
         if let Some(res) = self.custom.iter().find_map(|handler| f(handler.as_ref())) {

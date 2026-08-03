@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 pub(crate) fn file_scan_config_desired_task_count(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let cfg = ev.session_config;
     let dse: &DataSourceExec = ev.plan.downcast_ref()?;
     let file_scan: &FileScanConfig = dse.data_source().downcast_ref()?;
@@ -30,7 +30,7 @@ pub(crate) fn file_scan_config_desired_task_count(
         .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
         .div_ceil(cfg.target_partitions());
 
-    Some(DesiredTaskCountEventResponse::desired(task_count))
+    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
 
 pub(crate) fn file_scan_config_scale_up_leaf_node(
@@ -115,7 +115,8 @@ mod tests {
             plan: &plan,
             session_config: &cfg,
         })
-        .expect("a handler should respond");
+        .await
+        .expect("a handler should respond")?;
         assert_eq!(response.task_count.as_usize(), 10);
         Ok(())
     }
@@ -131,7 +132,8 @@ mod tests {
             plan: &plan,
             session_config: &cfg,
         })
-        .expect("a handler should respond");
+        .await
+        .expect("a handler should respond")?;
         assert_eq!(response.task_count.as_usize(), 30);
         Ok(())
     }
@@ -149,7 +151,7 @@ mod tests {
             plan: &plan,
             session_config: &cfg,
         })
-        .expect("a file scan should be recognized");
+        .expect("a file scan should be recognized")?;
         assert_eq!(response.task_count.as_usize(), 3);
         Ok(())
     }
@@ -197,19 +199,21 @@ mod tests {
         Ok(plan)
     }
 
-    fn desired_ten(_: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        Some(DesiredTaskCountEventResponse::desired(10))
+    fn desired_ten(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
+        Some(Ok(DesiredTaskCountEventResponse::desired(10)))
     }
 
-    fn desired_twenty(_: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        Some(DesiredTaskCountEventResponse::desired(20))
+    fn desired_twenty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
+        Some(Ok(DesiredTaskCountEventResponse::desired(20)))
     }
 
-    fn no_desired_task_count(_: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    fn no_desired_task_count(
+        _: DesiredTaskCountEvent,
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
         None
     }
 
-    fn desired_thirty(_: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
-        Some(DesiredTaskCountEventResponse::desired(30))
+    fn desired_thirty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
+        Some(Ok(DesiredTaskCountEventResponse::desired(30)))
     }
 }

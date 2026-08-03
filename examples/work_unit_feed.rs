@@ -245,14 +245,14 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
 
 fn remote_scan_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
-) -> Option<DesiredTaskCountEventResponse> {
+) -> Option<Result<DesiredTaskCountEventResponse>> {
     let task_count = ev
         .plan
         .downcast_ref::<RemoteScanExec>()?
         .feed
         .inner()?
         .task_count;
-    Some(DesiredTaskCountEventResponse::desired(task_count))
+    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
 
 fn remote_scan_scale_up_leaf_node_handler(

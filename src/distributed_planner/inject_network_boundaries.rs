@@ -237,7 +237,7 @@ async fn _inject_network_boundaries(
             plan: &plan,
             session_config: nb_ctx.cfg,
         };
-        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev) {
+        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev).await.transpose()? {
             Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
         } else {
             // We could not determine how many tasks this leaf node should run on, so
@@ -261,7 +261,10 @@ async fn _inject_network_boundaries(
         plan: &plan,
         session_config: nb_ctx.cfg,
     };
-    let mut task_count = DesiredTaskCountHandlers::handle(ev).map_or(Desired(1), |v| v.task_count);
+    let mut task_count = DesiredTaskCountHandlers::handle(ev)
+        .await
+        .transpose()?
+        .map_or(Desired(1), |v| v.task_count);
     if plan.is::<ChildrenIsolatorUnionExec>() {
         // Isolating unions have the chance to decide how many tasks they should run on. If there
         // is a union with a bunch of children, the user might want to increase parallelism and the
@@ -1189,20 +1192,19 @@ mod tests {
 
     fn repartition_max_one_desired_task_count_handler(
         ev: DesiredTaskCountEvent,
-    ) -> Option<DesiredTaskCountEventResponse> {
-        ev.plan
-            .is::<RepartitionExec>()
-            .then(|| DesiredTaskCountEventResponse::maximum(1))
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
+        ev.plan.downcast_ref::<RepartitionExec>()?;
+        Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
     }
 
     fn broadcast_build_coalesce_max_desired_task_count_handler(
         ev: DesiredTaskCountEvent,
-    ) -> Option<DesiredTaskCountEventResponse> {
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
         ev.plan
             .downcast_ref::<CoalescePartitionsExec>()?
             .input()
-            .is::<BroadcastExec>()
-            .then(|| DesiredTaskCountEventResponse::maximum(1))
+            .downcast_ref::<BroadcastExec>()?;
+        Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
     }
 
     async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {

@@ -584,11 +584,12 @@ pub trait DistributedExt: Sized {
     /// ```rust
     /// # use datafusion::execution::SessionStateBuilder;
     /// # use datafusion::physical_plan::empty::EmptyExec;
+    /// # use datafusion::common::Result;
     /// # use datafusion_distributed::{DistributedExt, DesiredTaskCountEvent, DesiredTaskCountEventResponse};
     ///
-    /// fn handle_custom_desired_task_count(event: DesiredTaskCountEvent) -> Option<DesiredTaskCountEventResponse> {
+    /// fn handle_custom_desired_task_count(event: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
     ///     let _exec = event.plan.downcast_ref::<EmptyExec>()?;
-    ///     Some(DesiredTaskCountEventResponse::desired(3))
+    ///     Some(Ok(DesiredTaskCountEventResponse::desired(3)))
     /// }
     ///
     /// SessionStateBuilder::new()
