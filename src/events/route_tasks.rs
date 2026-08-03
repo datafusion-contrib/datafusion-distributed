@@ -61,6 +61,12 @@ where
     }
 }
 
+impl RouteTasksHandler for Arc<dyn RouteTasksHandler> {
+    fn handle(&self, ev: RouteTasksEvent) -> Option<Result<RouteTasksEventResponse>> {
+        self.as_ref().handle(ev)
+    }
+}
+
 pub(crate) type RouteTasksHandlers = EventHandlerChain<dyn RouteTasksHandler>;
 
 impl RouteTasksHandlers {

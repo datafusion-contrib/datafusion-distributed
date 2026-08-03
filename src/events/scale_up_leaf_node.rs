@@ -60,6 +60,12 @@ where
     }
 }
 
+impl ScaleUpLeafNodeHandler for Arc<dyn ScaleUpLeafNodeHandler> {
+    fn handle(&self, ev: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
+        self.as_ref().handle(ev)
+    }
+}
+
 pub(crate) type ScaleUpLeafNodeHandlers = EventHandlerChain<dyn ScaleUpLeafNodeHandler>;
 
 impl ScaleUpLeafNodeHandlers {
