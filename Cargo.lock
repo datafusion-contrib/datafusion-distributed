@@ -2289,6 +2289,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "async-trait",
+ "base64 0.23.0",
  "color-eyre",
  "crossterm",
  "datafusion",
