@@ -202,8 +202,7 @@ impl DataFusionErrorProto {
                 // than dropping the error.
                 #[cfg(not(feature = "parquet"))]
                 {
-                    let _ = err;
-                    DataFusionError::Internal("ParquetError from peer".to_string())
+                    DataFusionError::Internal(format!("ParquetError from peer: {err}"))
                 }
             }
             DataFusionErrorInnerProto::ObjectStoreError(err) => {
@@ -225,8 +224,13 @@ impl DataFusionErrorProto {
                 // reasoning as the parquet arm above.
                 #[cfg(not(feature = "sql"))]
                 {
-                    let _ = err;
-                    DataFusionError::Internal("SQL error from peer".to_string())
+                    let msg = err
+                        .err
+                        .as_ref()
+                        .map(|err| err.to_string())
+                        .unwrap_or_default();
+                    let backtrace = err.backtrace.as_deref().unwrap_or_default();
+                    DataFusionError::Internal(format!("SQL error from peer: {msg}{backtrace}"))
                 }
             }
             DataFusionErrorInnerProto::NotImplemented(msg) => {

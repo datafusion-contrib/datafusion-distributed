@@ -19,6 +19,20 @@ pub enum ParserErrorInnerProto {
     RecursionLimitExceeded(bool),
 }
 
+/// Mirrors `ParserError`'s `Display` without needing the type itself, so that endpoints built
+/// without the `sql` feature can still surface the message an error carried over the wire.
+impl std::fmt::Display for ParserErrorProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self.inner {
+            Some(ParserErrorInnerProto::TokenizerError(ref msg)) => msg.as_str(),
+            Some(ParserErrorInnerProto::ParserError(ref msg)) => msg.as_str(),
+            Some(ParserErrorInnerProto::RecursionLimitExceeded(_)) => "recursion limit exceeded",
+            None => "Malformed protobuf message",
+        };
+        write!(f, "sql parser error: {msg}")
+    }
+}
+
 #[cfg(feature = "sql")]
 impl ParserErrorProto {
     pub fn from_parser_error(err: &ParserError) -> Self {
@@ -70,6 +84,9 @@ mod tests {
             let recovered_error = proto.to_parser_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
+            // The proto's own `Display` is what endpoints built without `sql` fall back to, so it
+            // must stay in sync with `ParserError`'s.
+            assert_eq!(original_error.to_string(), proto.to_string());
         }
     }
 
@@ -78,5 +95,6 @@ mod tests {
         let malformed_proto = ParserErrorProto { inner: None };
         let recovered_error = malformed_proto.to_parser_error();
         assert!(matches!(recovered_error, ParserError::ParserError(_)));
+        assert_eq!(recovered_error.to_string(), malformed_proto.to_string());
     }
 }

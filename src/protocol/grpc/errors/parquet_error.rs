@@ -35,6 +35,28 @@ pub struct IndexOutOfBoundProto {
     b: u64,
 }
 
+/// Mirrors `ParquetError`'s `Display` without needing the type itself, so that endpoints built
+/// without the `parquet` feature can still surface the message an error carried over the wire.
+impl std::fmt::Display for ParquetErrorProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some(ref inner) = self.inner else {
+            return write!(f, "External: Malformed protobuf message");
+        };
+
+        match inner {
+            ParquetErrorInnerProto::General(msg) => write!(f, "Parquet error: {msg}"),
+            ParquetErrorInnerProto::NYI(msg) => write!(f, "NYI: {msg}"),
+            ParquetErrorInnerProto::EOF(msg) => write!(f, "EOF: {msg}"),
+            ParquetErrorInnerProto::ArrowError(msg) => write!(f, "Arrow: {msg}"),
+            ParquetErrorInnerProto::IndexOutOfBound(IndexOutOfBoundProto { a, b }) => {
+                write!(f, "Index {a} out of bound: {b}")
+            }
+            ParquetErrorInnerProto::External(msg) => write!(f, "External: {msg}"),
+            ParquetErrorInnerProto::NeedMoreData(n) => write!(f, "NeedMoreData: {n}"),
+        }
+    }
+}
+
 #[cfg(feature = "parquet")]
 impl ParquetErrorProto {
     pub fn from_parquet_error(err: &ParquetError) -> Self {
@@ -118,6 +140,9 @@ mod tests {
             let recovered_error = proto.to_parquet_error();
 
             assert_eq!(original_error.to_string(), recovered_error.to_string());
+            // The proto's own `Display` is what endpoints built without `parquet` fall back to,
+            // so it must stay in sync with `ParquetError`'s.
+            assert_eq!(original_error.to_string(), proto.to_string());
         }
     }
 
@@ -126,5 +151,6 @@ mod tests {
         let malformed_proto = ParquetErrorProto { inner: None };
         let recovered_error = malformed_proto.to_parquet_error();
         assert!(matches!(recovered_error, ParquetError::External(_)));
+        assert_eq!(recovered_error.to_string(), malformed_proto.to_string());
     }
 }
