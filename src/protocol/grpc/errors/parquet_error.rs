@@ -1,3 +1,6 @@
+// Only the conversions touch `ParquetError`; the proto types below are always compiled so
+// that the wire format does not depend on which features an endpoint was built with.
+#[cfg(feature = "parquet")]
 use datafusion::parquet::errors::ParquetError;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -32,6 +35,7 @@ pub struct IndexOutOfBoundProto {
     b: u64,
 }
 
+#[cfg(feature = "parquet")]
 impl ParquetErrorProto {
     pub fn from_parquet_error(err: &ParquetError) -> Self {
         match err {

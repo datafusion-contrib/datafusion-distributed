@@ -1,3 +1,6 @@
+// Only the conversions touch `ParserError`; the proto types below are always compiled so
+// that the wire format does not depend on which features an endpoint was built with.
+#[cfg(feature = "sql")]
 use datafusion::sql::sqlparser::parser::ParserError;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -16,6 +19,7 @@ pub enum ParserErrorInnerProto {
     RecursionLimitExceeded(bool),
 }
 
+#[cfg(feature = "sql")]
 impl ParserErrorProto {
     pub fn from_parser_error(err: &ParserError) -> Self {
         match err {
