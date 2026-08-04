@@ -50,7 +50,7 @@ mod tests {
     /// the stage to one task. Every id matches on a single node; distributed, a build id only
     /// survives if its probe rows landed in the same task.
     #[tokio::test]
-    async fn capped_collect_left_semi_hash_join_is_correct() -> Result<()> {
+    async fn collect_left_semi_hash_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT id FROM build_side WHERE id IN (SELECT id FROM probe_side)",
             true,
@@ -62,7 +62,7 @@ mod tests {
     /// so zero rows. Distributed, each task only sees a slice of probe_side, so most build ids
     /// look unmatched and phantom rows are emitted.
     #[tokio::test]
-    async fn capped_not_in_anti_hash_join_is_correct() -> Result<()> {
+    async fn not_in_anti_hash_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT id FROM build_side WHERE id NOT IN (SELECT id FROM probe_side)",
             true,
@@ -75,7 +75,7 @@ mod tests {
     /// is `p.id = b.id` for integers, but expressed as inequalities so no hash join is possible).
     #[tokio::test]
     #[ignore = "Until we upgrade to DF 54.1.0 or greater, this is flaky. See apache/datafusion#22791"]
-    async fn capped_nested_loop_left_semi_join_is_correct() -> Result<()> {
+    async fn nested_loop_left_semi_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT b.id FROM build_side b WHERE EXISTS ( \
                 SELECT 1 FROM probe_side p WHERE p.id > b.id - 1 AND p.id < b.id + 1)",
@@ -89,7 +89,7 @@ mod tests {
     /// padding. Distributed: cross-task matches are lost and spurious NULL-padded rows appear.
     #[tokio::test]
     #[ignore = "Until we upgrade to DF 54.1.0 or greater, this is flaky. See apache/datafusion#22791"]
-    async fn capped_nested_loop_full_join_is_correct() -> Result<()> {
+    async fn nested_loop_full_join_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT b.id, p.id FROM build_side b FULL JOIN probe_side p \
                 ON p.id > b.id - 1 AND p.id < b.id + 1",
@@ -117,7 +117,7 @@ mod tests {
     /// (A bare `count(*)` is folded to a constant from parquet statistics, so sum an
     /// expression the optimizer cannot answer from metadata.)
     #[tokio::test]
-    async fn capped_cross_join_broadcast_disabled_is_correct() -> Result<()> {
+    async fn cross_join_broadcast_disabled_is_correct() -> Result<()> {
         assert_distributed_matches_single_node(
             "SELECT sum(b.id + p.id) AS pair_sum FROM build_side b CROSS JOIN probe_side p",
             false,
