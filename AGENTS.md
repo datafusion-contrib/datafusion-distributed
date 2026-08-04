@@ -47,6 +47,10 @@ about a user's networking or deployment stack.
   upgrades.
 - Do not introduce a public or wire-format breaking change unless it is
   explicitly requested.
+- For every public breaking change, add a user-facing migration entry to the
+  next major upgrade guide under `docs/upgrade/`. Derive its version from the
+  latest release tag: after a `2.x.y` release, update `docs/upgrade/3.0.0.md`.
+  Describe only the code or configuration adaptation users need to make.
 - Keep public documentation and runnable examples aligned with public API
   changes.
 - Follow established patterns in the closest relevant code and tests before
