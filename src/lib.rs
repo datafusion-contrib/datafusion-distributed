@@ -7,6 +7,7 @@ mod coordinator;
 mod distributed_ext;
 mod distributed_planner;
 mod execution_plans;
+mod explain_analyze;
 mod metrics;
 mod passthrough_headers;
 mod protocol;
