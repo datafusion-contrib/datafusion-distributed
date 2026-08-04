@@ -5,6 +5,7 @@ use super::parquet_error::ParquetErrorProto;
 use super::parser_error::ParserErrorProto;
 use super::schema_error::SchemaErrorProto;
 use datafusion::common::{DataFusionError, Diagnostic};
+#[cfg(feature = "sql")]
 use datafusion::logical_expr::sqlparser::parser::ParserError;
 use std::error::Error;
 use std::sync::Arc;
@@ -90,6 +91,7 @@ impl DataFusionErrorProto {
                     ArrowErrorProto::from_arrow_error(err, msg.as_ref()),
                 )),
             },
+            #[cfg(feature = "parquet")]
             DataFusionError::ParquetError(err) => DataFusionErrorProto {
                 inner: Some(DataFusionErrorInnerProto::ParquetError(
                     ParquetErrorProto::from_parquet_error(err),
@@ -105,6 +107,7 @@ impl DataFusionErrorProto {
                     IoErrorProto::from_io_error("", err),
                 )),
             },
+            #[cfg(feature = "sql")]
             DataFusionError::SQL(err, msg) => DataFusionErrorProto {
                 inner: Some(DataFusionErrorInnerProto::SQL(DataFusionSqlErrorProto {
                     err: Some(ParserErrorProto::from_parser_error(err)),
@@ -190,7 +193,18 @@ impl DataFusionErrorProto {
                 DataFusionError::ArrowError(Box::new(err), ctx)
             }
             DataFusionErrorInnerProto::ParquetError(err) => {
-                DataFusionError::ParquetError(Box::new(err.to_parquet_error()))
+                #[cfg(feature = "parquet")]
+                {
+                    DataFusionError::ParquetError(Box::new(err.to_parquet_error()))
+                }
+                // Built without `parquet`, so `DataFusionError::ParquetError` does not exist
+                // here. The peer that sent this may still have it, so keep the message rather
+                // than dropping the error.
+                #[cfg(not(feature = "parquet"))]
+                {
+                    let _ = err;
+                    DataFusionError::Internal("ParquetError from peer".to_string())
+                }
             }
             DataFusionErrorInnerProto::ObjectStoreError(err) => {
                 DataFusionError::ObjectStore(Box::new(err.to_object_store_error()))
@@ -200,10 +214,20 @@ impl DataFusionErrorProto {
                 DataFusionError::IoError(err)
             }
             DataFusionErrorInnerProto::SQL(err) => {
-                let backtrace = err.backtrace.clone();
-                let err = err.err.as_ref().map(|err| err.to_parser_error());
-                let err = err.unwrap_or(ParserError::ParserError("".to_string()));
-                DataFusionError::SQL(Box::new(err), backtrace)
+                #[cfg(feature = "sql")]
+                {
+                    let backtrace = err.backtrace.clone();
+                    let err = err.err.as_ref().map(|err| err.to_parser_error());
+                    let err = err.unwrap_or(ParserError::ParserError("".to_string()));
+                    DataFusionError::SQL(Box::new(err), backtrace)
+                }
+                // Built without `sql`, so `DataFusionError::SQL` does not exist here. Same
+                // reasoning as the parquet arm above.
+                #[cfg(not(feature = "sql"))]
+                {
+                    let _ = err;
+                    DataFusionError::Internal("SQL error from peer".to_string())
+                }
             }
             DataFusionErrorInnerProto::NotImplemented(msg) => {
                 DataFusionError::NotImplemented(msg.clone())
