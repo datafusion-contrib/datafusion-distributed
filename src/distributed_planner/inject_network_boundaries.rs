@@ -1112,6 +1112,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_null_aware_anti_join_caps_join_stage() {
+        // NOT IN over nullable columns produces a null-aware anti join, whose NULL-existence
+        // checks live in process-local shared state, so even with broadcast joins enabled the
+        // join stage is capped to a single task.
+        let query = r#"
+        SELECT "MinTemp" FROM weather
+        WHERE "RainToday" NOT IN (SELECT "RainTomorrow" FROM weather)
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
+            .distributed_planner(false)
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        HashJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
+        ");
+    }
+
+    #[tokio::test]
     async fn test_nested_loop_inner_join_broadcast() {
         // Inner joins emit only probe-driven rows, so the left side can be broadcast and
         // the join can run in a multi-task stage.
@@ -1134,6 +1158,54 @@ mod tests {
               BroadcastExec: task_count=Desired(4)
                 DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Desired(4)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_nested_loop_full_join_caps_join_stage() {
+        // A Full nested loop join emits unmatched rows from both sides, which requires global
+        // match knowledge, so even with broadcast joins enabled the join stage is capped to a
+        // single task.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a FULL JOIN weather b
+        ON a."MinTemp" < b."MaxTemp"
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
+            .distributed_planner(false)
+            .broadcast_joins(true);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        NestedLoopJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
+        ");
+    }
+
+    #[tokio::test]
+    async fn test_cross_join_without_broadcasts_caps_join_stage() {
+        // A CrossJoin collects its entire left side in every task. It is always safe to
+        // broadcast, so it is only capped to a single task when broadcast joins are disabled.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM weather a CROSS JOIN weather b
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            // annotate_test_plan wants this as false so its s a single node plan
+            .distributed_planner(false)
+            .broadcast_joins(false);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @"
+        CrossJoinExec: task_count=Maximum(1)
+          CoalescePartitionsExec: task_count=Maximum(1)
+            DistributedLeafExec: task_count=Maximum(1)
+          DistributedLeafExec: task_count=Maximum(1)
         ");
     }
 
