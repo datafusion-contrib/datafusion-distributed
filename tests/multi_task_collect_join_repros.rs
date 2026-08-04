@@ -125,6 +125,40 @@ mod tests {
         .await
     }
 
+    /// Joins with a single partition on both sides do not need to be and should not be
+    /// rewritten. Doing so risks breaking assumptions DataFusion has made to safely apply
+    /// optimizations to single-partition cases. This tests the hash join case
+    #[tokio::test]
+    async fn single_partition_full_hash_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            r"SELECT b.id AS bid, p.id AS pid FROM
+                (SELECT id FROM build_side ORDER BY id LIMIT 5) b
+                FULL JOIN
+                (SELECT id FROM probe_side ORDER BY id LIMIT 1000000) p
+                ON b.id = p.id
+             ORDER BY bid NULLS LAST, pid NULLS LAST",
+            true,
+        )
+        .await
+    }
+
+    /// Joins with a single partition on both sides do not need to be and should not be
+    /// rewritten. Doing so risks breaking assumptions DataFusion has made to safely apply
+    /// optimizations to single-partition cases. This tests the nested loop join case
+    #[tokio::test]
+    async fn single_partition_nested_loop_join_is_correct() -> Result<()> {
+        assert_distributed_matches_single_node(
+            r"SELECT b.id AS bid, p.id AS pid FROM
+                (SELECT id FROM build_side WHERE id % 25 = 0) b
+                LEFT JOIN
+                (SELECT id FROM probe_side ORDER BY id LIMIT 1000000) p
+                ON p.id <= b.id
+             ORDER BY bid NULLS LAST, pid NULLS LAST",
+            true,
+        )
+        .await
+    }
+
     fn data_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("target/multi_task_collect_join_repros")
     }

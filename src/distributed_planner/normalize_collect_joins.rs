@@ -5,10 +5,10 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use super::DistributedConfig;
 use super::insert_broadcast::is_left_broadcast_safe;
@@ -47,6 +47,9 @@ use super::insert_broadcast::is_left_broadcast_safe;
 ///   Full join emits unmatched rows from both sides, so every orientation replicates an
 ///   emitting side.
 ///
+/// And finally, any join with a single partition on both sides is left untouched, as a single
+/// partition is inherently safe to broadcast to.
+///
 /// [insert_broadcast_execs]: super::insert_broadcast::insert_broadcast_execs
 /// [inject_network_boundaries]: super::inject_network_boundaries::inject_network_boundaries
 pub(super) fn normalize_collect_joins(
@@ -61,6 +64,7 @@ pub(super) fn normalize_collect_joins(
             && join.mode == PartitionMode::CollectLeft
             && !is_left_broadcast_safe(join.join_type())
             && !join.null_aware
+            && !both_sides_use_single_partition(join.left(), join.right())
         {
             return Ok(Transformed::yes(collect_left_to_partitioned(
                 join,
@@ -73,6 +77,7 @@ pub(super) fn normalize_collect_joins(
             && d_cfg.broadcast_joins
             && !is_left_broadcast_safe(join.join_type())
             && join.join_type() != &JoinType::Full
+            && !both_sides_use_single_partition(join.left(), join.right())
         {
             // The build side's CoalescePartitionsExec only exists to satisfy the single-partition
             // requirement of the *current* orientation. After the swap that side becomes the
@@ -103,6 +108,11 @@ fn collect_left_to_partitioned(
     join: &HashJoinExec,
     target_partitions: usize,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    assert!(
+        join.right().output_partitioning().partition_count() > 1,
+        "Single-partition joins are safe and can actually be made incorrect by repartitioning them"
+    );
+
     let (left_keys, right_keys): (Vec<_>, Vec<_>) = join
         .on()
         .iter()
@@ -130,6 +140,14 @@ fn collect_left_to_partitioned(
         .build()?;
 
     Ok(Arc::new(new_join))
+}
+
+fn both_sides_use_single_partition(
+    left: &Arc<dyn ExecutionPlan>,
+    right: &Arc<dyn ExecutionPlan>,
+) -> bool {
+    left.output_partitioning().partition_count() == 1
+        && right.output_partitioning().partition_count() == 1
 }
 
 #[cfg(test)]
