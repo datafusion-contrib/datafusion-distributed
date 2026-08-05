@@ -3,7 +3,7 @@ members = ["benchmarks", "cli", "console"]
 
 [workspace.dependencies]
 datafusion = { version = "54.0.0", default-features = false }
-datafusion-proto = { version = "54.0.0" }
+datafusion-proto = { version = "54.0.0", default-features = false }
 
 [package]
 name = "datafusion-distributed"
@@ -17,8 +17,6 @@ repository = "https://github.com/datafusion-contrib/datafusion-distributed"
 [dependencies]
 chrono = { version = "0.4.44" }
 datafusion = { workspace = true, features = [
-  "parquet",
-  "sql",
   "unicode_expressions",
   "datetime_expressions",
 ] }
@@ -61,7 +59,13 @@ arrow = { version = "58", optional = true, features = ["test_utils"] }
 hyper-util = { version = "0.1.16", optional = true }
 
 [features]
-default = ["grpc"]
+default = ["grpc", "parquet", "sql"]
+
+# Both are in the default set, so nothing changes for consumers who do not opt out.
+# They exist so that an embedder which never reads parquet files and never parses SQL
+# can skip the parquet and sqlparser stacks with `default-features = false`.
+parquet = ["datafusion/parquet", "datafusion-proto/parquet"]
+sql = ["datafusion/sql"]
 avro = ["datafusion/avro"]
 grpc = [
     "arrow-flight",
@@ -71,7 +75,7 @@ grpc = [
     "tower"
 ]
 
-integration = ["insta", "parquet", "arrow", "hyper-util", "grpc"]
+integration = ["insta", "dep:parquet", "arrow", "hyper-util", "grpc", "parquet", "sql"]
 
 system-metrics = ["sysinfo"]
 
@@ -83,6 +87,11 @@ sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
 datafusion-distributed-benchmarks = { path = "benchmarks" }
+# The crate's own tests drive `SessionContext::sql` and register parquet tables, so they need
+# both features regardless of which ones a consumer selects. Requesting them here keeps
+# `--no-default-features` test runs compiling without forcing either on library consumers.
+datafusion = { workspace = true, features = ["parquet", "sql"] }
+datafusion-proto = { workspace = true, features = ["parquet"] }
 structopt = "0.3"
 insta = { version = "1.46.0", features = ["filters"] }
 parquet = "58"
