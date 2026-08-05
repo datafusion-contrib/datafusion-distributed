@@ -28,7 +28,7 @@ jobs:
     uses: paradedb/actions/.github/workflows/upstream-sync-promote.yml@v10
     with:
       branch_name: ${{ inputs.branch_name }}
-      approvers: "philippemnoel,rebasedming,stuhood,mdashti"
+      approvers: datafusion-maintainers
       github_app_client_id: ${{ vars.PARADEDB_GITHUB_APP_CLIENT_ID }}
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_GITHUB_CHANNEL_WEBHOOK_URL }}
