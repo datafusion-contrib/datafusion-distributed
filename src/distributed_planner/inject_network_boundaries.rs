@@ -1,3 +1,4 @@
+use crate::distributed_planner::insert_broadcast::is_left_broadcast_safe;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::events::{
     DesiredTaskCountEvent, DesiredTaskCountHandlers, ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers,
@@ -275,23 +276,31 @@ async fn _inject_network_boundaries(
         task_count = Desired(count);
     } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
-        && (!broadcast_joins_enabled || node.null_aware)
+        && (!broadcast_joins_enabled
+            || node.null_aware
+            || !is_left_broadcast_safe(node.join_type()))
     {
         // A CollectLeft join collects its entire build side in every task, so it can only run in
         // a multi-task stage when [insert_broadcast_execs] broadcast the build side. That is not
         // possible when broadcast joins are disabled, nor for null-aware anti joins, whose
         // NULL-existence checks live in process-local shared state that cannot span tasks in any
-        // orientation. Other build-side-emitting join types were already rewritten to Partitioned
-        // by [normalize_collect_joins], so they never reach this arm.
+        // orientation. Most other build-side-emitting join types were already rewritten to Partitioned
+        // by [normalize_collect_joins], so they never reach this arm. `!is_left_broadcast_safe()`
+        // captures any remaining types that were not rewritten (for instance, cases where both
+        // sides have one output partition).
         task_count = Maximum(1);
     } else if let Some(node) = plan.downcast_ref::<NestedLoopJoinExec>()
-        && (!broadcast_joins_enabled || node.join_type() == &JoinType::Full)
+        && (!broadcast_joins_enabled
+            || node.join_type() == &JoinType::Full
+            || !is_left_broadcast_safe(node.join_type()))
     {
         // A NestedLoopJoin always collects its entire left side in every task, so it also needs
         // its build side broadcast to run in a multi-task stage. Full joins emit unmatched rows
         // from both sides, which needs global match knowledge that cannot span tasks, so they
-        // always run in a single task. Other build-side-emitting join types were already swapped
-        // to probe-side-emitting ones by [normalize_collect_joins].
+        // always run in a single task. Most other build-side-emitting join types were already swapped
+        // to probe-side-emitting ones by [normalize_collect_joins]. `!is_left_broadcast_safe()`
+        // captures any remaining types that were not rewritten (for instance, cases where both
+        // sides have one output partition).
         task_count = Maximum(1);
     } else if plan.is::<CrossJoinExec>() && !broadcast_joins_enabled {
         // A CrossJoin also collects its entire left side in every task. It is always safe to

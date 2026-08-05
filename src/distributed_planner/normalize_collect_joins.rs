@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use datafusion::common::JoinType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{JoinType, assert_or_internal_err};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::Partitioning;
@@ -47,8 +47,10 @@ use super::insert_broadcast::is_left_broadcast_safe;
 ///   Full join emits unmatched rows from both sides, so every orientation replicates an
 ///   emitting side.
 ///
-/// And finally, any join with a single partition on both sides is left untouched, as a single
-/// partition is inherently safe to broadcast to.
+/// And finally, any join with a single partition on both sides is left untouched. DataFusion
+/// may apply optimizations when there a single-partition that are not correct for multiple
+/// partitions. We maintain correctness by capping them to a single task in
+/// [inject_network_boundaries].
 ///
 /// [insert_broadcast_execs]: super::insert_broadcast::insert_broadcast_execs
 /// [inject_network_boundaries]: super::inject_network_boundaries::inject_network_boundaries
@@ -108,7 +110,7 @@ fn collect_left_to_partitioned(
     join: &HashJoinExec,
     target_partitions: usize,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    assert!(
+    assert_or_internal_err!(
         join.right().output_partitioning().partition_count() > 1,
         "Single-partition joins are safe and can actually be made incorrect by repartitioning them"
     );
