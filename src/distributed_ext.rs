@@ -614,6 +614,11 @@ pub trait DistributedExt: Sized {
     /// Registers a handler that can replace leaf nodes with distributed variants once the
     /// distributed planner has decided a final task count.
     ///
+    /// Any leaf node returned by a leaf scaling handler (whether as per-task variants in
+    /// [DistributedLeafExec] or a single plan) must handle `execute(partition, context)` for
+    /// all partition indices in the stage's requested range. Returning data on unassigned
+    /// partitions causes duplicate rows; unassigned partition requests must return an empty stream.
+    ///
     /// A function with the following signature can be provided as argument:
     ///
     /// ```rust
