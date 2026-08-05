@@ -10,8 +10,6 @@ use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, Partiti
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
-use crate::display_plan_ascii;
-
 use super::DistributedConfig;
 use super::insert_broadcast::is_left_broadcast_safe;
 
@@ -31,11 +29,57 @@ use super::insert_broadcast::is_left_broadcast_safe;
 ///   task, so matched pairs and unmatched rows — on either side — are decided with complete
 ///   information and emitted exactly once. This is the same mode swap DataFusion's own
 ///   JoinSelection performs when the build side crosses the CollectLeft size threshold.
+///
+/// ```text
+///                   ┌──────────────────────┐                                             ┌──────────────────────┐
+///                   │       HashJoin       │                                             │       HashJoin       │
+///                   │   mode=CollectLeft   │                                             │   mode=Partitioned   │
+///                   └────▲────────────▲────┘                                             └────▲────────────▲────┘
+///                        │            │                                                       │            │
+///              ┌─────────┘            └──────────┐                                  ┌─────────┘            └──────────┐
+///         Build Side                        Probe Side                         Build Side                        Probe Side
+///              │                                 │                                  │                                 │
+///  ┌───────────┴──────────┐          ┌───────────┴──────────┐           ┌───────────┴──────────┐          ┌───────────┴──────────┐
+///  │  CoalescePartitions  │          │      DataSource      │ ───────▶  │  Repartition (Hash)  │          │  Repartition (Hash)  │
+///  └───▲────▲────▲────▲───┘          └──────────────────────┘           └───▲────▲────▲────▲───┘          └───────────▲──────────┘
+///      │    │    │    │                                                     │    │    │    │                          │
+///  ┌───┴────┴────┴────┴───┐                                             ┌───┴────┴────┴────┴───┐          ┌───────────┴──────────┐
+///  │      DataSource      │                                             │      DataSource      │          │      DataSource      │
+///  └──────────────────────┘                                             └──────────────────────┘          └──────────────────────┘
+/// ```
+///
+///   A fetch-less build-side [CoalescePartitionsExec] (CollectLeft's single-partition
+///   artifact) is stripped as shown; a fetch-bearing one is retained below the new
+///   RepartitionExec (see `collect_left_to_partitioned`).
+///
 /// - [NestedLoopJoinExec]s with a build-side-emitting join type are swapped (Left becomes
 ///   Right, LeftSemi becomes RightSemi, and so on), so the emitting side becomes the
 ///   partitioned probe side and the other side can be broadcast as usual. There is no
 ///   partitioned fallback for a NestedLoopJoin: its predicate is arbitrary, so no partitioning
 ///   can co-locate matching rows.
+///
+/// ```text
+///                   ┌──────────────────────┐                                             ┌──────────────────────┐
+///                   │    NestedLoopJoin    │                                             │      Projection      │
+///                   │   (join_type=Left)   │                                             └───────────▲──────────┘
+///                   └────▲────────────▲────┘                                                         │
+///                        │            │                                                  ┌───────────┴──────────┐
+///              ┌─────────┘            └──────────┐                                       │    NestedLoopJoin    │
+///     Build Side (emits)                    Probe Side                                   │  (join_type=Right)   │
+///              │                                 │                                       └────▲────────────▲────┘
+///  ┌───────────┴──────────┐          ┌───────────┴──────────┐                                 │            │
+///  │  CoalescePartitions  │          │    DataSource (R)    │ ───────▶              ┌─────────┘            └──────────┐
+///  └───▲────▲────▲────▲───┘          └──────────────────────┘                  Build Side                    Probe Side (emits)
+///      │    │    │    │                                                             │                                 │
+///  ┌───┴────┴────┴────┴───┐                                             ┌───────────┴──────────┐          ┌───────────┴──────────┐
+///  │    DataSource (L)    │                                             │    DataSource (R)    │          │    DataSource (L)    │
+///  └──────────────────────┘                                             └──────────────────────┘          └──────────────────────┘
+/// ```
+///
+///   The swap strips a fetch-less build-side [CoalescePartitionsExec] (it would serialize
+///   the new probe side), and the Projection restores the pre-swap column order (Semi/Anti/
+///   Mark swaps don't need one). [insert_broadcast_execs] later coalesces and broadcasts
+///   the new build side.
 ///
 /// Two shapes have no distributed rewrite and are left untouched for
 /// [inject_network_boundaries] to cap at a single task:
