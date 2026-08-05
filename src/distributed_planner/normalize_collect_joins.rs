@@ -10,6 +10,8 @@ use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, Partiti
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
+use crate::display_plan_ascii;
+
 use super::DistributedConfig;
 use super::insert_broadcast::is_left_broadcast_safe;
 
@@ -81,20 +83,26 @@ pub(super) fn normalize_collect_joins(
             && join.join_type() != &JoinType::Full
             && !both_sides_use_single_partition(join.left(), join.right())
         {
-            // The build side's CoalescePartitionsExec only exists to satisfy the single-partition
+            // A fetch-less build side CoalescePartitionsExec only exists to satisfy the single-partition
             // requirement of the *current* orientation. After the swap that side becomes the
             // partitioned probe side, so strip it or it would serialize the probe;
             // [insert_broadcast_execs] re-coalesces the new build side when it broadcasts it.
-            let swapped = match join.left().downcast_ref::<CoalescePartitionsExec>() {
-                Some(coalesce) => Arc::clone(&node)
+            //
+            // If the CoalescePartitionsExec has a fetch, then it must be retained for correctness
+            let swapped = if let Some(coalesce) =
+                join.left().downcast_ref::<CoalescePartitionsExec>()
+                && coalesce.fetch().is_none()
+            {
+                Arc::clone(&node)
                     .with_new_children(vec![
                         Arc::clone(coalesce.input()),
                         Arc::clone(join.right()),
                     ])?
                     .downcast_ref::<NestedLoopJoinExec>()
                     .expect("with_new_children changed the node type")
-                    .swap_inputs()?,
-                None => join.swap_inputs()?,
+                    .swap_inputs()?
+            } else {
+                join.swap_inputs()?
             };
             return Ok(Transformed::yes(swapped));
         }
@@ -104,8 +112,7 @@ pub(super) fn normalize_collect_joins(
 }
 
 /// Rebuilds a CollectLeft [HashJoinExec] as a [PartitionMode::Partitioned] one, hash-partitioning
-/// both inputs on the join keys. The build side's [CoalescePartitionsExec] (the artifact of
-/// CollectLeft's single-partition requirement) is stripped, as the hash repartition replaces it.
+/// both inputs on the join keys.
 fn collect_left_to_partitioned(
     join: &HashJoinExec,
     target_partitions: usize,
@@ -121,15 +128,22 @@ fn collect_left_to_partitioned(
         .map(|(l, r)| (Arc::clone(l), Arc::clone(r)))
         .unzip();
 
-    let build_input = join
-        .left()
-        .downcast_ref::<CoalescePartitionsExec>()
-        .map_or_else(|| Arc::clone(join.left()), |c| Arc::clone(c.input()));
-
+    // If the build input is a fetch-less [CoalescePartitionsExec], we can strip it as it's only
+    // a remnant of CollectLeft's need to collect input into a single partition. Otherwise, if
+    // the build input contains a fetch or is some other node type, we must retain it to ensure
+    // correct behavior
+    let build_input = if let Some(coalesce) = join.left().downcast_ref::<CoalescePartitionsExec>()
+        && coalesce.fetch().is_none()
+    {
+        coalesce.input()
+    } else {
+        join.left()
+    };
     let left = Arc::new(RepartitionExec::try_new(
-        build_input,
+        Arc::clone(build_input),
         Partitioning::Hash(left_keys, target_partitions),
     )?);
+
     let right = Arc::new(RepartitionExec::try_new(
         Arc::clone(join.right()),
         Partitioning::Hash(right_keys, target_partitions),
