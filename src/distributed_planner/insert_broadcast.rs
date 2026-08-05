@@ -165,7 +165,7 @@ fn can_broadcast_left_input(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<CrossJoinExec>().is_some()
 }
 
-fn is_left_broadcast_safe(join_type: &JoinType) -> bool {
+pub(super) fn is_left_broadcast_safe(join_type: &JoinType) -> bool {
     matches!(
         join_type,
         JoinType::Inner
