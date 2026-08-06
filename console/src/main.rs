@@ -5,6 +5,8 @@ mod ui;
 mod worker;
 
 use app::App;
+use base64::engine::general_purpose::STANDARD;
+use base64::engine::Engine;
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
@@ -24,6 +26,10 @@ struct Args {
     /// Polling interval in milliseconds
     #[structopt(long = "poll-interval", default_value = "100")]
     poll_interval: u64,
+
+    /// Decode and print a base64-encoded plan string produced by explain_analyze.
+    #[structopt(long = "encoded-plan")]
+    encoded_plan: Option<String>,
 }
 
 #[tokio::main]
@@ -31,6 +37,14 @@ async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let args = Args::from_args();
+
+    if let Some(encoded) = args.encoded_plan {
+        let decoded = Engine::decode(&STANDARD, &encoded)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or(encoded);
+        println!("{decoded}");
+        return Ok(());
+    }
 
     let seed_url = Url::parse(&format!("http://localhost:{}", args.port)).expect("valid URL");
 

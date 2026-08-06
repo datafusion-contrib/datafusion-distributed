@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::engine::Engine;
 use crate::common::require_one_child;
 use crate::coordinator::metrics_store::MetricsStore;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
@@ -133,6 +135,12 @@ impl DistributedExec {
             .map_err(|e| internal_datafusion_err!("Failed to lock head stage: {}", e))?
             .clone()
             .ok_or_else(|| internal_datafusion_err!("No head stage found. Was execute() called?"))
+    }
+    /// Decodes a base64-encoded plan string produced by [`explain_analyze`](crate::explain_analyze).
+    pub fn extract_encoded_plan(&self, encoded_plan: &str) -> String {
+        Engine::decode(&STANDARD, encoded_plan)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|_| encoded_plan.to_string())
     }
 }
 
