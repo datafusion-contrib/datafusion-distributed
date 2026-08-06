@@ -53,6 +53,9 @@ impl DynamicFilterStore {
     /// The merge is non-destructive: subsequent calls see the same expressions plus any that have
     /// arrived since the previous call. The expression tree is balanced to avoid creating a deep
     /// left- or right-associated tree when a filter has many producers.
+    ///
+    /// DataFusion may eventually merge dynamic filter expressions natively; see
+    /// [apache/datafusion#23817](https://github.com/apache/datafusion/issues/23817).
     pub(super) fn merge(&self, id: DynamicFilterId) -> Result<Option<Arc<dyn PhysicalExpr>>> {
         let expressions = {
             let all_expressions = self.expressions.lock().expect("poisoned lock");
@@ -82,7 +85,7 @@ fn merge_with_or(expressions: &[Arc<dyn PhysicalExpr>]) -> Option<Arc<dyn Physic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::physical_expr::expressions::lit;
+    use datafusion::physical_expr::expressions::{CaseExpr, Column, lit};
 
     const FILTER_ID: DynamicFilterId = DynamicFilterId(1);
     const OTHER_FILTER_ID: DynamicFilterId = DynamicFilterId(2);
@@ -159,6 +162,21 @@ mod tests {
     }
 
     #[test]
+    fn merge_ors_case_expressions() -> Result<()> {
+        let store = DynamicFilterStore::new([FILTER_ID]);
+        store.add(FILTER_ID, task_case(0)?)?;
+        store.add(FILTER_ID, task_case(1)?)?;
+
+        let merged = store.merge(FILTER_ID)?.unwrap();
+
+        assert_eq!(
+            merged.to_string(),
+            "CASE WHEN task@0 = 0 THEN true ELSE false END OR CASE WHEN task@0 = 1 THEN true ELSE false END"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn merge_is_non_destructive_and_includes_later_additions() -> Result<()> {
         let store = DynamicFilterStore::new([FILTER_ID]);
         store.add(FILTER_ID, lit(true))?;
@@ -193,5 +211,18 @@ mod tests {
         assert_eq!(store.len(FILTER_ID)?, 8);
         assert!(store.merge(FILTER_ID)?.is_some());
         Ok(())
+    }
+
+    fn task_case(task: i32) -> Result<Arc<dyn PhysicalExpr>> {
+        let matches_task = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("task", 0)),
+            Operator::Eq,
+            lit(task),
+        ));
+        Ok(Arc::new(CaseExpr::try_new(
+            None,
+            vec![(matches_task, lit(true))],
+            Some(lit(false)),
+        )?))
     }
 }
