@@ -29,12 +29,14 @@
 //! pure Rust over the shared buffer.
 
 use std::ffi::c_void;
+use std::future::Future;
 use std::sync::Arc;
 
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use super::dsm::{
     compute_dsm_layout, leader_init, peer_proc_for_index, read_region_total, worker_attach,
@@ -43,8 +45,8 @@ use super::mesh::{DsmInboxReceiver, DsmInboxSender};
 use super::mpsc_ring::{DsmMpscSender, NO_RECEIVER_TOKEN, Wakeup};
 use super::runtime::MppMesh;
 use super::transport::{
-    BatchChannelSender, DrainHandle, Interrupt, MppFrameHeader, MppReceiver, MppSender,
-    ReceiverScope, SELF_LOOP_CAPACITY, in_proc_channel,
+    BatchChannelSender, DrainHandle, ExecuteTaskRx, Interrupt, MppFrameHeader, MppReceiver,
+    MppSender, ReceiverScope, SELF_LOOP_CAPACITY, in_proc_channel,
 };
 use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
@@ -118,19 +120,20 @@ fn build_outbound_senders(
     (senders, cancel)
 }
 
-/// What [`leader_setup`] hands back to the embedder.
-pub struct LeaderAttach {
+/// What [`leader_setup`] hands back to the embedder: the active leader session on the mesh.
+///
+/// Dropping this handle drops `_outbound_senders`, notifying peer worker inboxes that the leader
+/// has detached. Fields `mesh` and `plan_bytes` are accessible, while `_outbound_senders` is private
+/// to prevent premature destructuring.
+pub struct LeaderSession {
     /// The leader's mesh, installed on its DataFusion session.
     pub mesh: Arc<MppMesh>,
     /// Outbound senders keyed by destination proc index, for the control plane: work-unit
-    /// frames flow leader -> worker through them. Slot 0 (the leader itself) stays `None`;
-    /// empty unless `attach_senders` was passed. Holders must keep them alive for the whole
-    /// query: dropping them before a worker attaches latches that worker's inbox as detached.
-    pub outbound_senders: Vec<Option<MppSender>>,
+    /// frames flow leader -> worker through them. Private to enforce session scope retention.
+    _outbound_senders: Vec<Option<MppSender>>,
 }
 
-/// Initialize the shared region as the leader (`proc 0`) and return its mesh plus its outbound
-/// senders.
+/// Initialize the shared region as the leader (`proc 0`) and return its session handle.
 ///
 /// Writes the region header, copies `plan_bytes` in, initializes the `n_procs` inboxes, and
 /// attaches the leader as receiver to its own inbox. `receiver_token` is registered so producers
@@ -151,7 +154,7 @@ pub unsafe fn leader_setup(
     receiver_token: u64,
     interrupt: Arc<dyn Interrupt>,
     attach_senders: bool,
-) -> Result<LeaderAttach> {
+) -> Result<LeaderSession> {
     if receiver_token == NO_RECEIVER_TOKEN {
         return Err(DataFusionError::Internal(
             "mpp: leader_setup: receiver_token is the NO_RECEIVER_TOKEN sentinel; wakeups \
@@ -182,13 +185,13 @@ pub unsafe fn leader_setup(
     // work-unit frames (and later dynamic filters) flow leader -> worker through them. Empty
     // when the embedder did not opt in: a ring latches `detached` once its sender count hits
     // zero, so senders that might drop before every worker attached must never exist.
-    // The leader's `Cancel` senders are wired by the embedder (it shares the same outbound senders
-    // it holds for plan delivery and releases before the DSM unmaps), so drop the cancel set here.
-    let (outbound_senders, _cancel_senders) =
+    let (outbound_senders, cancel_senders) =
         build_outbound_senders(0, n_procs, attach.outbound_senders);
-    Ok(LeaderAttach {
-        mesh: Arc::new(MppMesh::new(0, n_procs, inbound, interrupt, attach.alive)),
-        outbound_senders,
+    let mesh = Arc::new(MppMesh::new(0, n_procs, inbound, interrupt, attach.alive));
+    mesh.set_cancel_senders(Arc::new(std::sync::Mutex::new(cancel_senders)));
+    Ok(LeaderSession {
+        mesh,
+        _outbound_senders: outbound_senders,
     })
 }
 
@@ -241,15 +244,29 @@ pub fn install_work_unit_channels(
     mesh.register_work_unit_senders(stage_id, task_number, channels.senders);
 }
 
-/// What [`worker_setup`] hands back to the embedder.
-pub struct WorkerAttach {
+/// What [`worker_setup`] hands back to the embedder: the active worker session on the mesh.
+///
+/// Dropping this handle drops `_outbound_senders`, notifying peer inboxes that this worker
+/// has detached. Private `_outbound_senders` prevents premature destructuring.
+pub struct WorkerSession {
     /// The worker's mesh, installed on its DataFusion session.
     pub mesh: Arc<MppMesh>,
-    /// Outbound senders keyed by destination proc index. The slot at `this_proc` is the in-proc
-    /// self-loop; every other slot writes to that peer's inbox.
-    pub outbound_senders: Vec<Option<MppSender>>,
     /// The plan bytes the leader wrote into the region, copied out for this worker.
     pub plan_bytes: Vec<u8>,
+    /// Outbound senders keyed by destination proc index. Private to enforce session scope retention.
+    _outbound_senders: Vec<Option<MppSender>>,
+}
+
+impl LeaderSession {
+    pub fn outbound_senders(&self) -> &[Option<MppSender>] {
+        &self._outbound_senders
+    }
+}
+
+impl WorkerSession {
+    pub fn outbound_senders(&self) -> &[Option<MppSender>] {
+        &self._outbound_senders
+    }
 }
 
 /// Attach to the leader-initialized region as worker `proc_idx` (`>= 1`).
@@ -264,7 +281,7 @@ pub unsafe fn worker_setup(
     wakeup: Arc<dyn Wakeup>,
     receiver_token: u64,
     interrupt: Arc<dyn Interrupt>,
-) -> Result<WorkerAttach> {
+) -> Result<WorkerSession> {
     if receiver_token == NO_RECEIVER_TOKEN {
         return Err(DataFusionError::Internal(
             "mpp: worker_setup: receiver_token is the NO_RECEIVER_TOKEN sentinel; wakeups \
@@ -277,7 +294,7 @@ pub unsafe fn worker_setup(
             .map_err(DataFusionError::Internal)?;
     let total_procs = header.n_procs;
 
-    let (mut outbound, cancel) =
+    let (mut outbound, mut cancel) =
         build_outbound_senders(proc_idx, total_procs, attach.outbound_senders);
 
     // Self-loop in-proc channel: peer-mesh routing can land a producer and its consumer on the same
@@ -286,7 +303,11 @@ pub unsafe fn worker_setup(
     let (self_tx, self_rx) = in_proc_channel(SELF_LOOP_CAPACITY);
     let self_tx_arc: Arc<dyn BatchChannelSender> = Arc::new(self_tx);
     outbound[proc_idx as usize] = Some(MppSender::with_header(
-        self_tx_arc,
+        Arc::clone(&self_tx_arc),
+        MppFrameHeader::batch(0, 0, proc_idx),
+    ));
+    cancel[proc_idx as usize] = Some(MppSender::with_header(
+        Arc::clone(&self_tx_arc),
         MppFrameHeader::batch(0, 0, proc_idx),
     ));
 
@@ -310,10 +331,10 @@ pub unsafe fn worker_setup(
     // its mesh the control-plane cancel senders; they drop with the mesh at the end of the worker's
     // run, well before the DSM unmaps, so no explicit release is needed.
     mesh.set_cancel_senders(Arc::new(std::sync::Mutex::new(cancel)));
-    Ok(WorkerAttach {
+    Ok(WorkerSession {
         mesh,
-        outbound_senders: outbound,
         plan_bytes,
+        _outbound_senders: outbound,
     })
 }
 
@@ -328,16 +349,19 @@ pub async fn run_worker_fragment(
     plan: Arc<dyn ExecutionPlan>,
     sinks: Vec<Box<dyn PartitionSink>>,
     ctx: Arc<TaskContext>,
+    partition_range: std::ops::Range<usize>,
 ) -> Result<()> {
-    let n_partitions = plan.output_partitioning().partition_count();
-    if n_partitions != sinks.len() {
+    if partition_range.end.saturating_sub(partition_range.start) != sinks.len() {
         return Err(DataFusionError::Internal(format!(
-            "run_worker_fragment: plan has {n_partitions} output partitions but {} sinks",
+            "run_worker_fragment: partition range {}..{} requires {} sinks but got {}",
+            partition_range.start,
+            partition_range.end,
+            partition_range.end.saturating_sub(partition_range.start),
             sinks.len()
         )));
     }
-    let mut futures = Vec::with_capacity(n_partitions);
-    for (partition, mut sink) in sinks.into_iter().enumerate() {
+    let mut futures = Vec::with_capacity(sinks.len());
+    for (partition, mut sink) in partition_range.zip(sinks.into_iter()) {
         let plan = Arc::clone(&plan);
         let ctx = Arc::clone(&ctx);
         futures.push(async move {
@@ -370,4 +394,187 @@ pub async fn run_worker_fragment(
         r?;
     }
     Ok(())
+}
+
+/// Run the worker request loop for receiving [`ExecuteTaskFrame`] requests, validating partition
+/// ranges, and delegating execution of each requested range to `spawn_range`.
+///
+/// # Lifecycle & Guarantees
+/// - **On-Demand Range Execution:** Listens on `rx` for incoming [`ExecuteTaskFrame`] messages,
+///   extracting the requested partition range (`start..end`) and headers.
+/// - **Partition Validation & Single-Claim Accounting:** Ensures that `start <= end` and `end <= n_partitions`,
+///   and verifies that no partition within `start..end` has been claimed by a previous frame. Returns an
+///   [`DataFusionError::Execution`] error if bounds are exceeded or duplicate partition claims occur.
+/// - **Cancellation & Early Termination Unwinding:** Selects on `token.cancelled()`. If the query is
+///   cancelled or terminates early (e.g. satisfied by a `LIMIT` clause downstream), the request loop
+///   breaks out immediately and drops active sub-futures.
+/// - **Cooperative Inbound Ring Flushing:** Periodically invokes `drain_pass` to drive the inbound ring
+///   buffer drain pass while awaiting frame arrivals or stream completions.
+/// - **Completion:** Exits cleanly once all `n_partitions` have been requested (or `rx` closes) AND all
+///   spawned stream futures in `spawn_range` have completed to EOF.
+///
+/// # Arguments
+/// * `rx`: The receiver channel for incoming [`ExecuteTaskFrame`] messages obtained via `MppMesh::take_execute_task_rx`.
+/// * `n_partitions`: Total number of output partitions expected across all request frames for this task.
+/// * `token`: Cancellation token used to unwind the request loop on query cancellation or early teardown.
+/// * `drain_pass`: Callback invoked periodically to drive inbound ring buffer draining (e.g. `mesh.inbound_receiver().try_drain_pass()`).
+/// * `spawn_range`: Closure invoked for each valid, unclaimed partition range `start..end`. Must return a future executing the partition streams for that range.
+pub async fn run_execute_task_loop<F, Fut>(
+    rx: ExecuteTaskRx,
+    n_partitions: usize,
+    token: CancellationToken,
+    mut drain_pass: impl FnMut() -> Result<()>,
+    mut spawn_range: F,
+) -> Result<()>
+where
+    F: FnMut(pb::ExecuteTaskRequest, http::HeaderMap, std::ops::Range<usize>) -> Fut,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    if n_partitions == 0 {
+        return Ok(());
+    }
+
+    let mut sub_futures = futures::stream::FuturesUnordered::new();
+    let mut partitions_requested = 0;
+    let mut rx_opt = Some(rx);
+    let mut claimed = vec![false; n_partitions];
+
+    loop {
+        // Stop when frame receiving has finished (all partitions requested or channel closed)
+        // and all active partition stream futures have completed.
+        if rx_opt.is_none() && sub_futures.is_empty() {
+            break;
+        }
+
+        tokio::select! {
+            // Unwind immediately on early query cancellation or completion.
+            _ = token.cancelled() => break,
+
+            frame_res = async { rx_opt.as_mut().unwrap().recv().await }, if rx_opt.is_some() => {
+                match frame_res {
+                    Some(Ok(frame)) => {
+                        let (request, headers) = frame.into_parts()?;
+                        let start = request.target_partition_start as usize;
+                        let end = request.target_partition_end as usize;
+
+                        if start > end || end > n_partitions {
+                            return Err(DataFusionError::Execution(format!(
+                                "shm transport: invalid partition range {start}..{end} for total partitions {n_partitions}"
+                            )));
+                        }
+
+                        for (i, claimed_slot) in claimed[start..end].iter_mut().enumerate() {
+                            if *claimed_slot {
+                                let q = start + i;
+                                return Err(DataFusionError::Execution(format!(
+                                    "shm transport: requested partition range {start}..{end} includes already claimed partition {q}"
+                                )));
+                            }
+                            *claimed_slot = true;
+                        }
+
+                        let len = end - start;
+                        let range_fut = spawn_range(request, headers, start..end);
+                        sub_futures.push(range_fut);
+
+                        partitions_requested += len;
+                        if partitions_requested >= n_partitions {
+                            rx_opt = None;
+                        }
+                    }
+                    Some(Err(e)) => return Err(e),
+                    None => {
+                        rx_opt = None;
+                    }
+                }
+            }
+            next_res = sub_futures.next(), if !sub_futures.is_empty() => {
+                match next_res {
+                    Some(Ok(())) => {}
+                    Some(Err(e)) => return Err(e),
+                    None => unreachable!(),
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => {
+                drain_pass()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::transport::ExecuteTaskFrame;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn run_execute_task_loop_multi_frame_sub_ranges() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let total_partitions = 4;
+        let ranges_processed = Arc::new(AtomicUsize::new(0));
+        let total_partition_len_processed = Arc::new(AtomicUsize::new(0));
+
+        // Frame 1: sub-range 0..2
+        let frame1 = ExecuteTaskFrame::from_parts(
+            pb::ExecuteTaskRequest {
+                task_key: Some(pb::TaskKey {
+                    query_id: vec![],
+                    stage_id: 1,
+                    task_number: 0,
+                }),
+                target_partition_start: 0,
+                target_partition_end: 2,
+                producer_head: None,
+            },
+            &http::HeaderMap::new(),
+        )
+        .unwrap();
+
+        // Frame 2: sub-range 2..4
+        let frame2 = ExecuteTaskFrame::from_parts(
+            pb::ExecuteTaskRequest {
+                task_key: Some(pb::TaskKey {
+                    query_id: vec![],
+                    stage_id: 1,
+                    task_number: 0,
+                }),
+                target_partition_start: 2,
+                target_partition_end: 4,
+                producer_head: None,
+            },
+            &http::HeaderMap::new(),
+        )
+        .unwrap();
+
+        tx.send(Ok(frame1)).unwrap();
+        tx.send(Ok(frame2)).unwrap();
+
+        let ranges_counter = Arc::clone(&ranges_processed);
+        let len_counter = Arc::clone(&total_partition_len_processed);
+
+        let res = run_execute_task_loop(
+            rx,
+            total_partitions,
+            token,
+            || Ok(()),
+            move |_request, _headers, range| {
+                let r_counter = Arc::clone(&ranges_counter);
+                let l_counter = Arc::clone(&len_counter);
+                let len = range.len();
+                async move {
+                    r_counter.fetch_add(1, Ordering::SeqCst);
+                    l_counter.fetch_add(len, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert!(res.is_ok());
+        assert_eq!(ranges_processed.load(Ordering::SeqCst), 2);
+        assert_eq!(total_partition_len_processed.load(Ordering::SeqCst), 4);
+    }
 }

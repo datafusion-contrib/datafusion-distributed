@@ -383,8 +383,12 @@ unsafe fn attach_proc(
             let inbox_addr = unsafe { base.add(off) };
             let nn = unsafe { mpsc_ring::attach_at(inbox_addr, ring_slots, slot_capacity) }
                 .expect("DsmMpscRing attach_at: leader-initialized region must validate");
-            outbound_senders
-                .push(unsafe { DsmMpscSender::new(nn, Arc::clone(&wakeup), Arc::clone(&alive)) });
+            let sender = if this_proc == 0 {
+                unsafe { DsmMpscSender::new_control(nn, Arc::clone(&wakeup), Arc::clone(&alive)) }
+            } else {
+                unsafe { DsmMpscSender::new(nn, Arc::clone(&wakeup), Arc::clone(&alive)) }
+            };
+            outbound_senders.push(sender);
         }
     }
 
