@@ -64,9 +64,7 @@ use crate::{
 
 use super::mpsc_ring::Wakeup;
 use super::runtime::{InProcessWorkerResolver, MppMesh, ShmChannelResolver, proc_for_task};
-use super::setup::{
-    collect_task_metrics, dsm_region_bytes, leader_setup, run_worker_fragment, worker_setup,
-};
+use super::setup::{collect_task_metrics, dsm_region_bytes, leader_setup, worker_setup};
 use super::transport::{
     CooperativeDrainSet, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt,
 };
@@ -148,6 +146,7 @@ enum FragmentRouting {
 /// One producer stage's routing metadata, captured from a network boundary. The stage's plan is
 /// not captured here: workers run the specialized plans the coordinator dispatches, delivered
 /// through the leader session's [`CapturingPlanSource`].
+#[derive(Clone, Debug)]
 struct StageEntry {
     stage_num: u32,
     task_count: usize,
@@ -379,14 +378,22 @@ async fn run_worker_proc(
     for fragment in &fragments {
         routing.insert(fragment.stage_id, fragment.routing.clone());
     }
+    // The metrics frames go to the leader after the fragments finish; the clone keeps one sender
+    // on the leader's inbox alive past the drop below, which only delays that ring's detach
+    // observation, never a per-channel EOF.
+    let metrics_sender_base = outbound
+        .first()
+        .and_then(|s| s.as_ref())
+        .map(|s| s.clone_with_header(MppFrameHeader::task_metrics(0, 0, mesh.this_proc)));
+
     // One sink serves every stage this proc produces; it owns the base outbound senders and routes
     // each (stage, partition) to the destination proc's send end.
-    let worker_sink = ShmMqWorkerSink {
+    let worker_sink = Arc::new(ShmMqWorkerSink {
         outbound,
         mesh: Arc::clone(&mesh),
         n_workers,
         routing,
-    };
+    });
 
     let mut prepared = Vec::with_capacity(fragments.len());
     for fragment in &fragments {
@@ -395,34 +402,71 @@ async fn run_worker_proc(
         let plan =
             reinstantiate(&captured_plan(&captured, fragment.stage_id, fragment.task_idx).await);
         let n_out = plan.output_partitioning().partition_count();
-        let mut sinks: Vec<Box<dyn PartitionSink>> = Vec::with_capacity(n_out);
-        for q in 0..n_out {
-            sinks.push(worker_sink.open_partition(fragment.stage_id as usize, q)?);
-        }
-        prepared.push((fragment, plan, sinks, task_ctx));
+        prepared.push((fragment, plan, n_out, task_ctx));
     }
-    // The metrics frames go to the leader after the fragments finish; the clone keeps one sender
-    // on the leader's inbox alive past the drop below, which only delays that ring's detach
-    // observation, never a per-channel EOF.
-    let metrics_sender_base = worker_sink
-        .outbound
-        .first()
-        .and_then(|s| s.as_ref())
-        .map(|s| s.clone_with_header(MppFrameHeader::task_metrics(0, 0, mesh.this_proc)));
-    // Drop the base senders so the only senders left are the per-partition clones the fragment
-    // futures own; otherwise the rings never observe the last-sender detach.
-    drop(worker_sink);
+
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    let drain_mesh = Arc::clone(&mesh);
+    // `in_process.rs` is an in-process test harness running under a multi-threaded Tokio test
+    // runtime. Unlike production cooperative workers (which run single-threaded without tokio::spawn),
+    // spawning a background task here is acceptable to keep mock worker meshes drained during tests.
+    #[allow(clippy::disallowed_methods)]
+    let _drain_guard = AbortOnDrop(tokio::spawn(async move {
+        loop {
+            if drain_mesh.drain_all_inbound().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }));
 
     let mut futures = Vec::with_capacity(prepared.len());
     let mut executed = Vec::with_capacity(prepared.len());
-    for (fragment, plan, sinks, task_ctx) in prepared {
+    for (fragment, plan, n_out, task_ctx) in prepared {
         executed.push((
             fragment.stage_id,
             fragment.task_idx,
             fragment.task_count,
             Arc::clone(&plan),
         ));
-        futures.push(run_worker_fragment(plan, sinks, task_ctx));
+        let mesh = Arc::clone(&mesh);
+        let stage_id = fragment.stage_id;
+        let task_idx = fragment.task_idx as u32;
+        let worker_sink = Arc::clone(&worker_sink);
+
+        futures.push(async move {
+            let rx = mesh.take_execute_task_rx(stage_id, task_idx)?;
+            let mesh = Arc::clone(&mesh);
+            crate::shm::setup::run_execute_task_loop(
+                rx,
+                n_out,
+                tokio_util::sync::CancellationToken::new(),
+                || {
+                    mesh.inbound_receiver().try_drain_pass()?;
+                    Ok(())
+                },
+                |_request, _headers, range| {
+                    let plan = Arc::clone(&plan);
+                    let task_ctx = Arc::clone(&task_ctx);
+                    let worker_sink = Arc::clone(&worker_sink);
+                    async move {
+                        let mut task_sinks = Vec::with_capacity(range.len());
+                        for q in range.clone() {
+                            task_sinks.push(worker_sink.open_partition(stage_id as usize, q)?);
+                        }
+                        crate::shm::setup::run_worker_fragment(plan, task_sinks, task_ctx, range)
+                            .await
+                    }
+                },
+            )
+            .await
+        });
     }
     for r in futures::future::join_all(futures).await {
         r?;
@@ -739,7 +783,7 @@ mod tests {
                 Arc::clone(&wakeup),
                 receiver_token(0),
                 Arc::new(NoInterrupt),
-                /* attach_senders */ false,
+                /* attach_senders */ true,
             )
         }
         .unwrap()
@@ -757,7 +801,11 @@ mod tests {
                 )
             }
             .unwrap();
-            worker_setups.push((proc_idx, attach.mesh, attach.outbound_senders));
+            worker_setups.push((
+                proc_idx,
+                Arc::clone(&attach.mesh),
+                attach.outbound_senders().to_vec(),
+            ));
         }
 
         // Build the distributed plan once on the leader session; producers and consumer share it.
@@ -893,7 +941,7 @@ mod tests {
                 Arc::clone(&wakeup),
                 receiver_token(0),
                 Arc::new(NoInterrupt),
-                /* attach_senders */ false,
+                /* attach_senders */ true,
             )
         }
         .unwrap()
@@ -911,7 +959,11 @@ mod tests {
                 )
             }
             .unwrap();
-            workers.push((proc_idx, attach.mesh, attach.outbound_senders));
+            workers.push((
+                proc_idx,
+                Arc::clone(&attach.mesh),
+                attach.outbound_senders().to_vec(),
+            ));
         }
         Bootstrap {
             leader_mesh,

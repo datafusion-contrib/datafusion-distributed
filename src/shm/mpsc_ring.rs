@@ -464,12 +464,13 @@ impl DsmMpscReceiver {
         let seq = unsafe { (*slot).seq.load(Ordering::Acquire) };
         let expected_ready = head.wrapping_add(1);
         if seq != expected_ready {
-            // Slot not ready. Use `<=` rather than `==` so a strict invariant
-            // violation (tail < head, impossible under correct operation) still
-            // surfaces as Detached rather than wedging Empty forever.
-            if header.detached.load(Ordering::Acquire)
-                && header.tail.load(Ordering::Acquire) <= head
-            {
+            // If the next expected slot is not yet ready, check if producers have detached.
+            // Under teardown or worker exit, once `detached` latches to true, no further slots
+            // will be published. Checking `detached` directly here ensures the consumer unblocks
+            // immediately with `RecvOutcome::Detached` during teardown, rather than remaining
+            // wedged on `RecvOutcome::Empty` waiting for a claimed-but-unpublished slot from an
+            // exited sender.
+            if header.detached.load(Ordering::Acquire) {
                 return RecvOutcome::Detached;
             }
             return RecvOutcome::Empty;
@@ -646,6 +647,21 @@ impl DsmMpscSender {
             ring,
             wakeup,
             counts_as_data: true,
+            alive,
+        }
+    }
+
+    /// Wrap an already-initialized ring as a control sender. Does NOT increment `sender_count`,
+    /// so it doesn't prevent the consumer from detecting when all true data producers drop.
+    pub(super) unsafe fn new_control(
+        ring: NonNull<DsmMpscRingHeader>,
+        wakeup: Arc<dyn Wakeup>,
+        alive: AliveFlag,
+    ) -> Self {
+        Self {
+            ring,
+            wakeup,
+            counts_as_data: false,
             alive,
         }
     }

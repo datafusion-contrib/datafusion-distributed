@@ -92,6 +92,7 @@ pub(super) enum MppFrameKind {
     /// frame once `total_len` bytes have arrived, so no single ring-resident message ever
     /// exceeds the ring and frame size is never an error.
     Chunk = 7,
+    ExecuteTask = 8,
 }
 
 /// Payload of a `SetPlan` frame: the plan-delivery message a worker needs to run one task,
@@ -151,6 +152,67 @@ impl SetPlanFrame {
             headers.append(name, value);
         }
         Ok((set_plan, headers))
+    }
+}
+
+/// Payload of an `ExecuteTask` frame: the request a consumer uses to ask a producer
+/// to evaluate a specific partition range.
+/// Control frame wrapping a [`pb::ExecuteTaskRequest`] and pass-through HTTP headers sent over
+/// the shared-memory control mesh.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ExecuteTaskFrame {
+    #[prost(message, optional, tag = "1")]
+    pub request: Option<pb::ExecuteTaskRequest>,
+    #[prost(string, repeated, tag = "2")]
+    pub header_keys: Vec<String>,
+    #[prost(string, repeated, tag = "3")]
+    pub header_values: Vec<String>,
+}
+
+impl ExecuteTaskFrame {
+    pub fn from_parts(
+        request: pb::ExecuteTaskRequest,
+        headers: &http::HeaderMap,
+    ) -> Result<Self, DataFusionError> {
+        let mut header_keys = Vec::with_capacity(headers.len());
+        let mut header_values = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            let value = value.to_str().map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "mpp: non-ASCII header {name} cannot travel in a ExecuteTask frame: {e}"
+                ))
+            })?;
+            header_keys.push(name.as_str().to_string());
+            header_values.push(value.to_string());
+        }
+        Ok(Self {
+            request: Some(request),
+            header_keys,
+            header_values,
+        })
+    }
+
+    pub fn into_parts(self) -> Result<(pb::ExecuteTaskRequest, http::HeaderMap), DataFusionError> {
+        let request = self.request.ok_or_else(|| {
+            DataFusionError::Internal(
+                "mpp: ExecuteTask frame carries no ExecuteTaskRequest".to_string(),
+            )
+        })?;
+        let mut headers = http::HeaderMap::with_capacity(self.header_keys.len());
+        for (key, value) in self.header_keys.iter().zip(self.header_values.iter()) {
+            let name = http::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "mpp: ExecuteTask frame header name {key:?}: {e}"
+                ))
+            })?;
+            let value = http::header::HeaderValue::from_str(value).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "mpp: ExecuteTask frame header value for {key}: {e}"
+                ))
+            })?;
+            headers.append(name, value);
+        }
+        Ok((request, headers))
     }
 }
 
@@ -271,6 +333,16 @@ impl MppFrameHeader {
         }
     }
 
+    /// Build an `ExecuteTask` header for `(stage_id, task_number)`.
+    pub fn execute_task(stage_id: u32, task_number: u32, sender_proc: u32) -> Self {
+        Self {
+            magic: MPP_FRAME_MAGIC,
+            flags: pack_flags(MppFrameKind::ExecuteTask, sender_proc),
+            stage_id,
+            partition: task_number,
+        }
+    }
+
     /// Build a `Cancel` header for the `(stage_id, partition)` stream, stamped with the consumer's
     /// `sender_proc`. Carries no payload; the producer reads it as "stop sending this stream."
     pub fn cancel(stage_id: u32, partition: u32, sender_proc: u32) -> Self {
@@ -321,6 +393,7 @@ impl MppFrameHeader {
             5 => Ok(MppFrameKind::SetPlan),
             6 => Ok(MppFrameKind::Cancel),
             7 => Ok(MppFrameKind::Chunk),
+            8 => Ok(MppFrameKind::ExecuteTask),
             other => Err(DataFusionError::Internal(format!(
                 "mpp: unknown frame kind {other:#x}"
             ))),
@@ -527,6 +600,7 @@ enum FrameBody {
     FeedEof,
     TaskMetrics(pb::TaskMetrics),
     SetPlan(SetPlanFrame),
+    ExecuteTask(ExecuteTaskFrame),
     Cancel,
 }
 
@@ -564,6 +638,11 @@ fn decode_frame(bytes: &[u8]) -> Result<(MppFrameHeader, FrameBody), DataFusionE
             let frame = SetPlanFrame::decode(payload)
                 .map_err(|e| DataFusionError::Internal(format!("mpp: set-plan decode: {e}")))?;
             Ok((header, FrameBody::SetPlan(frame)))
+        }
+        MppFrameKind::ExecuteTask => {
+            let frame = ExecuteTaskFrame::decode(payload)
+                .map_err(|e| DataFusionError::Internal(format!("mpp: execute-task decode: {e}")))?;
+            Ok((header, FrameBody::ExecuteTask(frame)))
         }
         MppFrameKind::Batch => {
             let mut reader = StreamReader::try_new(payload, None)?;
@@ -1178,6 +1257,22 @@ impl MppSender {
         result
     }
 
+    /// Ship a task's execute-task request as an `ExecuteTask` frame.
+    pub async fn send_execute_task_traced(
+        &self,
+        frame: &ExecuteTaskFrame,
+        stats: &mut SendBatchStats,
+    ) -> Result<(), DataFusionError> {
+        let mut scratch = self.scratch.replace(Vec::new());
+        let result = async {
+            encode_prost_frame_into(self.header, frame, &mut scratch)?;
+            self.spin_send_scratch(&scratch, stats).await
+        }
+        .await;
+        self.scratch.replace(scratch);
+        result
+    }
+
     /// Close the feed channels of the task this sender's header names: the wire stand-in for
     /// Flight closing its coordinator stream, after which the worker-side feed streams end.
     pub async fn send_feed_eof_traced(
@@ -1230,6 +1325,12 @@ impl MppSender {
         .await;
         self.scratch.replace(scratch);
         result
+    }
+}
+
+impl Clone for MppSender {
+    fn clone(&self) -> Self {
+        self.clone_with_header(self.header)
     }
 }
 
@@ -1342,6 +1443,9 @@ impl MppReceiver {
                         Ok((header, FrameBody::SetPlan(frame))) => {
                             RecvBatchOutcome::SetPlan { header, frame }
                         }
+                        Ok((header, FrameBody::ExecuteTask(frame))) => {
+                            RecvBatchOutcome::ExecuteTask { header, frame }
+                        }
                         Ok((header, FrameBody::Cancel)) => RecvBatchOutcome::Cancel { header },
                         Err(e) => RecvBatchOutcome::Error(e),
                     };
@@ -1451,6 +1555,11 @@ pub(super) enum RecvBatchOutcome {
         header: MppFrameHeader,
         frame: SetPlanFrame,
     },
+    /// A task execution request named by `header.(stage_id, partition=task)`.
+    ExecuteTask {
+        header: MppFrameHeader,
+        frame: ExecuteTaskFrame,
+    },
     /// The collected metrics of the task named by the header.
     TaskMetrics {
         header: MppFrameHeader,
@@ -1538,6 +1647,8 @@ pub struct DrainHandle {
     /// pending-or-waiting shape as the feed registry: a frame arriving before the task asks
     /// buffers in `Pending`; a task asking first parks a oneshot the drain fulfills.
     set_plan_registry: Mutex<SetPlanRegistry>,
+    /// Worker-side destination of `ExecuteTask` frames, keyed `(stage_id, task_number)`.
+    execute_task_registry: Mutex<ExecuteTaskRegistry>,
     /// `(stage_id, partition)` streams this proc's consumers abandoned, learned from inbound
     /// `Cancel` frames. A producer blocked on a full outbound checks it in its send spin and ends
     /// that stream cleanly, so a consumer that stopped reading early doesn't leave it spinning to
@@ -1607,6 +1718,20 @@ enum SetPlanSlot {
     Waiting(tokio::sync::oneshot::Sender<Result<SetPlanFrame, DataFusionError>>),
 }
 
+pub type ExecuteTaskRx =
+    tokio::sync::mpsc::UnboundedReceiver<Result<ExecuteTaskFrame, DataFusionError>>;
+
+#[derive(Default)]
+struct ExecuteTaskRegistry {
+    map: HashMap<(u32, u32), ExecuteTaskSlot>,
+    dead: Option<String>,
+}
+
+enum ExecuteTaskSlot {
+    Pending(Vec<Result<ExecuteTaskFrame, DataFusionError>>),
+    Active(tokio::sync::mpsc::UnboundedSender<Result<ExecuteTaskFrame, DataFusionError>>),
+}
+
 impl DrainHandle {
     /// Construct a cooperative drain handle. Channel buffers are populated lazily by
     /// [`Self::try_drain_pass`] when a frame arrives, or up-front by [`Self::register_channel`]
@@ -1625,6 +1750,7 @@ impl DrainHandle {
             task_metrics_tx,
             task_metrics_rx: Mutex::new(Some(task_metrics_rx)),
             set_plan_registry: Mutex::new(SetPlanRegistry::default()),
+            execute_task_registry: Mutex::new(ExecuteTaskRegistry::default()),
             cancelled_streams: Mutex::new(HashSet::default()),
         }
     }
@@ -1835,7 +1961,68 @@ impl DrainHandle {
                     let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
                 }
             }
+            let mut execs = self.execute_task_registry.lock().unwrap();
+            execs.dead = Some(reason.to_string());
+            for (_, slot) in execs.map.drain() {
+                if let ExecuteTaskSlot::Active(tx) = slot {
+                    let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
+                }
+            }
         }
+    }
+
+    pub(super) fn route_execute_task(
+        &self,
+        stage_id: u32,
+        task_number: u32,
+        frame: ExecuteTaskFrame,
+    ) {
+        let mut guard = self.execute_task_registry.lock().unwrap();
+        if guard.dead.is_some() {
+            return;
+        }
+        let slot = guard
+            .map
+            .entry((stage_id, task_number))
+            .or_insert_with(|| ExecuteTaskSlot::Pending(Vec::new()));
+        match slot {
+            ExecuteTaskSlot::Pending(queue) => queue.push(Ok(frame)),
+            ExecuteTaskSlot::Active(tx) => {
+                let _ = tx.send(Ok(frame));
+            }
+        }
+    }
+
+    pub(super) fn take_execute_task_rx(
+        &self,
+        stage_id: u32,
+        task_number: u32,
+    ) -> Result<ExecuteTaskRx, DataFusionError> {
+        let mut guard = self.execute_task_registry.lock().unwrap();
+        if let Some(msg) = &guard.dead {
+            return Err(DataFusionError::Execution(msg.clone()));
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Some(slot) = guard.map.get_mut(&(stage_id, task_number)) {
+            match slot {
+                ExecuteTaskSlot::Active(_) => {
+                    return Err(DataFusionError::Execution(format!(
+                        "take_execute_task_rx: execute_task_rx for stage {stage_id} task {task_number} already taken"
+                    )));
+                }
+                ExecuteTaskSlot::Pending(queue) => {
+                    for item in queue.drain(..) {
+                        let _ = tx.send(item);
+                    }
+                    *slot = ExecuteTaskSlot::Active(tx);
+                }
+            }
+        } else {
+            guard
+                .map
+                .insert((stage_id, task_number), ExecuteTaskSlot::Active(tx));
+        }
+        Ok(rx)
     }
 
     /// Register (or look up) the channel buffer for `(sender_proc, stage_id, partition)`.
@@ -1967,6 +2154,9 @@ impl DrainHandle {
                     }
                     RecvBatchOutcome::SetPlan { header, frame } => {
                         self.route_set_plan(header.stage_id, header.partition, frame);
+                    }
+                    RecvBatchOutcome::ExecuteTask { header, frame } => {
+                        self.route_execute_task(header.stage_id, header.partition, frame);
                     }
                     RecvBatchOutcome::Cancel { header } => {
                         self.note_cancel(header.stage_id, header.partition);
@@ -2106,6 +2296,16 @@ mod tests {
     use std::thread;
 
     use std::thread::JoinHandle;
+
+    #[test]
+    fn take_execute_task_rx_second_take_errors() {
+        let drain = DrainHandle::cooperative(0, vec![]);
+        let rx1 = drain.take_execute_task_rx(1, 0);
+        assert!(rx1.is_ok());
+        let rx2 = drain.take_execute_task_rx(1, 0);
+        assert!(rx2.is_err());
+        assert!(rx2.unwrap_err().to_string().contains("already taken"));
+    }
 
     impl DrainBuffer {
         /// Block until a batch is available, EOF is reached, or the buffer is cancelled.
@@ -2268,6 +2468,7 @@ mod tests {
                     | RecvBatchOutcome::FeedEof { .. }
                     | RecvBatchOutcome::TaskMetrics { .. }
                     | RecvBatchOutcome::SetPlan { .. }
+                    | RecvBatchOutcome::ExecuteTask { .. }
                     | RecvBatchOutcome::Cancel { .. } => {}
                     RecvBatchOutcome::Empty => {}
                     RecvBatchOutcome::Detached => {

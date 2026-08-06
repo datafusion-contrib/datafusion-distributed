@@ -23,11 +23,16 @@
 //! drain) live here as a reusable library; an embedder supplies the two platform primitives via
 //! small extension points: how to allocate the shared buffer, and how to wake a blocked consumer.
 //!
+//! The shared-memory transport implements a demand-driven, pull-based RPC model: downstream
+//! consumers request partition execution on demand via [`ExecuteTaskFrame`], matching the
+//! canonical gRPC task execution model over shared-memory channels.
+//!
 //! The point of hosting it in this crate is testing: the in-process instantiation runs real
 //! distributed queries through the transport in this crate's CI, so an upstream rebase that
 //! breaks the channel-protocol contract fails here, before any downstream embedder rebuilds.
 //!
 //! [`ChannelResolver`]: crate::ChannelResolver
+//! [`ExecuteTaskFrame`]: transport::ExecuteTaskFrame
 //!
 //! Two assumptions an embedder signs up for:
 //! - Execution is cooperative on a current-thread runtime: consumers spin on
@@ -60,13 +65,14 @@ mod transport;
 pub use mpsc_ring::{NO_RECEIVER_TOKEN, Wakeup};
 pub use runtime::{InProcessWorkerResolver, MppMesh, ShmChannelResolver, proc_for_task};
 pub use setup::{
-    LeaderAttach, WorkerAttach, collect_task_metrics, dsm_region_bytes, install_work_unit_channels,
-    leader_setup, region_total, run_worker_fragment, worker_setup,
+    LeaderSession, WorkerSession, collect_task_metrics, dsm_region_bytes,
+    install_work_unit_channels, leader_setup, region_total, run_execute_task_loop,
+    run_worker_fragment, worker_setup,
 };
 pub use sink::{PartitionSink, WorkerSink};
 pub use transport::{
-    CooperativeDrainSet, Interrupt, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt,
-    SendBatchStats, SetPlanFrame,
+    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, MppFrameHeader,
+    MppPartitionSink, MppSender, NoInterrupt, SendBatchStats, SetPlanFrame,
 };
 
 /// Out-of-DSM liveness flag shared by the ring handles from one attach. The embedder flips it to
