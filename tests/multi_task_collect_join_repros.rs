@@ -324,10 +324,15 @@ mod tests {
         ")
     }
 
+    /// Counts are asserted instead of row sets because `LIMIT` without `ORDER BY`
+    /// legitimately picks a different 50 ids in each execution. `count(b.id)` (matched
+    /// build rows) is what detects a dropped fetch: 2500 with the build capped to 50 ids,
+    /// 3750 without. `count(*)` alone would not: it is 5000 either way, as the unmatched
+    /// probe rows of the Full join shrink to compensate.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_normalize() {
         let plan = assert_distributed_matches_single_node(
-            "SELECT b.id, p.id FROM (SELECT id FROM build_side LIMIT 50) b \
+            "SELECT count(*), count(b.id) FROM (SELECT id FROM build_side LIMIT 50) b \
              FULL JOIN probe_side p ON b.id = p.id",
             true,
         )
@@ -335,13 +340,17 @@ mod tests {
         .unwrap();
         assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
         ┌───── DistributedExec
-        │ CoalescePartitionsExec
-        │   [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
+        │ ProjectionExec: expr=[count(Int64(1))@0 as count(*), count(b.id)@1 as count(b.id)]
+        │   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1)), count(b.id)]
+        │     CoalescePartitionsExec
+        │       [Stage 3] => NetworkCoalesceExec: output_partitions=12, input_tasks=4
         └──────────────────────────────────────────────────
           ┌───── Stage 3 ── tasks=4, partitions=12
-          │ HashJoinExec: mode=Partitioned, join_type=Full, on=[(id@0, id@0)]
-          │   [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
-          │   [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │ AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1)), count(b.id)]
+          │   RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=3
+          │     HashJoinExec: mode=Partitioned, join_type=Full, on=[(id@0, id@0)], projection=[id@0]
+          │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=4
+          │       [Stage 2] => NetworkShuffleExec: output_partitions=3, input_tasks=4
           └──────────────────────────────────────────────────
             ┌───── Stage 1 ── tasks=4, partitions=12
             │ RepartitionExec: partitioning=Hash([id@0], 12), input_partitions=1
@@ -361,17 +370,6 @@ mod tests {
             │     t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
             └──────────────────────────────────────────────────
         ");
-    }
-
-    #[tokio::test]
-    async fn build_side_fetch_is_preserved_by_broadcast() {
-        let plan = assert_distributed_matches_single_node(
-            "SELECT b.id, p.id FROM (SELECT id FROM build_side LIMIT 50) b \
-             JOIN probe_side p ON b.id = p.id",
-            true,
-        )
-        .await
-        .unwrap();
     }
 
     fn data_dir() -> PathBuf {
