@@ -1,6 +1,7 @@
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
+use crate::coordinator::dynamic_filters::{DynamicFilterId, DynamicFilterStore};
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -46,6 +47,8 @@ const WORK_UNIT_FEED_CHUNK_SIZE: usize = 256;
 /// [StageCoordinator] scoped to each individual stage.
 pub(super) struct QueryCoordinator {
     task_ctx: Arc<TaskContext>,
+    #[allow(dead_code)] // Populated once dynamic-filter discovery is wired in.
+    dynamic_filters: Arc<DynamicFilterStore>,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<MetricsStore>>,
     end_stream_notifier: Arc<Notify>,
@@ -58,9 +61,11 @@ impl QueryCoordinator {
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<MetricsStore>>,
+        dynamic_filter_ids: impl IntoIterator<Item = DynamicFilterId>,
     ) -> Self {
         Self {
             task_ctx,
+            dynamic_filters: Arc::new(DynamicFilterStore::new(dynamic_filter_ids)),
             metrics_store,
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),

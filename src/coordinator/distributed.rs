@@ -191,6 +191,8 @@ impl ExecutionPlan for DistributedExec {
             Arc::clone(&context),
             &self.metrics,
             self.metrics_store.clone(),
+            // Dynamic-filter discovery will supply the query's expression IDs here.
+            std::iter::empty(),
         );
 
         let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema(), 1);
