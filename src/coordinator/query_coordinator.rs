@@ -1,7 +1,7 @@
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
-use crate::coordinator::dynamic_filters::{DynamicFilterId, DynamicFilterStore};
+use crate::coordinator::dynamic_filters::{DynamicFilterStore, ExpressionId};
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -61,7 +61,7 @@ impl QueryCoordinator {
         task_ctx: Arc<TaskContext>,
         metrics_set: &ExecutionPlanMetricsSet,
         metrics_store: Option<Arc<MetricsStore>>,
-        dynamic_filter_ids: impl IntoIterator<Item = DynamicFilterId>,
+        dynamic_filter_ids: impl IntoIterator<Item = ExpressionId>,
     ) -> Self {
         Self {
             task_ctx,

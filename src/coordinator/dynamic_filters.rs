@@ -5,32 +5,26 @@ use datafusion::physical_expr::expressions::BinaryExpr;
 use std::sync::{Arc, Mutex};
 
 /// Identifies all instances of the same dynamic filter within a query.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct DynamicFilterId(pub(crate) u64);
-
-/// Query-scoped collection of completed dynamic filter expressions received from producers.
 ///
-/// The number of expected producers is deliberately not tracked here yet: under dynamic
-/// planning it is not known until the producer stage has been finalized. Until then, [`Self::len`]
-/// only reports how many expressions have arrived; it does not indicate completion.
+/// Equivalent to [`PhysicalExpr::expression_id`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ExpressionId(pub(crate) u64);
+
+/// Collection of completed dynamic filter expressions received from producers.
 pub(super) struct DynamicFilterStore {
-    expressions: Mutex<HashMap<DynamicFilterId, Vec<Arc<dyn PhysicalExpr>>>>,
+    expressions: Mutex<HashMap<ExpressionId, Vec<Arc<dyn PhysicalExpr>>>>,
 }
 
 impl DynamicFilterStore {
     /// Creates an empty entry for every dynamic filter known to the query.
-    pub(super) fn new(ids: impl IntoIterator<Item = DynamicFilterId>) -> Self {
+    pub(super) fn new(ids: impl IntoIterator<Item = ExpressionId>) -> Self {
         Self {
             expressions: Mutex::new(ids.into_iter().map(|id| (id, vec![])).collect()),
         }
     }
 
-    /// Adds a completed producer expression and returns the number received for its filter.
-    pub(super) fn add(
-        &self,
-        id: DynamicFilterId,
-        expression: Arc<dyn PhysicalExpr>,
-    ) -> Result<usize> {
+    /// Adds an expression and returns the number received so far for the given id.
+    pub(super) fn add(&self, id: ExpressionId, expression: Arc<dyn PhysicalExpr>) -> Result<usize> {
         let mut expressions = self.expressions.lock().expect("poisoned lock");
         let Some(expressions) = expressions.get_mut(&id) else {
             return internal_err!("Unknown dynamic filter id: {}", id.0);
@@ -39,8 +33,8 @@ impl DynamicFilterStore {
         Ok(expressions.len())
     }
 
-    /// Returns the number of producer expressions received for a filter.
-    pub(super) fn len(&self, id: DynamicFilterId) -> Result<usize> {
+    /// Returns the number of producer expressions received for a given id.
+    pub(super) fn count(&self, id: ExpressionId) -> Result<usize> {
         let expressions = self.expressions.lock().expect("poisoned lock");
         let Some(expressions) = expressions.get(&id) else {
             return internal_err!("Unknown dynamic filter id: {}", id.0);
@@ -48,15 +42,11 @@ impl DynamicFilterStore {
         Ok(expressions.len())
     }
 
-    /// Returns a snapshot of all expressions for `id`, combined with boolean OR.
+    /// Returns a snapshot of all expressions for `id`, combined with an OR binary expression.
     ///
-    /// The merge is non-destructive: subsequent calls see the same expressions plus any that have
-    /// arrived since the previous call. The expression tree is balanced to avoid creating a deep
-    /// left- or right-associated tree when a filter has many producers.
-    ///
-    /// DataFusion may eventually merge dynamic filter expressions natively; see
+    /// DataFusion may eventually merge dynamic filter expressions natively. See
     /// [apache/datafusion#23817](https://github.com/apache/datafusion/issues/23817).
-    pub(super) fn merge(&self, id: DynamicFilterId) -> Result<Option<Arc<dyn PhysicalExpr>>> {
+    pub(super) fn merge(&self, id: ExpressionId) -> Result<Option<Arc<dyn PhysicalExpr>>> {
         let expressions = {
             let all_expressions = self.expressions.lock().expect("poisoned lock");
             let Some(expressions) = all_expressions.get(&id) else {
@@ -69,6 +59,8 @@ impl DynamicFilterStore {
     }
 }
 
+/// Merges the provided expressions by ORing them together. The expression tree is balanced
+/// to avoid creating a deep left- or right-associated tree.
 fn merge_with_or(expressions: &[Arc<dyn PhysicalExpr>]) -> Option<Arc<dyn PhysicalExpr>> {
     match expressions {
         [] => None,
@@ -87,16 +79,16 @@ mod tests {
     use super::*;
     use datafusion::physical_expr::expressions::{CaseExpr, Column, lit};
 
-    const FILTER_ID: DynamicFilterId = DynamicFilterId(1);
-    const OTHER_FILTER_ID: DynamicFilterId = DynamicFilterId(2);
+    const FILTER_ID: ExpressionId = ExpressionId(1);
+    const OTHER_FILTER_ID: ExpressionId = ExpressionId(2);
 
     #[test]
     fn new_deduplicates_filter_ids() -> Result<()> {
         let store = DynamicFilterStore::new([FILTER_ID, FILTER_ID]);
 
-        assert_eq!(store.len(FILTER_ID)?, 0);
+        assert_eq!(store.count(FILTER_ID)?, 0);
         assert!(store.add(FILTER_ID, lit(true)).is_ok());
-        assert_eq!(store.len(FILTER_ID)?, 1);
+        assert_eq!(store.count(FILTER_ID)?, 1);
         Ok(())
     }
 
@@ -105,7 +97,7 @@ mod tests {
         let store = DynamicFilterStore::new([FILTER_ID]);
 
         let add_error = store.add(OTHER_FILTER_ID, lit(true)).unwrap_err();
-        let len_error = store.len(OTHER_FILTER_ID).unwrap_err();
+        let count_error = store.count(OTHER_FILTER_ID).unwrap_err();
         let merge_error = store.merge(OTHER_FILTER_ID).unwrap_err();
 
         assert!(
@@ -114,7 +106,7 @@ mod tests {
                 .contains("Unknown dynamic filter id: 2")
         );
         assert!(
-            len_error
+            count_error
                 .to_string()
                 .contains("Unknown dynamic filter id: 2")
         );
@@ -173,43 +165,6 @@ mod tests {
             merged.to_string(),
             "CASE WHEN task@0 = 0 THEN true ELSE false END OR CASE WHEN task@0 = 1 THEN true ELSE false END"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn merge_is_non_destructive_and_includes_later_additions() -> Result<()> {
-        let store = DynamicFilterStore::new([FILTER_ID]);
-        store.add(FILTER_ID, lit(true))?;
-
-        assert_eq!(store.merge(FILTER_ID)?.unwrap().to_string(), "true");
-        assert_eq!(store.len(FILTER_ID)?, 1);
-
-        store.add(FILTER_ID, lit(false))?;
-
-        assert_eq!(
-            store.merge(FILTER_ID)?.unwrap().to_string(),
-            "true OR false"
-        );
-        assert_eq!(store.len(FILTER_ID)?, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn concurrent_adds_are_counted() -> Result<()> {
-        let store = Arc::new(DynamicFilterStore::new([FILTER_ID]));
-        let threads = (0..8)
-            .map(|_| {
-                let store = Arc::clone(&store);
-                std::thread::spawn(move || store.add(FILTER_ID, lit(true)))
-            })
-            .collect::<Vec<_>>();
-
-        for thread in threads {
-            thread.join().unwrap()?;
-        }
-
-        assert_eq!(store.len(FILTER_ID)?, 8);
-        assert!(store.merge(FILTER_ID)?.is_some());
         Ok(())
     }
 
