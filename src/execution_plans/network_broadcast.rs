@@ -3,13 +3,16 @@ use crate::distributed_planner::{NetworkBoundary, ProducerHead};
 use crate::stage::{LocalStage, Stage};
 use crate::worker::WorkerConnectionPool;
 use crate::{BroadcastExec, DistributedTaskContext};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, not_impl_err, plan_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, Statistics,
+    apply_no_expressions,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -212,6 +215,13 @@ impl ExecutionPlan for NetworkBroadcastExec {
             Some(plan) => vec![plan],
             None => vec![],
         }
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_no_expressions(f)
     }
 
     fn with_new_children(

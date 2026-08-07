@@ -1,14 +1,14 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::common::tree_node::{Transformed, TreeNode};
+    use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
-    use datafusion::physical_expr::EquivalenceProperties;
+    use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        execute_stream,
+        apply_no_expressions, execute_stream,
     };
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
@@ -106,6 +106,15 @@ mod tests {
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
             vec![&self.child]
+        }
+
+        fn apply_expressions(
+            &self,
+            f: &mut dyn FnMut(
+                &Arc<dyn PhysicalExpr>,
+            ) -> datafusion::common::Result<TreeNodeRecursion>,
+        ) -> datafusion::common::Result<TreeNodeRecursion> {
+            apply_no_expressions(f)
         }
 
         fn with_new_children(

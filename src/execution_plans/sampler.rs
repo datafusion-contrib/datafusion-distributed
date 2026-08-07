@@ -12,11 +12,13 @@ use datafusion::common::{DataFusionError, Result, exec_err};
 use datafusion::common::{HashSet, ScalarValue};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::{Gauge, MetricValue, MetricsSet};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, Time};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    apply_no_expressions,
 };
 use futures::stream::FusedStream;
 use futures::{Stream, StreamExt, TryFutureExt};
@@ -533,6 +535,13 @@ impl ExecutionPlan for SamplerExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_no_expressions(f)
     }
 
     fn with_new_children(

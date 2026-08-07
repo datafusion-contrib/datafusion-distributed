@@ -1,9 +1,11 @@
 use crate::distributed_planner::statistics::default_bytes_for_datatype::default_bytes_for_datatype;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Statistics, not_impl_err, plan_err};
 use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use delegate::delegate;
@@ -127,6 +129,13 @@ impl ExecutionPlan for StatisticsWrapper {
             return plan_err!("StatisticsWrapper not prepared for partition-specific stats");
         }
         Ok(Arc::clone(&self.stats))
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner.apply_expressions(f)
     }
 
     delegate! {

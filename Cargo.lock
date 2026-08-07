@@ -1871,32 +1871,32 @@ dependencies = [
  "async-trait",
  "bzip2",
  "chrono",
- "datafusion-catalog",
- "datafusion-catalog-listing",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-datasource-arrow",
- "datafusion-datasource-avro",
- "datafusion-datasource-csv",
- "datafusion-datasource-json",
- "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
- "datafusion-functions-table",
- "datafusion-functions-window",
- "datafusion-optimizer",
- "datafusion-physical-expr",
- "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
- "datafusion-physical-optimizer",
- "datafusion-physical-plan",
- "datafusion-session",
- "datafusion-sql",
+ "datafusion-catalog 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-catalog-listing 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource-arrow 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource-avro 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource-csv 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource-json 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource-parquet 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-nested 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-table 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-window 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-optimizer 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-adapter 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-optimizer 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-sql 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2",
  "futures",
  "indexmap",
@@ -1915,6 +1915,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "async-trait",
+ "chrono",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-avro 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-window 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-sql 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "futures",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "parquet",
+ "sqlparser",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "datafusion-catalog"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1923,14 +1972,38 @@ dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-catalog"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "dashmap",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1947,15 +2020,37 @@ checksum = "897c70f871277f9ce99aa38347be0d679bbe3e617156c4d2a8378cec8a2a0891"
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
+ "datafusion-catalog 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-adapter 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+]
+
+[[package]]
+name = "datafusion-catalog-listing"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1974,8 +2069,8 @@ dependencies = [
  "aws-credential-types",
  "chrono",
  "clap 4.6.1",
- "datafusion",
- "datafusion-common",
+ "datafusion 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "dirs",
  "env_logger",
  "futures",
@@ -2018,10 +2113,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-common"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-ipc",
+ "arrow-schema",
+ "chrono",
+ "foldhash 0.2.0",
+ "half",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "object_store",
+ "parquet",
+ "sqlparser",
+ "tokio",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "datafusion-common-runtime"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "981b9dae74f78ee3d9f714fb49b01919eab975461b56149510c3ba9ea11287d1"
+dependencies = [
+ "futures",
+ "log",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-common-runtime"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
 dependencies = [
  "futures",
  "log",
@@ -2040,15 +2169,15 @@ dependencies = [
  "bytes",
  "bzip2",
  "chrono",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-adapter 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2",
  "futures",
  "glob",
@@ -2065,6 +2194,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-datasource"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "futures",
+ "glob",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "rand 0.9.4",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "datafusion-datasource-arrow"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2074,14 +2232,37 @@ dependencies = [
  "arrow-ipc",
  "async-trait",
  "bytes",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "itertools 0.14.0",
+ "object_store",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-datasource-arrow"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-ipc",
+ "async-trait",
+ "bytes",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "itertools 0.14.0",
  "object_store",
@@ -2098,11 +2279,29 @@ dependencies = [
  "arrow-avro",
  "async-trait",
  "bytes",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-physical-expr-adapter",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-adapter 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "object_store",
+]
+
+[[package]]
+name = "datafusion-datasource-avro"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-avro",
+ "async-trait",
+ "bytes",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "object_store",
 ]
@@ -2116,14 +2315,36 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "object_store",
+ "regex",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-datasource-csv"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "object_store",
  "regex",
@@ -2139,14 +2360,36 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "object_store",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "datafusion-datasource-json"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "object_store",
  "tokio",
@@ -2162,19 +2405,49 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-pruning",
- "datafusion-session",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-adapter 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-pruning 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-session 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "parquet",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-datasource-parquet"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -2198,7 +2471,7 @@ dependencies = [
  "chrono",
  "crossbeam-queue",
  "dashmap",
- "datafusion",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "datafusion-distributed-benchmarks",
  "datafusion-proto",
  "delegate",
@@ -2240,7 +2513,7 @@ dependencies = [
  "axum 0.7.9",
  "built",
  "criterion",
- "datafusion",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "datafusion-distributed",
  "env_logger",
  "futures",
@@ -2268,7 +2541,7 @@ name = "datafusion-distributed-cli"
 version = "0.1.0"
 dependencies = [
  "clap 4.6.1",
- "datafusion",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "datafusion-cli",
  "datafusion-distributed",
  "dirs",
@@ -2284,7 +2557,7 @@ dependencies = [
  "async-trait",
  "color-eyre",
  "crossterm",
- "datafusion",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "datafusion-distributed",
  "datafusion-distributed-benchmarks",
  "futures",
@@ -2303,6 +2576,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb9e7e5d11130c48c8bd4e80c79a9772dd28ce6dc330baca9246205d245b9e2e"
 
 [[package]]
+name = "datafusion-doc"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+
+[[package]]
 name = "datafusion-execution"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,14 +2590,35 @@ dependencies = [
  "arrow-buffer",
  "async-trait",
  "dashmap",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "log",
  "object_store",
  "parking_lot",
  "parquet",
+ "rand 0.9.4",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "datafusion-execution"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "async-trait",
+ "dashmap",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "futures",
+ "log",
+ "object_store",
+ "parking_lot",
  "rand 0.9.4",
  "tempfile",
  "url",
@@ -2335,15 +2634,36 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-window-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "indexmap",
  "itertools 0.14.0",
  "recursive",
+ "serde_json",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-expr"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-schema",
+ "async-trait",
+ "chrono",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "indexmap",
+ "itertools 0.14.0",
  "serde_json",
  "sqlparser",
 ]
@@ -2355,7 +2675,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0225491839a31b1f7d2cb8092c2d50792e2fe1c1724e4e6d08e011f5feaf4ed2"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "indexmap",
+ "itertools 0.14.0",
+]
+
+[[package]]
+name = "datafusion-expr-common"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "indexmap",
  "itertools 0.14.0",
 ]
@@ -2373,13 +2704,13 @@ dependencies = [
  "blake3",
  "chrono",
  "chrono-tz",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -2393,20 +2724,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-functions"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "base64",
+ "chrono",
+ "chrono-tz",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "hex",
+ "itertools 0.14.0",
+ "log",
+ "memchr",
+ "num-traits",
+ "rand 0.9.4",
+ "regex",
+ "uuid",
+]
+
+[[package]]
 name = "datafusion-functions-aggregate"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75a2ca14e1b609be21e657e2d3130b2f446456b08393b377bb721a33952d2e09"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "foldhash 0.2.0",
+ "half",
+ "log",
+ "num-traits",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "foldhash 0.2.0",
  "half",
  "log",
@@ -2420,9 +2798,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ece74ba09092d2ef9c9b54a38445450aea292a1f8b04faf531936b723a24b3c"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate-common"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
 ]
 
 [[package]]
@@ -2433,16 +2822,40 @@ checksum = "3f3e3f9ee8ca59bf70518802107de6f1b88a9509efdc629fadc5de9d6b2d5ef5"
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.17.1",
+ "itertools 0.14.0",
+ "itoa",
+ "log",
+ "memchr",
+]
+
+[[package]]
+name = "datafusion-functions-nested"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-ord",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "hashbrown 0.17.1",
  "itertools 0.14.0",
  "itoa",
@@ -2458,11 +2871,26 @@ checksum = "89161dffc22cf2b50f9f4b1bee83b5221d3b4ed7c2e37fd7aa2b22a5297b3a26"
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-plan",
+ "datafusion-catalog 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot",
+]
+
+[[package]]
+name = "datafusion-functions-table"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "parking_lot",
 ]
 
@@ -2473,13 +2901,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7339345b226b3874037708bf5023ba1c2de705128f8457a095aae5ae9cb9c78"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-window-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-macros 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log",
+]
+
+[[package]]
+name = "datafusion-functions-window"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "log",
 ]
 
@@ -2489,8 +2933,17 @@ version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa84836dc2392df6f43d6a29d37fb56a8ebdc8b3f4e10ae8dc15861fd20278fb"
 dependencies = [
- "datafusion-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "datafusion-functions-window-common"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
 ]
 
 [[package]]
@@ -2499,7 +2952,17 @@ version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "587164e03ad68732aa9e7bfe5686e3f25970d4c64fd4bd80790749840892dae5"
 dependencies = [
- "datafusion-doc",
+ "datafusion-doc 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "datafusion-macros"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "quote",
  "syn 2.0.117",
 ]
@@ -2512,14 +2975,32 @@ checksum = "77f20e8cf9e8654d92f4c16b24c487353ee5bf153ffc12d5772cd399ab8cd281"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "indexmap",
  "itertools 0.14.0",
  "log",
  "recursive",
+ "regex",
+ "regex-syntax",
+]
+
+[[package]]
+name = "datafusion-optimizer"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
  "regex",
  "regex-syntax",
 ]
@@ -2531,11 +3012,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f015a4a82f6f7ff7e1d8d4bf3870a936752fa38b17705dfcc14adef95aa8922c"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "half",
  "hashbrown 0.17.1",
  "indexmap",
@@ -2547,17 +3028,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-physical-expr"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "half",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "itertools 0.14.0",
+ "parking_lot",
+ "petgraph",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-physical-expr-adapter"
 version = "54.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e6ffff8acdfe54e0ea15ccf38115c4a9184433b0439f42907637928d00a235"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "itertools 0.14.0",
+]
+
+[[package]]
+name = "datafusion-physical-expr-adapter"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "itertools 0.14.0",
 ]
 
@@ -2569,8 +3084,24 @@ checksum = "7967a3e171c6a4bf09474b3f7a14f1a3db13ed1714ba12156f33fcce2bba54e8"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "itertools 0.14.0",
+ "parking_lot",
+ "pin-project",
+]
+
+[[package]]
+name = "datafusion-physical-expr-common"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "hashbrown 0.17.1",
  "indexmap",
  "itertools 0.14.0",
@@ -2585,16 +3116,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ff803e2a96054cb6d83f35f9e60fd4f42eac515e1932bd1b2dbc91d5fcbf36"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-pruning",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-pruning 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "itertools 0.14.0",
  "recursive",
+]
+
+[[package]]
+name = "datafusion-physical-optimizer"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "itertools 0.14.0",
 ]
 
 [[package]]
@@ -2609,15 +3157,47 @@ dependencies = [
  "arrow-ord",
  "arrow-schema",
  "async-trait",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-common-runtime 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-aggregate-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-window-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures",
+ "half",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
+ "num-traits",
+ "parking_lot",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-physical-plan"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "arrow-data",
+ "arrow-ipc",
+ "arrow-ord",
+ "arrow-schema",
+ "async-trait",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "futures",
  "half",
  "hashbrown 0.17.1",
@@ -2633,25 +3213,24 @@ dependencies = [
 [[package]]
 name = "datafusion-proto"
 version = "54.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd15a1ba5d3af93808241065c6c44dbca8296a189845e8a587c45c07bf0ffae"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-catalog",
- "datafusion-catalog-listing",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-datasource-arrow",
- "datafusion-datasource-csv",
- "datafusion-datasource-json",
- "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-table",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "datafusion-proto-common",
  "object_store",
  "prost",
@@ -2660,11 +3239,10 @@ dependencies = [
 [[package]]
 name = "datafusion-proto-common"
 version = "54.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90042982cf9462eb06a0b81f92efa4188dae871e7ea3ab8dc61aa9c9349b2530"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "prost",
 ]
 
@@ -2675,12 +3253,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fb9e5774660aa69c3ba93c610f175f75b65cb8c3776edb3626de8f3a4f4ee3"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-datasource 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-expr-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log",
+]
+
+[[package]]
+name = "datafusion-pruning"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "log",
 ]
 
@@ -2691,10 +3284,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15ce715fa2a61f4623cc234bcc14a3ef6a91f189128d5b14b468a6a17cdfc417"
 dependencies = [
  "async-trait",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-plan",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-execution 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-physical-plan 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot",
+]
+
+[[package]]
+name = "datafusion-session"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "async-trait",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
  "parking_lot",
 ]
 
@@ -2707,12 +3313,29 @@ dependencies = [
  "arrow",
  "bigdecimal",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-functions-nested",
+ "datafusion-common 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-expr 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-nested 54.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "indexmap",
  "log",
  "recursive",
+ "regex",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-sql"
+version = "54.0.0"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+dependencies = [
+ "arrow",
+ "bigdecimal",
+ "chrono",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "indexmap",
+ "log",
  "regex",
  "sqlparser",
 ]
