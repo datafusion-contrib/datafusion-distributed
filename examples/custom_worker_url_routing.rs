@@ -257,6 +257,7 @@ impl PhysicalExtensionCodec for CachedFileScanCodec {
         _buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let [child] = inputs else {
             return internal_err!("CacheExec expects exactly 1 child, got {}", inputs.len());
@@ -264,7 +265,12 @@ impl PhysicalExtensionCodec for CachedFileScanCodec {
         Ok(CacheExec::new(Arc::clone(child)))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, _buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        _buf: &mut Vec<u8>,
+        _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         if node.downcast_ref::<CacheExec>().is_none() {
             return internal_err!("Expected CacheExec, got {}", node.name());
         }

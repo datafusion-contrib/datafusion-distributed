@@ -1917,38 +1917,38 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-avro 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-window 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-sql 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-avro 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-window 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-optimizer 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-sql 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "indexmap",
  "itertools 0.14.0",
@@ -1991,19 +1991,19 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -2038,19 +2038,19 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -2115,7 +2115,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -2150,7 +2150,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "futures",
  "log",
@@ -2196,21 +2196,21 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "chrono",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "glob",
  "itertools 0.14.0",
@@ -2249,20 +2249,20 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-ipc",
  "async-trait",
  "bytes",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "itertools 0.14.0",
  "object_store",
@@ -2291,17 +2291,17 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-avro"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-avro",
  "async-trait",
  "bytes",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "object_store",
 ]
@@ -2332,19 +2332,19 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "object_store",
  "regex",
@@ -2377,19 +2377,19 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "object_store",
  "tokio",
@@ -2430,24 +2430,24 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-adapter 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-session 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -2471,7 +2471,7 @@ dependencies = [
  "chrono",
  "crossbeam-queue",
  "dashmap",
- "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "datafusion-distributed-benchmarks",
  "datafusion-proto",
  "delegate",
@@ -2513,7 +2513,7 @@ dependencies = [
  "axum 0.7.9",
  "built",
  "criterion",
- "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "datafusion-distributed",
  "env_logger",
  "futures",
@@ -2541,7 +2541,7 @@ name = "datafusion-distributed-cli"
 version = "0.1.0"
 dependencies = [
  "clap 4.6.1",
- "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "datafusion-cli",
  "datafusion-distributed",
  "dirs",
@@ -2557,7 +2557,7 @@ dependencies = [
  "async-trait",
  "color-eyre",
  "crossterm",
- "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "datafusion-distributed",
  "datafusion-distributed-benchmarks",
  "futures",
@@ -2578,7 +2578,7 @@ checksum = "cb9e7e5d11130c48c8bd4e80c79a9772dd28ce6dc330baca9246205d245b9e2e"
 [[package]]
 name = "datafusion-doc"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 
 [[package]]
 name = "datafusion-execution"
@@ -2606,15 +2606,15 @@ dependencies = [
 [[package]]
 name = "datafusion-execution"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-buffer",
  "async-trait",
  "dashmap",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "log",
  "object_store",
@@ -2650,18 +2650,18 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "indexmap",
  "itertools 0.14.0",
  "serde_json",
@@ -2683,10 +2683,10 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "indexmap",
  "itertools 0.14.0",
 ]
@@ -2726,20 +2726,20 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-buffer",
  "base64",
  "chrono",
  "chrono-tz",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -2774,17 +2774,17 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "foldhash 0.2.0",
  "half",
  "log",
@@ -2806,12 +2806,12 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
 ]
 
 [[package]]
@@ -2842,20 +2842,20 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "hashbrown 0.17.1",
  "itertools 0.14.0",
  "itoa",
@@ -2882,15 +2882,15 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "parking_lot",
 ]
 
@@ -2914,16 +2914,16 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-macros 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "log",
 ]
 
@@ -2940,10 +2940,10 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
 ]
 
 [[package]]
@@ -2960,9 +2960,9 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
- "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-doc 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "quote",
  "syn 2.0.117",
 ]
@@ -2990,14 +2990,14 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "indexmap",
  "itertools 0.14.0",
  "log",
@@ -3030,14 +3030,14 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "half",
  "hashbrown 0.17.1",
  "indexmap",
@@ -3065,14 +3065,14 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "itertools 0.14.0",
 ]
 
@@ -3096,12 +3096,12 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "hashbrown 0.17.1",
  "indexmap",
  "itertools 0.14.0",
@@ -3131,17 +3131,17 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-pruning 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "itertools 0.14.0",
 ]
 
@@ -3181,7 +3181,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "arrow-data",
@@ -3189,15 +3189,15 @@ dependencies = [
  "arrow-ord",
  "arrow-schema",
  "async-trait",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common-runtime 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-aggregate-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-window-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "futures",
  "half",
  "hashbrown 0.17.1",
@@ -3213,24 +3213,24 @@ dependencies = [
 [[package]]
 name = "datafusion-proto"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-catalog 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-catalog-listing 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-arrow 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-csv 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-json 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource-parquet 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-table 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "datafusion-proto-common",
  "object_store",
  "prost",
@@ -3239,10 +3239,10 @@ dependencies = [
 [[package]]
 name = "datafusion-proto-common"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "prost",
 ]
 
@@ -3265,15 +3265,15 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-datasource 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-expr-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "log",
 ]
 
@@ -3294,13 +3294,13 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "async-trait",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-execution 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-physical-plan 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "parking_lot",
 ]
 
@@ -3326,14 +3326,14 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "54.0.0"
-source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87#5808dd37986ebd38bafc76212a5c6a3413920b87"
+source = "git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8#e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8"
 dependencies = [
  "arrow",
  "bigdecimal",
  "chrono",
- "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
- "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=5808dd37986ebd38bafc76212a5c6a3413920b87)",
+ "datafusion-common 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-expr 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
+ "datafusion-functions-nested 54.0.0 (git+ssh://git@github.com/jayshrivastava/datafusion.git?rev=e8f7b586f70ffecb1d080b367c6c1a36cc6c4dc8)",
  "indexmap",
  "log",
  "regex",

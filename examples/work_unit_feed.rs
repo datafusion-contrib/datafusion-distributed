@@ -220,6 +220,7 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let p = RemoteScanProto::decode(buf).map_err(|e| proto_error(format!("{e}")))?;
         let feed = WorkUnitFeed::<ChunkFeedProvider>::from_proto(
@@ -234,7 +235,12 @@ impl PhysicalExtensionCodec for RemoteScanExecCodec {
         )))
     }
 
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let exec = node
             .downcast_ref::<RemoteScanExec>()
             .ok_or_else(|| proto_error(format!("expected RemoteScanExec, got {}", node.name())))?;

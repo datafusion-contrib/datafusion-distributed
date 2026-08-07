@@ -148,6 +148,7 @@ mod tests {
             buf: &[u8],
             inputs: &[Arc<dyn ExecutionPlan>],
             _ctx: &TaskContext,
+            _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
             let _node = CustomPassThroughExecProto::decode(buf)
                 .map_err(|err| proto_error(format!("{err}")))?;
@@ -166,6 +167,7 @@ mod tests {
             &self,
             node: Arc<dyn ExecutionPlan>,
             buf: &mut Vec<u8>,
+            _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
         ) -> datafusion::common::Result<()> {
             let Some(_plan) = node.downcast_ref::<CustomPassThroughExec>() else {
                 return Err(proto_error(format!(
