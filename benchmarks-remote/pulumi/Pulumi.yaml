@@ -1,0 +1,7 @@
+name: datafusion-distributed-benchmarks
+description: Pulumi-managed k3s infrastructure for distributed benchmarks
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+main: src/index.ts

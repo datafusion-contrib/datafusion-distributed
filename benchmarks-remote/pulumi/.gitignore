@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.pulumi/
+Pulumi.*.yaml
+.pulumi-outputs.json

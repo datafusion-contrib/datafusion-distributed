@@ -1,0 +1,4 @@
+node_modules/
+engines/ballista/target/
+k8s/.kubeconfig
+k8s/.runtime.json
