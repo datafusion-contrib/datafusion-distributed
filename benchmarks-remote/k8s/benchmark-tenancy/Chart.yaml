@@ -1,0 +1,6 @@
+apiVersion: v2
+name: benchmark-tenancy
+description: Namespaces and service accounts for isolated benchmark engines
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

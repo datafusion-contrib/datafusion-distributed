@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.systemNamespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "benchmark-tenancy.labels" . | nindent 4 }}
+    benchmark.datafusion.apache.org/role: system
+---
+{{- range .Values.engines }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: benchmark-{{ . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "benchmark-tenancy.labels" $ | nindent 4 }}
+    benchmark.datafusion.apache.org/role: engine
+    benchmark.datafusion.apache.org/engine: {{ . }}
+---
+{{- end }}

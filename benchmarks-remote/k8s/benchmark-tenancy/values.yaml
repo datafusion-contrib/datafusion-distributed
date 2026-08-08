@@ -1,0 +1,11 @@
+nameOverride: ""
+fullnameOverride: ""
+
+systemNamespace: benchmark-system
+engineServiceAccount: benchmark-engine
+
+engines:
+  - datafusion
+  - ballista
+  - spark
+  - trino
