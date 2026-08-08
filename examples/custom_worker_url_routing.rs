@@ -164,6 +164,11 @@ fn cached_file_scan_desired_task_count_handler(
     Some(Ok(DesiredTaskCountEventResponse::desired(usize::MAX)))
 }
 
+/// Assigns each file to a task slot by hashing its path so the same file always lands in the
+/// same variant slot. Returns a `DistributedLeafExec` containing the per-task variants.
+/// Any leaf node returned by `scale_up_leaf_node` must handle `execute(partition, context)` for
+/// any partition index probed by upstream stage operators (such as `RepartitionExec`), returning
+/// an empty stream for unassigned partitions to prevent duplicate rows.
 fn cached_file_scan_scale_up_leaf_node_handler(
     ev: ScaleUpLeafNodeEvent,
 ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {

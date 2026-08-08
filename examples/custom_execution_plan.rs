@@ -184,6 +184,12 @@ impl ExecutionPlan for NumbersExec {
         _partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        // Upstream stage operators (such as RepartitionExec) may call execute() for any
+        // partition index in the stage. Leaf plans returned by scale_up_leaf_node handlers
+        // must return an empty stream for unassigned partition indices to avoid emitting
+        // duplicate rows. NumbersExec exposes a single partition (UnknownPartitioning(1)),
+        // so _partition is 0 here.
+        //
         // Get the distributed task context to determine which subset of numbers
         // this task should generate
         let dist_ctx = DistributedTaskContext::from_ctx(&context);

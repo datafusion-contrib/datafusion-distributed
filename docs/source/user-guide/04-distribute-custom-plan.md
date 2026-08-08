@@ -181,11 +181,18 @@ that task's worker:
 ```
 
 ```{note}
+When a task runs on a worker, upstream stage operators (such as `RepartitionExec`)
+may call `execute(partition, context)` for every partition index in the stage's
+requested partition range. Any leaf node returned by a `ScaleUpLeafNodeHandler` —
+whether wrapped in per-task `DistributedLeafExec` variants or as a single plan that
+dispatches internally — must return an empty record batch stream (such as
+`EmptyRecordBatchStream`) for any unassigned `partition` index. If unassigned
+partitions emit data instead of empty streams, duplicate rows will be produced.
+
 If your node dispatches internally — reading
 `DistributedTaskContext::from_ctx(&ctx).task_index` inside `execute()` to decide
 what to produce — you can skip `DistributedLeafExec` and return a single prepared
-plan directly. The runnable `numbers(start, end)` example linked below takes this
-route; the choice is yours.
+plan directly (as in the `numbers(start, end)` example linked below).
 ```
 
 ## Putting it together

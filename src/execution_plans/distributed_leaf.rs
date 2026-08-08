@@ -60,6 +60,16 @@ use std::sync::Arc;
 ///
 /// This way, the different workers get to execute different versions of the same plan, each
 /// handling its own range of non-overlapping data.
+///
+/// ## Leaf Execution Contract
+/// When a scaled-up leaf node (or a per-task variant in `DistributedLeafExec`) is executed on a
+/// worker, upstream stage operators (such as `RepartitionExec`) may call
+/// `leaf.execute(partition, context)` for every partition index `partition` in the stage's
+/// requested partition range. Leaf plans or variants that map to a specific physical partition
+/// must return an empty record batch stream (such as `EmptyRecordBatchStream`) when `partition`
+/// does not match their assigned partition, allowing multi-partition stage pipelines to pull and
+/// repartition data without failing. If unassigned partitions emit data instead of returning an
+/// empty stream, duplicate rows will be produced.
 #[derive(Debug)]
 pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
