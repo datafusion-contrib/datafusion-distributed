@@ -1,4 +1,4 @@
-use crate::common::{TreeNodeExt, require_one_child, vec_cast};
+use crate::common::{TreeNodeExt, logical_record_batch_size, require_one_child, vec_cast};
 use crate::{
     BytesCounterMetric, BytesMetricExt, GaugeMetricExt, LatencyMetricExt, LoadInfo, MaxGaugeMetric,
     MaxLatencyMetric, P50LatencyMetric,
@@ -6,6 +6,7 @@ use crate::{
 use datafusion::arrow::array::Array;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::format::MetricCategory;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result, exec_err};
@@ -13,13 +14,13 @@ use datafusion::common::{HashSet, ScalarValue};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr_common::metrics::{Gauge, MetricValue, MetricsSet};
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, Time};
+use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder, Time};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
 use futures::stream::FusedStream;
-use futures::{Stream, StreamExt, TryFutureExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
@@ -68,6 +69,8 @@ pub(crate) struct SamplerExecMetrics {
     bytes_ready: BytesCounterMetric,
     /// Elapsed compute while sampling.
     elapsed_compute: Time,
+    /// Number of output bytes.
+    output_bytes: Count,
 }
 
 impl SamplerExecMetrics {
@@ -87,6 +90,13 @@ impl SamplerExecMetrics {
                 let time = Time::new();
                 bdr().build(MetricValue::ElapsedCompute(time.clone()));
                 time
+            },
+            output_bytes: {
+                let count = Count::new();
+                bdr()
+                    .with_category(MetricCategory::Bytes)
+                    .build(MetricValue::OutputBytes(count.clone()));
+                count
             },
         }
     }
@@ -273,11 +283,16 @@ impl PartitionSampler {
             Ok(peek.chain(input_stream).boxed())
         });
 
+        let output_bytes = self.metrics.output_bytes.clone();
+
         let stream = async move {
             task.await
                 .map_err(|err| DataFusionError::Internal(err.to_string()))?
         }
-        .try_flatten_stream();
+        .try_flatten_stream()
+        .inspect_ok(move |b| {
+            output_bytes.add(logical_record_batch_size(b));
+        });
 
         self.stream
             .lock()

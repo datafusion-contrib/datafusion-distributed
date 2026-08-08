@@ -1047,6 +1047,7 @@ pub(crate) fn find_all_stages(plan: &Arc<dyn ExecutionPlan>) -> Vec<&Stage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::QErrorMetric;
     use crate::test_utils::mock_exec::MockExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::expressions::Column;
@@ -1107,6 +1108,12 @@ mod tests {
     fn format_metrics_by_task_without_task_ids_stays_scalar() {
         let set = metrics_set([output_rows(100, None)]);
         assert_eq!(format_metrics_by_task(&set), "output_rows=100");
+    }
+
+    #[test]
+    fn format_metrics_by_task_displays_q_error_as_a_factor() {
+        let set = metrics_set([QErrorMetric::new_metric("stats_q_error", 1.456)]);
+        assert_eq!(format_metrics_by_task(&set), "stats_q_error=1.46x");
     }
 
     fn single_column_schema() -> Arc<Schema> {

@@ -80,8 +80,8 @@ pub struct LoadInfo {
     /// The amount of rows that were pulled from leaf nodes while this partition was sampling data.
     #[prost(uint64, tag = "8")]
     pub rows_pulled_from_leaf: u64,
-    /// Whether the sampled partition stream reached end-of-stream by the time this LoadInfo was
-    /// captured.
+    /// Whether the sampled partition stream reached end-of-stream (i.e. the partition finished
+    /// producing all of its output) by the time this LoadInfo was captured.
     #[prost(bool, tag = "9")]
     pub reached_eos: bool,
 }
@@ -259,13 +259,13 @@ pub struct Metric {
     pub partition: ::core::option::Option<u64>,
     #[prost(
         oneof = "metric::Value",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
     )]
     pub value: ::core::option::Option<metric::Value>,
 }
 /// Nested message and enum types in `Metric`.
 pub mod metric {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Value {
         #[prost(message, tag = "10")]
         OutputRows(super::OutputRows),
@@ -317,6 +317,8 @@ pub mod metric {
         CustomP99Latency(super::PercentileLatency),
         #[prost(message, tag = "34")]
         CustomMaxGauge(super::MaxGauge),
+        #[prost(message, tag = "35")]
+        CustomQError(super::QError),
     }
 }
 /// A MetricsSet is a protobuf mirror of datafusion::physical_plan::metrics::MetricsSet. It represents
@@ -465,6 +467,13 @@ pub struct MaxGauge {
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub value: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QError {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(double, tag = "2")]
+    pub value: f64,
 }
 /// Generated client implementations.
 pub mod worker_service_client {

@@ -1,11 +1,11 @@
 use crate::common::TreeNodeExt;
-use crate::coordinator::{DistributedExec, MetricsStore};
+use crate::coordinator::{DistributedExec, ESTIMATED_OUTPUT_BYTES_METRIC, MetricsStore};
 use crate::distributed_planner::NetworkBoundaryExt;
-use crate::execution_plans::MetricsWrapperExec;
+use crate::execution_plans::{MetricsWrapperExec, SamplerExec};
 use crate::metrics::DISTRIBUTED_DATAFUSION_TASK_ID_LABEL;
 use crate::metrics::collect_plan_metrics;
 use crate::stage::{LocalStage, Stage};
-use crate::{DistributedTaskContext, TaskKey};
+use crate::{DistributedTaskContext, QErrorMetric, TaskKey};
 use datafusion::common::HashMap;
 use datafusion::common::plan_err;
 use datafusion::common::tree_node::Transformed;
@@ -27,6 +27,8 @@ pub enum DistributedMetricsFormat {
     /// `output_rows={0:.., 1:..}`, one entry per task.
     PerTask,
 }
+
+pub const STATS_Q_ERROR_METRIC: &str = "stats_q_error";
 
 impl DistributedMetricsFormat {
     pub(crate) fn to_rewrite_ctx(self, task_id: u64) -> RewriteCtx {
@@ -78,9 +80,9 @@ pub async fn rewrite_distributed_plan_with_metrics(
             let network_boundary = network_boundary.with_input_stage(Stage::Local(LocalStage {
                 query_id: stage.query_id,
                 num: stage.num,
-                plan: plan_with_metrics,
                 tasks: stage.tasks,
-                metrics_set: stage.metrics_set.clone(),
+                metrics_set: stage_metrics(stage.metrics_set.clone(), &plan_with_metrics),
+                plan: plan_with_metrics,
             }))?;
             let network_boundary =
                 MetricsWrapperExec::new(network_boundary, plan.metrics().unwrap_or_default());
@@ -90,6 +92,51 @@ pub async fn rewrite_distributed_plan_with_metrics(
         Ok(Transformed::no(plan))
     })?;
     plan.with_new_children(vec![transformed.data])
+}
+
+fn stage_metrics(
+    mut stage_metrics: MetricsSet,
+    plan_with_metrics: &Arc<dyn ExecutionPlan>,
+) -> MetricsSet {
+    let mut sampler_output_bytes = None;
+    let _ = plan_with_metrics.apply(|plan| {
+        if plan.is::<SamplerExec>() {
+            if let Some(output_bytes) = plan
+                .metrics()
+                .and_then(|metrics| metric_total(&metrics, "output_bytes"))
+            {
+                sampler_output_bytes = Some(output_bytes)
+            }
+            Ok(TreeNodeRecursion::Stop)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
+    });
+
+    if let Some(estimated_byte_size) = metric_total(&stage_metrics, ESTIMATED_OUTPUT_BYTES_METRIC)
+        && let Some(sampler_output_bytes) = sampler_output_bytes
+    {
+        stage_metrics.push(QErrorMetric::new_metric(
+            STATS_Q_ERROR_METRIC,
+            q_error(estimated_byte_size, sampler_output_bytes),
+        ));
+    }
+    stage_metrics
+}
+
+fn metric_total(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    metrics
+        .sum(|metric| metric.value().name() == name)
+        .map(|value| value.as_usize())
+}
+
+/// Q-error is the standard cardinality-estimation metric because it treats equal-factor over- and
+/// underestimates symmetrically. See https://www.vldb.org/pvldb/vol2/vldb09-657.pdf and
+/// https://vldb.org/pvldb/vol9/p204-leis.pdf.
+fn q_error(estimated: usize, actual: usize) -> f64 {
+    let estimated = estimated.max(1) as f64;
+    let actual = actual.max(1) as f64;
+    (estimated / actual).max(actual / estimated)
 }
 
 /// Extra information for rewriting local plans.
@@ -660,5 +707,13 @@ mod tests {
         assert_eq!(labels[0].value(), "scan");
         assert_eq!(labels[1].name(), DISTRIBUTED_DATAFUSION_TASK_ID_LABEL);
         assert_eq!(labels[1].value(), "42");
+    }
+
+    #[test]
+    fn q_error_is_symmetric_and_handles_zero() {
+        assert_eq!(super::q_error(200, 100), 2.0);
+        assert_eq!(super::q_error(100, 200), 2.0);
+        assert_eq!(super::q_error(0, 10), 10.0);
+        assert_eq!(super::q_error(0, 0), 1.0);
     }
 }

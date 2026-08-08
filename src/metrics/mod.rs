@@ -1,6 +1,7 @@
 mod bytes_metric;
 mod latency_metric;
 mod max_gauge_metric;
+mod q_error_metric;
 mod task_metrics_collector;
 mod task_metrics_rewriter;
 
@@ -10,8 +11,11 @@ pub use latency_metric::{
     P50LatencyMetric, P75LatencyMetric, P95LatencyMetric, P99LatencyMetric,
 };
 pub use max_gauge_metric::{GaugeMetricExt, MaxGaugeMetric};
+pub use q_error_metric::QErrorMetric;
 pub(crate) use task_metrics_collector::collect_plan_metrics;
-pub use task_metrics_rewriter::{DistributedMetricsFormat, rewrite_distributed_plan_with_metrics};
+pub use task_metrics_rewriter::{
+    DistributedMetricsFormat, STATS_Q_ERROR_METRIC, rewrite_distributed_plan_with_metrics,
+};
 /// Label used to annotate metrics in execution plan nodes with the task in which they were executed.
 /// Note that the same task id may be used in multiple stages.
 pub const DISTRIBUTED_DATAFUSION_TASK_ID_LABEL: &str = "task_id";

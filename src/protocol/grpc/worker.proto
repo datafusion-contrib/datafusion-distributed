@@ -253,6 +253,7 @@ message Metric {
     PercentileLatency custom_p95_latency = 32;
     PercentileLatency custom_p99_latency = 33;
     MaxGauge custom_max_gauge = 34;
+    QError custom_q_error = 35;
   }
 }
 
@@ -363,4 +364,9 @@ message PercentileLatency {
 message MaxGauge {
   string name = 1;
   uint64 value = 2;
+}
+
+message QError {
+  string name = 1;
+  double value = 2;
 }

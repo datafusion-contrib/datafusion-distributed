@@ -24,6 +24,9 @@ use std::any::TypeId;
 use std::sync::Arc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+pub const ESTIMATED_PCT_SAMPLED_METRIC: &str = "estimated_pct_sampled";
+pub const ESTIMATED_OUTPUT_BYTES_METRIC: &str = "estimated_output_bytes";
+
 pub(super) async fn prepare_dynamic_plan(
     query_coordinator: &QueryCoordinator,
     base_plan: &Arc<dyn ExecutionPlan>,
@@ -276,7 +279,7 @@ async fn gather_runtime_statistics(
     } else if let Some(estimated_driver_path_leaf_rows) = estimated_driver_path_leaf_rows(plan) {
         // The stage is still producing. Estimate how far along it is from the fraction of the
         // driver-path leaf rows consumed so far.
-        (rows_pulled_from_leafs as f32 / estimated_driver_path_leaf_rows as f32).min(1.0)
+        rows_pulled_from_leafs as f32 / estimated_driver_path_leaf_rows as f32
     } else {
         // We can't measure progress (no leaf-row estimate, or nothing pulled from the leaves
         // yet even though we're not at EOS): fall back rather than dividing by ~0.
@@ -284,10 +287,11 @@ async fn gather_runtime_statistics(
     };
 
     new_metrics.push(MaxGaugeMetric::new_metric(
-        "estimated_pct_sampled",
+        ESTIMATED_PCT_SAMPLED_METRIC,
         (estimated_pct_sampled * 100.) as usize,
     ));
 
+    let estimated_pct_sampled = estimated_pct_sampled.min(1.0);
     let total_num_rows = (rows_ready as f32 / estimated_pct_sampled) as usize;
 
     if total_num_rows == 0 {
@@ -298,7 +302,7 @@ async fn gather_runtime_statistics(
     let total_byte_size: usize = per_col_byte_size.iter().sum();
 
     new_metrics.push(BytesCounterMetric::new_metric(
-        "estimated_output_bytes",
+        ESTIMATED_OUTPUT_BYTES_METRIC,
         total_byte_size,
     ));
 
