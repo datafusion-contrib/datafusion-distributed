@@ -6,7 +6,7 @@ This module provides a non-gRPC [`ChannelResolver`](../protocol/worker_channel.r
 
 ## Architecture Overview
 
-The shared-memory transport mirrors the canonical gRPC protocol's pull-based RPC design while replacing network serialization and TCP sockets with Direct Shared Memory (DSM) ring buffers and compact 16-byte frame headers.
+The shared-memory transport mirrors the canonical gRPC protocol's pull-based RPC design while replacing network serialization and TCP sockets with Direct Shared Memory (DSM) ring buffers and compact 20-byte frame headers.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ The shared-memory transport mirrors the canonical gRPC protocol's pull-based RPC
 │  1. Receives SetPlan & registers plan fragment (TaskKey)                    │
 │  2. Idles until ExecuteTaskFrame arrives from downstream consumer           │
 │  3. ExecuteTaskFrame arrives specifying partition_range (start..end)        │
-│  4. Opens per-partition sinks lazily for start..end                        │
+│  4. Opens per-task, per-partition sinks lazily for start..end               │
 │  5. Evaluates run_worker_fragment(plan, sinks, ctx, start..end)             │
 │  6. Streams batches out via DSM ring buffers                                │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -31,17 +31,17 @@ The shared-memory transport mirrors the canonical gRPC protocol's pull-based RPC
 ## Control & Data Plane Design
 
 ### 1. Control Plane (`MppMesh`, `DrainHandle` & `run_execute_task_loop`)
-- **Messages**: Control frames (`ExecuteTask`, `SetPlan`, `TaskMetrics`, `Cancel`, `EOF`) are tagged with a 16-byte [`MppFrameHeader`](./transport.rs) (`kind`, `stage_id`, `partition`, `sender_proc`) and routed through `MppMesh`.
+- **Messages**: Frames carry a 20-byte [`MppFrameHeader`](./transport.rs): `kind`, `stage_id`, `task_id`, `partition`, and `sender_proc`. Control frames route a `(stage_id, task_number)` address; data frames (`Batch`, `EOF`, `Cancel`, and `Chunk`) route a `(stage_id, task_id, partition)` stream.
 - **Demand-Driven Pull Execution**:
   - Downstream consumers issue `ExecuteTaskFrame` to upstream producer tasks via `MppMesh::send_execute_task`.
   - Upstream worker tasks wait on `MppMesh::take_execute_task_rx(stage_num, task_idx)` for incoming execution requests before spawning task fragments.
   - Workers run the demand loop via [`run_execute_task_loop`](./setup.rs), which validates requested partition ranges (`start..end`), guards against duplicate/overlapping partition claims, listens to `CancellationToken` for prompt cancellation unwinding, and periodically drives inbound ring draining.
-- **Demuxing**: Incoming frames are demuxed cooperatively by [`DrainHandle`](./transport.rs) into per-`(stage_id, task_number)` request registries and per-channel record batch buffers.
+- **Demuxing**: Incoming frames are demuxed cooperatively by [`DrainHandle`](./transport.rs) into per-`(stage_id, task_number)` request registries and per-`(sender_proc, stage_id, task_id, partition)` record-batch buffers.
 
 ### 2. Data Plane (DSM Ring Buffers)
 - Output partitions write record batches into lock-free/cache-aligned DSM ring buffers (`mpsc_ring.rs`).
 - Batches are serialized as Arrow IPC streams directly into ring slots.
-- Dedicated per-partition rings eliminate head-of-line blocking across tasks.
+- One shared inbox per process multiplexes data streams; the task-aware stream key keeps tasks on the same producer process independent.
 
 ---
 

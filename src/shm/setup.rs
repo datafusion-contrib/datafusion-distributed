@@ -45,8 +45,8 @@ use super::mesh::{DsmInboxReceiver, DsmInboxSender};
 use super::mpsc_ring::{DsmMpscSender, NO_RECEIVER_TOKEN, Wakeup};
 use super::runtime::MppMesh;
 use super::transport::{
-    BatchChannelSender, DrainHandle, ExecuteTaskRx, Interrupt, MppFrameHeader, MppReceiver,
-    MppSender, ReceiverScope, SELF_LOOP_CAPACITY, in_proc_channel,
+    BatchChannelSender, DrainHandle, ExecuteTaskRx, Interrupt, MppDataStreamKey, MppFrameHeader,
+    MppReceiver, MppSender, ReceiverScope, SELF_LOOP_CAPACITY, in_proc_channel,
 };
 use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
@@ -107,14 +107,14 @@ fn build_outbound_senders(
             Arc::new(DsmInboxSender::new(dsm_send.to_control()));
         cancel[target_proc as usize] = Some(MppSender::with_header(
             control,
-            MppFrameHeader::batch(0, 0, this_proc),
+            MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), this_proc),
         ));
         let shared: Arc<dyn BatchChannelSender> = Arc::new(DsmInboxSender::new(dsm_send));
         senders[target_proc as usize] = Some(MppSender::with_header(
             shared,
             // Stamp `sender_proc = this_proc` so a stray frame that escapes the dispatcher's
             // `clone_with_header` overwrite still identifies its origin on the drain side.
-            MppFrameHeader::batch(0, 0, this_proc),
+            MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), this_proc),
         ));
     }
     (senders, cancel)
@@ -304,11 +304,11 @@ pub unsafe fn worker_setup(
     let self_tx_arc: Arc<dyn BatchChannelSender> = Arc::new(self_tx);
     outbound[proc_idx as usize] = Some(MppSender::with_header(
         Arc::clone(&self_tx_arc),
-        MppFrameHeader::batch(0, 0, proc_idx),
+        MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), proc_idx),
     ));
     cancel[proc_idx as usize] = Some(MppSender::with_header(
         Arc::clone(&self_tx_arc),
-        MppFrameHeader::batch(0, 0, proc_idx),
+        MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), proc_idx),
     ));
 
     let inbox = DsmInboxReceiver::new(attach.inbound_receiver);
