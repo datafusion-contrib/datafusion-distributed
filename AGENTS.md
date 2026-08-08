@@ -38,7 +38,8 @@ about a user's networking or deployment stack.
 - `examples/`: runnable usage examples.
 - `benchmarks-local/`: local benchmark crate and microbenchmarks; do not change
   benchmark behavior as an incidental part of a library change.
-- `benchmarks-remote/`: remote benchmark worker, deployment, and client tooling.
+- `benchmarks-remote/`: remote benchmark runner and Pulumi-managed Kubernetes
+  infrastructure.
 - `docs/`: Sphinx documentation. Contributor documentation is in
   `docs/source/contributor-guide/`.
 

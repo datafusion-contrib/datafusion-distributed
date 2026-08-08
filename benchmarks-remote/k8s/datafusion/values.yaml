@@ -1,0 +1,4 @@
+worker:
+  image: ""
+  imagePullSecret: benchmark-ecr
+  datasetBucket: ""

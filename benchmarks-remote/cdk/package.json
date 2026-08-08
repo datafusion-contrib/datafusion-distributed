@@ -14,6 +14,8 @@
     "sync-bucket": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/sync-bucket.ts",
     "compare": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/compare.ts",
     "datafusion-bench": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/datafusion-bench.ts",
+    "datafusion-deploy:k8s": "../k8s/publish-datafusion.sh",
+    "datafusion-bench:k8s": "../k8s/run-tpch.sh",
     "trino-bench": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/trino-bench.ts",
     "spark-bench": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/spark-bench.ts",
     "ballista-bench": "TS_NODE_PREFER_TS_EXTS=1 npx ts-node bin/ballista-bench.ts",

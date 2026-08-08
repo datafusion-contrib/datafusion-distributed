@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: datafusion-worker
+  namespace: benchmark-datafusion
+  labels:
+    app.kubernetes.io/name: datafusion-worker
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: datafusion-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: datafusion-worker
+    spec:
+      serviceAccountName: benchmark-engine
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        benchmark.datafusion.apache.org/engine: datafusion
+      tolerations:
+        - key: benchmark.datafusion.apache.org/engine
+          operator: Equal
+          value: datafusion
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: {{ .Values.worker.imagePullSecret }}
+      containers:
+        - name: worker
+          image: {{ required "worker.image is required" .Values.worker.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --bucket
+            - {{ required "worker.datasetBucket is required" .Values.worker.datasetBucket | quote }}
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 9000
+            - name: grpc
+              containerPort: 9001
+          readinessProbe:
+            httpGet:
+              path: /info
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: "6"
+              memory: 12Gi
+            limits:
+              cpu: "7"
+              memory: 16Gi

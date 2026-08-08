@@ -51,13 +51,13 @@ the [benchmarks README](https://github.com/datafusion-contrib/datafusion-distrib
 
 ## Remote Benchmarks
 
-These benchmarks run on a remote EC2 cluster against parquet files stored in S3.
-These are the most realistic benchmarks, but also the most expensive to run in
-terms of development iteration cycles (it requires AWS CDK deploys for every
-code change) and cost, as it uses a real EC2 cluster.
+These benchmarks run on a Pulumi-managed Kubernetes cluster against Parquet
+files stored in S3. These are the most realistic benchmarks, but also the most
+expensive in terms of development iteration cycles and cost because they use
+real EC2 instances.
 
-For running these benchmarks, refer to
-the [CDK benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-remote/cdk/README.md).
+For running these benchmarks, refer to the
+[remote benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-remote/README.md).
 
 Always prefer this type of benchmarks VS the local ones.
 

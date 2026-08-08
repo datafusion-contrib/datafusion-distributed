@@ -70,8 +70,9 @@ per-query median (p50) latencies over the queries that all compared engines
 completed successfully; lower is better.
 
 The benchmarking code is public and can be reproduced in another AWS account.
-Local benchmarks live in [benchmarks-local](./benchmarks-local), while remote
-benchmark tooling lives in [benchmarks-remote](./benchmarks-remote).
+Local benchmarks live in [benchmarks-local](./benchmarks-local), while the
+Pulumi-managed Kubernetes system lives in
+[benchmarks-remote](./benchmarks-remote).
 
 ## Core tenets of the project
 

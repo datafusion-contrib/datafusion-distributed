@@ -94,7 +94,7 @@ const QueryResponse = z.object({
 type QueryResponse = z.infer<typeof QueryResponse>
 
 class DataFusionRunner implements BenchmarkRunner {
-    private url = 'http://localhost:9000';
+    private url = process.env.DATAFUSION_URL ?? 'http://localhost:9000';
 
     constructor(private readonly options: {
         fileScanConfigBytesPerPartition: number;
@@ -218,6 +218,9 @@ class DataFusionRunner implements BenchmarkRunner {
 }
 
 function getCurrentBranch(): string {
+    if (process.env.BENCHMARK_ENGINE) {
+        return process.env.BENCHMARK_ENGINE;
+    }
     try {
         // Try to get current git branch. For branches with a slash prefix, keep the last entry.
         return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim().split("/").slice(-1)[0];

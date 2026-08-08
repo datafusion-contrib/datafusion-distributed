@@ -355,6 +355,12 @@ async fn background_ec2_worker_resolver(urls: Arc<RwLock<Vec<Url>>>) {
                 )
                 .filters(
                     aws_sdk_ec2::types::Filter::builder()
+                        .name("tag:benchmark.datafusion.apache.org/engine")
+                        .values("datafusion")
+                        .build(),
+                )
+                .filters(
+                    aws_sdk_ec2::types::Filter::builder()
                         .name("instance-state-name")
                         .values("running")
                         .build(),
