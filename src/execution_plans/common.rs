@@ -22,15 +22,38 @@ pub(super) fn scale_partitioning(
         Partitioning::RoundRobinBatch(p) => Partitioning::RoundRobinBatch(f(*p)),
         Partitioning::Hash(hash, p) => Partitioning::Hash(hash.clone(), f(*p)),
         Partitioning::UnknownPartitioning(p) => Partitioning::UnknownPartitioning(f(*p)),
-        // A range shuffle never reaches a network boundary, so its count is never
-        // scaled. If that changes, the caller would misroute against an unscaled
-        // count, so fail loud in debug rather than clone silently.
-        Partitioning::Range(_) => {
-            debug_assert!(
-                false,
-                "scale_partitioning: range partitioning is not scaled at a boundary"
-            );
-            partitioning.clone()
-        }
+        // A task-scaled range layout has no representation: the consumer side of a
+        // coalesce boundary sees every input task's ranges repeated, and
+        // `RangePartitioning` cannot express repeated split points. Cloning the layout
+        // unscaled would make the consumer request a partition set the producers never
+        // serve, so drop to an unknown layout with the scaled count; the boundary math
+        // and the consumer run on counts alone.
+        // TODO(#68): carry the range property across the boundary so consumer-side
+        // joins can stay co-partitioned.
+        Partitioning::Range(range) => Partitioning::UnknownPartitioning(f(range.partition_count())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint};
+
+    #[test]
+    fn range_partitioning_scales_to_an_unknown_layout() {
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Default::default(),
+        )])
+        .unwrap();
+        let splits = vec![
+            SplitPoint::new(vec![ScalarValue::Int64(Some(10))]),
+            SplitPoint::new(vec![ScalarValue::Int64(Some(20))]),
+        ];
+        let range = RangePartitioning::try_new(ordering, splits).unwrap();
+        let scaled = scale_partitioning(&Partitioning::Range(range), |p| p * 4);
+        assert!(matches!(scaled, Partitioning::UnknownPartitioning(12)));
     }
 }
