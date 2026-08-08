@@ -71,8 +71,8 @@ pub use setup::{
 };
 pub use sink::{PartitionSink, WorkerSink};
 pub use transport::{
-    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, MppFrameHeader,
-    MppPartitionSink, MppSender, NoInterrupt, SendBatchStats, SetPlanFrame,
+    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, MppDataStreamKey,
+    MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt, SendBatchStats, SetPlanFrame,
 };
 
 /// Out-of-DSM liveness flag shared by the ring handles from one attach. The embedder flips it to

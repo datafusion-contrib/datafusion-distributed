@@ -59,8 +59,8 @@ use super::mpsc_ring::Wakeup;
 use super::runtime::{MppMesh, ShmMqWorkerTransport, proc_for_task};
 use super::setup::{dsm_region_bytes, leader_setup, worker_setup};
 use super::transport::{
-    CooperativeDrainSet, Interrupt, MppFrameHeader, MppPartitionSink, MppSender, SendBatchStats,
-    SetPlanFrame,
+    CooperativeDrainSet, Interrupt, MppDataStreamKey, MppFrameHeader, MppPartitionSink, MppSender,
+    SendBatchStats, SetPlanFrame,
 };
 use crate::proto as pb;
 use crate::{
@@ -767,7 +767,10 @@ impl QueryHarness {
                         );
                     };
                     let sender = base
-                        .clone_with_header(MppFrameHeader::batch(stage_num, q as u32, proc))
+                        .clone_with_header(MppFrameHeader::batch(
+                            MppDataStreamKey::new(stage_num, task_i as u32, q as u32),
+                            proc,
+                        ))
                         .with_cooperative_drain(Arc::clone(mesh) as Arc<dyn CooperativeDrainSet>);
                     sinks.push(Box::new(MppPartitionSink::new(sender)));
                 }

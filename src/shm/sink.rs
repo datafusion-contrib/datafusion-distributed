@@ -38,12 +38,17 @@ pub trait PartitionSink: Send {
 /// output batch in. The shared-memory mesh provides the implementation; it is constructed by the
 /// producer (which knows the per-partition routing), not handed out by the consume-side transport.
 pub trait WorkerSink: Send + Sync {
-    /// Takes `stage` and `partition` separately because one sink serves every stage, unlike the
-    /// per-stage read connection that closes over its stage.
+    /// Takes `stage`, producing `task`, and `partition` separately because one sink serves every
+    /// stage, unlike the per-stage read connection that closes over its stage.
     ///
-    /// `stage` is the producing stage's number and `partition` the producer task's own output
-    /// partition index, before routing. Several producer tasks of one stage may hold sinks for the
-    /// same pair, and the consumer merges them, so one `finish` is one producer task's EOF, not
-    /// channel completion (which stays transport-defined).
-    fn open_partition(&self, stage: usize, partition: usize) -> Result<Box<dyn PartitionSink>>;
+    /// `stage` is the producing stage's number, `task` its logical task number, and `partition`
+    /// the producer task's own output partition index before routing. Several producer tasks of
+    /// one stage may hold sinks for the same partition, and each needs a distinct stream identity:
+    /// one task's `finish` must never close another task's stream.
+    fn open_partition(
+        &self,
+        stage: usize,
+        task: usize,
+        partition: usize,
+    ) -> Result<Box<dyn PartitionSink>>;
 }

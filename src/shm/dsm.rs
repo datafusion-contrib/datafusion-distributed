@@ -253,7 +253,7 @@ fn ring_dims_for(queue_bytes: usize) -> (u32, u32) {
 /// The own-inbox is the multiplexed entry point: every peer attaches to it as a sender
 /// (each `DsmMpscSender` increments the ring's `sender_count`) and stamps its identity
 /// into `MppFrameHeader::sender_proc` on every frame. The receiver side pulls frames
-/// off that single ring and routes them to per-`(sender_proc, stage_id, partition)`
+/// off that single ring and routes them to per-`(sender_proc, stage_id, task_id, partition)`
 /// channel buffers via [`DrainHandle`].
 pub(super) struct ProcAttach {
     /// `outbound_senders[i]` writes to peer `peer_proc_for_index(this_proc, i)`'s inbox.
