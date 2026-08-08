@@ -23,5 +23,12 @@ pub fn settings() -> insta::Settings {
         "UUID",
     );
     settings.add_filter(r"\d+\.\.\d+", "<int>..<int>");
+    // A hash join pushes its build-side values into a DynamicFilter's IN-list in whatever
+    // order the build collected them, which is scheduler-dependent. Only redact inside
+    // DynamicFilter: static IN (SET) predicates are deterministic and stay asserted.
+    settings.add_filter(
+        r"(DynamicFilter \[[^\[\]]*IN \(SET\) \(\[)[^\]]*(\]\))",
+        "${1}<values>${2}",
+    );
     settings
 }
