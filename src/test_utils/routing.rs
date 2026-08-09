@@ -246,9 +246,11 @@ fn url_emitter_schema() -> SchemaRef {
 pub fn url_emitter_desired_task_count(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
-    ev.plan
-        .downcast_ref::<URLEmitterExec>()
-        .map(|exec| Ok(DesiredTaskCountEventResponse::desired(exec.task_count)))
+    ev.plan.downcast_ref::<URLEmitterExec>().map(|exec| {
+        Ok(DesiredTaskCountEventResponse::desired(
+            exec.task_count as f64,
+        ))
+    })
 }
 
 pub fn url_emitter_scale_up_leaf_node(
