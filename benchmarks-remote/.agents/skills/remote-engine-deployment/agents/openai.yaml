@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Engine Deployment"
+  short_description: "Manage Kubernetes benchmark engines"
+  default_prompt: "Use $remote-engine-deployment to deploy, inspect, update, or destroy a remote benchmark engine."

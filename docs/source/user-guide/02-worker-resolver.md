@@ -163,4 +163,4 @@ pods in that namespace.
 
 For a complete, running example against real infrastructure — discovering a
 cluster of AWS EC2 machines by tag with the AWS Rust SDK — see
-[benchmarks-remote/src/main.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-remote/src/main.rs).
+[benchmarks-remote/engines/datafusion/main.rs](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-remote/engines/datafusion/main.rs).

@@ -1,47 +1,46 @@
-# Local Kubernetes benchmarks
+# Kubernetes engine workloads
 
-Kubernetes hosts the engine workers only. The benchmark harness stays on the
-developer machine and uses the same TypeScript entry points and result files as
-the existing EC2 benchmarks.
+Kubernetes hosts persistent engine services. Benchmark clients run on the
+developer machine through the npm commands in `benchmarks-remote/package.json`.
 
-From `benchmarks-remote/pulumi`, create or update the foundation and install the
-tenancy resources:
+Create the foundation before managing engines:
 
 ```bash
-npm install
-npm run deploy
+npm run foundation-deploy
 ```
 
-The deploy command writes ignored Pulumi outputs to `.pulumi-outputs.json`, so
-the benchmark scripts do not need copied instance IDs, bucket names, or ASG
-names.
-
-From `benchmarks-remote/cdk`, build and publish only the DataFusion worker image:
+Engine deploy commands publish required artifacts, install or update the Helm
+release, and wait for it to become ready. For example:
 
 ```bash
-npm install
-npm run datafusion-deploy:k8s
+npm run datafusion-deploy
+npm run datafusion-bench -- --dataset tpch/sf1 --iterations 1
+npm run datafusion-destroy
 ```
 
-Then run the existing benchmark harness locally. Arguments after `--` are
-passed unchanged to `datafusion-bench`:
+Benchmark commands require the engine release and dataset to exist. They do not
+run Helm, upload datasets, or uninstall the engine. Deployments continue to use
+EKS capacity between runs until their corresponding `<engine>-destroy` command
+is invoked.
+
+All measured worker and executor pods load
+[`worker-resources.yaml`](./worker-resources.yaml). They request and limit the
+same 7 CPUs and 17 GiB of memory, reserving the available benchmark capacity of
+one `c5n.2xlarge` node per pod while leaving capacity for Kubernetes system
+overhead. Every engine defaults to 12 worker replicas. Engine coordinators run
+on the separate system-node type and are not part of the measured worker
+capacity.
+
+The scripts use `k8s/.kubeconfig`. Export it to connect directly:
 
 ```bash
-npm run datafusion-bench:k8s -- --dataset tpch_sf1 --iterations 1
+export KUBECONFIG="$PWD/k8s/.kubeconfig"
+kubectl get pods --all-namespaces
 ```
 
-The wrapper scales the dedicated DataFusion pool, deploys the worker DaemonSet,
-opens an SSM tunnel to one stable coordinator, invokes local
-`npm run datafusion-bench`, uploads the local result files, and always removes
-the workload and returns the pool to zero capacity.
-
-To delete and recreate the whole benchmark foundation, run these commands from
-`benchmarks-remote/pulumi`:
+Destroy the complete AWS foundation only when its buckets, registries, results,
+and cluster should also be removed:
 
 ```bash
-npm run destroy
-npm run deploy
+npm run foundation-destroy
 ```
-
-The external S3 bucket holding Pulumi state is intentionally not owned by the
-stack and remains available for recreation.

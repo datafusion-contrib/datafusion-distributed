@@ -1,0 +1,94 @@
+import {Command} from "commander";
+import {z} from 'zod';
+import {BenchmarkRunner, ExecuteQueryResult, runBenchmark, TableSpec} from "./@bench-common";
+
+async function main() {
+    const program = new Command();
+
+    program
+        .requiredOption('--dataset <string>', 'Dataset to run queries on')
+        .option('-i, --iterations <number>', 'Number of iterations', '5')
+        .option('--queries <string>', 'Specific queries to run', undefined)
+        .option('--debug <boolean>', 'Print the generated plans to stdout')
+        .option('--warmup <boolean>', 'Perform a warmup query before the benchmarks', 'true')
+        .parse(process.argv);
+
+    const options = program.opts();
+
+    const dataset: string = options.dataset
+    const iterations = parseInt(options.iterations);
+    const queries = options.queries?.split(",") ?? []
+    const debug = options.debug === true || options.debug === 'true' || options.debug === 1
+    const warmup = options.warmup === true || options.warmup === 'true' || options.warmup === 1
+
+    const runner = new BallistaRunner({});
+
+    await runBenchmark(runner, {
+        dataset,
+        engine: 'ballista',
+        iterations,
+        queries,
+        debug,
+        warmup
+    });
+}
+
+const QueryResponse = z.object({
+    count: z.number(),
+    plan: z.string(),
+    elapsed_ms: z.number(),
+})
+type QueryResponse = z.infer<typeof QueryResponse>
+
+class BallistaRunner implements BenchmarkRunner {
+    private url = process.env.BALLISTA_URL ?? 'http://localhost:9000';
+
+    constructor(private readonly options: {}) {
+    }
+
+    async executeQuery(sql: string): Promise<ExecuteQueryResult> {
+        let response
+        if (sql.includes("create view")) {
+            // This is query 15
+            let [createView, query, dropView] = sql.split(";")
+            await this.query(createView);
+            response = await this.query(query)
+            await this.query(dropView);
+        } else {
+            response = await this.query(sql)
+        }
+
+        return {rowCount: response.count, plan: response.plan, elapsed: response.elapsed_ms, tasks: 0};
+    }
+
+    private async query(sql: string): Promise<QueryResponse> {
+        const url = new URL(this.url);
+        url.searchParams.set('sql', sql);
+
+        const response = await fetch(url.toString());
+
+        if (!response.ok) {
+            const msg = await response.text();
+            throw new Error(`Query failed: ${response.status} ${msg}`);
+        }
+
+        const unparsed = await response.json();
+        return QueryResponse.parse(unparsed);
+    }
+
+    async createTables(tables: TableSpec[]): Promise<void> {
+        for (const table of tables) {
+            await this.query(`DROP TABLE IF EXISTS ${table.name}`);
+            await this.query(
+                `CREATE EXTERNAL TABLE IF NOT EXISTS ${table.name} STORED AS PARQUET LOCATION '${table.s3Path}'`,
+            );
+        }
+    }
+
+}
+
+main()
+    .catch(err => {
+        console.error(err)
+        process.exit(1)
+    })

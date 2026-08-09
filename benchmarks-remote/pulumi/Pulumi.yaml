@@ -1,5 +1,5 @@
 name: datafusion-distributed-benchmarks
-description: Pulumi-managed k3s infrastructure for distributed benchmarks
+description: Pulumi-managed EKS Auto Mode infrastructure for distributed benchmarks
 runtime:
   name: nodejs
   options:

@@ -21,16 +21,16 @@ test('requires a positive benchmark node limit', () => {
   assert.throws(() => validateFoundationConfig(config), /positive integer/);
 });
 
-test('requires a pinned k3s release for the self-managed backend', () => {
+test('requires a pinned EKS minor release', () => {
   const config = testConfig();
-  config.k3sVersion = 'latest';
+  config.eksVersion = 'latest';
 
-  assert.throws(() => validateFoundationConfig(config), /k3sVersion must be an exact release/);
+  assert.throws(() => validateFoundationConfig(config), /eksVersion must be an exact EKS minor/);
 });
 
-test('rejects a k3s pod CIDR that overlaps the VPC', () => {
+test('rejects a world-accessible Kubernetes API', () => {
   const config = testConfig();
-  config.k3sPodCidr = '10.42.128.0/17';
+  config.kubernetesApiAllowedCidrs = ['0.0.0.0/0'];
 
-  assert.throws(() => validateFoundationConfig(config), /k3sPodCidr must not overlap vpcCidr/);
+  assert.throws(() => validateFoundationConfig(config), /must not expose/);
 });

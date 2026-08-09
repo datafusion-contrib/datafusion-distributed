@@ -12,11 +12,8 @@ export function testConfig(): FoundationConfig {
     },
     benchmarkInstanceType: 'c5n.2xlarge',
     benchmarkNodeCount: 12,
-    benchmarkRootVolumeSizeGiB: 200,
-    benchmarkRootVolumeIops: 3000,
-    benchmarkRootVolumeThroughput: 125,
     systemInstanceType: 'm6i.large',
-    k3sVersion: 'v1.35.1+k3s1',
-    k3sPodCidr: '10.244.0.0/16',
+    eksVersion: '1.36',
+    kubernetesApiAllowedCidrs: ['192.0.2.10/32'],
   };
 }

@@ -1,0 +1,43 @@
+{
+  "name": "datafusion-distributed-remote-benchmarks",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "pulumi"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "node --test --require ts-node/register test/*.test.ts",
+    "foundation-deploy": "./pulumi/deploy.sh",
+    "foundation-destroy": "./pulumi/destroy.sh",
+    "sync-bucket": "env TS_NODE_PREFER_TS_EXTS=1 ts-node src/sync-bucket.ts",
+    "dataset-destroy": "env TS_NODE_PREFER_TS_EXTS=1 ts-node src/destroy-dataset.ts",
+    "compare": "TS_NODE_PREFER_TS_EXTS=1 ts-node src/compare.ts",
+    "datafusion-bench": "./k8s/run-benchmark.sh datafusion",
+    "trino-bench": "./k8s/run-benchmark.sh trino",
+    "spark-bench": "./k8s/run-benchmark.sh spark",
+    "ballista-bench": "./k8s/run-benchmark.sh ballista",
+    "datafusion-deploy": "./k8s/deploy-engine.sh datafusion",
+    "datafusion-destroy": "./k8s/destroy-engine.sh datafusion",
+    "trino-deploy": "./k8s/deploy-engine.sh trino",
+    "trino-destroy": "./k8s/destroy-engine.sh trino",
+    "spark-deploy": "./k8s/deploy-engine.sh spark",
+    "spark-destroy": "./k8s/destroy-engine.sh spark",
+    "ballista-deploy": "./k8s/deploy-engine.sh ballista",
+    "ballista-destroy": "./k8s/destroy-engine.sh ballista",
+    "command": "./k8s/command.sh",
+    "runner:datafusion-bench": "TS_NODE_PREFER_TS_EXTS=1 ts-node src/datafusion-bench.ts",
+    "runner:trino-bench": "TS_NODE_PREFER_TS_EXTS=1 ts-node src/trino-bench.ts",
+    "runner:spark-bench": "TS_NODE_PREFER_TS_EXTS=1 ts-node src/spark-bench.ts",
+    "runner:ballista-bench": "TS_NODE_PREFER_TS_EXTS=1 ts-node src/ballista-bench.ts"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "22.7.9",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.6.3"
+  }
+}

@@ -1,87 +1,81 @@
 # Pulumi benchmark foundation
 
 This project owns the AWS infrastructure used by the Kubernetes benchmarks.
-It creates one small k3s control-plane instance and a dedicated zero-sized EC2
-Auto Scaling group for each engine: DataFusion Distributed, Ballista, Spark,
-and Trino. Engine images, workloads, and benchmark execution remain outside the
-foundation.
+It creates an EKS Auto Mode cluster. Engine workloads and benchmark execution
+remain outside the foundation and are driven by the local npm commands.
 
 The stack also creates:
 
 - a two-AZ VPC with private engine nodes;
 - encrypted dataset and result buckets;
-- one immutable ECR repository per engine; and
-- the EC2 and SSM permissions needed by the k3s server and workers.
+- one immutable ECR repository per engine;
+- an IAM role associated with each engine service account through EKS Pod
+  Identity; and
+- a CodeBuild project for publishing the Spark image.
 
-Every engine group starts with `minSize=0` and `desiredCapacity=0`. The local
-benchmark wrapper changes only the selected engine group and always returns it
-to zero.
+EKS Auto Mode provisions nodes only for scheduled benchmark pods. The local
+benchmark wrapper uninstalls the selected engine after a run, allowing the
+cluster to return to zero worker nodes.
 
 ## Prerequisites
 
 - Node.js 22 or newer.
 - Pulumi CLI matching the `@pulumi/pulumi` major version in `package.json`.
 - AWS CLI credentials with permission to manage the stack resources.
-- An S3 Pulumi state bucket created separately from this stack, or a Pulumi
-  Cloud organization.
+- A selected Pulumi backend, or `PULUMI_BACKEND_URL` pointing to an S3 backend
+  or Pulumi Cloud organization.
+- The AWS KMS alias `alias/datafusion-bench-pulumi-state` for encrypting Pulumi
+  state when using an object-storage backend.
 
 Install dependencies and create or update the stack:
 
 ```bash
 npm install
-npm run deploy
+npm run foundation-deploy
 ```
 
 `PULUMI_BIN` may point to a downloaded Pulumi binary when it is not on `PATH`.
-The deploy script uses the caller's existing AWS credentials, writes ignored
-stack outputs to `.pulumi-outputs.json`, and installs the stable Kubernetes
-tenancy resources after k3s is ready.
+The deploy script uses the caller's existing AWS credentials and Pulumi backend,
+writes ignored stack outputs to `.pulumi-outputs.json`, installs the stable
+Kubernetes tenancy resources after EKS is ready, and writes the ignored
+worktree-local kubeconfig at `../k8s/.kubeconfig`.
 
 ## Stack configuration
 
-Create the stack and configure the network once:
-
-```bash
-pulumi stack init benchmark
-pulumi config set aws:region us-east-1
-pulumi config set --path 'availabilityZones[0]' us-east-1a
-pulumi config set --path 'availabilityZones[1]' us-east-1b
-pulumi config set --path 'publicSubnetCidrs[0]' 10.42.0.0/24
-pulumi config set --path 'publicSubnetCidrs[1]' 10.42.1.0/24
-pulumi config set --path 'privateSubnetCidrs[0]' 10.42.10.0/24
-pulumi config set --path 'privateSubnetCidrs[1]' 10.42.11.0/24
-pulumi config set k3sVersion v1.35.1+k3s1
-```
+The region and network defaults are committed in `Pulumi.benchmark.yaml`.
+Credentials, account selection, and state backend choices stay in the caller's
+local AWS and Pulumi configuration. Object-storage stacks use the KMS alias
+`alias/datafusion-bench-pulumi-state` by default. `PULUMI_SECRETS_PROVIDER` can
+select a different Pulumi secrets provider.
 
 Optional configuration:
 
-| Key                             | Default            | Purpose                                  |
-| ------------------------------- | ------------------ | ---------------------------------------- |
-| `namePrefix`                    | `datafusion-bench` | Prefix for physical AWS resources.       |
-| `benchmarkInstanceType`         | `c5n.2xlarge`      | Measured engine instance type.           |
-| `benchmarkNodeCount`            | `12`               | Maximum nodes in each engine group.      |
-| `benchmarkRootVolumeSizeGiB`    | `200`              | Engine node root volume size.            |
-| `benchmarkRootVolumeIops`       | `3000`             | Engine node gp3 IOPS.                    |
-| `benchmarkRootVolumeThroughput` | `125`              | Engine node gp3 throughput in MiB/s.     |
-| `systemInstanceType`            | `m6i.large`        | Persistent k3s server instance type.     |
-| `k3sPodCidr`                    | `10.244.0.0/16`    | Pod CIDR; must not overlap the VPC CIDR. |
+| Key                         | Default            | Purpose                               |
+| --------------------------- | ------------------ | ------------------------------------- |
+| `namePrefix`                | `datafusion-bench` | Prefix for physical AWS resources.    |
+| `benchmarkInstanceType`     | `c5n.2xlarge`      | Measured engine instance type.        |
+| `benchmarkNodeCount`        | `12`               | Default worker replica count.         |
+| `systemInstanceType`        | `m6i.large`        | Coordinator pod instance type.        |
+| `eksVersion`                | `1.36`             | Exact EKS Kubernetes minor release.   |
+| `kubernetesApiAllowedCidrs` | required           | Trusted CIDRs for the public EKS API. |
 
-For an S3 backend:
+`KUBERNETES_API_ALLOWED_CIDRS` can provide a comma-separated list. When it is
+unset, `npm run foundation-deploy` detects the current public IP and restricts the endpoint
+to that `/32`.
+
+The state backend is a bootstrap dependency and cannot be owned by the stack
+whose state it holds. Set `PULUMI_BACKEND_URL` to have the lifecycle scripts log
+in explicitly, or select a backend with `pulumi login` beforehand.
+
+Stack resources are protected during normal operation. To intentionally delete
+the complete managed footprint, including datasets, results, and engine
+images, run:
 
 ```bash
-pulumi login 's3://<state-bucket>/datafusion-distributed-benchmarks'
+npm run foundation-destroy
 ```
 
-The state bucket cannot be owned by the stack that stores its state. The stack
-resources are protected during normal operation. To intentionally delete the
-complete managed footprint, including datasets, results, and engine images,
-run:
-
-```bash
-npm run destroy
-```
-
-The external state bucket and stack configuration remain, so `npm run deploy`
+The external state bucket and stack configuration remain, so `npm run foundation-deploy`
 can recreate everything from scratch.
 
 ## Local validation

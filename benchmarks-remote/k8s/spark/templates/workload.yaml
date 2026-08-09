@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark
+  namespace: benchmark-spark
+spec:
+  selector:
+    app.kubernetes.io/name: spark
+    app.kubernetes.io/component: coordinator
+  ports:
+    - {name: master, port: 7077, targetPort: master}
+    - {name: driver, port: 7078, targetPort: driver}
+    - {name: block-manager, port: 7079, targetPort: block-manager}
+    - {name: http, port: 9000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-coordinator
+  namespace: benchmark-spark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spark
+        app.kubernetes.io/component: coordinator
+    spec:
+      serviceAccountName: benchmark-engine
+      nodeSelector:
+        karpenter.sh/nodepool: general-purpose
+        node.kubernetes.io/instance-type: {{ .Values.coordinatorInstanceType | quote }}
+      containers:
+        - name: master
+          image: {{ required "image is required" .Values.image | quote }}
+          command: ["spark-class", "org.apache.spark.deploy.master.Master", "--host", "0.0.0.0", "--port", "7077"]
+          ports:
+            - {name: master, containerPort: 7077}
+          resources:
+            requests: {cpu: "250m", memory: 1Gi}
+            limits: {cpu: "1", memory: 2Gi}
+        - name: http
+          image: {{ required "image is required" .Values.image | quote }}
+          command: ["python", "/opt/benchmark/spark_http.py"]
+          env:
+            - {name: SPARK_MASTER_HOST, value: spark}
+            - {name: SPARK_DRIVER_HOST, value: spark}
+            - {name: HTTP_PORT, value: "9000"}
+            - {name: AWS_REGION, value: us-east-1}
+            - {name: AWS_EC2_METADATA_DISABLED, value: "false"}
+          ports:
+            - {name: http, containerPort: 9000}
+            - {name: driver, containerPort: 7078}
+            - {name: block-manager, containerPort: 7079}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: {cpu: "250m", memory: 1Gi}
+            limits: {cpu: "1", memory: 2Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-worker
+  namespace: benchmark-spark
+spec:
+  replicas: {{ .Values.workerReplicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spark
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: benchmark-engine
+      nodeSelector:
+        karpenter.sh/nodepool: general-purpose
+        node.kubernetes.io/instance-type: {{ .Values.workerInstanceType | quote }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: spark
+                  app.kubernetes.io/component: worker
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: {{ required "image is required" .Values.image | quote }}
+          command: ["spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark:7077"]
+          env:
+            - {name: SPARK_WORKER_CORES, value: "7"}
+            - {name: SPARK_WORKER_MEMORY, value: 15g}
+          resources:
+            {{- toYaml (required "workerResources is required" .Values.workerResources) | nindent 12 }}

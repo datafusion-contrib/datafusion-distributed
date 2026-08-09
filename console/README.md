@@ -46,35 +46,36 @@ On startup and every 5 seconds, it calls `GetClusterWorkers` on the seed worker,
 which returns URLs for all known workers via its `WorkerResolver`. New workers
 are added automatically; removed workers are cleaned up.
 
-## Monitoring an EC2 Benchmark Cluster
+## Monitoring a Remote Benchmark Cluster
 
-The benchmark workers in [`benchmarks-remote/cdk/`](../benchmarks-remote/cdk/README.md) run on
-EC2 instances with the observability service enabled. Each worker listens on port
-9001 (gRPC/Flight + Observability) and port 9000 (HTTP benchmarks). The
-`Ec2WorkerResolver` discovers peers via `DescribeInstances`, so connecting the
-console to any single worker exposes the full cluster.
-
-To run the console, SSH into any instance in the cluster and install it there
-(the console runs inside the VPC so it can reach all workers on their private IPs):
+The [remote Kubernetes benchmarks](../benchmarks-remote/README.md) run
+DataFusion worker pods on EKS. Each worker listens on port 9001 (gRPC/Flight +
+Observability) and port 9000 (HTTP benchmarks). Kubernetes DNS discovers the
+worker pods. Because discovery returns private pod addresses, run the console
+inside a worker pod rather than port-forwarding only one worker:
 
 ```bash
-cd benchmarks-remote/cdk/
-npm run deploy
+cd benchmarks-remote
+npm run foundation-deploy
+npm run datafusion-deploy
+npm run datafusion-bench -- --dataset tpch_sf1 --queries q1
 
-# Connect to an instance via SSM
-aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION"
-
-# Install the Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-
-# Install the console binary from the repo
-cargo install --locked --git https://github.com/datafusion-contrib/datafusion-distributed.git \
-  datafusion-distributed-console
-
-# Run — connect to the local worker on port 9001
-datafusion-distributed-console 9001
+# In another local terminal, build Linux console binary and copy it into a pod.
+cargo zigbuild --release --target x86_64-unknown-linux-gnu \
+  --package datafusion-distributed-console
+export KUBECONFIG="$PWD/benchmarks-remote/k8s/.kubeconfig"
+POD=$(kubectl -n benchmark-datafusion get pod \
+  -l app.kubernetes.io/name=datafusion-worker \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl -n benchmark-datafusion cp \
+  target/x86_64-unknown-linux-gnu/release/datafusion-distributed-console \
+  "$POD:/tmp/datafusion-distributed-console" -c worker
+kubectl -n benchmark-datafusion exec -it "$POD" -c worker -- \
+  /tmp/datafusion-distributed-console 9001
 ```
+
+Back on the developer machine, stop the workload with
+`npm run datafusion-destroy`.
 
 ## Examples
 

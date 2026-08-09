@@ -1,0 +1,6 @@
+image: trinodb/trino:476
+region: us-east-1
+datasetBucket: ""
+workerReplicas: 12
+workerInstanceType: c5n.2xlarge
+coordinatorInstanceType: m6i.large

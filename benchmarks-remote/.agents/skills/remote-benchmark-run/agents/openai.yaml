@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Benchmark Run"
+  short_description: "Run distributed engine benchmarks"
+  default_prompt: "Use $remote-benchmark-run to execute and verify a remote benchmark against a deployed engine."

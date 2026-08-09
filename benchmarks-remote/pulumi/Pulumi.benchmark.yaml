@@ -1,0 +1,14 @@
+config:
+  aws:region: us-east-1
+  datafusion-distributed-benchmarks:availabilityZones:
+    - us-east-1a
+    - us-east-1b
+  datafusion-distributed-benchmarks:publicSubnetCidrs:
+    - 10.42.0.0/24
+    - 10.42.1.0/24
+  datafusion-distributed-benchmarks:privateSubnetCidrs:
+    - 10.42.16.0/20
+    - 10.42.32.0/20
+  datafusion-distributed-benchmarks:eksVersion: '1.36'
+secretsprovider: awskms://alias/datafusion-bench-pulumi-state?region=us-east-1
+encryptedkey: AQICAHhFWOJtyF7ljoVRXX4A/UELq3uKj1V/vmoe0IUTGS5wYAH6Wt7nlLzRln26157h2FNfAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQM/Nx2xngJWD//tp1MAgEQgDuHftqd9UonN3FGcxi8DuAgbWzubz11NpSQ7mDb1K3ONRsna9b1XazrpGsvkyFimhu4GTtx0KN8X7Bvkw==

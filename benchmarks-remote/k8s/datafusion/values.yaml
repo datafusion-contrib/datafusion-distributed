@@ -1,4 +1,7 @@
 worker:
-  image: ""
-  imagePullSecret: benchmark-ecr
+  replicas: 12
+  instanceType: c5n.2xlarge
+  artifact: ""
+  artifactImage: public.ecr.aws/aws-cli/aws-cli:2.27.49
+  runtimeImage: public.ecr.aws/amazonlinux/amazonlinux:2023
   datasetBucket: ""

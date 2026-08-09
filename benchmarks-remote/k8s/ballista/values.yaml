@@ -1,0 +1,10 @@
+artifactImage: public.ecr.aws/aws-cli/aws-cli:2.27.49
+runtimeImage: public.ecr.aws/amazonlinux/amazonlinux:2023
+datasetBucket: ""
+workerReplicas: 12
+workerInstanceType: c5n.2xlarge
+coordinatorInstanceType: m6i.large
+artifacts:
+  scheduler: ""
+  executor: ""
+  http: ""

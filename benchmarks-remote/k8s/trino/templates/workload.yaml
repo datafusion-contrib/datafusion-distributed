@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino
+  namespace: benchmark-trino
+spec:
+  selector:
+    app.kubernetes.io/name: trino
+    app.kubernetes.io/component: coordinator
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino-coordinator
+  namespace: benchmark-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trino
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: trino
+        app.kubernetes.io/component: coordinator
+    spec:
+      serviceAccountName: benchmark-engine
+      securityContext:
+        fsGroup: 1000
+      nodeSelector:
+        karpenter.sh/nodepool: general-purpose
+        node.kubernetes.io/instance-type: {{ .Values.coordinatorInstanceType | quote }}
+      containers:
+        - name: trino
+          image: {{ .Values.image | quote }}
+          ports:
+            - name: http
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /v1/info
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: {cpu: "500m", memory: 2Gi}
+            limits: {cpu: "1", memory: 3Gi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/trino/node.properties, subPath: node.properties}
+            - {name: config, mountPath: /etc/trino/jvm.config, subPath: coordinator-jvm.config}
+            - {name: config, mountPath: /etc/trino/config.properties, subPath: coordinator.properties}
+            - {name: config, mountPath: /etc/trino/catalog/hive.properties, subPath: hive.properties}
+            - {name: config, mountPath: /etc/trino/catalog/tpch.properties, subPath: tpch.properties}
+            - {name: catalog, mountPath: /var/trino/catalog}
+            - {name: data, mountPath: /var/trino/data}
+      volumes:
+        - name: config
+          configMap: {name: trino-config}
+        - name: catalog
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino-worker
+  namespace: benchmark-trino
+spec:
+  replicas: {{ .Values.workerReplicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trino
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: trino
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: benchmark-engine
+      securityContext:
+        fsGroup: 1000
+      nodeSelector:
+        karpenter.sh/nodepool: general-purpose
+        node.kubernetes.io/instance-type: {{ .Values.workerInstanceType | quote }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: trino
+                  app.kubernetes.io/component: worker
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: trino
+          image: {{ .Values.image | quote }}
+          readinessProbe:
+            httpGet:
+              path: /v1/info
+              port: 9000
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            {{- toYaml (required "workerResources is required" .Values.workerResources) | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/trino/node.properties, subPath: node.properties}
+            - {name: config, mountPath: /etc/trino/jvm.config, subPath: worker-jvm.config}
+            - {name: config, mountPath: /etc/trino/config.properties, subPath: worker.properties}
+            - {name: config, mountPath: /etc/trino/catalog/hive.properties, subPath: hive.properties}
+            - {name: config, mountPath: /etc/trino/catalog/tpch.properties, subPath: tpch.properties}
+            - {name: catalog, mountPath: /var/trino/catalog}
+            - {name: data, mountPath: /var/trino/data}
+      volumes:
+        - name: config
+          configMap: {name: trino-config}
+        - name: catalog
+          emptyDir: {}
+        - name: data
+          emptyDir: {}

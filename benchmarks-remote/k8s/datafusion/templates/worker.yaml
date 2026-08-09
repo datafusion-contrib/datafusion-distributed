@@ -1,11 +1,12 @@
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
   name: datafusion-worker
   namespace: benchmark-datafusion
   labels:
     app.kubernetes.io/name: datafusion-worker
 spec:
+  replicas: {{ .Values.worker.replicas }}
   selector:
     matchLabels:
       app.kubernetes.io/name: datafusion-worker
@@ -15,29 +16,41 @@ spec:
         app.kubernetes.io/name: datafusion-worker
     spec:
       serviceAccountName: benchmark-engine
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
-        benchmark.datafusion.apache.org/engine: datafusion
-      tolerations:
-        - key: benchmark.datafusion.apache.org/engine
-          operator: Equal
-          value: datafusion
-          effect: NoSchedule
-      imagePullSecrets:
-        - name: {{ .Values.worker.imagePullSecret }}
+        karpenter.sh/nodepool: general-purpose
+        node.kubernetes.io/instance-type: {{ .Values.worker.instanceType | quote }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: datafusion-worker
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: download-worker
+          image: {{ .Values.worker.artifactImage | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - aws s3 cp {{ required "worker.artifact is required" .Values.worker.artifact | quote }} /opt/benchmark/worker && chmod 0755 /opt/benchmark/worker
+          volumeMounts:
+            - name: worker-binary
+              mountPath: /opt/benchmark
       containers:
         - name: worker
-          image: {{ required "worker.image is required" .Values.worker.image | quote }}
+          image: {{ .Values.worker.runtimeImage | quote }}
           imagePullPolicy: IfNotPresent
+          command:
+            - /opt/benchmark/worker
           args:
             - --bucket
             - {{ required "worker.datasetBucket is required" .Values.worker.datasetBucket | quote }}
           env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: AWS_REGION
               value: us-east-1
-            - name: AWS_EC2_METADATA_DISABLED
-              value: "false"
           ports:
             - name: http
               containerPort: 9000
@@ -51,9 +64,10 @@ spec:
             periodSeconds: 5
             failureThreshold: 24
           resources:
-            requests:
-              cpu: "6"
-              memory: 12Gi
-            limits:
-              cpu: "7"
-              memory: 16Gi
+            {{- toYaml (required "workerResources is required" .Values.workerResources) | nindent 12 }}
+          volumeMounts:
+            - name: worker-binary
+              mountPath: /opt/benchmark
+      volumes:
+        - name: worker-binary
+          emptyDir: {}

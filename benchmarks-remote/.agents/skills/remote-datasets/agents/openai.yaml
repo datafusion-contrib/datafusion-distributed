@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Datasets"
+  short_description: "Sync and remove remote benchmark data"
+  default_prompt: "Use $remote-datasets to list, sync, or remove remote benchmark datasets."

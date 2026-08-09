@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-config
+  namespace: benchmark-trino
+data:
+  node.properties: |
+    node.environment=benchmark
+    node.id=${ENV:HOSTNAME}
+    node.data-dir=/var/trino/data
+  coordinator-jvm.config: |
+    -server
+    -Xmx2G
+    -XX:+UseG1GC
+    -XX:+ExitOnOutOfMemoryError
+  worker-jvm.config: |
+    -server
+    -Xmx10G
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+  coordinator.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=false
+    http-server.http.port=9000
+    discovery.uri=http://trino:9000
+    query.max-memory=80GB
+    query.max-total-memory=80GB
+    query.max-memory-per-node=1GB
+    memory.heap-headroom-per-node=512MB
+  worker.properties: |
+    coordinator=false
+    http-server.http.port=9000
+    discovery.uri=http://trino:9000
+    query.max-memory=80GB
+    query.max-total-memory=80GB
+    query.max-memory-per-node=8GB
+    memory.heap-headroom-per-node=1.5GB
+  hive.properties: |
+    connector.name=hive
+    hive.metastore=file
+    hive.metastore.catalog.dir=file:///var/trino/catalog
+    fs.native-local.enabled=true
+    fs.native-s3.enabled=true
+    s3.region={{ .Values.region }}
+  tpch.properties: |
+    connector.name=tpch

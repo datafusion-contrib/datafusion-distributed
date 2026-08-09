@@ -17,12 +17,9 @@ export interface FoundationConfig {
   subnetCidrs: SubnetCidrs;
   benchmarkInstanceType: string;
   benchmarkNodeCount: number;
-  benchmarkRootVolumeSizeGiB: number;
-  benchmarkRootVolumeIops: number;
-  benchmarkRootVolumeThroughput: number;
   systemInstanceType: string;
-  k3sVersion: string;
-  k3sPodCidr: string;
+  eksVersion: string;
+  kubernetesApiAllowedCidrs: string[];
 }
 
 function requirePair(name: string, values: string[]): [string, string] {
@@ -70,16 +67,18 @@ export function validateFoundationConfig(config: FoundationConfig): FoundationCo
   requirePair('subnetCidrs.private', config.subnetCidrs.private);
 
   requirePositiveInteger('benchmarkNodeCount', config.benchmarkNodeCount);
-  requirePositiveInteger('benchmarkRootVolumeSizeGiB', config.benchmarkRootVolumeSizeGiB);
-  requirePositiveInteger('benchmarkRootVolumeIops', config.benchmarkRootVolumeIops);
-  requirePositiveInteger('benchmarkRootVolumeThroughput', config.benchmarkRootVolumeThroughput);
-  if (!/^v\d+\.\d+\.\d+\+k3s\d+$/.test(config.k3sVersion)) {
-    throw new Error('k3sVersion must be an exact release such as v1.35.1+k3s1');
+  if (!/^1\.\d+$/.test(config.eksVersion)) {
+    throw new Error('eksVersion must be an exact EKS minor release such as 1.36');
   }
-  const [vpcStart, vpcEnd] = ipv4CidrRange('vpcCidr', config.vpcCidr);
-  const [podStart, podEnd] = ipv4CidrRange('k3sPodCidr', config.k3sPodCidr);
-  if (vpcStart <= podEnd && podStart <= vpcEnd) {
-    throw new Error('k3sPodCidr must not overlap vpcCidr');
+  ipv4CidrRange('vpcCidr', config.vpcCidr);
+  if (config.kubernetesApiAllowedCidrs.length === 0) {
+    throw new Error('kubernetesApiAllowedCidrs must contain at least one trusted CIDR');
+  }
+  for (const cidr of config.kubernetesApiAllowedCidrs) {
+    ipv4CidrRange('kubernetesApiAllowedCidrs', cidr);
+    if (cidr === '0.0.0.0/0') {
+      throw new Error('kubernetesApiAllowedCidrs must not expose the Kubernetes API to the world');
+    }
   }
 
   return config;
@@ -88,6 +87,9 @@ export function validateFoundationConfig(config: FoundationConfig): FoundationCo
 export function loadFoundationConfig(): FoundationConfig {
   const config = new pulumi.Config();
   const awsConfig = new pulumi.Config('aws');
+  const apiCidrsFromEnvironment = process.env.KUBERNETES_API_ALLOWED_CIDRS?.split(',')
+    .map((cidr) => cidr.trim())
+    .filter(Boolean);
 
   return validateFoundationConfig({
     namePrefix: config.get('namePrefix') ?? 'datafusion-bench',
@@ -109,11 +111,11 @@ export function loadFoundationConfig(): FoundationConfig {
     },
     benchmarkInstanceType: config.get('benchmarkInstanceType') ?? 'c5n.2xlarge',
     benchmarkNodeCount: config.getNumber('benchmarkNodeCount') ?? 12,
-    benchmarkRootVolumeSizeGiB: config.getNumber('benchmarkRootVolumeSizeGiB') ?? 200,
-    benchmarkRootVolumeIops: config.getNumber('benchmarkRootVolumeIops') ?? 3000,
-    benchmarkRootVolumeThroughput: config.getNumber('benchmarkRootVolumeThroughput') ?? 125,
     systemInstanceType: config.get('systemInstanceType') ?? 'm6i.large',
-    k3sVersion: config.get('k3sVersion') ?? 'v1.35.1+k3s1',
-    k3sPodCidr: config.get('k3sPodCidr') ?? '10.244.0.0/16',
+    eksVersion: config.get('eksVersion') ?? '1.36',
+    kubernetesApiAllowedCidrs:
+      apiCidrsFromEnvironment && apiCidrsFromEnvironment.length > 0
+        ? apiCidrsFromEnvironment
+        : config.requireObject<string[]>('kubernetesApiAllowedCidrs'),
   });
 }

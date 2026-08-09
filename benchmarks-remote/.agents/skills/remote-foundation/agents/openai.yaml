@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Foundation"
+  short_description: "Manage the remote EKS foundation"
+  default_prompt: "Use $remote-foundation to inspect, deploy, or destroy the remote benchmark foundation."

@@ -1,0 +1,4 @@
+image: ""
+workerReplicas: 12
+workerInstanceType: c5n.2xlarge
+coordinatorInstanceType: m6i.large

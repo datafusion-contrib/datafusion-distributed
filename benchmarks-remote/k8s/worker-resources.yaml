@@ -1,0 +1,7 @@
+workerResources:
+  requests:
+    cpu: "7"
+    memory: 17Gi
+  limits:
+    cpu: "7"
+    memory: 17Gi
