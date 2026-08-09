@@ -885,8 +885,11 @@ mod tests {
             .num_workers(4)
             .distributed_planner(false)
             .broadcast_joins(false)
-            .desired_task_count_handler(0.5);
+            .desired_task_count_handler(fractional_leaf_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
+        // Desired(1) proves the two 0.5 leaf hints were summed before the final rounding.
+        // The children are Maximum(1) because union slot allocation then propagates each
+        // child's assigned task count as a hard cap.
         assert_snapshot!(annotated, @r"
         ChildrenIsolatorUnionExec: task_count=Desired(1)
           FilterExec: task_count=Maximum(1)
@@ -1348,6 +1351,15 @@ mod tests {
     ) -> Option<Result<DesiredTaskCountEventResponse>> {
         ev.plan.downcast_ref::<RepartitionExec>()?;
         Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+    }
+
+    fn fractional_leaf_desired_task_count_handler(
+        ev: DesiredTaskCountEvent,
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
+        ev.plan
+            .children()
+            .is_empty()
+            .then(|| Ok(DesiredTaskCountEventResponse::desired(0.5)))
     }
 
     fn broadcast_build_coalesce_max_desired_task_count_handler(
