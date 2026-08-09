@@ -1,6 +1,5 @@
 /.idea
 /target
-/benchmarks-local/data/
 testdata/tpch/*
 !testdata/tpch/queries
 testdata/tpcds/*
@@ -8,6 +7,7 @@ testdata/tpcds/*
 !testdata/tpcds/README.md
 testdata/clickbench/*
 !testdata/clickbench/queries
+testdata/iceberg/*
 src/protocol/grpc/observability/gen/target/*
 src/protocol/grpc/observability/gen/Cargo.lock
 src/protocol/grpc/gen/target/*

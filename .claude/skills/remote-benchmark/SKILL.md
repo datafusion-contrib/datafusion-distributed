@@ -165,7 +165,7 @@ Options:
   -h, --help                                 display help for command
 ```
 
-The --dataset command is mandatory, and its value can be any of the folder names in `benchmarks-local/data`, for example:
+The --dataset command is mandatory and uses logical names that resolve to benchmark directories under `testdata/`, for example:
 clickbench_0-100, tpcds_sf1, tpch_sf1, tpch_sf10 or tpch_sf100.
 
 IMPORTANT — match the flags to what you are benchmarking. Several features are gated behind flags that
@@ -195,9 +195,9 @@ arguments, be smart while parsing those.
 
 results for individual queries will be dumped in the respective dataset folders, for example:
 
-`benchmarks-local/data/tpch_sf10/.results-remote/datafusion-distributed-main/q1.json`
+`testdata/tpch/benchmark_sf10/.results-remote/datafusion-distributed-main/q1.json`
 or
-`benchmarks-local/data/tpch_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
+`testdata/tpch/benchmark_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
 
 You can inspect the results and the plan by reading the JSONs. Tip: use jq for printing nice results.
 

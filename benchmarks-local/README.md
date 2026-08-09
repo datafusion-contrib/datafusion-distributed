@@ -2,7 +2,8 @@
 
 ### Generating Benchmarking data
 
-Generate datasets into `benchmarks-local/data/`.
+Generate datasets alongside the integration-test fixtures under `testdata/`.
+For example, `tpch_sf1` is stored in `testdata/tpch/benchmark_sf1`.
 
 ```shell
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16 - override by setting these environment variables)
@@ -24,7 +25,8 @@ WORKERS=0 ./benchmarks-local/run.sh --threads 2 --dataset tpch_sf1
   binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
   individual process running queries, and simulate how adding throttled workers can speed up the
   queries.
-- `--dataset`: Dataset directory name under `benchmarks-local/data/` (e.g. `tpch_sf1`, `tpcds_sf1`).
+- `--dataset`: Logical dataset name (e.g. `tpch_sf1`, `tpcds_sf1`). It is
+  resolved to the corresponding `testdata/<suite>/benchmark_<variant>` directory.
 
 ### Running benchmarks with local workers
 
@@ -37,6 +39,6 @@ WORKERS=8 ./benchmarks-local/run.sh --threads 2 --dataset tpch_sf1 --file-scan-c
 - `WORKERS`: Env variable that sets the amount of localhost workers used in the query.
 - `--threads`: Sets the Tokio runtime threads for each individual worker and for the benchmarking
   binary.
-- `--dataset`: Dataset directory name under `benchmarks-local/data/`.
+- `--dataset`: Logical dataset name under `testdata/`.
 - `--file-scan-config-bytes-per-partition`: How many bytes each partition is expected to scan. Lower values
   produce more partitions/tasks. Defaults to the engine default when unset.

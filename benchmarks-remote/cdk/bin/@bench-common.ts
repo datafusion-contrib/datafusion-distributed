@@ -2,8 +2,8 @@ import path from "path";
 import fs from "fs/promises";
 import * as fsSync from "fs";
 import {BenchmarkRun, BenchResult} from "./@results";
+import {datasetPath, ROOT} from "./@paths";
 
-export const ROOT = path.join(__dirname, '../../..')
 const STACK_NAME = "DataFusionDistributedBenchmarks"
 const CDK_OUTPUT_FILE = path.join(__dirname, "..", ".cdk-outputs.json")
 
@@ -79,12 +79,12 @@ export interface BenchmarkRunner {
 }
 
 async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
-    const datasetPath = path.join(ROOT, "benchmarks-local", "data", dataset)
+    const localDatasetPath = datasetPath(dataset)
     const bucketUri = getBucketUri()
 
     const result: TableSpec[] = []
-    for (const entryName of await fs.readdir(datasetPath)) {
-        const dir = path.join(datasetPath, entryName)
+    for (const entryName of await fs.readdir(localDatasetPath)) {
+        const dir = path.join(localDatasetPath, entryName)
         if (await isDirWithAllParquetFiles(dir)) {
             result.push({
                 name: entryName,

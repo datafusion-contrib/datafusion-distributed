@@ -7,15 +7,25 @@ mod results;
 mod run;
 
 use datafusion::error::Result;
+use std::path::PathBuf;
 use structopt::StructOpt;
 
-pub(crate) mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
-pub(crate) const DATA_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data");
 pub(crate) const RESULTS_DIR: &str = ".results";
+
+pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
+    let (suite, variant) = dataset.split_once('_').unwrap_or((dataset, ""));
+    let directory = match (suite, variant) {
+        ("clickbench", range) if !range.is_empty() => format!("benchmark_range{range}"),
+        (_, "") => "benchmark".to_string(),
+        (_, variant) => format!("benchmark_{variant}"),
+    };
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("testdata")
+        .join(suite)
+        .join(directory)
+}
 
 #[derive(Debug, StructOpt)]
 #[structopt(about = "benchmark command")]
@@ -43,5 +53,19 @@ pub fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dataset_path;
+
+    #[test]
+    fn resolves_datasets_under_testdata() {
+        assert!(dataset_path("tpch_sf1").ends_with("testdata/tpch/benchmark_sf1"));
+        assert!(dataset_path("tpcds_sf1").ends_with("testdata/tpcds/benchmark_sf1"));
+        assert!(
+            dataset_path("clickbench_0-100").ends_with("testdata/clickbench/benchmark_range0-100")
+        );
     }
 }

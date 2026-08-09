@@ -1,10 +1,22 @@
 import {execSync} from "child_process";
+import fs from "fs";
 import path from "path";
-import {getBucketUri, ROOT} from "./@bench-common";
+import {getBucketUri} from "./@bench-common";
+import {ROOT} from "./@paths";
 
-const localDataPath = path.join(ROOT, "benchmarks-local", "data");
-// Keep a trailing slash so `aws s3 sync` treats destination as a prefix, not a renamed key.
-const target = `${getBucketUri().replace(/\/+$/, "")}/`;
+const testdataPath = path.join(ROOT, "testdata");
+const target = getBucketUri().replace(/\/+$/, "");
 
-console.log(`Syncing local data '${localDataPath}' to '${target}'...`);
-execSync(`aws s3 sync "${localDataPath}" "${target}"`, {stdio: "inherit"});
+for (const suite of ["tpch", "tpcds", "clickbench"]) {
+    const suitePath = path.join(testdataPath, suite);
+    for (const entry of fs.readdirSync(suitePath, {withFileTypes: true})) {
+        if (!entry.isDirectory() || !entry.name.startsWith("benchmark_")) {
+            continue;
+        }
+        const variant = entry.name.slice("benchmark_".length).replace(/^range/, "");
+        const dataset = `${suite}_${variant}`;
+        const source = path.join(suitePath, entry.name);
+        console.log(`Syncing local dataset '${source}' to '${target}/${dataset}'...`);
+        execSync(`aws s3 sync "${source}" "${target}/${dataset}"`, {stdio: "inherit"});
+    }
+}

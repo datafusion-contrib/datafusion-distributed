@@ -1,9 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from "zod";
+import {datasetPath} from "./@paths";
 
-// Assuming DATA_PATH is defined elsewhere or passed as parameter
-export const DATA_PATH = path.join(__dirname, '../../../benchmarks-local/data');
 export const RESULTS_DIR = ".results-remote"
 
 // Interface for a single iteration of a benchmark query
@@ -32,7 +31,7 @@ export class BenchmarkRun {
     }
 
     loadPrevious(): BenchmarkRun | null {
-        const previousPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
+        const previousPath = path.join(datasetPath(this.dataset), `previous-remote.json`);
 
         try {
             const prevData = fs.readFileSync(previousPath, 'utf-8');
@@ -55,7 +54,7 @@ export class BenchmarkRun {
 
     // Write data as JSON into output path if it exists
     store(): void {
-        const outputPath = path.join(DATA_PATH, this.dataset, `previous-remote.json`);
+        const outputPath = path.join(datasetPath(this.dataset), `previous-remote.json`);
 
         // Ensure directory exists
         const dir = path.dirname(outputPath);
@@ -222,8 +221,7 @@ export class BenchResult {
 
     store(): void {
         const filePath = path.join(
-            DATA_PATH,
-            this.dataset,
+            datasetPath(this.dataset),
             RESULTS_DIR,
             this.engine,
             `${this.id}.json`
@@ -241,8 +239,7 @@ export class BenchResult {
 
     static load(dataset: string, engine: string, id: string): BenchResult | null {
         const filePath = path.join(
-            DATA_PATH,
-            dataset,
+            datasetPath(dataset),
             RESULTS_DIR,
             engine,
             `${id}.json`
@@ -278,7 +275,7 @@ export class BenchResult {
     }
 
     static loadMany(dataset: string, engine: string): BenchResult[] {
-        const resultsDir = path.join(DATA_PATH, dataset, RESULTS_DIR, engine);
+        const resultsDir = path.join(datasetPath(dataset), RESULTS_DIR, engine);
         const results: BenchResult[] = [];
 
         try {

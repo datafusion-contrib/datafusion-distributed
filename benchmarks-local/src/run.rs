@@ -371,9 +371,7 @@ impl RunOpt {
     }
 
     fn get_path(&self) -> Result<PathBuf> {
-        let data_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("data")
-            .join(&self.dataset);
+        let data_path = crate::dataset_path(&self.dataset);
         if !data_path.exists() {
             return exec_err!(
                 "--dataset {} doesn't exist. Was it generated?",

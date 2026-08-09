@@ -331,7 +331,8 @@ npm run compare -- --dataset tpch_sf10 datafusion-distributed-main datafusion-di
 # awscmd npm run compare -- --dataset tpch_sf10 datafusion-distributed-main datafusion-distributed-<feature-branch-suffix>
 ```
 
-Results are stored under `benchmarks-local/data/<dataset>/.results-remote/<engine>/`.
+Results are stored beside each dataset under
+`testdata/<suite>/benchmark_<variant>/.results-remote/<engine>/`.
 
 ## Troubleshooting
 
