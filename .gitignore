@@ -1,6 +1,6 @@
 /.idea
 /target
-/benchmarks/data/
+/benchmarks-local/data/
 testdata/tpch/*
 !testdata/tpch/queries
 testdata/tpcds/*

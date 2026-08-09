@@ -15,7 +15,7 @@ let ballistaSchedulerBinary: s3assets.Asset
 let ballistaExecutorBinary: s3assets.Asset
 
 // Ballista is built as a standalone project, separate from the main workspace
-const BALLISTA_DIR = path.join(ROOT, 'benchmarks/cdk/ballista')
+const BALLISTA_DIR = path.join(ROOT, 'benchmarks-remote/cdk/ballista')
 const BALLISTA_TARGET_PARTITIONS = 96 // 12 c5n.2xlarge instances * 8 vCPUs
 const BALLISTA_EXECUTOR_MEMORY_POOL = '16GiB' // leave ~4 GiB for the OS and untracked allocations
 const BALLISTA_JOB_DATA_CLEAN_UP_INTERVAL_SECONDS = 300

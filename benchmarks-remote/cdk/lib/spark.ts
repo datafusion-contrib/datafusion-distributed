@@ -19,12 +19,12 @@ export const SPARK_ENGINE: QueryEngine = {
     beforeEc2Machines(ctx: BeforeEc2MachinesContext): void {
         // Upload Python HTTP server script to S3
         sparkHttpScript = new s3assets.Asset(ctx.scope, 'SparkHttpScript', {
-            path: path.join(ROOT, 'benchmarks/cdk/bin/spark_http.py'),
+            path: path.join(ROOT, 'benchmarks-remote/cdk/bin/spark_http.py'),
         })
 
         // Upload Python requirements file to S3
         sparkRequirements = new s3assets.Asset(ctx.scope, 'SparkRequirements', {
-            path: path.join(ROOT, 'benchmarks/cdk/requirements.txt'),
+            path: path.join(ROOT, 'benchmarks-remote/cdk/requirements.txt'),
         })
 
         sparkHttpScript.grantRead(ctx.role)

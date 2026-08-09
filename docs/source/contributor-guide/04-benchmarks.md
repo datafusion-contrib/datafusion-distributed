@@ -6,7 +6,7 @@ write new benchmarks.
 ## Micro benchmarks
 
 When contributing performance improvements to very specific pieces of code, 
-prefer using the existing micro-benches in `benchmarks/benches`.
+prefer using the existing micro-benches in `benchmarks-local/benches`.
 
 If there's no benchmark that exercises the code path you are aiming to 
 improve, consider creating a separate PR adding the necessary benchmark 
@@ -25,7 +25,7 @@ there are no performance regressions.
 First, a TPCH dataset must be generated:
 
 ```bash
-cd benchmarks
+cd benchmarks-local
 SCALE_FACTOR=10 ./gen-tpch.sh
 ```
 
@@ -39,7 +39,7 @@ per worker. This provides a relatively accurate benchmarking environment for a
 distributed system locally.
 
 ```bash
-WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch_sf10
+WORKERS=8 ./benchmarks-local/run.sh --threads 2 --dataset tpch_sf10
 ```
 
 Subsequent runs will compare results against the previous one, so a useful trick
@@ -47,7 +47,7 @@ to measure the impact of a PR is to first run the benchmarks on `main`, and then
 on the PR branch.
 
 More information about these benchmarks can be found in
-the [benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/README.md).
+the [benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-local/README.md).
 
 ## Remote Benchmarks
 
@@ -57,7 +57,7 @@ terms of development iteration cycles (it requires AWS CDK deploys for every
 code change) and cost, as it uses a real EC2 cluster.
 
 For running these benchmarks, refer to
-the [CDK benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks/cdk/README.md).
+the [CDK benchmarks README](https://github.com/datafusion-contrib/datafusion-distributed/blob/main/benchmarks-remote/cdk/README.md).
 
 Always prefer this type of benchmarks VS the local ones.
 

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { z } from "zod";
 
 // Assuming DATA_PATH is defined elsewhere or passed as parameter
-export const DATA_PATH = path.join(__dirname, '../../data');
+export const DATA_PATH = path.join(__dirname, '../../../benchmarks-local/data');
 export const RESULTS_DIR = ".results-remote"
 
 // Interface for a single iteration of a benchmark query

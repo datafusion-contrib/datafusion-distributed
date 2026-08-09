@@ -3,9 +3,9 @@ name: ec2-cluster-provision
 description: uses the code present in this repository for provision an EC2 cluster for benchmarking purposes
 ---
 
-This project uses a remote benchmarks EC2 cluster constructed with AWS CDK located at `benchmarks/cdk`.
+This project uses a remote benchmarks EC2 cluster constructed with AWS CDK located at `benchmarks-remote/cdk`.
 
-There's a package.json file in `benchmarks/cdk/package.json` with relevant commands about deploying.
+There's a package.json file in `benchmarks-remote/cdk/package.json` with relevant commands about deploying.
 
 Authentication for this skill should be handled in this order of preference:
 1. AWS SSO profile commands
@@ -76,7 +76,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --region "$AWS_REGION" --query Account 
 npm run bootstrap -- aws://$ACCOUNT_ID/$AWS_REGION
 ```
 
-Running `npm run deploy` will provision the cluster with the resources specified in `benchmarks/cdk/lib/`.
+Running `npm run deploy` will provision the cluster with the resources specified in `benchmarks-remote/cdk/lib/`.
 This takes a while typically (~5 mins). If the user data of the EC2 machines was changed, and you want those changes
 to take effect you will need to prepend the deployment command with `USER_DATA_CAUSES_REPLACEMENT=true`.
 Deployment writes `.cdk-outputs.json` used by benchmark scripts for bucket resolution.
@@ -132,14 +132,14 @@ it's necessary to perform the following steps for the following engines:
    `curl -s -H "X-Trino-User: admin" http://localhost:8080/v1/node | jq .`
    `curl -s -H "X-Trino-User: admin" http://localhost:8080/v1/info | jq .`
 3. Make sure that the response of the above is consistent with what is supposed to be deployed by
-   `benchmarks/cdk/lib/trino.ts`
+   `benchmarks-remote/cdk/lib/trino.ts`
 
 ## Spark
 
-1. Port forward the 9003 port in a background terminal (this is a custom Python server `benchmarks/cdk/bin/spark_http.py`):
+1. Port forward the 9003 port in a background terminal (this is a custom Python server `benchmarks-remote/cdk/bin/spark_http.py`):
    `aws ssm start-session --target $INSTANCE_ID --document-name AWS-StartPortForwardingSession --parameters "portNumber=9003,localPortNumber=9003"`
 2. You can issue curl queries to `http://localhost:9003/health` and `http://localhost:9003/query` to double-check that
-   everything is consistent with what's expected from `benchmarks/cdk/lib/spark.ts`
+   everything is consistent with what's expected from `benchmarks-remote/cdk/lib/spark.ts`
 
 ## Ballista
 

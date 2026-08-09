@@ -8,7 +8,7 @@ const WORKER_BINARY_PATH = path.join(ROOT, 'target/x86_64-unknown-linux-gnu/rele
 async function main() {
     // Step 1: Build the worker binary
     console.log('Building worker binary...');
-    execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin worker --target x86_64-unknown-linux-gnu', {
+    execSync('cargo zigbuild -p datafusion-distributed-benchmark-worker --release --bin worker --target x86_64-unknown-linux-gnu', {
         cwd: ROOT,
         stdio: 'inherit',
         env: { ...process.env, FORCE_REBUILD: Date.now().toString() },

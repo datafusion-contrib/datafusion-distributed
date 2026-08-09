@@ -24,13 +24,13 @@ rustup target add x86_64-unknown-linux-gnu
 Ensure that you can cross-compile to Linux x86_64 before performing any deployments:
 
 ```shell
-cargo zigbuild -p datafusion-distributed-benchmarks --release --bin worker --target x86_64-unknown-linux-gnu
+cargo zigbuild -p datafusion-distributed-benchmark-worker --release --bin worker --target x86_64-unknown-linux-gnu
 ```
 
 Install JS dependencies:
 
 ```shell
-cd benchmarks/cdk
+cd benchmarks-remote/cdk
 npm install
 ```
 
@@ -166,8 +166,8 @@ Generate TPCH data (from repo root):
 
 ```shell
 cd ../..
-SCALE_FACTOR=10 PARTITIONS=16 ./benchmarks/gen-tpch.sh
-cd benchmarks/cdk
+SCALE_FACTOR=10 PARTITIONS=16 ./benchmarks-local/gen-tpch.sh
+cd benchmarks-remote/cdk
 ```
 
 Then sync:
@@ -259,10 +259,10 @@ curl -sS http://localhost:9000/info | jq .
 If terminal B is a new shell session, re-run your auth setup first (and re-define `awscmd` for
 method 2), otherwise environment variables from terminal A will not carry over.
 
-3. In terminal B, run benchmarks from `benchmarks/cdk`:
+3. In terminal B, run benchmarks from `benchmarks-remote/cdk`:
 
 ```shell
-cd benchmarks/cdk
+cd benchmarks-remote/cdk
 
 # Method 1 and 3
 npm run datafusion-bench -- --dataset tpch_sf10
@@ -306,7 +306,7 @@ Run both branches on the same cluster and dataset, then compare:
 ```shell
 cd /path/to/datafusion-distributed
 git switch main
-cd benchmarks/cdk
+cd benchmarks-remote/cdk
 # Method 1 and 3
 npm run fast-deploy
 npm run datafusion-bench -- --dataset tpch_sf10
@@ -316,7 +316,7 @@ npm run datafusion-bench -- --dataset tpch_sf10
 
 cd /path/to/datafusion-distributed
 git switch <feature-branch>
-cd benchmarks/cdk
+cd benchmarks-remote/cdk
 # Method 1 and 3
 npm run fast-deploy
 npm run datafusion-bench -- --dataset tpch_sf10
@@ -324,14 +324,14 @@ npm run datafusion-bench -- --dataset tpch_sf10
 # awscmd npm run fast-deploy
 # awscmd npm run datafusion-bench -- --dataset tpch_sf10
 
-cd benchmarks/cdk
+cd benchmarks-remote/cdk
 # Method 1 and 3
 npm run compare -- --dataset tpch_sf10 datafusion-distributed-main datafusion-distributed-<feature-branch-suffix>
 # Method 2
 # awscmd npm run compare -- --dataset tpch_sf10 datafusion-distributed-main datafusion-distributed-<feature-branch-suffix>
 ```
 
-Results are stored under `benchmarks/data/<dataset>/.results-remote/<engine>/`.
+Results are stored under `benchmarks-local/data/<dataset>/.results-remote/<engine>/`.
 
 ## Troubleshooting
 

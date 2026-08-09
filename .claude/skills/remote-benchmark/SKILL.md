@@ -4,9 +4,9 @@ description: deploys the code to a remote EC2 cluster with the commands availabl
   a machine port, and runs benchmarks against it.
 ---
 
-This project uses a remote benchmarks EC2 cluster constructed with AWS CDK located at `benchmarks/cdk`.
+This project uses a remote benchmarks EC2 cluster constructed with AWS CDK located at `benchmarks-remote/cdk`.
 
-There's a package.json file in `benchmarks/cdk/package.json` with relevant commands about benchmarking.
+There's a package.json file in `benchmarks-remote/cdk/package.json` with relevant commands about benchmarking.
 
 Authentication for this skill should be handled in this order of preference:
 
@@ -88,7 +88,7 @@ npm run sync-bucket
 
 You can assume that the cluster is already there, and the only thing necessary is to execute the `npm run fast-deploy`
 command for deploying the current code to the EC2 cluster. Remember that all npm commands need to be run from the
-`benchmarks/cdk` folder.
+`benchmarks-remote/cdk` folder.
 
 The `npm run fast-deploy` command will compile the current code and deploy it to the EC2 machines. If it fails,
 prompt the user to fix it. It will output several EC2 instance IDs: pick the first one, that's the one we will port
@@ -135,7 +135,7 @@ npm run datafusion-bench -- --dataset tpch_sf10
 ```
 
 You can learn how this command works by running `npm run datafusion-bench -- --help`. The full set of
-flags (keep this in sync with `benchmarks/cdk/bin/datafusion-bench.ts`):
+flags (keep this in sync with `benchmarks-remote/cdk/bin/datafusion-bench.ts`):
 
 ```shell
 $ npm run datafusion-bench -- --help
@@ -165,7 +165,7 @@ Options:
   -h, --help                                 display help for command
 ```
 
-The --dataset command is mandatory, and its value can be any of the folder names in `benchmarks/data`, for example:
+The --dataset command is mandatory, and its value can be any of the folder names in `benchmarks-local/data`, for example:
 clickbench_0-100, tpcds_sf1, tpch_sf1, tpch_sf10 or tpch_sf100.
 
 IMPORTANT — match the flags to what you are benchmarking. Several features are gated behind flags that
@@ -195,9 +195,9 @@ arguments, be smart while parsing those.
 
 results for individual queries will be dumped in the respective dataset folders, for example:
 
-`benchmarks/data/tpch_sf10/.results-remote/datafusion-distributed-main/q1.json`
+`benchmarks-local/data/tpch_sf10/.results-remote/datafusion-distributed-main/q1.json`
 or
-`benchmarks/data/tpch_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
+`benchmarks-local/data/tpch_sf1/.results-remote/datafusion-distributed-new-branch/q2.json`
 
 You can inspect the results and the plan by reading the JSONs. Tip: use jq for printing nice results.
 

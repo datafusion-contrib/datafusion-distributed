@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmarks", "cli", "console"]
+members = ["benchmarks-local", "benchmarks-remote", "cli", "console"]
 
 [workspace.dependencies]
 datafusion = { version = "54.0.0", default-features = false }
@@ -86,7 +86,7 @@ slow-tests = []
 sysinfo = ["dep:sysinfo"]
 
 [dev-dependencies]
-datafusion-distributed-benchmarks = { path = "benchmarks" }
+datafusion-distributed-benchmarks = { path = "benchmarks-local" }
 # The crate's own tests drive `SessionContext::sql` and register parquet tables, so they need
 # both features regardless of which ones a consumer selects. Requesting them here keeps
 # `--no-default-features` test runs compiling without forcing either on library consumers.

@@ -2230,14 +2230,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-distributed-benchmarks"
+name = "datafusion-distributed-benchmark-worker"
 version = "0.1.0"
 dependencies = [
- "arrow",
  "async-trait",
  "aws-config",
  "aws-sdk-ec2",
  "axum 0.7.9",
+ "built",
+ "datafusion",
+ "datafusion-distributed",
+ "datafusion-distributed-benchmarks",
+ "env_logger",
+ "futures",
+ "log",
+ "mimalloc",
+ "object_store",
+ "openssl",
+ "reqwest",
+ "serde",
+ "structopt",
+ "tokio",
+ "tonic",
+ "url",
+]
+
+[[package]]
+name = "datafusion-distributed-benchmarks"
+version = "0.1.0"
+dependencies = [
+ "arrow",
  "built",
  "criterion",
  "datafusion",
@@ -2245,9 +2267,6 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
- "mimalloc",
- "object_store",
- "openssl",
  "parquet",
  "reqwest",
  "serde",
@@ -2259,7 +2278,6 @@ dependencies = [
  "tonic",
  "tpchgen",
  "tpchgen-arrow",
- "url",
  "zip",
 ]
 

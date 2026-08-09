@@ -79,7 +79,7 @@ export interface BenchmarkRunner {
 }
 
 async function tablePathsForDataset(dataset: string): Promise<TableSpec[]> {
-    const datasetPath = path.join(ROOT, "benchmarks", "data", dataset)
+    const datasetPath = path.join(ROOT, "benchmarks-local", "data", dataset)
     const bucketUri = getBucketUri()
 
     const result: TableSpec[] = []

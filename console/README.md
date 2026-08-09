@@ -48,7 +48,7 @@ are added automatically; removed workers are cleaned up.
 
 ## Monitoring an EC2 Benchmark Cluster
 
-The benchmark workers in [`benchmarks/cdk/`](../benchmarks/cdk/README.md) run on
+The benchmark workers in [`benchmarks-remote/cdk/`](../benchmarks-remote/cdk/README.md) run on
 EC2 instances with the observability service enabled. Each worker listens on port
 9001 (gRPC/Flight + Observability) and port 9000 (HTTP benchmarks). The
 `Ec2WorkerResolver` discovers peers via `DescribeInstances`, so connecting the
@@ -58,7 +58,7 @@ To run the console, SSH into any instance in the cluster and install it there
 (the console runs inside the VPC so it can reach all workers on their private IPs):
 
 ```bash
-cd benchmarks/cdk/
+cd benchmarks-remote/cdk/
 npm run deploy
 
 # Connect to an instance via SSM

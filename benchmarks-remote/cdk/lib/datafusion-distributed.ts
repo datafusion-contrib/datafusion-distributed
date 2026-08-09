@@ -16,7 +16,7 @@ let workerBinary: s3assets.Asset
 export const DATAFUSION_DISTRIBUTED_ENGINE: QueryEngine = {
     beforeEc2Machines(ctx: BeforeEc2MachinesContext): void {
         console.log('Building worker binary...');
-        execSync('cargo zigbuild -p datafusion-distributed-benchmarks --release --bin worker --target x86_64-unknown-linux-gnu', {
+        execSync('cargo zigbuild -p datafusion-distributed-benchmark-worker --release --bin worker --target x86_64-unknown-linux-gnu', {
             cwd: ROOT,
             stdio: 'inherit',
         });

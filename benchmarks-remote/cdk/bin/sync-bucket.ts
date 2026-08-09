@@ -2,7 +2,7 @@ import {execSync} from "child_process";
 import path from "path";
 import {getBucketUri, ROOT} from "./@bench-common";
 
-const localDataPath = path.join(ROOT, "benchmarks", "data");
+const localDataPath = path.join(ROOT, "benchmarks-local", "data");
 // Keep a trailing slash so `aws s3 sync` treats destination as a prefix, not a renamed key.
 const target = `${getBucketUri().replace(/\/+$/, "")}/`;
 
