@@ -779,8 +779,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(2)
-          NetworkShuffleExec: task_count=Desired(2)
+        HashJoinExec: task_count=Desired(1.3333333333333333)
+          NetworkShuffleExec: task_count=Desired(1.3333333333333333)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -790,7 +790,7 @@ mod tests {
                         FilterExec: task_count=Desired(4)
                           RepartitionExec: task_count=Desired(4)
                             DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(2)
+          NetworkShuffleExec: task_count=Desired(1.3333333333333333)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -839,8 +839,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(3)
-          NetworkShuffleExec: task_count=Desired(3)
+        AggregateExec: task_count=Desired(2.6666666666666665)
+          NetworkShuffleExec: task_count=Desired(2.6666666666666665)
             RepartitionExec: task_count=Desired(4)
               AggregateExec: task_count=Desired(4)
                 DistributedLeafExec: task_count=Desired(4)
@@ -992,8 +992,8 @@ mod tests {
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(1)
-          NetworkShuffleExec: task_count=Desired(1)
+        AggregateExec: task_count=Desired(0.6666666666666666)
+          NetworkShuffleExec: task_count=Desired(0.6666666666666666)
             RepartitionExec: task_count=Desired(1)
               AggregateExec: task_count=Desired(1)
                 DistributedLeafExec: task_count=Desired(1)
