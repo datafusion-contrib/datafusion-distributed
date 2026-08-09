@@ -263,9 +263,9 @@ async fn _inject_network_boundaries(
         // Isolating unions have the chance to decide how many tasks they should run on. If there
         // is a union with a bunch of children, the user might want to increase parallelism and the
         // task count for the stage running that.
-        let mut count = 0;
+        let mut count = 0.0;
         for processed_child in processed_children.iter() {
-            count += nb_ctx.task_count(processed_child)?.as_usize();
+            count += nb_ctx.task_count(processed_child)?.as_f64();
         }
         Desired(count)
     } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
@@ -302,7 +302,9 @@ async fn _inject_network_boundaries(
         // broadcasts are unavailable.
         Maximum(1)
     } else {
-        let mut task_count = desired_task_count.unwrap_or(Desired(1));
+        // Default to 0.0 so an absent hint does not inflate children's fractional
+        // values via max-merge.
+        let mut task_count = desired_task_count.unwrap_or(Desired(0.0));
         // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
         // nodes can only run in one task. If there is a subplan with a single node declaring that
@@ -485,7 +487,7 @@ impl InjectNetworkBoundaryContext<'_> {
                 children
                     .iter()
                     .map(|v| match self.task_count(v)? {
-                        Desired(n) => Ok(ChildWeight::desired(n as f64)),
+                        Desired(n) => Ok(ChildWeight::desired(n)),
                         Maximum(n) => Ok(ChildWeight::maximum(n)),
                     })
                     .collect::<Result<Vec<_>>>()?,
@@ -614,7 +616,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
     ) -> Result<NetworkBoundaryBuilderResult> {
         input_stage.plan = nb_ctx.propagate_task_count_until_network_boundaries(
             &input_stage.plan,
-            Desired(input_stage.tasks),
+            Desired(input_stage.tasks as f64),
         )?;
         let input_properties = Arc::clone(input_stage.plan.properties());
 
@@ -650,7 +652,7 @@ impl NetworkBoundaryBuilder for CardinalityBasedNetworkBoundaryBuilder {
         let f = calculate_scale_factor(&input_stage.plan, nb_ctx.d_cfg);
 
         Ok(NetworkBoundaryBuilderResult {
-            consumer_task_count: Desired((f * input_stage.tasks as f64).ceil() as usize),
+            consumer_task_count: Desired(f * input_stage.tasks as f64),
             input_stage: Stage::Local(input_stage),
             input_properties,
         })
@@ -879,6 +881,32 @@ mod tests {
             FilterExec: task_count=Maximum(2)
               RepartitionExec: task_count=Maximum(2)
                 DistributedLeafExec: task_count=Maximum(2)
+        ")
+    }
+
+    #[tokio::test]
+    async fn test_union_all_sums_fractional_task_counts_before_rounding() {
+        let query = r#"
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            .distributed_planner(false)
+            .broadcast_joins(false)
+            .desired_task_count_handler(0.5);
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(1)
+          FilterExec: task_count=Maximum(1)
+            RepartitionExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Maximum(1)
+          ProjectionExec: task_count=Maximum(1)
+            FilterExec: task_count=Maximum(1)
+              RepartitionExec: task_count=Maximum(1)
+                DistributedLeafExec: task_count=Maximum(1)
         ")
     }
 

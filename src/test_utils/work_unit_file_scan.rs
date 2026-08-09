@@ -390,7 +390,9 @@ pub fn work_unit_file_scan_desired_task_count(
         .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
         .div_ceil(cfg.target_partitions());
 
-    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
+    Some(Ok(DesiredTaskCountEventResponse::desired(
+        task_count as f64,
+    )))
 }
 
 /// Rebuilds a work-unit file scan after the stage task count is finalized.

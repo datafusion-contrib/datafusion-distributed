@@ -4,19 +4,30 @@ use async_trait::async_trait;
 use datafusion::common::Result;
 use datafusion::execution::config::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 /// Annotation attached to a single [ExecutionPlan] that determines how many distributed tasks
 /// it should run on.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum TaskCountAnnotation {
     /// The desired number of distributed tasks for this node. The final task count for the
     /// annotated node might not be exactly this number, it is more like a hint, so depending
     /// on the desired task count of adjacent nodes, the final task count might change.
-    Desired(usize),
+    /// Fractional values are kept while hints are combined and rounded up when the final task
+    /// count is resolved.
+    Desired(f64),
     /// Sets a maximum number of distributed tasks for this node. Typically used with the inner
     /// value of 1, stating that this node cannot be executed in a distributed fashion.
     Maximum(usize),
+}
+
+impl fmt::Debug for TaskCountAnnotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Desired(desired) => write!(f, "Desired({desired})"),
+            Maximum(maximum) => write!(f, "Maximum({maximum})"),
+        }
+    }
 }
 
 /// Information supplied when the planner asks a handler for a node's desired task count.
@@ -68,7 +79,7 @@ impl DesiredTaskCountEventResponse {
     /// - Other nodes providing a `DesiredTaskCountEventResponse::desired(M)` where `M` > `N`.
     /// - Any other node providing a `DesiredTaskCountEventResponse::maximum(M)` where `M` can be
     ///   anything.
-    pub fn desired(value: usize) -> Self {
+    pub fn desired(value: f64) -> Self {
         DesiredTaskCountEventResponse {
             task_count: Desired(value),
         }
@@ -108,21 +119,28 @@ impl From<TaskCountAnnotation> for usize {
 impl TaskCountAnnotation {
     pub fn as_usize(&self) -> usize {
         match self {
-            Desired(desired) => *desired,
+            Desired(desired) => desired.ceil() as usize,
             Maximum(maximum) => *maximum,
+        }
+    }
+
+    pub(crate) fn as_f64(&self) -> f64 {
+        match self {
+            Desired(desired) => *desired,
+            Maximum(maximum) => *maximum as f64,
         }
     }
 
     pub(crate) fn limit(self, limit: usize) -> Self {
         match self {
-            Desired(desired) => Desired(desired.min(limit)),
+            Desired(desired) => Desired(desired.min(limit as f64)),
             Maximum(maximum) => Maximum(maximum.min(limit)),
         }
     }
 
     pub(crate) fn merge(self, other: TaskCountAnnotation) -> Self {
         match (self, other) {
-            (Desired(a), Desired(b)) => Desired(std::cmp::max(a, b)),
+            (Desired(a), Desired(b)) => Desired(a.max(b)),
             (Desired(_), Maximum(b)) => Maximum(b),
             (Maximum(a), Desired(_)) => Maximum(a),
             (Maximum(a), Maximum(b)) => Maximum(std::cmp::min(a, b)),
@@ -146,6 +164,19 @@ where
 
 #[async_trait]
 impl DesiredTaskCountHandler for usize {
+    async fn handle(
+        &self,
+        ev: DesiredTaskCountEvent<'_>,
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
+        ev.plan
+            .children()
+            .is_empty()
+            .then(|| Ok(DesiredTaskCountEventResponse::desired(*self as f64)))
+    }
+}
+
+#[async_trait]
+impl DesiredTaskCountHandler for f64 {
     async fn handle(
         &self,
         ev: DesiredTaskCountEvent<'_>,
@@ -182,5 +213,16 @@ impl DesiredTaskCountHandlers {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fractional_desired_task_count_rounds_up_when_resolved() {
+        assert_eq!(Desired(0.5).as_usize(), 1);
+        assert_eq!(Desired(1.25).as_usize(), 2);
     }
 }

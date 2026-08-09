@@ -68,7 +68,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .clamp(1, nb_ctx.max_tasks()?);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
-                .merge(Desired(compute_based_task_count));
+                .merge(Desired(compute_based_task_count as f64));
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
@@ -110,7 +110,7 @@ pub(super) async fn prepare_dynamic_plan(
                     // returning Desired(1) here is our way to tell the planner that we don't care
                     // about the task count assigned to the network boundary in the consumer stage,
                     // and we don't want it to affect other task count decisions.
-                    (Some(Arc::new(stats)), Desired(1))
+                    (Some(Arc::new(stats)), Desired(1.0))
                 };
 
                 // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan

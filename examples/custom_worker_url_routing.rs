@@ -169,7 +169,9 @@ fn cached_file_scan_desired_task_count_handler(
     ev: DesiredTaskCountEvent,
 ) -> Option<Result<DesiredTaskCountEventResponse>> {
     ev.plan.downcast_ref::<CacheExec>()?;
-    Some(Ok(DesiredTaskCountEventResponse::desired(usize::MAX)))
+    Some(Ok(DesiredTaskCountEventResponse::desired(
+        usize::MAX as f64,
+    )))
 }
 
 fn cached_file_scan_scale_up_leaf_node_handler(
