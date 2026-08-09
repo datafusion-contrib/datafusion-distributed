@@ -182,19 +182,6 @@ impl DesiredTaskCountHandler for usize {
 }
 
 #[async_trait]
-impl DesiredTaskCountHandler for f64 {
-    async fn handle(
-        &self,
-        ev: DesiredTaskCountEvent<'_>,
-    ) -> Option<Result<DesiredTaskCountEventResponse>> {
-        ev.plan
-            .children()
-            .is_empty()
-            .then(|| Ok(DesiredTaskCountEventResponse::desired(*self)))
-    }
-}
-
-#[async_trait]
 impl DesiredTaskCountHandler for Arc<dyn DesiredTaskCountHandler> {
     async fn handle(
         &self,
@@ -219,17 +206,5 @@ impl DesiredTaskCountHandlers {
             }
         }
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn desired_task_count_rounds_up_when_resolved() {
-        let response = DesiredTaskCountEventResponse::desired(1.25);
-
-        assert_eq!(response.task_count.as_usize(), 2);
     }
 }
