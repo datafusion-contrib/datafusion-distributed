@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmarks", "cli", "console"]
+members = ["benchmarks", "cli", "console", "iceberg"]
 
 [workspace.dependencies]
 datafusion = { version = "54.0.0", default-features = false }
