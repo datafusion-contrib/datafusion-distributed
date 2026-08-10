@@ -60,6 +60,11 @@ use std::sync::Arc;
 ///
 /// This way, the different workers get to execute different versions of the same plan, each
 /// handling its own range of non-overlapping data.
+///
+/// Note that every variant in `variants` must agree on the same schema and partition count with
+/// every other variant, but variants are **not** required to match the partition count of the
+/// `original` leaf plan. Variants can scale their partition count higher or lower as needed for
+/// worker execution.
 #[derive(Debug)]
 pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
@@ -69,8 +74,10 @@ pub struct DistributedLeafExec {
 
 impl DistributedLeafExec {
     /// Builds a new [DistributedLeafExec] based on the provided original plan and its per-task
-    /// variants. Every variant must expose the same schema and partition count as every other
-    /// variant.
+    /// variants.
+    ///
+    /// Every variant must expose the same schema and partition count as every other variant.
+    /// Variants do not need to match the partition count of the `original` plan.
     pub fn try_new(
         original: Arc<dyn ExecutionPlan>,
         variants: impl IntoIterator<Item = Arc<dyn ExecutionPlan>>,

@@ -622,17 +622,18 @@ pub trait DistributedExt: Sized {
     /// # use std::sync::Arc;
     /// # use datafusion::error::Result;
     /// # use datafusion::execution::SessionStateBuilder;
+    /// # use datafusion::physical_plan::ExecutionPlan;
     /// # use datafusion::physical_plan::empty::EmptyExec;
     /// # use datafusion_distributed::{DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse};
     ///
     /// fn handle_custom_scale_up_leaf_node(event: ScaleUpLeafNodeEvent) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
-    ///     let _exec = event.plan.downcast_ref::<EmptyExec>()?;
+    ///     let exec = event.plan.downcast_ref::<EmptyExec>()?;
+    ///     // Build per-task plan variants, each handling its own non-overlapping subset of data.
+    ///     let variants = (0..event.task_count)
+    ///         .map(|_| Arc::new(EmptyExec::new(exec.schema())) as _);
     ///     Some(
-    ///         DistributedLeafExec::try_new(
-    ///             Arc::clone(event.plan),
-    ///             vec![Arc::clone(event.plan); event.task_count],
-    ///         )
-    ///         .map(|exec| ScaleUpLeafNodeEventResponse::new(Arc::new(exec))),
+    ///         DistributedLeafExec::try_new(Arc::clone(event.plan), variants)
+    ///             .map(|exec| ScaleUpLeafNodeEventResponse::new(Arc::new(exec))),
     ///     )
     /// }
     ///

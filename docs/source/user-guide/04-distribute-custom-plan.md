@@ -165,9 +165,19 @@ fn sharded_scan_scale_up_leaf_node(
 ```
 
 `DistributedLeafExec` holds the original node plus the per-task variants. Every
-variant must expose the **same schema and partition count** (`try_new` enforces
-this) — that is what keeps the node transparent to the network boundaries above
-it. At execution time only the variant for task `i` is serialized and shipped to
+variant must expose the **same schema and partition count as every other variant**
+(`try_new` enforces this) — that is what keeps the node transparent to the network
+boundaries above it. Note that variants do **not** need to match the partition
+count of the original leaf `ExecutionPlan` or `target_partitions`; variants can
+scale their partition count higher or lower as needed for worker execution, as long
+as all variants agree on the same partition count.
+
+Trimming each variant to contain only its assigned slice of work ensures that each
+worker task emits only its assigned data. If instead you pass untrimmed copies of the
+original plan to all variants, every task will re-process all data and produce duplicate
+rows.
+
+At execution time only the variant for task `i` is serialized and shipped to
 that task's worker:
 
 ```text
