@@ -82,7 +82,10 @@ automatic path. You only place the boundaries; the leaves are scaled for you.
 
 This means a custom leaf node still needs its desired task-count and leaf-scale handlers (or
 `DistributedTaskContext`-based dispatch) registered, just as it would for automatic planning — you do
-**not** need to hand-build `DistributedLeafExec` in your boundary-injection rule.
+**not** need to hand-build `DistributedLeafExec` in your boundary-injection rule. Leaf scaling runs
+during stage finalization after network boundary injection and physical optimization rules are complete,
+so per-task leaf variants may adjust their partition counts independently of the original plan without
+affecting upstream boundary placement.
 
 ## Example: a progressive partial-reduction tree
 
