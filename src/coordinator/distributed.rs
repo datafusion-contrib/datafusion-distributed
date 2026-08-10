@@ -1,4 +1,5 @@
 use crate::common::require_one_child;
+use crate::coordinator::dynamic_filters::isolate_distributed_leaf_display_variants;
 use crate::coordinator::metrics_store::MetricsStore;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
@@ -126,6 +127,14 @@ impl DistributedExec {
             })
     }
 
+    pub(crate) fn plan_for_display(&self) -> Arc<dyn ExecutionPlan> {
+        self.plan_for_viz
+            .lock()
+            .ok()
+            .and_then(|plan| plan.clone())
+            .unwrap_or_else(|| Arc::clone(&self.base_plan))
+    }
+
     /// Returns the head stage that was actually executed. Unlike [`Self::plan_for_viz`] (which is
     /// reconstructed for visualization, with `Stage::Local` boundaries and rebuilt ancestor
     /// `Arc`s), this returns the original `Arc` instances whose metrics were populated during
@@ -225,10 +234,12 @@ impl ExecutionPlan for DistributedExec {
                 false => prepare_static_plan(&query_coordinator, &base_plan)?,
             };
 
+            let display_plan =
+                isolate_distributed_leaf_display_variants(result.plan_for_viz, &context)?;
             plan_for_viz
                 .lock()
                 .expect("poisoned lock")
-                .replace(result.plan_for_viz);
+                .replace(Arc::clone(&display_plan));
             head_stage
                 .lock()
                 .expect("poisoned lock")
@@ -239,8 +250,11 @@ impl ExecutionPlan for DistributedExec {
                     break; // channel closed
                 }
             }
-            drop(tx);
             drop(guard);
+            query_coordinator
+                .finish_dynamic_filter_display(&display_plan)
+                .await;
+            drop(tx);
             query_coordinator.drain_pending_tasks().await?;
             Ok(())
         });

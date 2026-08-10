@@ -9,6 +9,7 @@ pub use channel_resolver::{ChannelResolver, get_distributed_channel_resolver};
 
 pub use worker_channel::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
-    LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch,
-    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskDynamicFilter, TaskDynamicFilters, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg,
 };

@@ -10,7 +10,7 @@ mod tests {
         compare_ordering, compare_result_set,
     };
     use datafusion_distributed::{
-        DefaultSessionBuilder, DistributedExec, DistributedExt, display_plan_ascii,
+        DefaultSessionBuilder, DistributedExec, DistributedExt, assert_snapshot, display_plan_ascii,
     };
     use datafusion_distributed_benchmarks::datasets::{register_tables, tpcds};
     use std::fs;
@@ -597,6 +597,12 @@ mod tests {
         }
         let display = display_plan_ascii(d_plan.as_ref(), false);
         println!("Query {query_id}:\n{display}");
+        if query_id == "q1" {
+            assert_snapshot!(displayed_dynamic_filter_predicates(&display), @r"
+            DynamicFilter [ c_customer_sk@0 >= 5 AND c_customer_sk@0 <= 100000 AND true ] AND DynamicFilter [ empty ]
+            DynamicFilter [ sr_returned_date_sk@0 >= 2451545 AND sr_returned_date_sk@0 <= 2451910 AND true ] AND DynamicFilter [ empty ]
+            ");
+        }
 
         // The comparison functions can be computationally expensive, so we spawn them in tokio
         // blocking tasks so that they do not block the tokio runtime.
@@ -617,5 +623,32 @@ mod tests {
         compare_ordering.await.unwrap().await?;
 
         Ok(())
+    }
+
+    fn displayed_dynamic_filter_predicates(display: &str) -> String {
+        let mut predicates: Vec<_> = display
+            .lines()
+            .filter(|line| line.contains(": DataSourceExec:"))
+            .filter_map(|line| {
+                line.split_once("predicate=")
+                    .map(|(_, predicate)| predicate)
+            })
+            .map(|predicate| {
+                predicate
+                    .split(", pruning_predicate=")
+                    .next()
+                    .unwrap_or(predicate)
+            })
+            .map(|predicate| {
+                predicate
+                    .split(", required_guarantees=")
+                    .next()
+                    .unwrap_or(predicate)
+            })
+            .filter(|predicate| predicate.contains("DynamicFilter"))
+            .collect();
+        predicates.sort_unstable();
+        predicates.dedup();
+        predicates.join("\n")
     }
 }
