@@ -896,17 +896,13 @@ impl TaskDriver {
             );
         }
 
-        let rx = launch.mesh.take_execute_task_rx(stage_num, task_i as u32)?;
         let mut sinks_opt: Vec<_> = launch.sinks.into_iter().map(Some).collect();
-        let mesh = Arc::clone(&launch.mesh);
         let produce = crate::shm::setup::run_execute_task_loop(
-            rx,
+            &launch.mesh,
+            stage_num,
+            task_i as u32,
             n_partitions,
             token.clone(),
-            || {
-                mesh.inbound_receiver().try_drain_pass()?;
-                Ok(())
-            },
             |request, _headers, range| {
                 let len = range.len();
                 let mut task_sinks = Vec::with_capacity(len);
@@ -971,7 +967,6 @@ impl TaskDriver {
             },
         );
         let produce_res: Result<()> = produce.await;
-
         // The metrics receiver resolves as the last partition stream above completes, so this
         // does not block on anything remote. The frame goes back over the mesh, where the
         // leader-side pump forwards it into the metrics store.
