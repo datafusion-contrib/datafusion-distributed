@@ -12,8 +12,8 @@ use crate::events::{ScaleUpLeafNodeEvent, ScaleUpLeafNodeHandlers};
 use crate::explain_analyze::DistributedAnalyzeExec;
 use crate::{DistributedConfig, DistributedExec, NetworkBoundaryExt};
 use async_trait::async_trait;
+use datafusion::catalog::Session;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::analyze::AnalyzeExec;
@@ -59,23 +59,18 @@ impl QueryPlanner for DistributedQueryPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session: &dyn Session,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let original_plan = match &self.prev {
             None => {
                 // Use the default physical planner.
                 let planner = DefaultPhysicalPlanner::default();
-                planner
-                    .create_physical_plan(logical_plan, session_state)
-                    .await?
+                planner.create_physical_plan(logical_plan, session).await?
             }
-            Some(prev) => {
-                prev.create_physical_plan(logical_plan, session_state)
-                    .await?
-            }
+            Some(prev) => prev.create_physical_plan(logical_plan, session).await?,
         };
 
-        create_distributed_plan(original_plan, session_state).await
+        create_distributed_plan(original_plan, session).await
     }
 }
 
@@ -86,7 +81,7 @@ impl QueryPlanner for DistributedQueryPlanner {
 /// fn`s would otherwise have an infinitely-sized return type.
 fn create_distributed_plan(
     original_plan: Arc<dyn ExecutionPlan>,
-    session_state: &SessionState,
+    session: &dyn Session,
 ) -> BoxFuture<'_, datafusion::common::Result<Arc<dyn ExecutionPlan>>> {
     Box::pin(async move {
         if original_plan.is::<DistributedExec>() {
@@ -96,14 +91,14 @@ fn create_distributed_plan(
         if let Some(analyze) = original_plan.downcast_ref::<AnalyzeExec>() {
             // Recursively distribute the query being analyzed. Replace `AnalyzeExec` only when its
             // input became distributed; otherwise retain DataFusion's native implementation.
-            let input = create_distributed_plan(Arc::clone(analyze.input()), session_state).await?;
+            let input = create_distributed_plan(Arc::clone(analyze.input()), session).await?;
             return match input.is::<DistributedExec>() {
                 true => Ok(Arc::new(DistributedAnalyzeExec::new(analyze, input))),
                 false => Arc::new(analyze.clone()).with_new_children(vec![input]),
             };
         }
 
-        let session_cfg = session_state.config();
+        let session_cfg = session.config();
         let cfg = session_cfg.options();
         let d_cfg = DistributedConfig::from_config_options(cfg)?;
 
@@ -138,7 +133,7 @@ fn create_distributed_plan(
 
         let mut plan = Arc::clone(&original_plan);
 
-        let cfg = session_state.config_options();
+        let cfg = session.config_options();
 
         plan = normalize_collect_joins(plan, cfg)?;
         plan = insert_broadcast_execs(plan, cfg)?;

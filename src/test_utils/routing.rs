@@ -4,10 +4,12 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunctionImpl, TableProvider},
-    common::{Result, ScalarValue, Statistics, internal_err, plan_err},
+    common::{
+        Result, ScalarValue, Statistics, internal_err, plan_err, tree_node::TreeNodeRecursion,
+    },
     datasource::TableType,
     execution::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
         stream::RecordBatchStreamAdapter,
@@ -180,6 +182,13 @@ impl ExecutionPlan for URLEmitterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

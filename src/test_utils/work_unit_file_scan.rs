@@ -11,7 +11,7 @@ use crate::{
 };
 use crate::{WorkUnitFeed, WorkUnitFeedProto, WorkUnitFeedProvider};
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::common::{Statistics, internal_err};
 use datafusion::config::ConfigOptions;
@@ -19,7 +19,7 @@ use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanC
 use datafusion::datasource::source::DataSource;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::execution_plan::SchedulingType;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
@@ -118,6 +118,13 @@ impl WorkUnitFileScanConfig {
 }
 
 impl DataSource for WorkUnitFileScanConfig {
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.fsc.apply_expressions(f)
+    }
+
     fn open(
         &self,
         partition: usize,
