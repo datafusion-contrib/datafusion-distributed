@@ -3,4 +3,4 @@ dist/
 .pulumi/
 Pulumi.*.yaml
 !Pulumi.benchmark.yaml
-.pulumi-outputs.json
+.pulumi-outputs*.json

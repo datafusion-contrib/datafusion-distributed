@@ -1,2 +1,2 @@
 .runtime.json
-.kubeconfig
+.kubeconfig*

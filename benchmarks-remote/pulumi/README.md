@@ -63,6 +63,29 @@ Optional configuration:
 unset, `npm run foundation-deploy` detects the current public IP and restricts the endpoint
 to that `/32`.
 
+## Multiple foundations
+
+`benchmark` is the default stack used for interactive runs. A human can
+provision an isolated foundation for automation by creating and configuring a
+second stack, then selecting it through `PULUMI_STACK`:
+
+```bash
+cd benchmarks-remote/pulumi
+pulumi stack init pr-bot --secrets-provider awskms://alias/datafusion-bench-pulumi-state?region=us-east-1
+pulumi config set --stack pr-bot namePrefix datafusion-pr-bot
+cd ..
+PULUMI_STACK=pr-bot npm run foundation-deploy
+```
+
+Non-default stacks write ignored, stack-specific files such as
+`pulumi/.pulumi-outputs.pr-bot.json` and `k8s/.kubeconfig.pr-bot`. They do not
+replace the interactive stack's local configuration. Use the same stack name
+for explicit teardown:
+
+```bash
+PULUMI_STACK=pr-bot npm run foundation-destroy
+```
+
 The state backend is a bootstrap dependency and cannot be owned by the stack
 whose state it holds. Set `PULUMI_BACKEND_URL` to have the lifecycle scripts log
 in explicitly, or select a backend with `pulumi login` beforehand.
