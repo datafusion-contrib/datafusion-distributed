@@ -1970,19 +1970,29 @@ impl DrainHandle {
         }
     }
 
-    /// Fail every registered channel fed by `scope` that has not completed yet, and remember the
-    /// scope as dead so later registrations fail too. Channels whose `Eof` already arrived are
-    /// untouched: a detach after a clean drain is the normal end of life for a ring.
-    fn fail_scope(&self, scope: ReceiverScope, reason: &str) {
+    /// Mark `scope`'s data plane as departed: fail every registered channel still waiting on
+    /// its `Eof`, and remember the scope so later data registrations fail immediately.
+    /// Channels whose `Eof` already arrived are untouched: a detach after a clean drain is the
+    /// normal end of life for a ring. Idempotent.
+    ///
+    /// The feed, plan, and request registries stay live. Their frames come from control
+    /// senders, which never join a ring's `sender_count`, so "the last data sender dropped"
+    /// says nothing about them: a peer that completed normally has EOF'd everything it served,
+    /// while this proc may still owe the leader work it has not been asked for yet.
+    fn detach_data_scope(&self, scope: ReceiverScope, reason: &str) {
         let to_fail = {
             let mut guard = self
                 .channel_buffers
                 .lock()
                 .expect("DrainHandle channel_buffers mutex poisoned");
-            match scope {
-                ReceiverScope::Inbox => guard.dead_inbox = true,
-                ReceiverScope::SelfLoop => guard.dead_self_loop = true,
+            let dead = match scope {
+                ReceiverScope::Inbox => &mut guard.dead_inbox,
+                ReceiverScope::SelfLoop => &mut guard.dead_self_loop,
+            };
+            if *dead {
+                return;
             }
+            *dead = true;
             guard
                 .map
                 .iter()
@@ -1993,6 +2003,13 @@ impl DrainHandle {
         for buf in to_fail {
             buf.fail_pending(reason);
         }
+    }
+
+    /// Hard scope death: [`Self::detach_data_scope`] plus the control-plane registries. For
+    /// ring corruption and embedder-driven teardown, where no further frame of any kind can be
+    /// trusted to arrive.
+    fn fail_scope(&self, scope: ReceiverScope, reason: &str) {
+        self.detach_data_scope(scope, reason);
         if scope == ReceiverScope::Inbox {
             let mut registry = self.feed_registry.lock().unwrap();
             registry.dead = Some(reason.to_string());
@@ -2152,8 +2169,10 @@ impl DrainHandle {
     /// - `Eof { header }`: per-channel EOF. Resolve the channel buffer and call
     ///   `notify_source_done`. Other channels on the same queue keep flowing,
     ///   so the receiver slot stays live.
-    /// - `Detached` / `Error`: queue-wide shutdown. Notify every registered
-    ///   channel buffer, mark the handle detached, and drop the slot.
+    /// - `Detached`: the receiver's data senders are gone. Fail the channels still
+    ///   waiting on their `Eof`; the slot stays live for control frames.
+    /// - `Error`: queue-wide shutdown. Notify every registered channel buffer and
+    ///   the control registries, mark the handle detached, and drop the slot.
     pub fn try_drain_pass(&self) -> Result<(), DataFusionError> {
         // Bound per-source pulls per call. The upper limit exists to give
         // the caller a chance to re-try its own send between drains —
@@ -2205,15 +2224,17 @@ impl DrainHandle {
                     }
                     RecvBatchOutcome::Empty => break,
                     RecvBatchOutcome::Detached => {
-                        // Only THIS receiver is dead. The drain holds multiple receivers
-                        // (own-inbox MPSC + self-loop in-proc); one going away doesn't
-                        // imply the others have. Fail only the channels this receiver's
-                        // scope feeds, and only those still waiting on their `Eof`: after a
-                        // clean drain the detach is the ring's normal end of life, but a
-                        // channel that never got its `Eof` (producer crash, early sender
-                        // drop) would otherwise spin on `try_pop -> None` forever.
-                        *slot = None;
-                        self.fail_scope(
+                        // Every data sender to this receiver is gone; that is also how a
+                        // peer's normal completion looks. Its EOFs were drained ahead of the
+                        // detach (the ring is FIFO), so failing only the channels still
+                        // waiting on their `Eof` hits exactly the work that depended on a
+                        // departed producer, which would otherwise spin on
+                        // `try_pop -> None` forever. Control senders stay out of the ring's
+                        // sender count and can still publish, so the slot stays live for the
+                        // leader-origin frames a fragment may still be waiting on (requests,
+                        // plans, feed units); `detach_data_scope` is idempotent, so the
+                        // passes that keep observing the latch cost one failed recv each.
+                        self.detach_data_scope(
                             scope,
                             "transport receiver detached before this channel's EOF; the \
                              producer went away",
@@ -2887,6 +2908,146 @@ mod tests {
         // Later takers fail immediately.
         let err = drain.take_set_plan(9, 1).await.expect_err("dead registry");
         assert!(format!("{err}").contains("producer went away"));
+    }
+
+    /// Ring-header-aligned heap region standing in for the DSM segment. Returned first from
+    /// [`detached_test_inbox`] so it outlives every ring handle minted over it.
+    struct AlignedRingRegion {
+        ptr: *mut u8,
+        layout: std::alloc::Layout,
+    }
+
+    impl AlignedRingRegion {
+        fn new(bytes: usize) -> Self {
+            let align = std::mem::align_of::<super::super::mpsc_ring::DsmMpscRingHeader>();
+            let layout = std::alloc::Layout::from_size_align(bytes, align).expect("layout");
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            assert!(!ptr.is_null());
+            Self { ptr, layout }
+        }
+    }
+
+    impl Drop for AlignedRingRegion {
+        fn drop(&mut self) {
+            unsafe { std::alloc::dealloc(self.ptr, self.layout) };
+        }
+    }
+
+    use crate::shm::Wakeup;
+
+    struct NoWake;
+    impl Wakeup for NoWake {
+        fn wake(&self, _token: u64) {}
+    }
+
+    /// One DSM test ring playing a worker's inbox: `peer` holds the ring's only data sender,
+    /// `leader` a control sender that stays out of `sender_count`. Dropping `peer` latches the
+    /// ring detached while `leader` can still publish, the exact state a peer's normal
+    /// completion leaves behind in a leader + two-worker mesh.
+    fn detached_test_inbox() -> (
+        AlignedRingRegion,
+        super::super::mpsc_ring::DsmMpscSender,
+        super::super::mpsc_ring::DsmMpscSender,
+        DrainHandle,
+    ) {
+        use super::super::mesh::DsmInboxReceiver;
+        use super::super::mpsc_ring::{self, DsmMpscReceiver, DsmMpscRingHeader, DsmMpscSender};
+
+        let (ring_slots, slot_capacity) = (64u32, 1024u32);
+        let region =
+            AlignedRingRegion::new(DsmMpscRingHeader::region_bytes(ring_slots, slot_capacity));
+        let header = unsafe { mpsc_ring::create_at(region.ptr, ring_slots, slot_capacity) };
+        let nn = std::ptr::NonNull::new(header).expect("create_at returned null");
+        let alive: super::super::AliveFlag = StdArc::new(std::sync::atomic::AtomicBool::new(true));
+        let wakeup: StdArc<dyn Wakeup> = StdArc::new(NoWake);
+        let peer = unsafe { DsmMpscSender::new(nn, StdArc::clone(&wakeup), StdArc::clone(&alive)) };
+        let leader = unsafe {
+            DsmMpscSender::new_control(nn, StdArc::clone(&wakeup), StdArc::clone(&alive))
+        };
+        let receiver = unsafe { DsmMpscReceiver::new(nn, alive) };
+        let drain = DrainHandle::cooperative(
+            2,
+            vec![(
+                ReceiverScope::Inbox,
+                MppReceiver::new(Box::new(DsmInboxReceiver::new(receiver))),
+            )],
+        );
+        (region, peer, leader, drain)
+    }
+
+    /// A peer's normal completion drops the ring's last data sender. Channels the peer EOF'd
+    /// stay clean, parked request takers keep waiting, and a control frame published after
+    /// the detach still reaches its registry: this proc may still owe the leader work.
+    #[test]
+    fn peer_completion_detach_keeps_leader_control_plane_alive() {
+        let (_region, peer, leader, drain) = detached_test_inbox();
+
+        // A fragment mid-query holds a parked request taker.
+        let mut requests = drain.take_execute_task_rx(3, 1).expect("take rx");
+
+        // The peer serves its one stream to completion and departs.
+        let mut eof = Vec::new();
+        encode_eof_frame_into(MppDataStreamKey::new(2, 1, 0), 1, &mut eof).expect("eof frame");
+        peer.try_send(&eof).expect("eof send");
+        drop(peer);
+
+        drain.try_drain_pass().expect("drain over the detach");
+
+        // The served stream completed; the departure did not fail it.
+        let served = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 0));
+        assert!(matches!(served.try_pop(), Some(DrainItem::Eof)));
+
+        // The request taker is still parked, not failed.
+        assert!(matches!(
+            requests.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+
+        // A request the leader publishes after the detach still lands.
+        let request = ExecuteTaskFrame::from_parts(
+            pb::ExecuteTaskRequest {
+                task_key: Some(pb::TaskKey {
+                    query_id: vec![7; 16],
+                    stage_id: 3,
+                    task_number: 1,
+                }),
+                target_partition_start: 0,
+                target_partition_end: 1,
+                producer_head: Some(pb::execute_task_request::ProducerHead::None(
+                    pb::NoneHead {},
+                )),
+            },
+            &http::HeaderMap::new(),
+        )
+        .expect("request frame");
+        let mut frame = Vec::new();
+        encode_prost_frame_into(MppFrameHeader::execute_task(3, 1, 0), &request, &mut frame)
+            .expect("encode request");
+        leader.try_send(&frame).expect("post-detach control send");
+        drain.try_drain_pass().expect("drain the request");
+
+        let got = requests
+            .try_recv()
+            .expect("request frame must be delivered")
+            .expect("delivery must not be a failure");
+        let (decoded, _headers) = got.into_parts().expect("into_parts");
+        assert_eq!(decoded.task_key.unwrap().task_number, 1);
+    }
+
+    /// A producer that departs without a channel's `Eof` still fails that channel: the
+    /// consumer depends on data that will never arrive. Registrations after the detach fail
+    /// the same way.
+    #[test]
+    fn producer_loss_fails_channels_still_awaiting_eof() {
+        let (_region, peer, _leader, drain) = detached_test_inbox();
+
+        let dependent = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 0));
+        drop(peer);
+        drain.try_drain_pass().expect("drain over the detach");
+
+        assert!(matches!(dependent.try_pop(), Some(DrainItem::Failed(_))));
+        let late = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 1));
+        assert!(matches!(late.try_pop(), Some(DrainItem::Failed(_))));
     }
 
     #[test]
