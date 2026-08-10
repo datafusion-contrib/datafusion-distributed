@@ -441,16 +441,12 @@ async fn run_worker_proc(
         let worker_sink = Arc::clone(&worker_sink);
 
         futures.push(async move {
-            let rx = mesh.take_execute_task_rx(stage_id, task_idx)?;
-            let mesh = Arc::clone(&mesh);
             crate::shm::setup::run_execute_task_loop(
-                rx,
+                &mesh,
+                stage_id,
+                task_idx,
                 n_out,
                 tokio_util::sync::CancellationToken::new(),
-                || {
-                    mesh.inbound_receiver().try_drain_pass()?;
-                    Ok(())
-                },
                 |_request, _headers, range| {
                     let plan = Arc::clone(&plan);
                     let task_ctx = Arc::clone(&task_ctx);
@@ -1246,5 +1242,114 @@ mod tests {
             err.contains("detached before this channel's EOF"),
             "unexpected error: {err}"
         );
+    }
+
+    /// When a task fragment panics on a worker process during execution, the worker loop catches
+    /// the panic and sends a `TaskError` frame to the requesting process. The requesting process's
+    /// drain handle marks the channel scope failed, ensuring the leader or caller query receives
+    /// an error containing the panic message rather than hanging on missing batches.
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_process_fragment_panic_propagates_to_leader() {
+        use crate::proto as pb;
+        use crate::shm::run_execute_task_loop;
+        use crate::shm::transport::{DrainItem, ExecuteTaskFrame};
+        use tokio_util::sync::CancellationToken;
+
+        let n_procs = 2; // Proc 0: leader / requester, Proc 1: worker
+        let region_total = dsm_region_bytes(n_procs, IN_PROCESS_QUEUE_BYTES, 0).unwrap();
+        let region = HeapRegion::new(region_total);
+        let base = SharedBase(region.base());
+        let wakeup: Arc<dyn Wakeup> = Arc::new(NoopWakeup);
+
+        let leader_mesh = unsafe {
+            leader_setup(
+                base.0,
+                n_procs,
+                IN_PROCESS_QUEUE_BYTES,
+                &[],
+                Arc::clone(&wakeup),
+                receiver_token(0),
+                Arc::new(NoInterrupt),
+                /* attach_senders */ true,
+            )
+        }
+        .unwrap()
+        .mesh;
+
+        let worker_attach = unsafe {
+            worker_setup(
+                base.0,
+                region_total,
+                1,
+                Arc::clone(&wakeup),
+                receiver_token(1),
+                Arc::new(NoInterrupt),
+            )
+        }
+        .unwrap();
+
+        use datafusion::common::runtime::SpawnedTask;
+
+        let token = CancellationToken::new();
+
+        // Worker 1 runs execute task loop where the fragment panics.
+        let worker_mesh = Arc::clone(&worker_attach.mesh);
+        let loop_mesh = Arc::clone(&worker_mesh);
+        let worker_token = token.clone();
+        let worker_handle = SpawnedTask::spawn(async move {
+            run_execute_task_loop(
+                &loop_mesh,
+                1, // stage_id 1
+                0, // task_number 0
+                1, // 1 partition
+                worker_token,
+                |_req, _hdr, _range| async move {
+                    panic!("simulated worker fragment crash");
+                },
+            )
+            .await
+        });
+
+        // Leader (proc 0) registers a channel for task (stage 1, task 0, partition 0) and sends ExecuteTask.
+        let channel = leader_mesh
+            .inbound_receiver()
+            .register_data_channel(1, MppDataStreamKey::new(1, 0, 0));
+
+        let request = ExecuteTaskFrame::from_parts(
+            pb::ExecuteTaskRequest {
+                task_key: Some(pb::TaskKey {
+                    query_id: vec![1; 16],
+                    stage_id: 1,
+                    task_number: 0,
+                }),
+                target_partition_start: 0,
+                target_partition_end: 1,
+                producer_head: None,
+            },
+            &http::HeaderMap::new(),
+        )
+        .unwrap();
+
+        leader_mesh.send_execute_task(1, 0, request).await.unwrap();
+
+        // Drive drain passes on worker and leader until the TaskError arrives.
+        let mut item = None;
+        for _ in 0..20 {
+            let _ = worker_mesh.inbound_receiver().try_drain_pass();
+            let _ = leader_mesh.inbound_receiver().try_drain_pass();
+            item = channel.try_pop();
+            if item.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let item = item.expect("TaskError frame must arrive and mark channel failed");
+        assert!(
+            matches!(item, DrainItem::Failed(ref msg) if msg.contains("simulated worker fragment crash")),
+            "Expected DrainItem::Failed with panic message, got: {item:?}"
+        );
+
+        let _ = worker_handle.join().await;
     }
 }

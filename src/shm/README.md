@@ -35,7 +35,7 @@ The shared-memory transport mirrors the canonical gRPC protocol's pull-based RPC
 - **Demand-Driven Pull Execution**:
   - Downstream consumers issue `ExecuteTaskFrame` to upstream producer tasks via `MppMesh::send_execute_task`.
   - Upstream worker tasks wait on `MppMesh::take_execute_task_rx(stage_num, task_idx)` for incoming execution requests before spawning task fragments.
-  - Workers run the demand loop via [`run_execute_task_loop`](./setup.rs), which validates requested partition ranges (`start..end`), guards against duplicate/overlapping partition claims, listens to `CancellationToken` for prompt cancellation unwinding, and periodically drives inbound ring draining.
+  - Workers run the demand loop via [`run_execute_task_loop`](./setup.rs), which internally waits for incoming `ExecuteTaskFrame` execution requests, handles routing `TaskError` frames back to the leader if a task panics, validates requested partition ranges (`start..end`), guards against duplicate/overlapping partition claims, listens to `CancellationToken` for prompt cancellation unwinding, and periodically drives inbound ring draining.
 - **Demuxing**: Incoming frames are demuxed cooperatively by [`DrainHandle`](./transport.rs) into per-`(stage_id, task_number)` request registries and per-`(sender_proc, stage_id, task_id, partition)` record-batch buffers.
 
 ### 2. Data Plane (DSM Ring Buffers)
