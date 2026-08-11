@@ -344,8 +344,10 @@ mod tests {
     }
 
     /// A build-side `LIMIT` is carried by the `CoalescePartitionsExec` that a
-    /// broadcast rewrite replaces. The replacement must preserve that fetch or
-    /// the join observes every build row instead of the requested 50.
+    /// broadcast rewrite replaces. It must run before broadcasting so the same
+    /// 50 rows reach every consumer, rather than being applied independently after fan-out.
+    /// Every build id has 50 probe matches, so the count is 2500 regardless of which
+    /// unordered 50 ids survive.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_broadcast() {
         assert_distributed_matches_single_node(
