@@ -79,6 +79,9 @@ pub struct SetPlanRequest {
     //  might want to omit the serde step, so there should be a way to pass here a normal plan, and
     //  pass the serializer/deserialized separately instead of being coupled to protobuf serialization
     pub plan_proto: Vec<u8>,
+    /// Expression IDs for dynamic-filter consumers that came from the selected
+    /// `DistributedLeafExec` variants. Workers report only these filters for visualization.
+    pub dynamic_filter_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.
@@ -125,6 +128,23 @@ pub enum WorkerToCoordinatorMsg {
     /// sizing the number of workers involved in a query.
     LoadInfo(LoadInfo),
     LoadInfoEos,
+    /// Final task-local dynamic filters used by distributed leaf variants.
+    TaskDynamicFilters(TaskDynamicFilters),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TaskDynamicFilters {
+    /// Final expressions keyed by their DataFusion physical-expression ID. The TaskKey is
+    /// implicit from the coordinator channel that carried this message.
+    pub filters: Vec<TaskDynamicFilter>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskDynamicFilter {
+    pub expression_id: u64,
+    /// A serialized `DynamicFilterPhysicalExpr` `PhysicalExprNode`, including its final predicate
+    /// and completion state.
+    pub expression: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]

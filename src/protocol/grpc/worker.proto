@@ -39,7 +39,20 @@ message WorkerToCoordinatorMsg {
     LoadInfo load_info = 2;
 
     bool load_info_eos = 3;
+
+    // Final task-local dynamic filters used by distributed leaf variants.
+    TaskDynamicFilters task_dynamic_filters = 4;
   }
+}
+
+message TaskDynamicFilters {
+  message DynamicFilter {
+    uint64 expression_id = 1;
+    // Serialized datafusion.proto.PhysicalExprNode.
+    bytes expression = 2;
+  }
+
+  repeated DynamicFilter filters = 1;
 }
 
 message TaskMetrics {
@@ -107,6 +120,8 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
+  // Dynamic-filter consumer IDs belonging to the selected DistributedLeafExec variants.
+  repeated uint64 dynamic_filter_ids = 7;
 }
 
 message WorkUnitBatch {

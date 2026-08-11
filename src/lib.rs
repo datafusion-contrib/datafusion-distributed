@@ -53,9 +53,9 @@ pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskKey, TaskMetrics,
-    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    GetWorkerInfoResponse, LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskDynamicFilter,
+    TaskDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
+    WorkerChannel, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 pub use stage::{
     DistributedTaskContext, Stage, display_plan_ascii, display_plan_graphviz, explain_analyze,

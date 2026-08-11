@@ -1,4 +1,4 @@
-use crate::common::TreeNodeExt;
+use crate::common::{TreeNodeExt, discover_dynamic_filter_consumers};
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
@@ -6,19 +6,24 @@ use crate::worker::LocalWorkerContext;
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedTaskContext, TaskData, TaskMetrics, Worker, WorkerQueryContext,
-    WorkerToCoordinatorMsg,
+    DistributedTaskContext, TaskData, TaskDynamicFilter, TaskDynamicFilters, TaskMetrics, Worker,
+    WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result, exec_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err, internal_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::physical_plan::to_proto::serialize_physical_expr;
+use datafusion_proto::physical_plan::{
+    AsExecutionPlan, DeduplicatingProtoConverter, PhysicalPlanNodeExt,
+};
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
+use prost::Message;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
@@ -51,6 +56,7 @@ impl Worker {
         }
 
         let (metrics_tx, metrics_rx) = oneshot::channel();
+        let (dynamic_filters_tx, dynamic_filters_rx) = oneshot::channel();
         let mut load_info_rxs = vec![];
 
         let task_data = || async {
@@ -88,7 +94,11 @@ impl Worker {
             let task_ctx = session_state.task_ctx();
             let proto_node = PhysicalPlanNode::try_decode(request.plan_proto.as_ref())?;
             let ev = WorkerPlanRewriteEvent {
-                plan: proto_node.try_into_physical_plan(&task_ctx, &codec)?,
+                plan: proto_node.try_into_physical_plan_with_converter(
+                    &task_ctx,
+                    &codec,
+                    &DeduplicatingProtoConverter::default(),
+                )?,
                 session_config: session_state.config(),
             };
             let plan = WorkerPlanRewriteHandlers::handle(ev)?.plan;
@@ -119,18 +129,20 @@ impl Worker {
         // Continue reading remaining messages (work unit feed data) in the background.
         let mut work_unit_senders = Some(remote_work_unit_feed_registry.senders);
         let task_data_entries = Arc::clone(&self.task_data_entries);
+        let dynamic_filter_ids: HashSet<_> = request.dynamic_filter_ids.iter().copied().collect();
 
-        // This tokio task takes ownership of the `oneshot::Sender<pb::TaskMetrics>` that keeps
-        // alive the worker->coordinator stream. as soon as this task ends, the runtime metrics
-        // are send back and the worker->coordinator stream ends. The flow is the following:
+        // This tokio task takes ownership of the final-report senders that keep the
+        // worker->coordinator stream alive. As soon as this task ends, the runtime metrics and
+        // final dynamic filters are sent back and the worker->coordinator stream ends. The flow
+        // is the following:
         // 1. The query ends normally, as all Arrow RecordBatches are already streamed.
         // 2. In DistributedExec::execute(), the end query guard is dropped.
         // 3. In StageCoordinator::send_plan_task(), `end_stream_notifier` fires and the
         //    coordinator->worker channel is gracefully ended.
         // 4. The coordinator->worker channel EOS is received by this same function, ending the
         //    while loop inside this `tokio::spawn` below.
-        // 5. The metrics are send back in the worker->coordinator channel, and then that channel
-        //    is closed.
+        // 5. The metrics and final dynamic filters are sent back in the worker->coordinator
+        //    channel, and then that channel is closed.
         #[allow(clippy::disallowed_methods)]
         tokio::spawn(async move {
             let mut stream = stream.map_ok(set_work_unit_received_time);
@@ -173,6 +185,7 @@ impl Worker {
             }
 
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
+            let mut dynamic_filters = TaskDynamicFilters::default();
             if let Some(Ok(plan)) = task_data.final_plan.get() {
                 let d_ctx = DistributedTaskContext {
                     task_index: key.task_number,
@@ -183,7 +196,11 @@ impl Worker {
                 if let Some(metrics_tx) = metrics_tx {
                     send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
                 }
+                dynamic_filters =
+                    build_task_dynamic_filters(plan, &dynamic_filter_ids, &task_data.task_ctx)
+                        .unwrap_or_default();
             }
+            let _ = dynamic_filters_tx.send(dynamic_filters);
             task_data_entries.invalidate(&key).await
         });
 
@@ -206,10 +223,46 @@ impl Worker {
             Some(WorkerToCoordinatorMsg::TaskMetrics(task_metrics))
         });
 
-        Ok(futures::stream::select(load_info_stream, metrics_stream)
-            .map(Ok)
-            .boxed())
+        let dynamic_filters_stream = dynamic_filters_rx.into_stream().filter_map(
+            async |dynamic_filters_or_channel_dropped| {
+                let dynamic_filters = dynamic_filters_or_channel_dropped.ok()?;
+                Some(WorkerToCoordinatorMsg::TaskDynamicFilters(dynamic_filters))
+            },
+        );
+
+        Ok(futures::stream::select(
+            load_info_stream,
+            futures::stream::select(metrics_stream, dynamic_filters_stream),
+        )
+        .map(Ok)
+        .boxed())
     }
+}
+
+fn build_task_dynamic_filters(
+    plan: &Arc<dyn ExecutionPlan>,
+    allowed_ids: &HashSet<u64>,
+    task_ctx: &Arc<datafusion::execution::TaskContext>,
+) -> Result<TaskDynamicFilters> {
+    let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+    let mut filters = vec![];
+    for consumer in discover_dynamic_filter_consumers(plan, Some(allowed_ids))? {
+        // Serializing the complete DynamicFilterPhysicalExpr preserves both its current
+        // predicate and its completion state through DataFusion's native proto hook.
+        let expression = serialize_physical_expr(&consumer.expression, &codec)?;
+        let Some(ExprType::DynamicFilter(dynamic_filter)) = expression.expr_type.as_ref() else {
+            return internal_err!("discovered dynamic filter did not serialize as one");
+        };
+        // A cancelled or short-circuited task can leave filters incomplete. Do not report those
+        // as final values for display.
+        if dynamic_filter.is_complete {
+            filters.push(TaskDynamicFilter {
+                expression_id: consumer.id,
+                expression: expression.encode_to_vec(),
+            });
+        }
+    }
+    Ok(TaskDynamicFilters { filters })
 }
 
 /// Collects metrics from the plan in pre-order traversal order and sends them via the

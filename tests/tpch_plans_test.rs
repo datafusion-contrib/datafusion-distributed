@@ -1,5 +1,7 @@
 #[cfg(all(feature = "integration", feature = "tpch", test))]
 mod tests {
+    use datafusion::physical_plan::{ExecutionPlan, collect};
+    use datafusion::prelude::SessionContext;
     use datafusion_distributed::test_utils::in_memory_channel_resolver::start_in_memory_context;
     use datafusion_distributed::{
         DefaultSessionBuilder, DistributedExt, assert_snapshot, display_plan_ascii,
@@ -8,6 +10,7 @@ mod tests {
     use std::error::Error;
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use tokio::sync::OnceCell;
 
     const NUM_WORKERS: usize = 4;
@@ -215,6 +218,16 @@ mod tests {
                 │       t2: DataSourceExec: file_groups={3 groups: [[/testdata/tpch/plan_sf0.02/customer/11.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/12.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/13.parquet:<int>..<int>], [/testdata/tpch/plan_sf0.02/customer/16.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/2.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/3.parquet:<int>..<int>], [/testdata/tpch/plan_sf0.02/customer/7.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/8.parquet:<int>..<int>]]}, projection=[c_custkey, c_mktsegment], file_type=parquet, predicate=c_mktsegment@6 = BUILDING, pruning_predicate=c_mktsegment_null_count@2 != row_count@3 AND c_mktsegment_min@0 <= BUILDING AND BUILDING <= c_mktsegment_max@1, required_guarantees=[c_mktsegment in (BUILDING)]
                 │       t3: DataSourceExec: file_groups={3 groups: [[/testdata/tpch/plan_sf0.02/customer/13.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/14.parquet:<int>..<int>], [/testdata/tpch/plan_sf0.02/customer/3.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/4.parquet:<int>..<int>], [/testdata/tpch/plan_sf0.02/customer/8.parquet:<int>..<int>, /testdata/tpch/plan_sf0.02/customer/9.parquet:<int>..<int>]]}, projection=[c_custkey, c_mktsegment], file_type=parquet, predicate=c_mktsegment@6 = BUILDING, pruning_predicate=c_mktsegment_null_count@2 != row_count@3 AND c_mktsegment_min@0 <= BUILDING AND BUILDING <= c_mktsegment_max@1, required_guarantees=[c_mktsegment in (BUILDING)]
                 └──────────────────────────────────────────────────
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tpch_3_dynamic_filters_after_execution() -> Result<(), Box<dyn Error>> {
+        let predicates = executed_dynamic_filter_predicates("q3").await?;
+        assert_snapshot!(predicates, @r"
+        DynamicFilter [ l_orderkey@0 >= 5 AND l_orderkey@0 <= 119972 AND true ]
+        DynamicFilter [ o_custkey@1 >= 1 AND o_custkey@1 <= 2993 AND true ]
         ");
         Ok(())
     }
@@ -1434,6 +1447,39 @@ mod tests {
 
     // test_tpch_query generates and displays a distributed plan for each TPC-H query.
     async fn test_tpch_query(query_id: &str) -> Result<String, Box<dyn Error>> {
+        let (_, plan) = prepare_tpch_query(query_id).await?;
+        Ok(display_plan_ascii(plan.as_ref(), false))
+    }
+
+    async fn executed_dynamic_filter_predicates(query_id: &str) -> Result<String, Box<dyn Error>> {
+        let (ctx, plan) = prepare_tpch_query(query_id).await?;
+        collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+        let display = display_plan_ascii(plan.as_ref(), false);
+        let mut predicates: Vec<_> = display
+            .lines()
+            .filter(|line| line.contains(": DataSourceExec:"))
+            .filter_map(|line| line.find("DynamicFilter [ ").map(|start| &line[start..]))
+            .map(|predicate| {
+                predicate
+                    .split(", dynamic_rg_pruning=")
+                    .next()
+                    .unwrap_or(predicate)
+            })
+            .map(|predicate| {
+                predicate
+                    .split(", pruning_predicate=")
+                    .next()
+                    .unwrap_or(predicate)
+            })
+            .collect();
+        predicates.sort_unstable();
+        predicates.dedup();
+        Ok(predicates.join("\n"))
+    }
+
+    async fn prepare_tpch_query(
+        query_id: &str,
+    ) -> Result<(SessionContext, Arc<dyn ExecutionPlan>), Box<dyn Error>> {
         let d_ctx = start_in_memory_context(NUM_WORKERS, DefaultSessionBuilder).await;
         let data_dir = ensure_tpch_data(TPCH_SCALE_FACTOR, TPCH_DATA_PARTS).await;
         let sql = tpch::get_query(query_id)?;
@@ -1473,7 +1519,7 @@ mod tests {
             df.create_physical_plan().await?
         };
 
-        Ok(display_plan_ascii(plan.as_ref(), false))
+        Ok((d_ctx, plan))
     }
 
     // OnceCell to ensure TPCH tables are generated only once for tests
