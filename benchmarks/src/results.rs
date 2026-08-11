@@ -1,4 +1,4 @@
-use crate::{DATA_PATH, RESULTS_DIR};
+use crate::RESULTS_DIR;
 use datafusion::common::utils::get_available_parallelism;
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion_distributed_benchmarks::stats::median;
@@ -68,7 +68,7 @@ impl BenchmarkRun {
     }
 
     pub fn load_previous(dataset: &str) -> Option<Self> {
-        let path = PathBuf::from(DATA_PATH).join(dataset).join("previous.json");
+        let path = dataset_path(dataset).join("previous.json");
         let Ok(prev) = fs::read(path) else {
             return None;
         };
@@ -83,9 +83,7 @@ impl BenchmarkRun {
 
     /// Write data as json into output path if it exists.
     pub fn store(&self) -> Result<()> {
-        let path = PathBuf::from(DATA_PATH)
-            .join(&self.dataset)
-            .join("previous.json");
+        let path = dataset_path(&self.dataset).join("previous.json");
         let json = serde_json::to_string_pretty(&self).unwrap();
 
         let _ = fs::create_dir_all(path.parent().unwrap());
@@ -124,6 +122,15 @@ impl BenchmarkRun {
 
         Ok(())
     }
+}
+
+pub(crate) fn dataset_path(dataset: &str) -> PathBuf {
+    let (suite, variant) = dataset.split_once('/').unwrap_or((dataset, ""));
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("testdata")
+        .join(suite)
+        .join(variant)
 }
 
 fn get_current_branch() -> String {
@@ -174,8 +181,7 @@ impl BenchResult {
     }
 
     pub fn store(&self) -> Result<()> {
-        let path = PathBuf::from(DATA_PATH)
-            .join(&self.dataset)
+        let path = dataset_path(&self.dataset)
             .join(RESULTS_DIR)
             .join(get_current_branch())
             .join(format!("{}.json", self.id));
@@ -190,10 +196,7 @@ impl BenchResult {
     }
 
     pub fn load_many(dataset: &str, branch: &str) -> Vec<Self> {
-        let dir = PathBuf::from(DATA_PATH)
-            .join(dataset)
-            .join(RESULTS_DIR)
-            .join(branch);
+        let dir = dataset_path(dataset).join(RESULTS_DIR).join(branch);
 
         let Ok(dir) = fs::read_dir(dir) else {
             return vec![];
@@ -233,8 +236,7 @@ impl BenchResult {
     }
 
     pub fn load(dataset: &str, branch: &str, id: &str) -> Result<Self> {
-        let path = PathBuf::from(DATA_PATH)
-            .join(dataset)
+        let path = dataset_path(dataset)
             .join(RESULTS_DIR)
             .join(branch)
             .join(format!("{id}.json"));

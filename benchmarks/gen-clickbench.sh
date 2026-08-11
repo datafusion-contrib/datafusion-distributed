@@ -10,9 +10,10 @@ echo "Generating ClickBench dataset"
 
 # https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-DATA_DIR=${DATA_DIR:-$SCRIPT_DIR/data}
-CARGO_COMMAND=${CARGO_COMMAND:-"cargo run --release"}
-CLICKBENCH_DIR="${DATA_DIR}/clickbench_${PARTITION_START}-${PARTITION_END}"
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+DATA_DIR=${DATA_DIR:-${REPO_ROOT}/testdata/clickbench}
+CARGO_COMMAND=${CARGO_COMMAND:-"cargo run -p datafusion-distributed-benchmarks --release"}
+CLICKBENCH_DIR="${DATA_DIR}/${PARTITION_START}-${PARTITION_END}"
 
 echo "Creating clickbench dataset from partition ${PARTITION_START} to ${PARTITION_END}"
 

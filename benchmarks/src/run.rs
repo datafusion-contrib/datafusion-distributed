@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::results::{BenchResult, BenchmarkRun, QueryIter};
+use crate::results::{BenchResult, BenchmarkRun, QueryIter, dataset_path};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::instant::Instant;
@@ -244,12 +244,15 @@ impl RunOpt {
             self.threads.unwrap_or(get_available_parallelism()),
         );
 
-        let dataset_prefix = self.dataset.split("_").next().unwrap();
-        for (id, sql) in queries_for_dataset(dataset_prefix)? {
+        let dataset_suite = self
+            .dataset
+            .split_once('/')
+            .map_or(self.dataset.as_str(), |(suite, _)| suite);
+        for (id, sql) in queries_for_dataset(dataset_suite)? {
             if !self.query.is_empty() && !self.query.contains(&id.to_string()) {
                 continue;
             }
-            let query_id = format!("{} {id}", self.dataset);
+            let query_id = id;
             let query_run = self.benchmark_query(&query_id, &sql, &ctx).await;
             if let Err(e) = &query_run {
                 eprintln!("{query_id} failed: {e:?}");
@@ -371,9 +374,7 @@ impl RunOpt {
     }
 
     fn get_path(&self) -> Result<PathBuf> {
-        let data_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("data")
-            .join(&self.dataset);
+        let data_path = dataset_path(&self.dataset);
         if !data_path.exists() {
             return exec_err!(
                 "--dataset {} doesn't exist. Was it generated?",
