@@ -1,5 +1,5 @@
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
-use crate::{ProducedDynamicFilter, TaskKey};
+use crate::{ApplyDynamicFilter, CoordinatorToWorkerMsg, ProducedDynamicFilter, TaskKey};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result, internal_err};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
@@ -8,6 +8,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use datafusion_proto::protobuf::{PhysicalBinaryExprNode, PhysicalExprNode};
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DynamicFilterMergeMode {
@@ -44,6 +45,8 @@ pub(super) struct DynamicFilterRegistryState {
     /// indicate that it will not register any more tasks by sealing
     /// particular stage ids.
     pub(super) sealed_stages: HashSet<usize>,
+    task_senders: HashMap<TaskKey, UnboundedSender<CoordinatorToWorkerMsg>>,
+    delivered: HashSet<(u64, TaskKey)>,
 }
 
 /// Query-scoped runtime topology and producer state for distributed dynamic filters.
@@ -121,13 +124,40 @@ impl DynamicFilterRegistry {
         Ok(())
     }
 
+    pub(crate) fn register_sender(
+        &self,
+        task_key: TaskKey,
+        sender: UnboundedSender<CoordinatorToWorkerMsg>,
+    ) {
+        self.state
+            .lock()
+            .expect("dynamic filter registry poisoned")
+            .task_senders
+            .insert(task_key, sender);
+        self.dispatch_all();
+    }
+
+    /// Drops the routing registry's channel handles before the query-end notification. Otherwise,
+    /// these retained senders would keep coordinator-to-worker streams alive indefinitely.
+    pub(crate) fn clear_senders(&self) {
+        self.state
+            .lock()
+            .expect("dynamic filter registry poisoned")
+            .task_senders
+            .clear();
+    }
+
     /// Mark that a stage has registered all of its tasks.
     pub(crate) fn seal_stage(&self, stage_id: usize) {
         let mut state = self.state.lock().expect("dynamic filter registry poisoned");
         state.sealed_stages.insert(stage_id);
         let ids = state.filters.keys().copied().collect::<Vec<_>>();
-        for id in ids {
+        for &id in &ids {
             Self::try_merge(&mut state, id);
+        }
+        drop(state);
+        for id in ids {
+            self.dispatch(id);
         }
     }
 
@@ -158,6 +188,8 @@ impl DynamicFilterRegistry {
         }
         filter.completed_predicates.insert(task_key, predicate);
         Self::try_merge(&mut state, report.expression_id);
+        drop(state);
+        self.dispatch(report.expression_id);
     }
 
     /// Merges partial dynamic filters together for the provided dynamic filter
@@ -211,6 +243,63 @@ impl DynamicFilterRegistry {
 
         if let Some(filter) = state.filters.get_mut(&id) {
             filter.merged.get_or_insert(merged);
+        }
+    }
+
+    fn dispatch_all(&self) {
+        let ids = self
+            .state
+            .lock()
+            .expect("dynamic filter registry poisoned")
+            .filters
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.dispatch(id);
+        }
+    }
+
+    fn dispatch(&self, id: u64) {
+        let deliveries = {
+            let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+            let Some(filter) = state.filters.get(&id) else {
+                return;
+            };
+            let Some(predicate) = filter.merged.clone() else {
+                return;
+            };
+            let producer_tasks = filter.producer_tasks.clone();
+            let consumer_tasks = filter.consumer_tasks.clone();
+
+            let mut deliveries = vec![];
+            for task_key in consumer_tasks {
+                if producer_tasks.contains(&task_key) {
+                    // A task-local consumer is already updated directly by its producer.
+                    state.delivered.insert((id, task_key));
+                    continue;
+                }
+                if state.delivered.contains(&(id, task_key)) {
+                    continue;
+                }
+                let Some(sender) = state.task_senders.get(&task_key).cloned() else {
+                    continue;
+                };
+                state.delivered.insert((id, task_key));
+                deliveries.push((sender, predicate.clone()));
+            }
+            deliveries
+        };
+
+        for (sender, predicate) in deliveries {
+            // Dynamic filtering is fail-open: a closed task channel never fails the query and is
+            // not retried because the task can no longer consume an update.
+            let _ = sender.send(CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(
+                ApplyDynamicFilter {
+                    expression_id: id,
+                    predicate,
+                },
+            )));
         }
     }
 }
@@ -452,6 +541,38 @@ mod tests {
 
     fn empty(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
         Arc::new(EmptyExec::new(Arc::clone(schema)))
+    }
+
+    #[test]
+    fn routes_once_to_remote_consumers_and_skips_local_consumers() {
+        let registry = DynamicFilterRegistry::new();
+        let producer = task_key(0);
+        let remote_consumer = task_key(1);
+        registry.state.lock().unwrap().filters.insert(
+            42,
+            PlannedDynamicFilter {
+                producer_tasks: HashSet::from([producer]),
+                consumer_tasks: HashSet::from([producer, remote_consumer]),
+                merged: Some(PhysicalExprNode::default()),
+                ..Default::default()
+            },
+        );
+
+        let (producer_tx, mut producer_rx) = tokio::sync::mpsc::unbounded_channel();
+        registry.register_sender(producer, producer_tx);
+        assert!(producer_rx.try_recv().is_err());
+
+        let (consumer_tx, mut consumer_rx) = tokio::sync::mpsc::unbounded_channel();
+        registry.register_sender(remote_consumer, consumer_tx);
+        let CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) = consumer_rx.try_recv().unwrap()
+        else {
+            panic!("expected dynamic-filter update");
+        };
+        assert_eq!(filter.expression_id, 42);
+
+        let (replacement_tx, mut replacement_rx) = tokio::sync::mpsc::unbounded_channel();
+        registry.register_sender(remote_consumer, replacement_tx);
+        assert!(replacement_rx.try_recv().is_err());
     }
 
     fn task_key(task_number: usize) -> TaskKey {
