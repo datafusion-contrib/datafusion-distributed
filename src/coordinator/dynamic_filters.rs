@@ -8,8 +8,7 @@ use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::from_proto::parse_physical_expr;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanNodeExt};
-use datafusion_proto::protobuf::{PhysicalExprNode, PhysicalPlanNode};
-use prost::Message;
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use std::sync::Arc;
 
 /// Replaces the variants in the visualization plan with independent per-task copies.
@@ -64,20 +63,17 @@ pub(super) fn apply_reports_to_distributed_leaves(
             let updates: HashMap<_, _> = report
                 .filters
                 .iter()
-                .map(|filter| (filter.expression_id, filter.expression.as_slice()))
+                .map(|filter| (filter.expression_id, &filter.expression))
                 .collect();
             let Ok(consumers) = discover_dynamic_filter_consumers(variant, None) else {
                 continue;
             };
             for consumer in consumers {
-                let Some(encoded) = updates.get(&consumer.id) else {
-                    continue;
-                };
-                let Ok(proto) = PhysicalExprNode::decode(*encoded) else {
+                let Some(proto) = updates.get(&consumer.id).copied() else {
                     continue;
                 };
                 let Ok(reported_expression) =
-                    parse_physical_expr(&proto, task_ctx, consumer.input_schema.as_ref(), &codec)
+                    parse_physical_expr(proto, task_ctx, consumer.input_schema.as_ref(), &codec)
                 else {
                     continue;
                 };
@@ -155,7 +151,7 @@ mod tests {
         let report = TaskCompletedDynamicFilters {
             filters: vec![crate::TaskDynamicFilter {
                 expression_id: dynamic_filter.expression_id().unwrap(),
-                expression: serialize_physical_expr(&dynamic_filter, &codec)?.encode_to_vec(),
+                expression: serialize_physical_expr(&dynamic_filter, &codec)?,
             }],
         };
         let reports = HashMap::from_iter([(

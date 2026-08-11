@@ -291,7 +291,7 @@ fn encode_task_completed_dynamic_filters(
             .into_iter()
             .map(|filter| pb::task_completed_dynamic_filters::DynamicFilter {
                 expression_id: filter.expression_id,
-                expression: filter.expression,
+                expression: filter.expression.encode_to_vec(),
             })
             .collect(),
     }

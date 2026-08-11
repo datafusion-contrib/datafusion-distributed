@@ -25,6 +25,7 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -511,7 +512,7 @@ fn decode_worker_to_coordinator_msg(
             }
             pb::worker_to_coordinator_msg::Inner::TaskCompletedDynamicFilters(filters) => {
                 WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(
-                    decode_task_completed_dynamic_filters(filters),
+                    decode_task_completed_dynamic_filters(filters)?,
                 )
             }
         },
@@ -520,17 +521,20 @@ fn decode_worker_to_coordinator_msg(
 
 fn decode_task_completed_dynamic_filters(
     filters: pb::TaskCompletedDynamicFilters,
-) -> TaskCompletedDynamicFilters {
-    TaskCompletedDynamicFilters {
+) -> Result<TaskCompletedDynamicFilters> {
+    Ok(TaskCompletedDynamicFilters {
         filters: filters
             .filters
             .into_iter()
-            .map(|filter| TaskDynamicFilter {
-                expression_id: filter.expression_id,
-                expression: filter.expression,
+            .map(|filter| {
+                Ok(TaskDynamicFilter {
+                    expression_id: filter.expression_id,
+                    expression: PhysicalExprNode::decode(filter.expression.as_slice())
+                        .map_err(|error| DataFusionError::External(Box::new(error)))?,
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<_>>()?,
+    })
 }
 
 fn decode_task_metrics(task_metrics: pb::TaskMetrics) -> Result<TaskMetrics> {

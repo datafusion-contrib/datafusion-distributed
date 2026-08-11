@@ -5,6 +5,7 @@ use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
+use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::stream::BoxStream;
 use http::HeaderMap;
 use std::sync::Arc;
@@ -123,12 +124,13 @@ pub enum WorkerToCoordinatorMsg {
     /// ensuring metrics are never lost due to early stream termination.
     /// metrics[i] is the set of metrics for plan node i in pre-order traversal order.
     TaskMetrics(TaskMetrics),
+    /// Sends the final dynamic filters used by dynamic filter consumers back to the coorindator
+    /// for displaying.
+    TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
     /// Load information reported by a task. This information is used for dynamically
     /// sizing the number of workers involved in a query.
     LoadInfo(LoadInfo),
     LoadInfoEos,
-    /// Final task-local dynamic filters used by distributed leaf variants.
-    TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -141,9 +143,8 @@ pub struct TaskCompletedDynamicFilters {
 #[derive(Clone, Debug)]
 pub struct TaskDynamicFilter {
     pub expression_id: u64,
-    /// A serialized `DynamicFilterPhysicalExpr` `PhysicalExprNode`, including its final predicate
-    /// and completion state.
-    pub expression: Vec<u8>,
+    /// A `DynamicFilterPhysicalExpr` proto containing its final predicate and completion state.
+    pub expression: PhysicalExprNode,
 }
 
 #[derive(Clone, Debug)]

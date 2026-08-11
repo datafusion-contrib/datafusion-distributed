@@ -19,7 +19,6 @@ use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use http::HeaderMap;
-use prost::Message;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
@@ -242,7 +241,7 @@ fn build_task_completed_dynamic_filters(
         if dynamic_filter.is_complete {
             filters.push(TaskDynamicFilter {
                 expression_id: consumer.id,
-                expression: expression.encode_to_vec(),
+                expression,
             });
         }
     }
