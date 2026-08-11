@@ -195,6 +195,10 @@ impl Worker {
                     CoordinatorToWorkerMsg::KickOffSampling => {
                         sampler_gate.kick_off();
                     }
+                    CoordinatorToWorkerMsg::ApplyDynamicFilter(_) => {
+                        // Runtime application is introduced independently from the routing
+                        // protocol. Until then, accepting the message is intentionally a no-op.
+                    }
                 }
             }
 
