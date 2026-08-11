@@ -47,7 +47,7 @@ pub(super) async fn prepare_static_plan(
             stage_coordinator.worker_to_coordinator_task(task_i, worker_rx);
             stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
         }
-
+        stage_coordinator.seal_dynamic_filter_stage();
         Ok(Transformed::yes(plan.with_input_stage(Stage::Remote(
             RemoteStage {
                 query_id: stage.query_id,

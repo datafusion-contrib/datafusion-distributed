@@ -108,6 +108,7 @@ pub(super) async fn prepare_dynamic_plan(
                     let _ = worker_tx.send(CoordinatorToWorkerMsg::KickOffSampling);
                     stage_coordinator.coordinator_to_worker_task(task_i, worker_tx)?;
                 }
+                stage_coordinator.seal_dynamic_filter_stage();
 
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
                     (None, Maximum(1))
