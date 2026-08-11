@@ -105,7 +105,10 @@ impl QueryCoordinator {
     /// the query is finished, ending them, and propagating the EOS to the workers so that they can
     /// clean up any remaining state.
     pub(super) fn end_query_guard(&self) -> NotifyGuard {
-        NotifyGuard(Arc::clone(&self.end_stream_notifier))
+        NotifyGuard {
+            notify: Arc::clone(&self.end_stream_notifier),
+            dynamic_filter_registry: Arc::clone(&self.dynamic_filter_registry),
+        }
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
@@ -187,6 +190,9 @@ impl<'a> StageCoordinator<'a> {
             tokio::sync::mpsc::unbounded_channel();
         let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
             tokio::sync::mpsc::unbounded_channel();
+
+        self.dynamic_filter_registry
+            .register_sender(task_key, coordinator_to_worker_tx.clone());
 
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
@@ -509,11 +515,15 @@ fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> +
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
 }
 
-pub(super) struct NotifyGuard(Arc<Notify>);
+pub(super) struct NotifyGuard {
+    notify: Arc<Notify>,
+    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
+}
 
 impl Drop for NotifyGuard {
     fn drop(&mut self) {
-        self.0.notify_waiters();
+        self.dynamic_filter_registry.clear_senders();
+        self.notify.notify_waiters();
     }
 }
 

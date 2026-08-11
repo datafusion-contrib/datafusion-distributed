@@ -53,6 +53,17 @@ pub enum CoordinatorToWorkerMsg {
     WorkUnitBatch(WorkUnitBatch),
     /// Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
     WorkUnitEos,
+    /// Sends a completed, coordinator-merged dynamic-filter predicate to one consumer task.
+    /// Runtime application is best-effort and must never block query execution.
+    ApplyDynamicFilter(Box<ApplyDynamicFilter>),
+}
+
+#[derive(Clone, Debug)]
+pub struct ApplyDynamicFilter {
+    /// DataFusion physical-expression ID used to find matching consumers in the task plan.
+    pub expression_id: u64,
+    /// The merged inner predicate, encoded only by the transport boundary.
+    pub predicate: PhysicalExprNode,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]

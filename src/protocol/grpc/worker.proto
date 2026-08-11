@@ -23,7 +23,15 @@ message CoordinatorToWorkerMsg {
     WorkUnitBatch work_unit_batch = 2;
     // Signals an EOS for WorkUnits. After this message is received, no more WorkUnits will be sent.
     bool work_unit_eos = 3;
+    // Sends a completed, coordinator-merged dynamic-filter predicate to one consumer task.
+    ApplyDynamicFilter apply_dynamic_filter = 4;
   }
+}
+
+message ApplyDynamicFilter {
+  uint64 expression_id = 1;
+  // Serialized datafusion.proto.PhysicalExprNode containing the merged inner predicate.
+  bytes predicate_proto = 2;
 }
 
 message WorkerToCoordinatorMsg {
