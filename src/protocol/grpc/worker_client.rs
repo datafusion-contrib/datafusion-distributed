@@ -529,7 +529,7 @@ fn decode_task_completed_dynamic_filters(
             .map(|filter| {
                 Ok(TaskDynamicFilter {
                     expression_id: filter.expression_id,
-                    expression: PhysicalExprNode::decode(filter.expression.as_slice())
+                    expression: PhysicalExprNode::decode(filter.expression_proto.as_slice())
                         .map_err(|error| DataFusionError::External(Box::new(error)))?,
                 })
             })

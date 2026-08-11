@@ -61,7 +61,7 @@ pub mod task_completed_dynamic_filters {
         pub expression_id: u64,
         /// Serialized datafusion.proto.PhysicalExprNode.
         #[prost(bytes = "vec", tag = "2")]
-        pub expression: ::prost::alloc::vec::Vec<u8>,
+        pub expression_proto: ::prost::alloc::vec::Vec<u8>,
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
