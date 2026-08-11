@@ -11,6 +11,7 @@
 3. Distributed Dynamic Filters
    - Local Case
    - Remote Case
+   - Eager Updates
 4. Implementation Details
    - Extracting Dynamic Filters
    - Routing Dynamic Filters
@@ -178,9 +179,10 @@ Sources
 - [Runtime Bloom-filter injection](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/optimizer/InjectRuntimeFilter.scala)
 - [Distributed Bloom-filter aggregation and merging](https://github.com/apache/spark/blob/035d510b029be1f08219f5e94585952a655073fd/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/BloomFilterAggregate.scala)
 
-## 3. Distributed Dyanmic Filters
+## 3. Distributed Dynamic Filters
 
-Distributed Dyanmic Filtering Falls into 2 cases
+Distributed dynamic filtering has two placement cases:
+
 - "local case" - when the producer `ExecutionPlan` node is on the same machine as the consumer/DataSourceExec
 - "remote case" - when the producer `ExecutionPlan` node is on a different machine as the consumer/DataSourceExec
 
@@ -271,8 +273,8 @@ The proposed change is to implement dynamic filtering similarly to Trino.
 2. The coordinator will union / merge the dynamic filter updates from all workers.
 3. The coordinator will send the unioned / merged dynamic filter updates to the consumers (`DataSourceExec`).
 
-For correctness, the coordinator must wait for all dynamic filter updates from all workers before sending them to the consumers, otherwise, the
-consumers may prune rows incorrectly.
+Whether consumers can apply an update before all producers finish depends on the producer, as
+described in `Eager Updates`.
 
 #### Global Filters
 
@@ -484,6 +486,49 @@ This is discussed in the `Merging Dynamic Filters` section below.
                                                                                                                                                                                                                   
 ```
 
+### Eager Updates
+
+In the above example, 3 distinct dynamic filters are produced: `filter_1`, `filter_2`, and `filter_3`. Whether
+or not the coordinator must wait for all of them to finish before pushing them down depends on the producer type.
+
+For example, assume they complete in the order `filter_1`, `filter_2`, `filter_3`. Is it safe for the coordinator to push down 3 times?
+1. `filter_1`
+2. `filter_1 OR filter_2`
+3. `filter_1 OR filter_2 OR filter_3`
+
+Furthermore, is it safe to push down individual updates?
+
+1. `filter_1 @ generation 1`
+2. `filter_1 @ generation 2` <-- filter was updated
+
+#### Joins  
+For non-replicated HashJoin filters, consumers must wait for every build worker to complete. The filter
+for a worker only contains the build side for the data on that worker. Pushing this down may be unsafe because
+it may filter out data which is required by another worker.
+
+For a replicated filter (ex. in a CollectLeft join) where the build side is the same across workers,
+it's safe to eagerly forward the first dynamic filter that completes. In practice, this is the same 
+as waiting for all of them because they will all complete at the same time.
+
+Note that joins do not produce multiple generations. They only update once when the build side finishes
+and are marked as complete.
+
+#### Aggregates  
+A current `MIN` or `MAX` bound is safe to apply eagerly. An observed `MIN` or `MAX` in a worker already
+proves that rows which cannot improve it cannot affect the global result. Ex. if an `AggregateExec` in one
+worker adds a filter for `a < 20` and another worker adds `a < 10`, either can safely be applied
+to the data source in any order. These expressions can also be OR-ed together `a < 10 OR a < 20`.
+
+Unlike joins, aggregates are only updated and never marked as complete, so datafusion-distributed
+would need to support eager updates in some way for these filters to work.
+
+#### Sorts  
+These operate similarly to Aggregates and can be applied eagerly.
+
+The proposal in this RFC is to take the safest approach and wait for all filters to complete before
+pushing them down. Once dynamic filtering works safetly for joins, then eager updates can be added as
+an optimization.
+
 
 ## 4. Implementation Details
 
@@ -511,7 +556,7 @@ be able to traverse the query plan and find the `DynamicFilterPhysicalExpr` prod
 question we discuss in the `Gaps in Vanilla DataFusion` section below is - how do you know if
 a node is a producer or consumer of dynamic filters?
 
-### Displaying Dyanamic Filters
+### Displaying Dynamic Filters
 
 Today, distributed query plans will always show `predicate=DynamicFilter [ empty ]`. In addition to making
 dynamic filter pruning work during execution, after execution we must propagate final dynamic
