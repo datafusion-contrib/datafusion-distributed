@@ -26,6 +26,7 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Gauge};
+use futures::future::ready;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use http::{Extensions, HeaderMap};
@@ -56,6 +57,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
         let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
         let plan_bytes_sent = set_plan_request.plan_proto.len();
+        let task_ctx = Arc::clone(ctx);
         let input_stream = futures::stream::once(async move {
             pb::CoordinatorToWorkerMsg {
                 inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
@@ -63,7 +65,10 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
                 )),
             }
         })
-        .chain(c2w_stream.map(encode_coordinator_to_worker_msg));
+        .chain(
+            c2w_stream
+                .filter_map(move |msg| ready(encode_coordinator_to_worker_msg(msg, &task_ctx))),
+        );
 
         let output_stream = self
             .coordinator_channel(Request::from_parts(
@@ -460,8 +465,11 @@ pub(super) fn encode_producer_head(
     })
 }
 
-fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::CoordinatorToWorkerMsg {
-    pb::CoordinatorToWorkerMsg {
+fn encode_coordinator_to_worker_msg(
+    msg: CoordinatorToWorkerMsg,
+    task_ctx: &Arc<TaskContext>,
+) -> Option<pb::CoordinatorToWorkerMsg> {
+    Some(pb::CoordinatorToWorkerMsg {
         inner: Some(match msg {
             CoordinatorToWorkerMsg::KickOffSampling => {
                 pb::coordinator_to_worker_msg::Inner::KickOffSampling(pb::KickOffSampling {})
@@ -472,8 +480,15 @@ fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::Coordina
             CoordinatorToWorkerMsg::WorkUnitEos => {
                 pb::coordinator_to_worker_msg::Inner::WorkUnitEos(true)
             }
+            CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
+                pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(pb::ApplyDynamicFilter {
+                    expression_id: filter.expression_id,
+                    // TODO: Handle this error.
+                    expression_proto: filter.expression.encode(task_ctx).ok()?,
+                })
+            }
         }),
-    }
+    })
 }
 
 fn encode_set_plan_request(

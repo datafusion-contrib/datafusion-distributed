@@ -109,7 +109,10 @@ impl QueryCoordinator {
     /// the query is finished, ending them, and propagating the EOS to the workers so that they can
     /// clean up any remaining state.
     pub(super) fn end_query_guard(&self) -> NotifyGuard {
-        NotifyGuard(Arc::clone(&self.end_stream_notifier))
+        NotifyGuard {
+            notify: Arc::clone(&self.end_stream_notifier),
+            dynamic_filter_registry: Arc::clone(&self.dynamic_filter_registry),
+        }
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
@@ -290,6 +293,8 @@ impl<'a> StageCoordinator<'a> {
         else {
             return internal_err!("Missing coordinator_to_worker_tx");
         };
+        self.dynamic_filter_registry
+            .register_sender(task_key, coordinator_to_worker_tx.clone());
 
         Ok((
             response.url,
@@ -507,11 +512,15 @@ struct TaskSpecializedPlan {
     dynamic_filter_remote_producer_ids: Vec<u64>,
 }
 
-pub(super) struct NotifyGuard(Arc<Notify>);
+pub(super) struct NotifyGuard {
+    notify: Arc<Notify>,
+    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
+}
 
 impl Drop for NotifyGuard {
     fn drop(&mut self) {
-        self.0.notify_waiters();
+        self.dynamic_filter_registry.clear_senders();
+        self.notify.notify_waiters();
     }
 }
 
