@@ -431,6 +431,12 @@ fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::Coordina
             CoordinatorToWorkerMsg::WorkUnitEos => {
                 pb::coordinator_to_worker_msg::Inner::WorkUnitEos(true)
             }
+            CoordinatorToWorkerMsg::ApplyDynamicFilter(filter) => {
+                pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(pb::ApplyDynamicFilter {
+                    expression_id: filter.expression_id,
+                    predicate_proto: filter.predicate.encode_to_vec(),
+                })
+            }
         }),
     }
 }
@@ -837,5 +843,23 @@ mod tests {
         assert_eq!(decoded.expression_id, 42);
         assert_eq!(decoded.expression, expression);
         Ok(())
+    }
+
+    #[test]
+    fn encode_apply_dynamic_filter() {
+        let predicate = PhysicalExprNode::default();
+        let encoded = encode_coordinator_to_worker_msg(CoordinatorToWorkerMsg::ApplyDynamicFilter(
+            Box::new(crate::ApplyDynamicFilter {
+                expression_id: 42,
+                predicate: predicate.clone(),
+            }),
+        ));
+
+        let Some(pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(encoded)) = encoded.inner
+        else {
+            panic!("expected dynamic-filter update");
+        };
+        assert_eq!(encoded.expression_id, 42);
+        assert_eq!(encoded.predicate_proto, predicate.encode_to_vec());
     }
 }
