@@ -419,7 +419,7 @@ fn display_inner_distributed_leaf(
         && !by_task.is_empty()
     {
         writeln!(f, "{indent} DistributedLeafExec:")?;
-        for (task_i, variant) in leaf.display_variants.iter().enumerate() {
+        for (task_i, variant) in leaf.variants.iter().enumerate() {
             let variant = displayable(variant.as_ref()).one_line().to_string();
             let metrics = match by_task.is_empty() {
                 true => String::new(),
@@ -433,7 +433,7 @@ fn display_inner_distributed_leaf(
             false => String::new(),
         };
         writeln!(f, "{indent} DistributedLeafExec:{header}")?;
-        for (task_i, variant) in leaf.display_variants.iter().enumerate() {
+        for (task_i, variant) in leaf.variants.iter().enumerate() {
             let variant = displayable(variant.as_ref()).one_line().to_string();
             writeln!(f, "{indent}   t{task_i}: {}", variant.trim_end())?;
         }

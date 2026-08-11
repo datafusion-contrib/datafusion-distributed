@@ -1,5 +1,5 @@
 use crate::common::require_one_child;
-use crate::coordinator::dynamic_filters::isolate_distributed_leaf_display_variants;
+use crate::coordinator::dynamic_filters::isolate_distributed_leaf_variants_for_display;
 use crate::coordinator::metrics_store::MetricsStore;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
@@ -233,7 +233,7 @@ impl ExecutionPlan for DistributedExec {
             };
 
             let display_plan =
-                isolate_distributed_leaf_display_variants(result.plan_for_viz, &context)?;
+                isolate_distributed_leaf_variants_for_display(result.plan_for_viz, &context)?;
             plan_for_viz
                 .lock()
                 .expect("poisoned lock")

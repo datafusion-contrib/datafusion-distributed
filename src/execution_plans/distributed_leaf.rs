@@ -74,9 +74,6 @@ pub struct DistributedLeafExec {
     pub(crate) original: Arc<dyn ExecutionPlan>,
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) variants: Vec<Arc<dyn ExecutionPlan>>,
-    /// Per-task variants used only for rendering. These are isolated from one another before a
-    /// query runs so that applying task-local runtime state cannot leak into another task's line.
-    pub(crate) display_variants: Vec<Arc<dyn ExecutionPlan>>,
 }
 
 impl DistributedLeafExec {
@@ -118,7 +115,6 @@ impl DistributedLeafExec {
         Ok(Self {
             original,
             properties,
-            display_variants: variants.clone(),
             variants,
         })
     }
@@ -141,36 +137,6 @@ impl DistributedLeafExec {
     /// Returns the variant belonging to provided task index.
     pub(crate) fn to_task_specialized(&self, task_i: usize) -> Arc<dyn ExecutionPlan> {
         Arc::clone(&self.variants[task_i])
-    }
-
-    pub(crate) fn with_display_variants(
-        &self,
-        display_variants: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Self> {
-        if display_variants.len() != self.variants.len() {
-            return plan_err!(
-                "DistributedLeafExec received {} display variants for {} execution variants",
-                display_variants.len(),
-                self.variants.len()
-            );
-        }
-        for (display, execution) in display_variants.iter().zip(&self.variants) {
-            if display.schema() != execution.schema()
-                || display.properties().partitioning.partition_count()
-                    != execution.properties().partitioning.partition_count()
-            {
-                return plan_err!(
-                    "DistributedLeafExec display variant properties differ from its execution variant"
-                );
-            }
-        }
-
-        Ok(Self {
-            original: Arc::clone(&self.original),
-            properties: Arc::clone(&self.properties),
-            variants: self.variants.clone(),
-            display_variants,
-        })
     }
 }
 

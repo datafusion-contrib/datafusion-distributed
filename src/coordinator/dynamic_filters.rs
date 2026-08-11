@@ -56,8 +56,8 @@ impl DynamicFilterReports {
     }
 }
 
-/// Gives every distributed-leaf task an independent plan used only for rendering.
-pub(super) fn isolate_distributed_leaf_display_variants(
+/// Replaces the variants in the visualization plan with independent per-task copies.
+pub(super) fn isolate_distributed_leaf_variants_for_display(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -68,7 +68,7 @@ pub(super) fn isolate_distributed_leaf_display_variants(
             return Ok(Transformed::no(node));
         };
 
-        let display_variants = leaf
+        let variants = leaf
             .variants()
             .iter()
             .map(|variant| {
@@ -81,14 +81,15 @@ pub(super) fn isolate_distributed_leaf_display_variants(
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Transformed::yes(
-            Arc::new(leaf.with_display_variants(display_variants)?) as Arc<dyn ExecutionPlan>,
-        ))
+        Ok(Transformed::yes(Arc::new(DistributedLeafExec::try_new(
+            Arc::clone(leaf.original()),
+            variants,
+        )?) as Arc<dyn ExecutionPlan>))
     })
     .map(|transformed| transformed.data)
 }
 
-/// Applies successful worker reports only to the matching task-local display variants.
+/// Applies successful worker reports only to the matching task-local visualization variants.
 pub(super) fn apply_reports_to_distributed_leaves(
     plan: &Arc<dyn ExecutionPlan>,
     reports: &HashMap<TaskKey, TaskDynamicFilters>,
@@ -101,7 +102,7 @@ pub(super) fn apply_reports_to_distributed_leaves(
         };
 
         for (task_key, report) in reports {
-            let Some(variant) = leaf.display_variants.get(task_key.task_number) else {
+            let Some(variant) = leaf.variants().get(task_key.task_number) else {
                 continue;
             };
             let updates: HashMap<_, _> = report
@@ -165,7 +166,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn task_display_variants_do_not_share_dynamic_filter_state() -> Result<()> {
+    fn visualization_variants_do_not_share_dynamic_filter_state() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let column = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
         let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
@@ -183,7 +184,7 @@ mod tests {
         )?) as Arc<dyn ExecutionPlan>;
 
         let task_ctx = SessionContext::new().task_ctx();
-        let isolated = isolate_distributed_leaf_display_variants(leaf, &task_ctx)?;
+        let isolated = isolate_distributed_leaf_variants_for_display(leaf, &task_ctx)?;
         let expression =
             Arc::new(BinaryExpr::new(column, Operator::Gt, lit(10_i32))) as Arc<dyn PhysicalExpr>;
         dynamic_filter
@@ -212,10 +213,10 @@ mod tests {
 
         apply_reports_to_distributed_leaves(&isolated, &reports, &task_ctx);
         let leaf = isolated.downcast_ref::<DistributedLeafExec>().unwrap();
-        let task_0 = displayable(leaf.display_variants[0].as_ref())
+        let task_0 = displayable(leaf.variants()[0].as_ref())
             .one_line()
             .to_string();
-        let task_1 = displayable(leaf.display_variants[1].as_ref())
+        let task_1 = displayable(leaf.variants()[1].as_ref())
             .one_line()
             .to_string();
         assert!(task_0.contains("DynamicFilter [ a@0 > 10 ]"));
