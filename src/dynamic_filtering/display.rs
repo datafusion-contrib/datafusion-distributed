@@ -1,12 +1,13 @@
-use crate::codec::{decode_physical_expr, roundtrip_pb};
+use crate::codec::{decode_physical_expr, dynamic_filter_update_target, roundtrip_pb};
+use crate::common::TreeNodeExt;
 use crate::coordinator::DistributedExec;
 use crate::dynamic_filtering::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
-use crate::{TaskCompletedDynamicFilters, TaskKey};
+use crate::stage::{LocalStage, Stage, find_all_stages};
+use crate::{DistributedTaskContext, TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, Result, internal_err};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
@@ -40,7 +41,12 @@ pub async fn rewrite_distributed_plan_with_dynamic_filters(
     // Avoids mutating the `plan_for_viz` of the incoming DistributedExec.
     let plan_for_viz =
         sever_dynamic_filter_relationships_in_plan_for_display(plan_for_viz, task_ctx)?;
-    apply_reports_to_distributed_leaves(&plan_for_viz, &reports, task_ctx);
+    for stage in find_all_stages(&plan_for_viz) {
+        let Stage::Local(stage) = stage else {
+            return internal_err!("expected local stages in the visualization plan");
+        };
+        apply_reports_to_distributed_leaves(stage, &reports, task_ctx)?;
+    }
     let plan = distributed_exec.with_plan_for_viz(Arc::clone(&plan_for_viz))?;
     plan.replace_children(
         vec![plan_for_viz],
@@ -145,59 +151,70 @@ fn isolate_sort_dynamic_filters_for_display(
 
 /// Applies successful worker reports only to the matching task-local visualization variants.
 fn apply_reports_to_distributed_leaves(
-    plan: &Arc<dyn ExecutionPlan>,
+    stage: &LocalStage,
     reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
     task_ctx: &Arc<TaskContext>,
-) {
-    let _ = plan.apply(|node| {
-        let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
-            return Ok(TreeNodeRecursion::Continue);
+) -> Result<()> {
+    for task_number in 0..stage.tasks {
+        let task_key = TaskKey {
+            query_id: stage.query_id,
+            stage_id: stage.num,
+            task_number,
         };
-
-        for (task_key, report) in reports {
-            let Some(variant) = leaf.variants().get(task_key.task_number) else {
-                continue;
+        let Some(report) = reports.get(&task_key) else {
+            continue;
+        };
+        let updates: HashMap<_, _> = report
+            .filters
+            .iter()
+            .map(|filter| (filter.expression_id, &filter.expression))
+            .collect();
+        let d_ctx = DistributedTaskContext {
+            task_index: task_number,
+            task_count: stage.tasks,
+        };
+        // Union children can use different task indices from their enclosing stage.
+        stage.plan.apply_with_dt_ctx(d_ctx, |node, d_ctx| {
+            let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() else {
+                return Ok(TreeNodeRecursion::Continue);
             };
-            let updates: HashMap<_, _> = report
-                .filters
-                .iter()
-                .map(|filter| (filter.expression_id, &filter.expression))
-                .collect();
-            let Ok(discovered) = discover_dynamic_filter_consumers(variant) else {
-                continue;
+            let Some(variant) = leaf.variants().get(d_ctx.task_index) else {
+                return internal_err!(
+                    "missing leaf variant {} for task {} in stage {}",
+                    d_ctx.task_index,
+                    task_number,
+                    stage.num
+                );
             };
+            let discovered = discover_dynamic_filter_consumers(variant)?;
             for consumer in discovered.consumers {
                 let Some(expression) = updates.get(&consumer.id).copied() else {
                     continue;
                 };
-                let Ok(proto) = expression.to_proto(task_ctx) else {
-                    continue;
-                };
+                let proto = expression.to_proto(task_ctx)?;
                 let Some(ExprType::DynamicFilter(dynamic_filter_proto)) = proto.expr_type.as_ref()
                 else {
-                    continue;
+                    return internal_err!("expected a dynamic filter in the completed task report");
                 };
-                let Ok(reported_expression) =
-                    decode_physical_expr(&proto, consumer.input_schema.as_ref(), task_ctx)
-                else {
+                if dynamic_filter_proto.generation <= 1 {
                     continue;
-                };
-                let Some(reported_dynamic_filter) =
-                    reported_expression.downcast_ref::<DynamicFilterPhysicalExpr>()
-                else {
-                    continue;
-                };
-                let Ok(expression) = reported_dynamic_filter.current() else {
-                    continue;
-                };
-                if dynamic_filter_proto.generation > 1 {
-                    let _ = consumer.expression.update(expression);
                 }
+                let Some(predicate) = dynamic_filter_proto.inner_expr.as_deref() else {
+                    return internal_err!("reported dynamic filter has no predicate");
+                };
+                let predicate =
+                    decode_physical_expr(predicate, consumer.input_schema.as_ref(), task_ctx)?;
+                let dynamic_filter = dynamic_filter_update_target(
+                    &consumer.expression,
+                    consumer.input_schema.as_ref(),
+                    task_ctx,
+                )?;
+                dynamic_filter.update(predicate)?;
             }
-        }
-
-        Ok(TreeNodeRecursion::Continue)
-    });
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -264,7 +281,14 @@ mod tests {
             report,
         )]);
 
-        apply_reports_to_distributed_leaves(&isolated, &reports, &task_ctx);
+        let stage = LocalStage {
+            query_id: Uuid::nil(),
+            num: 1,
+            plan: Arc::clone(&isolated),
+            tasks: 2,
+            metrics_set: Default::default(),
+        };
+        apply_reports_to_distributed_leaves(&stage, &reports, &task_ctx)?;
         let leaf = isolated.downcast_ref::<DistributedLeafExec>().unwrap();
         let task_0 = displayable(leaf.variants()[0].as_ref())
             .one_line()
