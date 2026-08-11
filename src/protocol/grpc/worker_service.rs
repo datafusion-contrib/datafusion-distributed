@@ -6,10 +6,10 @@ use super::spawn_select_all::spawn_select_all;
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
-    ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters, TaskKey,
-    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver,
-    WorkerToCoordinatorMsg,
+    ApplyDynamicFilter, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo,
+    MaybeEncoded, ProducedDynamicFilter, ProducerHead, SetPlanRequest, TaskCompletedDynamicFilters,
+    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
+    WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use arrow_flight::FlightData;
@@ -212,6 +212,15 @@ fn decode_coordinator_to_worker_msg(
             }
             pb::coordinator_to_worker_msg::Inner::WorkUnitEos(_) => {
                 CoordinatorToWorkerMsg::WorkUnitEos
+            }
+            pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(filter) => {
+                CoordinatorToWorkerMsg::ApplyDynamicFilter(Box::new(ApplyDynamicFilter {
+                    expression_id: filter.expression_id,
+                    predicate: datafusion_proto::protobuf::PhysicalExprNode::decode(
+                        filter.predicate_proto.as_slice(),
+                    )
+                    .map_err(|error| Status::invalid_argument(error.to_string()))?,
+                }))
             }
         },
     )
@@ -489,5 +498,25 @@ mod tests {
         };
         assert_eq!(encoded.expression_id, 42);
         assert_eq!(encoded.expression_proto, expression.encode_to_vec());
+    }
+
+    #[test]
+    fn decode_apply_dynamic_filter() {
+        let predicate = PhysicalExprNode::default();
+        let decoded = decode_coordinator_to_worker_msg(pb::CoordinatorToWorkerMsg {
+            inner: Some(pb::coordinator_to_worker_msg::Inner::ApplyDynamicFilter(
+                pb::ApplyDynamicFilter {
+                    expression_id: 42,
+                    predicate_proto: predicate.encode_to_vec(),
+                },
+            )),
+        })
+        .unwrap();
+
+        let CoordinatorToWorkerMsg::ApplyDynamicFilter(decoded) = decoded else {
+            panic!("expected dynamic-filter update");
+        };
+        assert_eq!(decoded.expression_id, 42);
+        assert_eq!(decoded.predicate, predicate);
     }
 }
