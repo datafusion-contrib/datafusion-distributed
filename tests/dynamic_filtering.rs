@@ -13,7 +13,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_left_local_dynamic_filters() -> Result<()> {
-        let display = execute_local_hash_join(true).await?;
+        let display = execute_local_hash_join(true, false).await?;
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
@@ -48,7 +48,8 @@ mod tests {
 
     #[tokio::test]
     async fn partitioned_local_dynamic_filters() -> Result<()> {
-        let display = execute_local_hash_join(false).await?;
+        let display =
+            normalize_runtime_dynamic_filters(execute_local_hash_join(false, false).await?);
         assert_snapshot!(display, @r"
         ┌───── DistributedExec
         │ ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
@@ -73,8 +74,8 @@ mod tests {
             ┌───── Stage 2 ── tasks=2, partitions=6
             │ RepartitionExec: partitioning=Hash([RainToday@0], 6), input_partitions=3
             │   DistributedLeafExec:
-            │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
-            │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
+            │     t0: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000000.parquet:<int>..<int>, /testdata/weather/result-000001.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet, predicate=DynamicFilter [ <runtime> ], dynamic_rg_pruning=eligible
+            │     t1: DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet:<int>..<int>], [/testdata/weather/result-000001.parquet:<int>..<int>, /testdata/weather/result-000002.parquet:<int>..<int>], [/testdata/weather/result-000002.parquet:<int>..<int>]]}, projection=[RainToday], file_type=parquet, predicate=DynamicFilter [ <runtime> ], dynamic_rg_pruning=eligible
             └──────────────────────────────────────────────────
         ");
         Ok(())
@@ -119,9 +120,44 @@ mod tests {
         Ok(())
     }
 
-    async fn execute_local_hash_join(broadcast_joins: bool) -> Result<String> {
+    #[tokio::test]
+    async fn partitioned_dynamic_planning_executes_with_remote_consumers() -> Result<()> {
+        let display =
+            normalize_runtime_dynamic_filters(execute_local_hash_join(false, true).await?);
+        assert_eq!(display.matches("DynamicFilter [ <runtime> ]").count(), 2);
+        Ok(())
+    }
+
+    /// Consumers intentionally do not wait for a remote filter. Depending on scheduling, a task's
+    /// final display report can contain its local filter, the coordinator merge, or no update. Keep
+    /// the whole-plan snapshot deterministic while unit tests validate the applied predicate.
+    fn normalize_runtime_dynamic_filters(display: String) -> String {
+        const START: &str = "predicate=DynamicFilter [";
+        const END: &str = "dynamic_rg_pruning=eligible";
+
+        display
+            .lines()
+            .map(|line| {
+                let (Some(start), Some(end)) = (line.find(START), line.find(END)) else {
+                    return line.to_owned();
+                };
+                format!(
+                    "{}predicate=DynamicFilter [ <runtime> ], {}",
+                    &line[..start],
+                    &line[end..end + END.len()]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    async fn execute_local_hash_join(
+        broadcast_joins: bool,
+        dynamic_task_count: bool,
+    ) -> Result<String> {
         execute_local_query(
             broadcast_joins,
+            dynamic_task_count,
             false,
             r#"
                 SELECT COUNT(*)
@@ -138,6 +174,7 @@ mod tests {
     async fn execute_local_union_probe_hash_join() -> Result<String> {
         execute_local_query(
             true,
+            false,
             true,
             r#"
                 SELECT COUNT(*)
@@ -163,11 +200,13 @@ mod tests {
 
     async fn execute_local_query(
         broadcast_joins: bool,
+        dynamic_task_count: bool,
         one_task_per_leaf: bool,
         sql: &str,
     ) -> Result<String> {
         let (ctx, _guard, _) = start_localhost_context(2, DefaultSessionBuilder).await;
         let mut ctx = ctx.with_distributed_broadcast_joins(broadcast_joins)?;
+        ctx.set_distributed_dynamic_task_count(dynamic_task_count)?;
         if one_task_per_leaf {
             ctx = ctx.with_distributed_desired_task_count_handler(1usize);
         }
