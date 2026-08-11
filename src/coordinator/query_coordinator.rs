@@ -299,6 +299,10 @@ impl<'a> StageCoordinator<'a> {
         ))
     }
 
+    pub(super) fn seal_dynamic_filter_stage(&self) {
+        self.dynamic_filter_registry.seal_stage(self.stage_id);
+    }
+
     /// Spawns a background task in charge of collecting messages sent by a worker. Some things that
     /// are collected from workers are:
     /// - Execution metrics information, sent once the worker has finished executing the task.
@@ -315,6 +319,7 @@ impl<'a> StageCoordinator<'a> {
         let task_metrics = self.metrics_store.clone();
         let completed_dynamic_filter_store = self.completed_dynamic_filter_store.clone();
         let dynamic_filter_registry = Arc::clone(self.dynamic_filter_registry);
+        let task_ctx = Arc::clone(self.task_ctx);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -342,8 +347,9 @@ impl<'a> StageCoordinator<'a> {
                             store.insert(task_key, filters);
                         }
                     }
-                    WorkerToCoordinatorMsg::ProducedDynamicFilter(_) => {
-                        dynamic_filter_registry.record_update_received();
+                    WorkerToCoordinatorMsg::ProducedDynamicFilter(filter) => {
+                        dynamic_filter_registry
+                            .record_dynamic_filter_update(task_key, *filter, &task_ctx);
                     }
                 }
             }
