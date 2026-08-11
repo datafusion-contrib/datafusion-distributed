@@ -1,13 +1,12 @@
+use crate::DistributedConfig;
 use crate::common::require_one_child;
 use crate::coordinator::dynamic_filters::isolate_distributed_leaf_variants_for_display;
-use crate::coordinator::metrics_store::MetricsStore;
 use crate::coordinator::prepare_dynamic_plan::prepare_dynamic_plan;
 use crate::coordinator::prepare_static_plan::prepare_static_plan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
-use crate::distributed_planner::NetworkBoundaryExt;
-use crate::{DistributedConfig, TaskKey};
+use crate::coordinator::store::{MetricsStore, task_keys_for_plan};
 use datafusion::common::internal_datafusion_err;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{Result, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
@@ -83,33 +82,13 @@ impl DistributedExec {
     ///
     /// [`rewrite_distributed_plan_with_metrics`]: crate::rewrite_distributed_plan_with_metrics
     pub async fn wait_for_metrics(&self) {
-        let mut expected_keys: Vec<TaskKey> = Vec::new();
         let Some(task_metrics) = &self.metrics_store else {
             return;
         };
         let Some(plan) = self.plan_for_viz.lock().unwrap().as_ref().cloned() else {
             return;
         };
-        let _ = plan.apply(|plan| {
-            if let Some(boundary) = plan.as_network_boundary() {
-                let stage = boundary.input_stage();
-                for i in 0..stage.task_count() {
-                    expected_keys.push(TaskKey {
-                        query_id: stage.query_id(),
-                        stage_id: stage.num(),
-                        task_number: i,
-                    });
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        });
-        if expected_keys.is_empty() {
-            return;
-        }
-        let mut rx = task_metrics.rx.clone();
-        let _ = rx
-            .wait_for(|map| expected_keys.iter().all(|key| map.contains_key(key)))
-            .await;
+        task_metrics.wait_for(&task_keys_for_plan(&plan)).await;
     }
 
     /// Returns the plan which is lazily prepared on `execute()` and actually gets executed.

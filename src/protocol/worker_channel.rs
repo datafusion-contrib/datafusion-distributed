@@ -128,11 +128,11 @@ pub enum WorkerToCoordinatorMsg {
     LoadInfo(LoadInfo),
     LoadInfoEos,
     /// Final task-local dynamic filters used by distributed leaf variants.
-    TaskDynamicFilters(TaskDynamicFilters),
+    TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct TaskDynamicFilters {
+pub struct TaskCompletedDynamicFilters {
     /// Final expressions keyed by their DataFusion physical-expression ID. The TaskKey is
     /// implicit from the coordinator channel that carried this message.
     pub filters: Vec<TaskDynamicFilter>,

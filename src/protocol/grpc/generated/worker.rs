@@ -45,16 +45,16 @@ pub mod worker_to_coordinator_msg {
         LoadInfoEos(bool),
         /// Final task-local dynamic filters used by distributed leaf variants.
         #[prost(message, tag = "4")]
-        TaskDynamicFilters(super::TaskDynamicFilters),
+        TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TaskDynamicFilters {
+pub struct TaskCompletedDynamicFilters {
     #[prost(message, repeated, tag = "1")]
-    pub filters: ::prost::alloc::vec::Vec<task_dynamic_filters::DynamicFilter>,
+    pub filters: ::prost::alloc::vec::Vec<task_completed_dynamic_filters::DynamicFilter>,
 }
-/// Nested message and enum types in `TaskDynamicFilters`.
-pub mod task_dynamic_filters {
+/// Nested message and enum types in `TaskCompletedDynamicFilters`.
+pub mod task_completed_dynamic_filters {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct DynamicFilter {
         #[prost(uint64, tag = "1")]

@@ -11,6 +11,6 @@ pub use channel_resolver::{ChannelResolver, get_distributed_channel_resolver};
 pub use in_process::LocalWorkerContext;
 pub use worker_channel::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,
-    LoadInfo, SetPlanRequest, TaskDynamicFilter, TaskDynamicFilters, TaskKey, TaskMetrics,
+    LoadInfo, SetPlanRequest, TaskCompletedDynamicFilters, TaskDynamicFilter, TaskKey, TaskMetrics,
     WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
 };

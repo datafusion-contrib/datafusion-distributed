@@ -1,8 +1,8 @@
 use crate::common::discover_dynamic_filter_consumers;
 use crate::execution_plans::DistributedLeafExec;
-use crate::{DistributedCodec, TaskDynamicFilters, TaskKey};
+use crate::{DistributedCodec, TaskCompletedDynamicFilters, TaskKey};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{HashMap, HashSet, Result};
+use datafusion::common::{HashMap, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
@@ -10,51 +10,7 @@ use datafusion_proto::physical_plan::from_proto::parse_physical_expr;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalPlanNodeExt};
 use datafusion_proto::protobuf::{PhysicalExprNode, PhysicalPlanNode};
 use prost::Message;
-use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
-
-#[derive(Default)]
-struct ReportState {
-    expected: HashSet<TaskKey>,
-    finished: HashSet<TaskKey>,
-    reports: HashMap<TaskKey, TaskDynamicFilters>,
-}
-
-/// Query-scoped storage for final dynamic-filter reports.
-#[derive(Default)]
-pub(super) struct DynamicFilterReports {
-    state: Mutex<ReportState>,
-    changed: Notify,
-}
-
-impl DynamicFilterReports {
-    pub(super) fn expect(&self, key: TaskKey) {
-        self.state.lock().unwrap().expected.insert(key);
-    }
-
-    pub(super) fn insert(&self, key: TaskKey, report: TaskDynamicFilters) {
-        self.state.lock().unwrap().reports.insert(key, report);
-        self.changed.notify_one();
-    }
-
-    pub(super) fn finish(&self, key: TaskKey) {
-        self.state.lock().unwrap().finished.insert(key);
-        self.changed.notify_one();
-    }
-
-    pub(super) async fn wait_for_finished(&self) -> HashMap<TaskKey, TaskDynamicFilters> {
-        loop {
-            let notified = self.changed.notified();
-            {
-                let state = self.state.lock().unwrap();
-                if state.expected.is_subset(&state.finished) {
-                    return state.reports.clone();
-                }
-            }
-            notified.await;
-        }
-    }
-}
+use std::sync::Arc;
 
 /// Replaces the variants in the visualization plan with independent per-task copies.
 pub(super) fn isolate_distributed_leaf_variants_for_display(
@@ -92,7 +48,7 @@ pub(super) fn isolate_distributed_leaf_variants_for_display(
 /// Applies successful worker reports only to the matching task-local visualization variants.
 pub(super) fn apply_reports_to_distributed_leaves(
     plan: &Arc<dyn ExecutionPlan>,
-    reports: &HashMap<TaskKey, TaskDynamicFilters>,
+    reports: &HashMap<TaskKey, TaskCompletedDynamicFilters>,
     task_ctx: &Arc<TaskContext>,
 ) {
     let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
@@ -196,7 +152,7 @@ mod tests {
             .unwrap()
             .mark_complete();
         let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-        let report = TaskDynamicFilters {
+        let report = TaskCompletedDynamicFilters {
             filters: vec![crate::TaskDynamicFilter {
                 expression_id: dynamic_filter.expression_id().unwrap(),
                 expression: serialize_physical_expr(&dynamic_filter, &codec)?.encode_to_vec(),

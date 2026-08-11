@@ -6,8 +6,8 @@ use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_t
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedCodec, DistributedConfig, DistributedExt,
-    DistributedTaskContext, SetPlanRequest, TaskData, TaskDynamicFilter, TaskDynamicFilters,
-    TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
+    DistributedTaskContext, SetPlanRequest, TaskCompletedDynamicFilters, TaskData,
+    TaskDynamicFilter, TaskMetrics, Worker, WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, HashSet, Result, exec_datafusion_err, internal_err};
@@ -164,7 +164,7 @@ impl Worker {
             }
 
             let metrics_tx = task_data.metrics_tx.lock().unwrap().take();
-            let mut dynamic_filters = TaskDynamicFilters::default();
+            let mut dynamic_filters = TaskCompletedDynamicFilters::default();
             if let Some(Ok(plan)) = task_data.final_plan.get() {
                 let d_ctx = DistributedTaskContext {
                     task_index: key.task_number,
@@ -175,9 +175,12 @@ impl Worker {
                 if let Some(metrics_tx) = metrics_tx {
                     send_metrics_via_channel(metrics_tx, plan, d_ctx, task_data_metrics);
                 }
-                dynamic_filters =
-                    build_task_dynamic_filters(plan, &dynamic_filter_ids, &task_data.task_ctx)
-                        .unwrap_or_default();
+                dynamic_filters = build_task_completed_dynamic_filters(
+                    plan,
+                    &dynamic_filter_ids,
+                    &task_data.task_ctx,
+                )
+                .unwrap_or_default();
             }
             let _ = dynamic_filters_tx.send(dynamic_filters);
             task_data_entries.invalidate(&key).await
@@ -205,7 +208,9 @@ impl Worker {
         let dynamic_filters_stream = dynamic_filters_rx.into_stream().filter_map(
             async |dynamic_filters_or_channel_dropped| {
                 let dynamic_filters = dynamic_filters_or_channel_dropped.ok()?;
-                Some(WorkerToCoordinatorMsg::TaskDynamicFilters(dynamic_filters))
+                Some(WorkerToCoordinatorMsg::TaskCompletedDynamicFilters(
+                    dynamic_filters,
+                ))
             },
         );
 
@@ -218,11 +223,11 @@ impl Worker {
     }
 }
 
-fn build_task_dynamic_filters(
+fn build_task_completed_dynamic_filters(
     plan: &Arc<dyn ExecutionPlan>,
     allowed_ids: &HashSet<u64>,
     task_ctx: &Arc<datafusion::execution::TaskContext>,
-) -> Result<TaskDynamicFilters> {
+) -> Result<TaskCompletedDynamicFilters> {
     let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
     let mut filters = vec![];
     for consumer in discover_dynamic_filter_consumers(plan, Some(allowed_ids))? {
@@ -241,7 +246,7 @@ fn build_task_dynamic_filters(
             });
         }
     }
-    Ok(TaskDynamicFilters { filters })
+    Ok(TaskCompletedDynamicFilters { filters })
 }
 
 /// Collects metrics from the plan in pre-order traversal order and sends them via the

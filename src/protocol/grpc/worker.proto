@@ -41,11 +41,11 @@ message WorkerToCoordinatorMsg {
     bool load_info_eos = 3;
 
     // Final task-local dynamic filters used by distributed leaf variants.
-    TaskDynamicFilters task_dynamic_filters = 4;
+    TaskCompletedDynamicFilters task_completed_dynamic_filters = 4;
   }
 }
 
-message TaskDynamicFilters {
+message TaskCompletedDynamicFilters {
   message DynamicFilter {
     uint64 expression_id = 1;
     // Serialized datafusion.proto.PhysicalExprNode.
