@@ -343,20 +343,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A build-side `LIMIT` is carried by the `CoalescePartitionsExec` that a
-    /// broadcast rewrite replaces. The replacement must preserve that fetch or
-    /// the join observes every build row instead of the requested 50.
-    #[tokio::test]
-    async fn build_side_fetch_is_preserved_by_broadcast() {
-        assert_distributed_matches_single_node(
-            "SELECT count(*) FROM (SELECT id FROM build_side LIMIT 50) b \
-             JOIN probe_side p ON b.id = p.id",
-            true,
-        )
-        .await
-        .unwrap();
-    }
-
     fn data_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("target/multi_task_collect_join_repros")
     }

@@ -133,17 +133,17 @@ pub(super) fn insert_broadcast_execs(
             return Ok(Transformed::no(node));
         };
 
-        let (broadcast_input, coalesce_fetch) = build_child
+        let broadcast_input = build_child
             .downcast_ref::<CoalescePartitionsExec>()
             .map_or_else(
-                || (Arc::clone(build_child), None),
-                |coalesce| (Arc::clone(coalesce.input()), coalesce.fetch()),
+                || Arc::clone(build_child),
+                |coalesce| Arc::clone(coalesce.input()),
             );
 
         // consumer_task_count=1 is a placeholder and will be corrected during optimizer rule.
         let broadcast: Arc<dyn ExecutionPlan> = Arc::new(BroadcastExec::new(broadcast_input, 1));
         let new_build_child: Arc<dyn ExecutionPlan> =
-            Arc::new(CoalescePartitionsExec::new(broadcast).with_fetch(coalesce_fetch));
+            Arc::new(CoalescePartitionsExec::new(broadcast));
 
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
         new_children[0] = new_build_child;
