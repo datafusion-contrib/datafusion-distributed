@@ -24,7 +24,7 @@ pub mod coordinator_to_worker_msg {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
-    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3")]
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3, 4")]
     pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
 }
 /// Nested message and enum types in `WorkerToCoordinatorMsg`.
@@ -43,6 +43,25 @@ pub mod worker_to_coordinator_msg {
         LoadInfo(super::LoadInfo),
         #[prost(bool, tag = "3")]
         LoadInfoEos(bool),
+        /// Final task-local dynamic filters used by distributed leaf variants.
+        #[prost(message, tag = "4")]
+        TaskDynamicFilters(super::TaskDynamicFilters),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskDynamicFilters {
+    #[prost(message, repeated, tag = "1")]
+    pub filters: ::prost::alloc::vec::Vec<task_dynamic_filters::DynamicFilter>,
+}
+/// Nested message and enum types in `TaskDynamicFilters`.
+pub mod task_dynamic_filters {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct DynamicFilter {
+        #[prost(uint64, tag = "1")]
+        pub expression_id: u64,
+        /// Serialized datafusion.proto.PhysicalExprNode.
+        #[prost(bytes = "vec", tag = "2")]
+        pub expression: ::prost::alloc::vec::Vec<u8>,
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -80,8 +99,8 @@ pub struct LoadInfo {
     /// The amount of rows that were pulled from leaf nodes while this partition was sampling data.
     #[prost(uint64, tag = "8")]
     pub rows_pulled_from_leaf: u64,
-    /// Whether the sampled partition stream reached end-of-stream by the time this LoadInfo was
-    /// captured.
+    /// Whether the sampled partition stream reached end-of-stream (i.e. the partition finished
+    /// producing all of its output) by the time this LoadInfo was captured.
     #[prost(bool, tag = "9")]
     pub reached_eos: bool,
 }
@@ -119,6 +138,9 @@ pub struct SetPlanRequest {
     /// relative to when the query was fired in the coordinator.
     #[prost(uint64, tag = "6")]
     pub query_start_time_ns: u64,
+    /// Dynamic-filter consumer IDs belonging to the selected DistributedLeafExec variants.
+    #[prost(uint64, repeated, tag = "7")]
+    pub dynamic_filter_ids: ::prost::alloc::vec::Vec<u64>,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {

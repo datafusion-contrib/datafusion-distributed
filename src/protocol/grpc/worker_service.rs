@@ -7,8 +7,8 @@ use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
-    ProducerHead, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration,
-    WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
+    ProducerHead, SetPlanRequest, TaskDynamicFilters, TaskKey, TaskMetrics, WorkUnitBatch,
+    WorkUnitFeedDeclaration, WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use arrow_flight::FlightData;
@@ -228,6 +228,7 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
             .collect::<Result<_, _>>()?,
         target_worker_url: parse_url(&request.target_worker_url, "target_worker_url")?,
         query_start_time_ns: request.query_start_time_ns as usize,
+        dynamic_filter_ids: request.dynamic_filter_ids,
     })
 }
 
@@ -272,8 +273,26 @@ fn encode_worker_to_coordinator_msg(
             WorkerToCoordinatorMsg::LoadInfoEos => {
                 pb::worker_to_coordinator_msg::Inner::LoadInfoEos(true)
             }
+            WorkerToCoordinatorMsg::TaskDynamicFilters(filters) => {
+                pb::worker_to_coordinator_msg::Inner::TaskDynamicFilters(
+                    encode_task_dynamic_filters(filters),
+                )
+            }
         }),
     })
+}
+
+fn encode_task_dynamic_filters(filters: TaskDynamicFilters) -> pb::TaskDynamicFilters {
+    pb::TaskDynamicFilters {
+        filters: filters
+            .filters
+            .into_iter()
+            .map(|filter| pb::task_dynamic_filters::DynamicFilter {
+                expression_id: filter.expression_id,
+                expression: filter.expression,
+            })
+            .collect(),
+    }
 }
 
 fn encode_task_metrics(task_metrics: TaskMetrics) -> Result<pb::TaskMetrics, Status> {

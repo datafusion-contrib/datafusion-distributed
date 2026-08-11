@@ -1,7 +1,10 @@
 use crate::codec::{decode_execution_plan, encode_execution_plan};
-use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
+use crate::common::{TreeNodeExt, dynamic_filter_consumer_ids, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
+use crate::coordinator::dynamic_filters::{
+    DynamicFilterReports, apply_reports_to_distributed_leaves,
+};
 use crate::coordinator::latency_metric::LatencyMetric;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -47,6 +50,7 @@ pub(super) struct QueryCoordinator {
     metrics: ExecutionPlanMetricsSet,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<MetricsStore>>,
+    dynamic_filter_reports: Arc<DynamicFilterReports>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -62,6 +66,7 @@ impl QueryCoordinator {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
+            dynamic_filter_reports: Arc::new(DynamicFilterReports::default()),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -80,6 +85,7 @@ impl QueryCoordinator {
             metrics_set: &self.metrics,
             metrics: &self.coordinator_to_worker_metrics,
             metrics_store: &self.metrics_store,
+            dynamic_filter_reports: &self.dynamic_filter_reports,
             end_stream_notifier: &self.end_stream_notifier,
             join_set: &self.join_set,
         }
@@ -95,6 +101,14 @@ impl QueryCoordinator {
     /// clean up any remaining state.
     pub(super) fn end_query_guard(&self) -> NotifyGuard {
         NotifyGuard(Arc::clone(&self.end_stream_notifier))
+    }
+
+    pub(super) async fn finish_dynamic_filter_display(
+        &self,
+        plan_for_viz: &Arc<dyn ExecutionPlan>,
+    ) {
+        let reports = self.dynamic_filter_reports.wait_for_finished().await;
+        apply_reports_to_distributed_leaves(plan_for_viz, &reports, &self.task_ctx);
     }
 
     /// Blocks until all background tasks have finished (e.g., sending WorkUnit feeds, or collecting
@@ -116,6 +130,12 @@ impl QueryCoordinator {
 /// - Building tasks that communicate a serialized plan to multiple workers for further execution.
 /// - Building tasks that stream partition feeds from local [WorkUnitFeedExec] nodes to their
 ///   remote counterparts.
+type SpecializedTaskPlan = (
+    Arc<dyn ExecutionPlan>,
+    Vec<WorkUnitFeedDeclaration>,
+    Vec<u64>,
+);
+
 pub(super) struct StageCoordinator<'a> {
     plan: &'a Arc<dyn ExecutionPlan>,
     query_id: Uuid,
@@ -125,6 +145,7 @@ pub(super) struct StageCoordinator<'a> {
     metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
     metrics_store: &'a Option<Arc<MetricsStore>>,
+    dynamic_filter_reports: &'a Arc<DynamicFilterReports>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -143,18 +164,21 @@ impl<'a> StageCoordinator<'a> {
     )> {
         let session_config = self.task_ctx.session_config();
 
-        let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
+        let (specialized, work_unit_feed_declarations, dynamic_filter_ids) =
+            self.task_specialized_plan(task_i)?;
 
         let task_key = TaskKey {
             query_id: self.query_id,
             stage_id: self.stage_id,
             task_number: task_i,
         };
+        self.dynamic_filter_reports.expect(task_key);
 
         let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
             plan: MaybeEncoded::Decoded(specialized),
+            dynamic_filter_ids,
             work_unit_feed_declarations,
             target_worker_url: url.clone(),
             query_start_time_ns: self.metrics.instantiation_time,
@@ -178,8 +202,8 @@ impl<'a> StageCoordinator<'a> {
             // 3. Here, `end_stream_notifier` fires and the coordinator->worker channel is
             //    gracefully ended.
             // 4. The coordinator->worker channel EOS is received in `impl_coordinator_channel.rs`.
-            // 5. The metrics are send back in the worker->coordinator channel, and then that
-            //    channel is closed.
+            // 5. The metrics and final dynamic filters are sent back in the
+            //    worker->coordinator channel, and then that channel is closed.
             .chain(keep_stream_alive(Arc::clone(self.end_stream_notifier)))
             .boxed();
 
@@ -236,6 +260,7 @@ impl<'a> StageCoordinator<'a> {
             task_number: task_i,
         };
         let task_metrics = self.metrics_store.clone();
+        let dynamic_filter_reports = Arc::clone(self.dynamic_filter_reports);
         let (load_info_tx, load_info_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut load_info_tx_opt = Some(load_info_tx);
 
@@ -258,8 +283,13 @@ impl<'a> StageCoordinator<'a> {
                     WorkerToCoordinatorMsg::LoadInfoEos => {
                         let _ = load_info_tx_opt.take();
                     }
+                    WorkerToCoordinatorMsg::TaskDynamicFilters(filters) => {
+                        dynamic_filter_reports.insert(task_key, filters);
+                        dynamic_filter_reports.finish(task_key);
+                    }
                 }
             }
+            dynamic_filter_reports.finish(task_key);
         });
         load_info_rx
     }
@@ -341,16 +371,14 @@ impl<'a> StageCoordinator<'a> {
     /// trimming down any unnecessary information that the specific `task_i` task is not going to
     /// need, like unexecuted branches in [ChildrenIsolatorUnionExec], or unexecuted variants of
     /// [DistributedLeafExec].
-    fn task_specialized_plan(
-        &self,
-        task_i: usize,
-    ) -> Result<(Arc<dyn ExecutionPlan>, Vec<WorkUnitFeedDeclaration>)> {
+    fn task_specialized_plan(&self, task_i: usize) -> Result<SpecializedTaskPlan> {
         let session_config = self.task_ctx.session_config();
         let wuf_registry = session_config
             .get_extension::<WorkUnitFeedRegistry>()
             .unwrap_or_default();
 
         let mut work_unit_feed_declarations = vec![];
+        let mut dynamic_filter_ids = datafusion::common::HashSet::new();
         let d_ctx = DistributedTaskContext {
             task_index: task_i,
             task_count: self.task_count,
@@ -382,12 +410,19 @@ impl<'a> StageCoordinator<'a> {
 
             if let Some(dle) = plan.downcast_ref::<DistributedLeafExec>() {
                 let specialized = dle.to_task_specialized(d_ctx.task_index);
+                dynamic_filter_ids.extend(dynamic_filter_consumer_ids(&specialized)?);
                 return Ok(Transformed::yes(specialized));
             }
 
             Ok(Transformed::no(plan))
         })?;
-        Ok((transformed.data, work_unit_feed_declarations))
+        let mut dynamic_filter_ids: Vec<_> = dynamic_filter_ids.into_iter().collect();
+        dynamic_filter_ids.sort_unstable();
+        Ok((
+            transformed.data,
+            work_unit_feed_declarations,
+            dynamic_filter_ids,
+        ))
     }
 
     /// Returns as many URLs as the task count for the stage this [StageCoordinator]
