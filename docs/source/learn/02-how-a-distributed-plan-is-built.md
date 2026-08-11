@@ -1,16 +1,28 @@
-# How a Distributed Plan is Built
+# How a Distributed Plan Is Built
 
-This page walks through how the distributed DataFusion planner transforms a query into a distributed execution plan.
+DataFusion Distributed installs a `QueryPlanner` with
+`with_distributed_planner()`. After DataFusion creates a normal physical plan,
+the distributed planner prepares that plan, splits it into stages at network
+boundaries, and wraps the result in `DistributedExec`.
 
-The transformation runs as a DataFusion `QueryPlanner` (registered by `with_distributed_planner()`) **after**
-normal physical planning. It takes the single-node physical plan, finds the points where data would cross a
-thread boundary in vanilla DataFusion, and inserts a network boundary node there instead — splitting the plan
-into *stages* that run on different *tasks* (machines).
+A **stage** is a connected fragment of the physical plan. A **task** is one
+instance of a stage. Each task is assigned to a worker URL before execution;
+multiple tasks may be assigned to the same worker. A **partition** is a
+DataFusion execution partition inside a task's plan. Partitions are units of
+parallel execution, not dedicated threads.
 
-## The same plan, before and after
+## The same query before and after distribution
 
-Take `SELECT count(*), "RainToday" FROM weather GROUP BY "RainToday" ORDER BY count(*)` over a 3-file table on a
-3-worker cluster. Here is the ordinary single-node physical plan (file paths trimmed to `[...]`):
+Consider this query over the three-file `weather` table:
+
+```sql
+SELECT count(*), "RainToday"
+FROM weather
+GROUP BY "RainToday"
+ORDER BY count(*)
+```
+
+DataFusion first creates the single-node physical plan:
 
 ```text
 SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
@@ -22,132 +34,160 @@ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
             DataSourceExec: file_groups={3 groups: [...]}, projection=[RainToday], file_type=parquet
 ```
 
-And the distributed plan for the same query, rendered with `display_plan_ascii`:
+With the configuration used by the planner's aggregation snapshot test, the
+abridged distributed plan is:
 
 ```text
-┌───── DistributedExec
-│ SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-│   [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
-└──────────────────────────────────────────────────
-  ┌───── Stage 2 ── tasks=2, partitions=4
-  │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-  │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
-  │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-  │       [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
-  └──────────────────────────────────────────────────
-    ┌───── Stage 1 ── tasks=3, partitions=8
-    │ RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
-    │   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
-    │     DistributedLeafExec: DataSourceExec: file_groups={3 groups: [...]}, projection=[RainToday], file_type=parquet
-    └──────────────────────────────────────────────────
+DistributedExec
+  SortPreservingMergeExec
+    [Stage 2] => NetworkCoalesceExec: output_partitions=8, input_tasks=2
+
+Stage 2: tasks=2, partitions=4
+  SortExec
+    ProjectionExec
+      AggregateExec: mode=FinalPartitioned
+        [Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3
+
+Stage 1: tasks=3, partitions=8
+  RepartitionExec: partitioning=Hash([RainToday@0], 8), input_partitions=3
+    AggregateExec: mode=Partial
+      DistributedLeafExec
+        t0: DataSourceExec: file_groups={3 groups: [...]}
+        t1: DataSourceExec: file_groups={3 groups: [...]}
+        t2: DataSourceExec: file_groups={3 groups: [...]}
 ```
 
-Same operators, same order. The planner only:
+That snapshot uses four DataFusion target partitions, three available worker
+URLs, a file-scan byte target small enough to request three leaf tasks, and a
+`distributed.cardinality_task_count_factor` of `1.5`. The factor defaults to
+`1.5` in tests and integration builds, but to `1.0` in a normal library build.
+Task and partition counts therefore depend on the session configuration,
+statistics, handlers, and available workers; they are not properties of the
+SQL query alone.
 
-- inserted a **`NetworkShuffleExec`** above the hash `RepartitionExec` (the shuffle now fans data across tasks),
-- inserted a **`NetworkCoalesceExec`** at the top to gather all tasks into the single head task,
-- wrapped the leaf in a **`DistributedLeafExec`** so each task scans its own slice of the files, and
-- grew the shuffle's partition count (4 → 8) because it now feeds multiple tasks.
+### Reading the distributed plan
 
-### Reading the output
+- `Stage 1: tasks=3, partitions=8` describes three instances of the stage. The
+  stage plan produces eight DataFusion partitions. Worker assignment happens
+  later, so this line does not mean three machines.
+- `NetworkShuffleExec: output_partitions=4, input_tasks=3` is a network
+  boundary that reads from the three producer tasks and exposes four output
+  partitions to the consumer plan. It preserves the hash partitioning required
+  by the final aggregate.
+- `NetworkCoalesceExec` gathers partitions from its input tasks without
+  repartitioning their rows. Here, `SortPreservingMergeExec` consumes the
+  gathered partitions in the coordinator's head stage.
+- `DistributedLeafExec` is one wrapper containing a plan variant for each task,
+  shown as `t0` through `t2`. Before a task is serialized, the coordinator
+  replaces the wrapper with only that task's `DataSourceExec` variant.
+- `DistributedExec` is the root executed by the client. It runs the head plan
+  locally and coordinates the remote producer stages behind the network
+  boundaries.
 
-- `┌───── Stage 1 ── tasks=3, partitions=8` — a stage running on **3 tasks**, each on a different worker,
-  together spanning **8 partitions**. Tasks are machines; partitions are the threads within a task.
-- `[Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3` — a **network boundary**: this node
-  streams the output of Stage 1 over Arrow Flight instead of from a child node. `input_tasks` is how many tasks
-  produced the data; `output_partitions` is how many partitions it exposes to its parent.
-- `DistributedExec` — the root and the only node the client executes. It hosts the **head stage**, which always
-  runs on a single task (the coordinator).
-- `DistributedLeafExec` — a transparent wrapper around the original leaf; `DistributedExec` swaps in the right
-  per-task variant before sending the stage to a worker.
+## Planning pipeline
 
-## Step by step
+### 1. Prepare a valid single-node plan
 
-The rest of this page walks the same transformation visually, on a four-file aggregation. To better understand
-what happens with the plan in the distribution process, we will represent it graphically:
+The planner first applies distribution-oriented rewrites that still leave a
+valid single-node plan:
 
-![img.png](../_static/images/img.png)
+1. Normalize `CollectLeft` joins.
+2. Add a `CoalescePartitionsExec` above a multi-partition root so the head can
+   later receive a coalescing network boundary.
+3. Insert `BroadcastExec` markers on eligible join build sides.
+4. Replace unions with `ChildrenIsolatorUnionExec` placeholders so their
+   children can be assigned across task slots.
 
-Note how the underlying `DataSourceExec` contains multiple non-overlapping pieces of data, represented with colors
-in the image. Depending on the underlying `DataSource` implementation in the `DataSourceExec` node, these can
-represent different things, such as different parquet files, or an external API from which we can gather data for different
-time ranges.
+These steps identify how the plan may be distributed without yet assigning
+worker URLs.
 
-The first step is to split the leaf node into different tasks:
+### 2. Choose task counts and specialize leaves
 
-![img_2.png](../_static/images/img_2.png)
+In static planning, `DesiredTaskCountHandler` implementations provide task
+count hints for leaves. The built-in file-scan handler estimates a desired
+count from file sizes and
+`distributed.file_scan_config_bytes_per_partition`. Custom data sources can
+register their own desired-task-count and scale-up handlers.
 
-Each task will handle a different non-overlapping piece of data.
+The planner combines child hints while walking upward. Operators' cardinality
+effects and `distributed.cardinality_task_count_factor` can increase or reduce
+the desired count for an upper stage. Counts are capped by
+`distributed.max_tasks_per_stage`, or by the number of resolved worker URLs
+when that option is zero.
 
-The number of tasks that will be used for executing leaf nodes is determined by
-`DesiredTaskCountHandler` implementations. Default handlers exist for file-based
-`DataSourceExec` nodes. However, since `DataSourceExec` can be customized to represent
-any data source, users with custom implementations should also provide corresponding
-desired task-count and leaf-scale handlers.
+Once a stage count is known, the count is propagated back through the stage.
+Leaf scale-up handlers create the per-task variants held by
+`DistributedLeafExec`. This is why the logical distributed plan contains one
+leaf wrapper rather than a separate independent leaf subtree for every task.
 
-the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
-partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a
-In the case above, a desired task-count handler decided to use four tasks for the leaf node. Note that even if we are distributing
-the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
-partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a
-the data across different tasks, each task will also distribute its data across partitions using the vanilla DataFusion
-partitioning mechanism. A partition is a split of data processed by a single thread on a single machine, whereas a 
-task is a split of data processed by an entire machine within a cluster.
+### 3. Insert stage boundaries
 
-After that, we can continue reconstructing the plan:
+The boundary pass keeps the prepared plan's topology and inserts one of three
+network nodes above a producer stage:
 
-![img_3.png](../_static/images/img_3.png)
+- `NetworkShuffleExec` above a hash `RepartitionExec` distributes hash ranges
+  among consumer tasks.
+- `NetworkBroadcastExec` above an eligible `BroadcastExec` makes the build-side
+  data available to each consumer task.
+- `NetworkCoalesceExec` below `CoalescePartitionsExec` or
+  `SortPreservingMergeExec` gathers producer partitions into the consumer.
 
-Nothing special to consider for now—the partial aggregation can simply be executed in parallel across different
-workers without further considerations.
+The planner does not add a batch-coalescing execution node before a shuffle.
+Worker stages inherit `datafusion.execution.batch_size` by default. Setting
+`distributed.shuffle_batch_size` to a nonzero value overrides that worker
+session value; `RepartitionExec` uses it through its internal
+`LimitedBatchCoalescer` when producing shuffle batches.
 
-Let's keep constructing the plan:
+### 4. Finalize the static plan
 
-![img_4.png](../_static/images/img_4.png)
+After boundary insertion, the planner:
 
-At this point, the plan encounters a `RepartitionExec` node, which requires repartitioning data so each partition
-handles a non-overlapping subset of grouping keys for the aggregation.
+1. prepares the boundaries, assigns stage identifiers, and removes boundaries
+   that are not needed;
+2. optionally inserts partial reductions below hash shuffles when
+   `distributed.partial_reduce` is enabled; and
+3. pushes a root fetch limit into a network coalesce when doing so is safe.
 
-While `RepartitionExec` redistributes data across threads on a single machine in vanilla DataFusion, it redistributes
-data across threads on different machines in the distributed context—requiring a network shuffle.
+If no network boundary remains, the original single-node plan is returned.
+Otherwise, the finalized plan is wrapped in `DistributedExec`.
 
-As we are about to send data over the network, it's convenient to coalesce smaller batches into larger ones to avoid
-the overhead of sending many small messages, and instead send fewer but larger messages:
+## Static and dynamic task sizing
 
-![img_5.png](../_static/images/img_5.png)
+With the default `distributed.dynamic_task_count=false`, task counts and all
+network boundaries are present in the physical plan before execution. The
+coordinator then routes every stage task and sends a task-specialized subplan
+to the selected worker URL.
 
-After this, we are ready to perform the shuffle over the network. For that, a new `ExecutionPlan` implementation is
-provided: `NetworkShuffleExec`:
+With dynamic task sizing enabled, the query planner performs the initial
+single-node preparation but defers boundary injection. During execution it
+builds and runs producer stages from the leaves upward, inserts a `SamplerExec`
+at each producer head, collects runtime row and byte statistics, and uses those
+statistics with `distributed.dynamic_bytes_per_partition` to choose the next
+stage's task count. The complete distributed shape is therefore known only
+after execution has progressed through all stages.
 
-![img_6.png](../_static/images/img_6.png)
+## Routing and transport
 
-A `NetworkShuffleExec`, instead of calling `execute()` on its child node, will execute it remotely through Arrow
-Flight, and each `NetworkShuffleExec` instance will know from which partitions and machines it should gather data.
+For each remote stage, the coordinator requests one worker URL per task from
+the registered `RouteTasksHandler` chain. For a single task, the built-in
+handlers first try to colocate it with the coordinator or a child stage. The
+fallback uses the URLs returned by `WorkerResolver` in round-robin order from a
+randomized starting offset. A URL can appear more than once, so tasks are
+execution slots, not workers.
 
-Note how this means that we have just built the first stage, as the first network boundary was introduced. We are now
-in the process of building the second stage, and note how it has just two tasks.
+Before sending a task, the coordinator specializes
+`ChildrenIsolatorUnionExec` and `DistributedLeafExec` for that task index,
+serializes the resulting plan, and sends it over `WorkerChannel`. The transport
+is abstracted by that trait. With the built-in gRPC implementation:
 
-If the number of tasks in a leaf stage is driven by the hints given by desired task-count handlers, the number of tasks in upper
-stages is driven by the nodes in between that reduce or increase the cardinality of the data.
+1. `WorkerService.CoordinatorChannel` carries the serialized plan, work-unit
+   messages, load reports, and final metrics.
+2. A network boundary calls `WorkerService.ExecuteTask` with a task key,
+   partition range, and producer-head description.
+3. `ExecuteTask` returns a server-side gRPC stream of Arrow Flight
+   `FlightData`. Application metadata identifies each message's original
+   partition so the receiving boundary can reconstruct the per-partition
+   streams.
 
-In this case, the leaf stage is performing a partial aggregation before sending data to the next stage, so we can
-assume that less compute will be needed, and therefore, we can reduce the width of the next stage to just two
-tasks.
-
-The rest of the plan can be formed as normal:
-
-![img_7.png](../_static/images/img_7.png)
-
-One final step remains: the plan's head is currently distributed across two machines, but the final result must be
-consolidated on a single node. In the same way that vanilla DataFusion coalesces all partitions into one in the head
-node for the user, we also need to do that, but not only across partitions on a single machine, but across tasks on
-different machines.
-
-For that, the `NetworkCoalesceExec` network boundary is introduced: it coalesces P partitions across N tasks into
-N*P partitions in one task. This does not imply repartitioning, or shuffling, or anything like that. The partitions
-are the same but joined into a single task:
-
-![img_8.png](../_static/images/img_8.png)
-
-Note how at this point, what the user sees is just an `ExecutionPlan` that can be executed as any other normal plan,
-but it will happen to be distributed under the hood.
+The wire format uses Arrow Flight's `FlightData`, but execution is performed by
+the project's `WorkerService` protocol rather than by an Arrow Flight service.
