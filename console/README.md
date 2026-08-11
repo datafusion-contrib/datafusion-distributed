@@ -46,32 +46,6 @@ On startup and every 5 seconds, it calls `GetClusterWorkers` on the seed worker,
 which returns URLs for all known workers via its `WorkerResolver`. New workers
 are added automatically; removed workers are cleaned up.
 
-## Monitoring an EC2 Benchmark Cluster
-
-The benchmark workers in [`benchmarks/cdk/`](../benchmarks/cdk/README.md) run on
-EC2 instances with the observability service enabled. Each worker listens on port
-9001 (gRPC/Flight + Observability) and port 9000 (HTTP benchmarks). The
-`Ec2WorkerResolver` discovers peers via `DescribeInstances`, so connecting the
-console to any single worker exposes the full cluster.
-
-To run the console, SSH into any instance in the cluster and install it there
-(the console runs inside the VPC so it can reach all workers on their private IPs):
-
-```bash
-cd benchmarks/cdk/
-npm run deploy
-
-# Connect to an instance via SSM
-aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION"
-
-# Install the Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-
-# Install the console binary from the repo
-cargo install --locked --git https://github.com/datafusion-contrib/datafusion-distributed.git \
-  datafusion-distributed-console
-
 # Run — connect to the local worker on port 9001
 datafusion-distributed-console 9001
 ```

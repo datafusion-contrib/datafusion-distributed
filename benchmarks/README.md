@@ -1,8 +1,9 @@
-# Distributed DataFusion Benchmarks
+# Local DataFusion benchmarks
 
 ### Generating Benchmarking data
 
-Generate datasets into `benchmarks/data/`.
+Generate datasets alongside the integration-test fixtures under `testdata/`.
+For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 
 ```shell
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16 - override by setting these environment variables)
@@ -17,26 +18,27 @@ Generate datasets into `benchmarks/data/`.
 After generating the data with the command above, the benchmarks can be run with:
 
 ```shell
-WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch_sf1
+WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1
 ```
 
 - `--threads`: This is the physical threads that the Tokio runtime will use for executing the
   binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
   individual process running queries, and simulate how adding throttled workers can speed up the
   queries.
-- `--dataset`: Dataset directory name under `benchmarks/data/` (e.g. `tpch_sf1`, `tpcds_sf1`).
+- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpcds/sf1`). It is
+  resolved to the corresponding `testdata/<suite>/<variant>` directory.
 
-### Running Benchmarks benchmarks in distributed mode
+### Running benchmarks with local workers
 
 The same script is used for running distributed benchmarks:
 
 ```shell
-WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch_sf1 --file-scan-config-bytes-per-partition 16777216
+WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1 --file-scan-config-bytes-per-partition 16777216
 ```
 
 - `WORKERS`: Env variable that sets the amount of localhost workers used in the query.
 - `--threads`: Sets the Tokio runtime threads for each individual worker and for the benchmarking
   binary.
-- `--dataset`: Dataset directory name under `benchmarks/data/`.
+- `--dataset`: Dataset directory name under `testdata`.
 - `--file-scan-config-bytes-per-partition`: How many bytes each partition is expected to scan. Lower values
   produce more partitions/tasks. Defaults to the engine default when unset.
