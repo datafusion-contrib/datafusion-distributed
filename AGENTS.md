@@ -36,8 +36,8 @@ about a user's networking or deployment stack.
     - `worker/`: worker service, sessions, task execution, and connections.
 - `tests/`: integration and correctness tests.
 - `examples/`: runnable usage examples.
-- `benchmarks/`: benchmark tooling; do not change benchmark behavior as an
-  incidental part of a library change.
+- `benchmarks/`: local benchmark crate and microbenchmarks; do not change
+  benchmark behavior as an incidental part of a library change.
 - `docs/`: Sphinx documentation. Contributor documentation is in
   `docs/source/contributor-guide/`.
 

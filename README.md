@@ -72,7 +72,8 @@ completed successfully; lower is better.
 The benchmarking code is public and open for anyone to easily reproduce. It uses
 AWS CDK for automating the creation of the benchmarking cluster so that anyone
 can reproduce the same results in their own AWS account. The code can be found
-in the [benchmarks/cdk](./benchmarks/cdk) directory.
+in the [datafusion-distributed-dev-tools](https://github.com/gabotechs/datafusion-distributed-dev-tools)
+repository.
 
 ## Core tenets of the project
 
