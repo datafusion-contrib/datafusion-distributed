@@ -65,12 +65,13 @@ impl QueryCoordinator {
         metrics_store: Option<Arc<MetricsStore>>,
         completed_dynamic_filter_store: Arc<CompletedDynamicFilterStore>,
     ) -> Self {
+        let dynamic_filter_registry = Arc::new(DynamicFilterRegistry::new(Arc::clone(&task_ctx)));
         Self {
             task_ctx,
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
-            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new()),
+            dynamic_filter_registry,
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),

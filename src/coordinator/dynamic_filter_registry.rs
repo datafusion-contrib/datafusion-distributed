@@ -1,10 +1,15 @@
-use crate::{NetworkBoundaryExt, ProducedDynamicFilter, TaskKey};
+use crate::{DistributedCodec, NetworkBoundaryExt, ProducedDynamicFilter, TaskKey};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{HashMap, HashSet, Result};
-use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
+use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::{BinaryExpr, DynamicFilterPhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion_proto::physical_plan::from_proto::parse_physical_expr;
+use datafusion_proto::physical_plan::to_proto::serialize_physical_expr;
 use datafusion_proto::protobuf::PhysicalExprNode;
 use datafusion_proto::protobuf::physical_expr_node::ExprType;
 use std::sync::{Arc, Mutex};
@@ -27,6 +32,7 @@ pub(super) struct PlannedDynamicFilter {
     pub(super) reports: HashMap<TaskKey, PhysicalExprNode>,
     /// Number of producer tasks whose latest state is complete.
     pub(super) completed_producer_count: usize,
+    pub(super) merged: Option<PhysicalExprNode>,
 }
 
 #[derive(Default)]
@@ -38,14 +44,17 @@ pub(super) struct DynamicFilterRegistryState {
 /// Query-scoped runtime topology for distributed hash-join dynamic filters.
 ///
 /// This is intentionally independent from the completed-consumer reports used to render plans.
-#[derive(Default)]
 pub(crate) struct DynamicFilterRegistry {
     pub(super) state: Mutex<DynamicFilterRegistryState>,
+    task_ctx: Arc<TaskContext>,
 }
 
 impl DynamicFilterRegistry {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(task_ctx: Arc<TaskContext>) -> Self {
+        Self {
+            state: Mutex::new(DynamicFilterRegistryState::default()),
+            task_ctx,
+        }
     }
 
     pub(crate) fn register_task(
@@ -132,6 +141,8 @@ impl DynamicFilterRegistry {
                 .consumer_tasks
                 .insert(task_key);
         }
+        drop(state);
+        self.try_merge_all();
         Ok(())
     }
 
@@ -141,6 +152,7 @@ impl DynamicFilterRegistry {
             .expect("dynamic filter registry poisoned")
             .sealed_stages
             .insert(stage_id);
+        self.try_merge_all();
     }
 
     pub(crate) fn add_report(&self, task_key: TaskKey, report: ProducedDynamicFilter) {
@@ -155,26 +167,27 @@ impl DynamicFilterRegistry {
         let Some(filter) = state.filters.get_mut(&report.expression_id) else {
             return;
         };
-        if filter.disabled || !filter.producer_tasks.contains(&task_key) {
+        if filter.disabled || filter.merged.is_some() || !filter.producer_tasks.contains(&task_key)
+        {
             return;
         }
 
-        let Some(previous) = filter.reports.get(&task_key) else {
-            filter.completed_producer_count += usize::from(is_complete);
-            filter.reports.insert(task_key, report.expression);
-            return;
+        let advances_state = match filter.reports.get(&task_key) {
+            None => true,
+            Some(previous) => {
+                let Some((previous_generation, previous_is_complete)) = report_state(previous)
+                else {
+                    // Only validated reports are inserted below.
+                    unreachable!("stored producer report must be a dynamic filter")
+                };
+                // A complete report is terminal. Otherwise, keep only a newer generation, except
+                // that completion may replace an incomplete report at the same generation because
+                // DataFusion's mark_complete() does not increment the generation.
+                !previous_is_complete
+                    && (generation > previous_generation
+                        || (generation == previous_generation && is_complete))
+            }
         };
-        let Some((previous_generation, previous_is_complete)) = report_state(previous) else {
-            // Only validated reports are inserted above.
-            unreachable!("stored producer report must be a dynamic filter")
-        };
-
-        // A complete report is terminal. Otherwise, keep only a newer generation, except that
-        // completion is allowed to replace an incomplete report at the same generation because
-        // DataFusion's mark_complete() does not increment the generation.
-        let advances_state = !previous_is_complete
-            && (generation > previous_generation
-                || (generation == previous_generation && is_complete));
         if !advances_state {
             return;
         }
@@ -183,7 +196,136 @@ impl DynamicFilterRegistry {
             filter.completed_producer_count += 1;
         }
         filter.reports.insert(task_key, report.expression);
+        drop(state);
+        self.try_merge(report.expression_id);
     }
+
+    fn try_merge_all(&self) {
+        let ids: Vec<_> = self
+            .state
+            .lock()
+            .expect("dynamic filter registry poisoned")
+            .filters
+            .keys()
+            .copied()
+            .collect();
+        for id in ids {
+            self.try_merge(id);
+        }
+    }
+
+    fn try_merge(&self, id: u64) {
+        if let Err(_error) = self.try_merge_inner(id)
+            && let Some(filter) = self
+                .state
+                .lock()
+                .expect("dynamic filter registry poisoned")
+                .filters
+                .get_mut(&id)
+        {
+            // Dynamic filtering is an optimization. A malformed or unsupported report must
+            // not fail the query.
+            filter.disabled = true;
+        }
+    }
+
+    fn try_merge_inner(&self, id: u64) -> Result<()> {
+        let (mode, schema, reports) = {
+            let state = self.state.lock().expect("dynamic filter registry poisoned");
+            let Some(filter) = state.filters.get(&id) else {
+                return Ok(());
+            };
+            if filter.disabled || filter.merged.is_some() {
+                return Ok(());
+            }
+            let (Some(mode), Some(schema)) = (filter.mode, filter.producer_schema.clone()) else {
+                return Ok(());
+            };
+
+            let mut task_keys: Vec<_> = filter.producer_tasks.iter().copied().collect();
+            task_keys.sort_unstable_by_key(|key| (key.stage_id, key.task_number));
+            let ready_keys = match mode {
+                PlannedHashJoinMode::CollectLeft => task_keys
+                    .into_iter()
+                    .find(|task_key| {
+                        filter
+                            .reports
+                            .get(task_key)
+                            .and_then(report_state)
+                            .is_some_and(|(_, is_complete)| is_complete)
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                PlannedHashJoinMode::Partitioned => {
+                    let stages_sealed = filter
+                        .producer_stages
+                        .iter()
+                        .all(|stage| state.sealed_stages.contains(stage));
+                    if !stages_sealed
+                        || task_keys.is_empty()
+                        || filter.completed_producer_count != task_keys.len()
+                    {
+                        return Ok(());
+                    }
+                    task_keys
+                }
+            };
+            if ready_keys.is_empty() {
+                return Ok(());
+            }
+            let reports = ready_keys
+                .into_iter()
+                .map(|task_key| filter.reports[&task_key].clone())
+                .collect::<Vec<_>>();
+            (mode, schema, reports)
+        };
+
+        let codec = DistributedCodec::new_combined_with_user(self.task_ctx.session_config());
+        let expressions = reports
+            .iter()
+            .map(|report| {
+                let expression =
+                    parse_physical_expr(report, &self.task_ctx, schema.as_ref(), &codec)?;
+                let dynamic_filter = expression
+                    .downcast_ref::<DynamicFilterPhysicalExpr>()
+                    .ok_or_else(|| {
+                        datafusion::common::internal_datafusion_err!(
+                            "producer report was not a DynamicFilterPhysicalExpr"
+                        )
+                    })?;
+                dynamic_filter.current()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let merged = match mode {
+            PlannedHashJoinMode::CollectLeft => Arc::clone(&expressions[0]),
+            PlannedHashJoinMode::Partitioned => balanced_or(expressions),
+        };
+        let merged = serialize_physical_expr(&merged, &codec)?;
+
+        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+        if let Some(filter) = state.filters.get_mut(&id)
+            && !filter.disabled
+        {
+            filter.merged.get_or_insert(merged);
+        }
+        Ok(())
+    }
+}
+
+fn balanced_or(mut expressions: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+    debug_assert!(!expressions.is_empty());
+    while expressions.len() > 1 {
+        let mut next = Vec::with_capacity(expressions.len().div_ceil(2));
+        let mut current = std::mem::take(&mut expressions).into_iter();
+        while let Some(left) = current.next() {
+            next.push(match current.next() {
+                Some(right) => Arc::new(BinaryExpr::new(left, Operator::Or, right)) as _,
+                None => left,
+            });
+        }
+        expressions = next;
+    }
+    expressions.pop().expect("non-empty expressions")
 }
 
 fn report_state(expression: &PhysicalExprNode) -> Option<(u64, bool)> {
@@ -198,10 +340,16 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::{JoinType, NullEquality};
+    use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, lit};
+    use datafusion::physical_expr::expressions::{
+        BinaryExpr, CaseExpr, Column, DynamicFilterPhysicalExpr, lit,
+    };
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::filter::FilterExec;
+    use datafusion::prelude::SessionContext;
+    use datafusion_proto::physical_plan::from_proto::parse_physical_expr;
+    use datafusion_proto::physical_plan::to_proto::serialize_physical_expr;
     use datafusion_proto::protobuf::PhysicalDynamicFilterNode;
     use uuid::Uuid;
 
@@ -236,7 +384,7 @@ mod tests {
             task_number: 1,
         };
 
-        let registry = DynamicFilterRegistry::new();
+        let registry = DynamicFilterRegistry::new(SessionContext::new().task_ctx());
         registry.register_task(&plan, task_key)?;
         registry.seal_stage(3);
 
@@ -290,7 +438,7 @@ mod tests {
     }
 
     fn registry_with_producer(expression_id: u64, task_key: TaskKey) -> DynamicFilterRegistry {
-        let registry = DynamicFilterRegistry::new();
+        let registry = DynamicFilterRegistry::new(SessionContext::new().task_ctx());
         registry.state.lock().unwrap().filters.insert(
             expression_id,
             PlannedDynamicFilter {
@@ -317,11 +465,148 @@ mod tests {
         }
     }
 
+    #[test]
+    fn partitioned_waits_for_all_tasks_then_merges_in_task_order() -> Result<()> {
+        let task_ctx = SessionContext::new().task_ctx();
+        let registry = DynamicFilterRegistry::new(Arc::clone(&task_ctx));
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let id = 99;
+        let task_0 = task_key(0);
+        let task_1 = task_key(1);
+        registry.state.lock().unwrap().filters.insert(
+            id,
+            PlannedDynamicFilter {
+                mode: Some(PlannedHashJoinMode::Partitioned),
+                producer_schema: Some(Arc::clone(&schema)),
+                producer_tasks: HashSet::from([task_0, task_1]),
+                producer_stages: HashSet::from([3]),
+                ..Default::default()
+            },
+        );
+        registry.seal_stage(3);
+
+        let task_1_predicate = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            lit(20_i32),
+        )) as Arc<dyn PhysicalExpr>;
+        registry.add_report(
+            task_1,
+            producer_report(id, Arc::clone(&task_1_predicate), false, &task_ctx)?,
+        );
+        {
+            let state = registry.state.lock().unwrap();
+            assert_eq!(state.filters[&id].completed_producer_count, 0);
+            assert!(state.filters[&id].merged.is_none());
+        }
+
+        registry.add_report(
+            task_1,
+            producer_report(id, task_1_predicate, true, &task_ctx)?,
+        );
+        {
+            let state = registry.state.lock().unwrap();
+            assert_eq!(state.filters[&id].completed_producer_count, 1);
+            assert!(state.filters[&id].merged.is_none());
+        }
+
+        registry.add_report(
+            task_0,
+            producer_report(
+                id,
+                Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("a", 0)),
+                    Operator::Gt,
+                    lit(10_i32),
+                )),
+                true,
+                &task_ctx,
+            )?,
+        );
+        let merged = registry.state.lock().unwrap().filters[&id]
+            .merged
+            .clone()
+            .unwrap();
+        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+        let merged = parse_physical_expr(&merged, &task_ctx, &schema, &codec)?;
+        assert_eq!(merged.to_string(), "a@0 > 10 OR a@0 < 20");
+        Ok(())
+    }
+
+    #[test]
+    fn collect_left_uses_first_completed_task() -> Result<()> {
+        let task_ctx = SessionContext::new().task_ctx();
+        let registry = DynamicFilterRegistry::new(Arc::clone(&task_ctx));
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let id = 100;
+        registry.state.lock().unwrap().filters.insert(
+            id,
+            PlannedDynamicFilter {
+                mode: Some(PlannedHashJoinMode::CollectLeft),
+                producer_schema: Some(Arc::clone(&schema)),
+                producer_tasks: HashSet::from([task_key(0), task_key(1)]),
+                producer_stages: HashSet::from([3]),
+                ..Default::default()
+            },
+        );
+        registry.add_report(
+            task_key(1),
+            producer_report(id, lit(true), true, &task_ctx)?,
+        );
+        assert!(registry.state.lock().unwrap().filters[&id].merged.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn partition_aware_cases_are_ored_whole() -> Result<()> {
+        let case_0 = Arc::new(CaseExpr::try_new(
+            Some(Arc::new(Column::new("partition", 0))),
+            vec![(lit(0_i32), lit(true))],
+            Some(lit(false)),
+        )?) as Arc<dyn PhysicalExpr>;
+        let case_1 = Arc::new(CaseExpr::try_new(
+            Some(Arc::new(Column::new("partition", 0))),
+            vec![(lit(1_i32), lit(true))],
+            Some(lit(false)),
+        )?) as Arc<dyn PhysicalExpr>;
+
+        let merged = balanced_or(vec![case_0, case_1]);
+        let merged = merged.downcast_ref::<BinaryExpr>().unwrap();
+        assert_eq!(merged.op(), &Operator::Or);
+        assert!(merged.left().downcast_ref::<CaseExpr>().is_some());
+        assert!(merged.right().downcast_ref::<CaseExpr>().is_some());
+        Ok(())
+    }
+
     fn task_key(task_number: usize) -> TaskKey {
         TaskKey {
             query_id: Uuid::nil(),
             stage_id: 3,
             task_number,
         }
+    }
+    fn producer_report(
+        expression_id: u64,
+        predicate: Arc<dyn PhysicalExpr>,
+        is_complete: bool,
+        task_ctx: &Arc<TaskContext>,
+    ) -> Result<ProducedDynamicFilter> {
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            predicate,
+        )) as Arc<dyn PhysicalExpr>;
+        if is_complete {
+            dynamic_filter
+                .downcast_ref::<DynamicFilterPhysicalExpr>()
+                .unwrap()
+                .mark_complete();
+        }
+        let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
+        let mut expression = serialize_physical_expr(&dynamic_filter, &codec)?;
+        expression.expr_id = Some(expression_id);
+        Ok(ProducedDynamicFilter {
+            expression_id,
+            expression,
+        })
     }
 }
