@@ -176,32 +176,32 @@ impl WorkerConn {
 
                 // Detect completed tasks: tasks that were running but disappeared
                 for old_task in &self.tasks {
-                    if old_task.status == TaskStatus::Running as i32 {
-                        if let Some(sk) = &old_task.task_key {
-                            let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
-                            if !new_task_keys.contains(&key) {
-                                // Task disappeared — assume completed
-                                let observed_duration = self
-                                    .task_first_seen
-                                    .get(&key)
-                                    .map(|first| first.elapsed())
-                                    .unwrap_or_default();
+                    if old_task.status == TaskStatus::Running as i32
+                        && let Some(sk) = &old_task.task_key
+                    {
+                        let key = (sk.query_id.clone(), sk.stage_id, sk.task_number);
+                        if !new_task_keys.contains(&key) {
+                            // Task disappeared — assume completed
+                            let observed_duration = self
+                                .task_first_seen
+                                .get(&key)
+                                .map(|first| first.elapsed())
+                                .unwrap_or_default();
 
-                                self.completed_tasks.push_front(CompletedTaskRecord {
-                                    query_id: sk.query_id.clone(),
-                                    stage_id: sk.stage_id,
-                                    task_number: sk.task_number,
-                                    observed_duration,
-                                });
+                            self.completed_tasks.push_front(CompletedTaskRecord {
+                                query_id: sk.query_id.clone(),
+                                stage_id: sk.stage_id,
+                                task_number: sk.task_number,
+                                observed_duration,
+                            });
 
-                                // Maintain bounded size
-                                while self.completed_tasks.len() > MAX_COMPLETED_TASKS {
-                                    self.completed_tasks.pop_back();
-                                }
-
-                                // Remove from first_seen tracking
-                                self.task_first_seen.remove(&key);
+                            // Maintain bounded size
+                            while self.completed_tasks.len() > MAX_COMPLETED_TASKS {
+                                self.completed_tasks.pop_back();
                             }
+
+                            // Remove from first_seen tracking
+                            self.task_first_seen.remove(&key);
                         }
                     }
                 }

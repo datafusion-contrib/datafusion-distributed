@@ -35,10 +35,10 @@ mod tests {
         let physical_distributed_str = display_plan_ascii(physical_distributed.as_ref(), false);
 
         assert_snapshot!(physical_str,
-            @r"
+            @"
         SortPreservingMergeExec: [count(*)@0 ASC NULLS LAST]
-          SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-            ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+            SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
               AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
                 RepartitionExec: partitioning=Hash([RainToday@0], 3), input_partitions=3
                   AggregateExec: mode=Partial, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
@@ -53,8 +53,8 @@ mod tests {
         │   [Stage 2] => NetworkCoalesceExec: output_partitions=6, input_tasks=2
         └──────────────────────────────────────────────────
           ┌───── Stage 2 ── tasks=2, partitions=3
-          │ SortExec: expr=[count(*)@0 ASC NULLS LAST], preserve_partitioning=[true]
-          │   ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          │ ProjectionExec: expr=[count(Int64(1))@1 as count(*), RainToday@0 as RainToday]
+          │   SortExec: expr=[count(Int64(1))@1 ASC NULLS LAST], preserve_partitioning=[true]
           │     AggregateExec: mode=FinalPartitioned, gby=[RainToday@0 as RainToday], aggr=[count(Int64(1))]
           │       [Stage 1] => NetworkShuffleExec: output_partitions=3, input_tasks=3
           └──────────────────────────────────────────────────

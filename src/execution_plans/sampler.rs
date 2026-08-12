@@ -12,6 +12,7 @@ use datafusion::common::{DataFusionError, Result, exec_err};
 use datafusion::common::{HashSet, ScalarValue};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::{Gauge, MetricValue, MetricsSet};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, Time};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -255,6 +256,7 @@ impl PartitionSampler {
                 // The input produced nothing at all: the stream is exhausted, so this partition
                 // reached EOS with zero rows.
                 reporter.load_info.reached_eos = true;
+                drop(reporter);
                 return Ok(peek.chain(input_stream).boxed());
             };
             let _guard = elapsed_compute.timer();
@@ -533,6 +535,13 @@ impl ExecutionPlan for SamplerExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
