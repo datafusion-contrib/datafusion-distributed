@@ -29,8 +29,8 @@ use datafusion_proto::physical_plan::{
     DefaultPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanNodeExt,
     PhysicalProtoConverterExtension,
 };
+use datafusion_proto::protobuf as df_proto;
 use datafusion_proto::protobuf::proto_error;
-use datafusion_proto::{TryFromProto, protobuf as df_proto};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -78,7 +78,7 @@ impl WorkUnitFeedProvider for FileScanWorkUnitProvider {
             return Ok(futures::stream::empty().boxed());
         };
         let stream = futures::stream::iter(file_group.files().to_vec()).map(|file| {
-            let file_proto = df_proto::PartitionedFile::try_from_proto(&file)
+            let file_proto = df_proto::PartitionedFile::try_from(&file)
                 .map_err(|e| internal_datafusion_err!("{e}"))?;
             Ok(FileScanWorkUnit {
                 file: Some(file_proto),
@@ -132,9 +132,8 @@ impl DataSource for WorkUnitFileScanConfig {
             .map(move |work_unit| {
                 let file = work_unit?.file.expect("missing file");
 
-                let df_file =
-                    datafusion::datasource::listing::PartitionedFile::try_from_proto(&file)
-                        .map_err(|e: DataFusionError| e)?;
+                let df_file = datafusion::datasource::listing::PartitionedFile::try_from(&file)
+                    .map_err(|e: DataFusionError| e)?;
                 let single_file_group = FileGroup::from(vec![df_file]);
 
                 let new_config = FileScanConfigBuilder::from(inner.clone())
@@ -157,6 +156,15 @@ impl DataSource for WorkUnitFileScanConfig {
                 Ok(())
             }
         }
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        ) -> Result<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
     }
 
     fn repartitioned(

@@ -347,8 +347,8 @@ mod tests {
         // this holds only if the converted join kept the original filter (the same instance
         // the probe-side scan subscribes to), not a lookalike replacement.
         assert_eq!(
-            original.dynamic_filter_expr().unwrap(),
-            converted.dynamic_filter_expr().unwrap()
+            original.dynamic_expressions_produced(),
+            converted.dynamic_expressions_produced()
         );
     }
 

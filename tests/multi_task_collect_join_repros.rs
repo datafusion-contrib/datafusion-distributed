@@ -103,7 +103,7 @@ mod tests {
         HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(id@0, id@0)], null_aware
           CoalescePartitionsExec
             DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet, /target/multi_task_collect_join_repros/build_side/part-1.parquet], [/target/multi_task_collect_join_repros/build_side/part-2.parquet, /target/multi_task_collect_join_repros/build_side/part-3.parquet]]}, projection=[id], file_type=parquet
-          DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet, /target/multi_task_collect_join_repros/probe_side/part-1.parquet], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet, /target/multi_task_collect_join_repros/probe_side/part-3.parquet]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ id@0 IS NULL OR id@0 >= 0 AND id@0 <= 99 AND id@0 IN (SET) ([<values>]) ], dynamic_rg_pruning=eligible, pruning_predicate=id_null_count@0 > 0 OR id_null_count@0 != row_count@2 AND id_max@1 >= 0 AND id_null_count@0 != row_count@2 AND id_min@3 <= 99, required_guarantees=[]
+          DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet, /target/multi_task_collect_join_repros/probe_side/part-1.parquet], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet, /target/multi_task_collect_join_repros/probe_side/part-3.parquet]]}, projection=[id], file_type=parquet
         ")
     }
 

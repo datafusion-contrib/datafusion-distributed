@@ -54,25 +54,28 @@ pub(crate) struct DistributedQueryPlanner {
     pub(crate) prev: Option<Arc<dyn QueryPlanner + Send + Sync>>,
 }
 
+use datafusion::catalog::Session;
+
 #[async_trait]
 impl QueryPlanner for DistributedQueryPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session: &dyn Session,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let session_state = session
+            .as_any()
+            .downcast_ref::<SessionState>()
+            .ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected SessionState".to_string())
+            })?;
         let original_plan = match &self.prev {
             None => {
                 // Use the default physical planner.
                 let planner = DefaultPhysicalPlanner::default();
-                planner
-                    .create_physical_plan(logical_plan, session_state)
-                    .await?
+                planner.create_physical_plan(logical_plan, session).await?
             }
-            Some(prev) => {
-                prev.create_physical_plan(logical_plan, session_state)
-                    .await?
-            }
+            Some(prev) => prev.create_physical_plan(logical_plan, session).await?,
         };
 
         create_distributed_plan(original_plan, session_state).await

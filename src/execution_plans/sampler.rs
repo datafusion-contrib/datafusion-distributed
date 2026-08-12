@@ -255,6 +255,7 @@ impl PartitionSampler {
                 // The input produced nothing at all: the stream is exhausted, so this partition
                 // reached EOS with zero rows.
                 reporter.load_info.reached_eos = true;
+                reporter.report(&peek);
                 return Ok(peek.chain(input_stream).boxed());
             };
             let _guard = elapsed_compute.timer();
@@ -533,6 +534,15 @@ impl ExecutionPlan for SamplerExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        ) -> Result<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

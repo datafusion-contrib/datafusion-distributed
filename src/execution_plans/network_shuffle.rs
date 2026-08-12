@@ -191,6 +191,18 @@ impl ExecutionPlan for NetworkShuffleExec {
         }
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        ) -> Result<
+            datafusion::common::tree_node::TreeNodeRecursion,
+            DataFusionError,
+        >,
+    ) -> Result<datafusion::common::tree_node::TreeNodeRecursion, DataFusionError> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
