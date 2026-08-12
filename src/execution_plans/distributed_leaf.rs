@@ -164,9 +164,6 @@ impl ExecutionPlan for DistributedLeafExec {
         &self,
         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        // `original` is deliberately hidden from `children()` so this remains a distributed leaf.
-        // It is the canonical representation of the task-specific variants, so expose its
-        // expression roots exactly as a transparent wrapper would.
         self.original.apply_expressions(f)
     }
 
