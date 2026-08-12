@@ -2,10 +2,10 @@
 # Empty workspace table to exclude this crate from parent workspace
 
 [package]
-name = "worker-gen"
+name = "datafusion-distributed-codegen"
 version = "0.1.0"
 edition = "2024"
-description = "Protobuf code generation for Worker service"
+description = "Protobuf code generation for DataFusion Distributed"
 publish = false
 
 [dependencies]
