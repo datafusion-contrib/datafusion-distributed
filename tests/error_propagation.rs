@@ -1,9 +1,9 @@
 #[cfg(all(feature = "integration", test))]
 mod tests {
-    use datafusion::common::tree_node::{Transformed, TreeNode};
+    use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
     use datafusion::error::DataFusionError;
     use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
-    use datafusion::physical_expr::EquivalenceProperties;
+    use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
@@ -13,7 +13,9 @@ mod tests {
     use datafusion_distributed::test_utils::localhost::start_localhost_context;
     use datafusion_distributed::test_utils::parquet::register_parquet_tables;
     use datafusion_distributed::{DistributedExt, WorkerQueryContext};
-    use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+    use datafusion_proto::physical_plan::{
+        PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    };
     use datafusion_proto::protobuf::proto_error;
     use futures::{TryStreamExt, stream};
     use prost::Message;
@@ -108,6 +110,15 @@ mod tests {
             vec![&self.child]
         }
 
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(
+                &Arc<dyn PhysicalExpr>,
+            ) -> datafusion::common::Result<TreeNodeRecursion>,
+        ) -> datafusion::common::Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
         fn with_new_children(
             self: Arc<Self>,
             children: Vec<Arc<dyn ExecutionPlan>>,
@@ -146,6 +157,7 @@ mod tests {
             buf: &[u8],
             inputs: &[Arc<dyn ExecutionPlan>],
             _ctx: &TaskContext,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
             let node =
                 ErrorThrowingExecProto::decode(buf).map_err(|err| proto_error(format!("{err}")))?;
@@ -167,6 +179,7 @@ mod tests {
             &self,
             node: Arc<dyn ExecutionPlan>,
             buf: &mut Vec<u8>,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> datafusion::common::Result<()> {
             let Some(plan) = node.downcast_ref::<ErrorThrowingExec>() else {
                 return Err(proto_error(format!(

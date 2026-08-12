@@ -1,8 +1,10 @@
 use datafusion::physical_plan::metrics::MetricsSet;
 use std::sync::Arc;
 
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
 use delegate::delegate;
@@ -51,6 +53,13 @@ impl ExecutionPlan for MetricsWrapperExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.inner.children()
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner.apply_expressions(f)
     }
 
     fn with_new_children(

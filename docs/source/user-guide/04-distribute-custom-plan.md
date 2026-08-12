@@ -19,6 +19,7 @@ emits their rows:
 struct ShardedScanExec {
     shards: Vec<String>, // the shards this node reads
     schema: SchemaRef,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     properties: PlanProperties,
     // ...its ExecutionPlan impl (execute(), etc.) is omitted here...
 }
@@ -42,17 +43,31 @@ ships it over gRPC, and the worker deserializes it. DataFusion's built-in nodes
 already know how to do this; your node needs a `PhysicalExtensionCodec`:
 
 ```rust
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalPlanDecodeContext,
+    PhysicalProtoConverterExtension,
+};
 
 #[derive(Debug)]
 struct ShardedScanCodec;
 
 impl PhysicalExtensionCodec for ShardedScanCodec {
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(scan) = node.downcast_ref::<ShardedScanExec>() else {
             return internal_err!("expected ShardedScanExec, got {}", node.name());
         };
-        // ...serialize scan.shards and the schema into `buf` (e.g. with prost)...
+        let predicate = scan
+            .predicate
+            .as_ref()
+            .map(|expr| proto_converter.physical_expr_to_proto(expr, self))
+            .transpose()?;
+        // Your prost helper serializes the shards, schema, and converted predicate.
+        encode_sharded_scan(buf, &scan.shards, &scan.schema, predicate)?;
         Ok(())
     }
 
@@ -60,12 +75,29 @@ impl PhysicalExtensionCodec for ShardedScanCodec {
         &self,
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // ...rebuild a ShardedScanExec (shard list + schema) from `buf`...
+        // Your prost helper returns the shard list, schema, and predicate proto.
+        let (shards, schema, predicate_proto) = decode_sharded_scan(buf)?;
+        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
+        let predicate = predicate_proto
+            .as_ref()
+            .map(|expr| {
+                proto_converter.proto_to_physical_expr(expr, schema.as_ref(), &decode_ctx)
+            })
+            .transpose()?;
+        Ok(Arc::new(ShardedScanExec::new(
+            shards,
+            schema,
+            predicate,
+        )))
     }
 }
 ```
+
+Use `proto_converter` for any physical expressions or nested plans stored in
+your custom protobuf payload.
 
 The node is encoded on the coordinating context and decoded on the worker, so the
 codec must be registered on **both** sides.
@@ -155,7 +187,11 @@ fn sharded_scan_scale_up_leaf_node(
         per_task[i % event.task_count].push(shard.clone());
     }
     let variants = per_task.into_iter().map(|shards| {
-        Arc::new(ShardedScanExec::new(shards, scan.schema())) as Arc<dyn ExecutionPlan>
+        Arc::new(ShardedScanExec::new(
+            shards,
+            scan.schema(),
+            scan.predicate.clone(),
+        )) as Arc<dyn ExecutionPlan>
     });
 
     let leaf = DistributedLeafExec::try_new(Arc::clone(event.plan), variants)
