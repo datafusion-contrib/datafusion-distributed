@@ -7,7 +7,5 @@ testdata/tpcds/*
 !testdata/tpcds/README.md
 testdata/clickbench/*
 !testdata/clickbench/queries
-src/protocol/grpc/observability/gen/target/*
-src/protocol/grpc/observability/gen/Cargo.lock
-src/protocol/grpc/gen/target/*
-src/protocol/grpc/gen/Cargo.lock
+codegen/target/*
+codegen/Cargo.lock
