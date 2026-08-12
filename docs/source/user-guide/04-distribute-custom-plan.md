@@ -42,13 +42,20 @@ ships it over gRPC, and the worker deserializes it. DataFusion's built-in nodes
 already know how to do this; your node needs a `PhysicalExtensionCodec`:
 
 ```rust
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+};
 
 #[derive(Debug)]
 struct ShardedScanCodec;
 
 impl PhysicalExtensionCodec for ShardedScanCodec {
-    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
         let Some(scan) = node.downcast_ref::<ShardedScanExec>() else {
             return internal_err!("expected ShardedScanExec, got {}", node.name());
         };
@@ -61,6 +68,7 @@ impl PhysicalExtensionCodec for ShardedScanCodec {
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // ...rebuild a ShardedScanExec (shard list + schema) from `buf`...
     }

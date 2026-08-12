@@ -40,7 +40,7 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
     let partition_count = ev.plan.output_partitioning().partition_count();
 
-    let rebalanced = if file_scan.partitioned_by_file_group {
+    let rebalanced = if file_scan.output_partitioning.is_some() {
         let all_partitioned_files = file_scan
             .file_groups
             .iter()
