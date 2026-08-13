@@ -1,5 +1,9 @@
 # Local DataFusion benchmarks
 
+The crate also owns the `worker` binary deployed by the remote benchmark
+harness. Keeping that binary here makes API changes to DataFusion Distributed
+and its benchmark worker compile together from the same revision.
+
 ### Generating Benchmarking data
 
 Generate datasets alongside the integration-test fixtures under `testdata/`.
