@@ -232,23 +232,6 @@ async fn _inject_network_boundaries(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let broadcast_joins_enabled = nb_ctx.d_cfg.broadcast_joins;
 
-    if plan.children().is_empty() {
-        // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the
-        // user. We need to estimate how many tasks are needed for this leaf node, and we'll take
-        // this decision into account when deciding how many tasks will be actually used.
-        let ev = DesiredTaskCountEvent {
-            plan: &plan,
-            session_config: nb_ctx.cfg,
-        };
-        return if let Some(estimate) = DesiredTaskCountHandlers::handle(ev).await.transpose()? {
-            Ok(nb_ctx.plan_with_task_count(plan, estimate.task_count.limit(nb_ctx.max_tasks()?)))
-        } else {
-            // We could not determine how many tasks this leaf node should run on, so
-            // assume it cannot be distributed and use just 1 task.
-            Ok(nb_ctx.plan_with_task_count(plan, Maximum(1)))
-        };
-    }
-
     let mut futures = Vec::with_capacity(plan.children().len());
     for child in plan.children() {
         let child = Arc::clone(child);
@@ -264,11 +247,17 @@ async fn _inject_network_boundaries(
         plan: &plan,
         session_config: nb_ctx.cfg,
     };
-    let mut task_count = DesiredTaskCountHandlers::handle(ev)
+    let desired_task_count = DesiredTaskCountHandlers::handle(ev)
         .await
         .transpose()?
-        .map_or(Desired(1), |v| v.task_count);
-    if plan.is::<ChildrenIsolatorUnionExec>() {
+        .map(|v| v.task_count);
+
+    let mut task_count = if plan.children().is_empty() {
+        // This is a leaf node, maybe a DataSourceExec, or maybe something else custom from the user.
+        // If we could not determine how many tasks this leaf node should run on, we need to assume
+        // it cannot be distributed and use just 1 task.
+        desired_task_count.unwrap_or(Maximum(1))
+    } else if plan.is::<ChildrenIsolatorUnionExec>() {
         // Isolating unions have the chance to decide how many tasks they should run on. If there
         // is a union with a bunch of children, the user might want to increase parallelism and the
         // task count for the stage running that.
@@ -276,7 +265,7 @@ async fn _inject_network_boundaries(
         for processed_child in processed_children.iter() {
             count += nb_ctx.task_count(processed_child)?.as_usize();
         }
-        task_count = Desired(count);
+        Desired(count)
     } else if let Some(node) = plan.downcast_ref::<HashJoinExec>()
         && node.mode == PartitionMode::CollectLeft
         && (!broadcast_joins_enabled
@@ -291,7 +280,7 @@ async fn _inject_network_boundaries(
         // by [normalize_collect_joins], so they never reach this arm. `!is_left_broadcast_safe()`
         // captures any remaining types that were not rewritten (for instance, cases where both
         // sides have one output partition).
-        task_count = Maximum(1);
+        Maximum(1)
     } else if let Some(node) = plan.downcast_ref::<NestedLoopJoinExec>()
         && (!broadcast_joins_enabled
             || node.join_type() == &JoinType::Full
@@ -304,13 +293,14 @@ async fn _inject_network_boundaries(
         // to probe-side-emitting ones by [normalize_collect_joins]. `!is_left_broadcast_safe()`
         // captures any remaining types that were not rewritten (for instance, cases where both
         // sides have one output partition).
-        task_count = Maximum(1);
+        Maximum(1)
     } else if plan.is::<CrossJoinExec>() && !broadcast_joins_enabled {
         // A CrossJoin also collects its entire left side in every task. It is always safe to
         // broadcast (it emits only pair rows), so it is only restricted to a single task when
         // broadcasts are unavailable.
-        task_count = Maximum(1);
+        Maximum(1)
     } else {
+        let mut task_count = desired_task_count.unwrap_or(Desired(1));
         // The task count for this plan is decided by the biggest task count from the children; unless
         // a child specifies a maximum task count, in that case, the maximum is respected. Some
         // nodes can only run in one task. If there is a subplan with a single node declaring that
@@ -318,7 +308,8 @@ async fn _inject_network_boundaries(
         for processed_child in processed_children.iter() {
             task_count = task_count.merge(nb_ctx.task_count(processed_child)?)
         }
-    }
+        task_count
+    };
 
     let plan = plan.with_new_children(processed_children)?;
     // Cap the reconciled task count by the configured max-per-stage budget.
@@ -367,11 +358,7 @@ async fn _inject_network_boundaries(
     // If the parent of the current node is either a `CoalescePartitionsExec` or a
     // `SortPreservingMergeExec`, a network boundary below it is necessary.
     else if let Some(parent) = parent
-        // If this node is a leaf node, putting a network boundary above is a bit wasteful, so
-        // we don't want to do it.
-        && !plan.children().is_empty()
-        && (parent.is::<CoalescePartitionsExec>()
-        || parent.is::<SortPreservingMergeExec>())
+        && (parent.is::<CoalescePartitionsExec>() || parent.is::<SortPreservingMergeExec>())
     {
         let input_stage = LocalStage {
             query_id: nb_ctx.query_id,
@@ -706,7 +693,7 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"DataSourceExec: task_count=Desired(4)")
+        assert_snapshot!(annotated, @"DistributedLeafExec: task_count=Desired(4)")
     }
 
     #[tokio::test]
@@ -831,7 +818,8 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DistributedLeafExec: task_count=Maximum(1)
+            NetworkCoalesceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Maximum(1)
         ")
     }
@@ -1139,10 +1127,11 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
+        assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DistributedLeafExec: task_count=Maximum(1)
+            NetworkCoalesceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Maximum(1)
         ");
     }
@@ -1190,10 +1179,11 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(true);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
+        assert_snapshot!(annotated, @r"
         NestedLoopJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DistributedLeafExec: task_count=Maximum(1)
+            NetworkCoalesceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Maximum(1)
         ");
     }
@@ -1213,10 +1203,11 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
-        assert_snapshot!(annotated, @"
+        assert_snapshot!(annotated, @r"
         CrossJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DistributedLeafExec: task_count=Maximum(1)
+            NetworkCoalesceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Maximum(1)
         ");
     }
@@ -1240,7 +1231,8 @@ mod tests {
         assert_snapshot!(annotated, @r"
         HashJoinExec: task_count=Maximum(1)
           CoalescePartitionsExec: task_count=Maximum(1)
-            DistributedLeafExec: task_count=Maximum(1)
+            NetworkCoalesceExec: task_count=Maximum(1)
+              DistributedLeafExec: task_count=Desired(4)
           DistributedLeafExec: task_count=Maximum(1)
         ")
     }
