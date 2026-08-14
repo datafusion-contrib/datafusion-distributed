@@ -89,13 +89,14 @@ The key differences are:
 - `┌───── Stage 1 ── tasks=2, partitions=4` — a stage running on **3 tasks**,
   each on a different worker, together spanning **8 partitions**. Tasks are
   machines; partitions are the threads within a task.
-- `[Stage 1] => NetworkShuffleExec: output_partitions=4, input_tasks=3` — a
-  **network boundary**: this node streams the output of Stage 1 over Arrow
-  Flight instead of from a child node. `input_tasks` is how many tasks produced
-  the data; `output_partitions` is how many partitions it exposes to its parent.
+- `[Stage 1] => NetworkShuffleExec: output_partitions=2, input_tasks=2` — a
+  **network boundary**: this node streams the output of Stage 1 over the network
+  using a Flight stream. `input_tasks` is how many tasks produced the data;
+  `output_partitions` is how many partitions it exposes to its parent.
 - `DistributedExec` — the root and the only node the client executes. It hosts
   the **head stage**, which always runs on a single task (the coordinator).
-- `DistributedLeafExec` — a transparent wrapper around the original leaf;
+- `DistributedLeafExec` — a transparent wrapper that carries the different
+  `DataSourceExec` variants that should be executed in the different workers;
   `DistributedExec` swaps in the right per-task variant before sending the stage
   to a worker.
 
