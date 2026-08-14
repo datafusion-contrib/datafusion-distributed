@@ -5,6 +5,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use moka::future::Cache;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use url::Url;
 
@@ -20,6 +21,7 @@ pub struct Worker {
     /// TASK_CACHE_TTI seconds. This prevents memory leaks from abandoned or incomplete queries
     /// while allowing concurrent access to task results across multiple partition requests.
     pub(crate) task_data_entries: Arc<TaskDataEntries>,
+    reject_unregistered_execute_tasks: Arc<AtomicBool>,
     pub(super) session_builder: Arc<dyn WorkerSessionBuilder + Send + Sync>,
     pub(crate) max_message_size: Option<usize>,
     pub(super) version: Cow<'static, str>,
@@ -31,6 +33,7 @@ impl Default for Worker {
         Self {
             runtime: Arc::new(RuntimeEnv::default()),
             task_data_entries: Arc::new(cache),
+            reject_unregistered_execute_tasks: Arc::new(AtomicBool::new(false)),
             session_builder: Arc::new(DefaultSessionBuilder),
             max_message_size: Some(usize::MAX),
             version: Cow::Borrowed(""),
@@ -39,6 +42,17 @@ impl Default for Worker {
 }
 
 impl Worker {
+    /// Enters drain mode for task execution.
+    ///
+    /// Once enabled, [`Self::execute_task`] accepts only task keys that are already registered on
+    /// this worker. Calls for unregistered keys fail immediately, while registered tasks remain
+    /// available to drain. This transition is irreversible and applies to all clones of this
+    /// worker.
+    pub fn reject_unregistered_execute_tasks(&self) {
+        self.reject_unregistered_execute_tasks
+            .store(true, Ordering::Release);
+    }
+
     /// Builds a [Worker] with a custom [WorkerSessionBuilder]. Use this
     /// method whenever you need to add custom stuff to the `SessionContext` that executes the query.
     pub fn from_session_builder(
@@ -101,5 +115,10 @@ impl Worker {
         // `entry_count()` task data.
         self.task_data_entries.run_pending_tasks().await;
         self.task_data_entries.entry_count() as usize
+    }
+
+    pub(super) fn rejects_unregistered_execute_tasks(&self) -> bool {
+        self.reject_unregistered_execute_tasks
+            .load(Ordering::Acquire)
     }
 }

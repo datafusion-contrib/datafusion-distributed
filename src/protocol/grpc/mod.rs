@@ -8,6 +8,7 @@ mod spawn_select_all;
 mod worker_client;
 mod worker_service;
 
+pub(crate) use errors::datafusion_error_to_tonic_status;
 // TODO: this should not be exposed.
 pub(crate) use channel_resolver::DEFAULT_CHANNEL_RESOLVER_PER_RUNTIME;
 

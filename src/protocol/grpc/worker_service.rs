@@ -1,4 +1,4 @@
-use super::errors::{datafusion_error_to_tonic_status, map_status_to_datafusion_error};
+use super::errors::map_status_to_datafusion_error;
 use super::generated::worker as pb;
 use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
@@ -6,6 +6,7 @@ use super::spawn_select_all::spawn_select_all;
 use crate::common::{deserialize_uuid, now_ns};
 use crate::protocol::ProducerHeadSpec;
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
+use crate::worker::execute_task_error_to_tonic_status;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, SetPlanRequest,
     TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
@@ -128,7 +129,7 @@ impl pb::worker_service_server::WorkerService for Worker {
         let (arrow_streams, task_ctx) = self
             .execute_task(request)
             .await
-            .map_err(datafusion_error_to_tonic_status)?;
+            .map_err(execute_task_error_to_tonic_status)?;
 
         let d_cfg = DistributedConfig::from_config_options(task_ctx.session_config().options())
             .map_err(datafusion_error_to_tonic_status)?;
