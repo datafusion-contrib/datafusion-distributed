@@ -275,6 +275,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_insert_broadcast_keeps_fetch_bearing_coalesce_below_broadcast() {
+        // A LIMIT on the build side is carried by CoalescePartitionsExec::fetch. That
+        // coalesce must stay *below* BroadcastExec so the limit is applied once before
+        // fan-out rather than independently in every consumer task.
+        let query = r#"
+        SELECT a."MinTemp", b."MaxTemp"
+        FROM (SELECT "MinTemp", "RainToday" FROM weather OFFSET 0 LIMIT 50) a
+        INNER JOIN weather b
+        ON a."RainToday" = b."RainToday"
+        "#;
+        let plan = sql_to_plan_with_broadcast(query, true, 4).await;
+        assert_snapshot!(plan, @r"
+        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
+          CoalescePartitionsExec
+            BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+          DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
+        ");
+    }
+
+    #[tokio::test]
     async fn test_insert_broadcast_cross_join() {
         let query = r#"
         SELECT a."MinTemp", b."MaxTemp"
