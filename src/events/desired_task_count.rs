@@ -147,8 +147,9 @@ impl Debug for TaskCountAnnotation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             // Keep whole-number hints formatted as `Desired(3)` so existing plan output remains
-            // stable while fractional hints are still shown exactly.
-            Desired(desired) => write!(f, "Desired({desired})"),
+            // stable while fractional hints use a compact, predictable precision.
+            Desired(desired) if desired.fract() == 0.0 => write!(f, "Desired({desired})"),
+            Desired(desired) => write!(f, "Desired({desired:.2})"),
             Maximum(maximum) => write!(f, "Maximum({maximum})"),
         }
     }

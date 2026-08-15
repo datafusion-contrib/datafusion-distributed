@@ -790,8 +790,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @"
-        HashJoinExec: task_count=Desired(2)
-          NetworkShuffleExec: task_count=Desired(2)
+        HashJoinExec: task_count=Desired(1.33)
+          NetworkShuffleExec: task_count=Desired(1.33)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -801,7 +801,7 @@ mod tests {
                         FilterExec: task_count=Desired(4)
                           RepartitionExec: task_count=Desired(4)
                             DistributedLeafExec: task_count=Desired(4)
-          NetworkShuffleExec: task_count=Desired(2)
+          NetworkShuffleExec: task_count=Desired(1.33)
             RepartitionExec: task_count=Desired(2)
               ProjectionExec: task_count=Desired(2)
                 AggregateExec: task_count=Desired(2)
@@ -851,8 +851,8 @@ mod tests {
             .broadcast_joins(false);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(3)
-          NetworkShuffleExec: task_count=Desired(3)
+        AggregateExec: task_count=Desired(2.67)
+          NetworkShuffleExec: task_count=Desired(2.67)
             RepartitionExec: task_count=Desired(4)
               AggregateExec: task_count=Desired(4)
                 DistributedLeafExec: task_count=Desired(4)
@@ -883,6 +883,32 @@ mod tests {
               RepartitionExec: task_count=Maximum(2)
                 DistributedLeafExec: task_count=Maximum(2)
         ")
+    }
+
+    #[tokio::test]
+    async fn test_union_all_zero_task_count_leaves() {
+        let query = r#"
+        SELECT "MinTemp" FROM weather WHERE "RainToday" = 'yes'
+        UNION ALL
+        SELECT "MaxTemp" FROM weather WHERE "RainToday" = 'no'
+        "#;
+        let test_plan_builder = TestPlanBuilder::new()
+            .target_partitions(4)
+            .num_workers(4)
+            .distributed_planner(false)
+            .broadcast_joins(false)
+            .desired_task_count_handler(zero_leaf_desired_task_count_handler);
+        // Two 0.0 leaf hints sum to Desired(0) before rounding. The isolator
+        // then rejects a zero-task union as an internal planning error rather
+        // than silently collapsing to a single task.
+        let err = annotate_test_plan_result(test_plan_builder, query)
+            .await
+            .expect_err("zero-task union should fail planning");
+        assert!(
+            err.to_string()
+                .contains("ChildrenIsolatorUnionExec had a task count 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -996,8 +1022,8 @@ mod tests {
             .desired_task_count_handler(repartition_max_one_desired_task_count_handler);
         let annotated = annotate_test_plan(test_plan_builder, query).await;
         assert_snapshot!(annotated, @r"
-        AggregateExec: task_count=Desired(1)
-          NetworkShuffleExec: task_count=Desired(1)
+        AggregateExec: task_count=Desired(0.67)
+          NetworkShuffleExec: task_count=Desired(0.67)
             RepartitionExec: task_count=Desired(1)
               AggregateExec: task_count=Desired(1)
                 DistributedLeafExec: task_count=Desired(1)
@@ -1366,6 +1392,15 @@ mod tests {
             .then(|| Ok(DesiredTaskCountEventResponse::desired(0.4)))
     }
 
+    fn zero_leaf_desired_task_count_handler(
+        ev: DesiredTaskCountEvent,
+    ) -> Option<Result<DesiredTaskCountEventResponse>> {
+        ev.plan
+            .children()
+            .is_empty()
+            .then(|| Ok(DesiredTaskCountEventResponse::desired(0.0)))
+    }
+
     fn broadcast_build_coalesce_max_desired_task_count_handler(
         ev: DesiredTaskCountEvent,
     ) -> Option<Result<DesiredTaskCountEventResponse>> {
@@ -1377,16 +1412,22 @@ mod tests {
     }
 
     async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {
+        annotate_test_plan_result(test_plan_builder, query)
+            .await
+            .expect("failed to annotate plan")
+    }
+
+    async fn annotate_test_plan_result(
+        test_plan_builder: TestPlanBuilder,
+        query: &str,
+    ) -> datafusion::error::Result<String> {
         let test_plan = test_plan_builder.build().await;
         let plan = test_plan.physical_plan(query).await;
         let session_config = test_plan.get_ctx().copied_config();
 
-        let plan = normalize_collect_joins(plan, session_config.options())
-            .expect("failed to normalize collect joins");
-        let plan = insert_broadcast_execs(plan, session_config.options())
-            .expect("failed to insert broadcasts");
-        let plan = insert_children_isolator_unions(plan, session_config.options())
-            .expect("failed to insert children isolator unions");
+        let plan = normalize_collect_joins(plan, session_config.options())?;
+        let plan = insert_broadcast_execs(plan, session_config.options())?;
+        let plan = insert_children_isolator_unions(plan, session_config.options())?;
         let network_boundaries_ctx = InjectNetworkBoundaryContext {
             cfg: &session_config,
             d_cfg: DistributedConfig::from_config_options(session_config.options()).unwrap(),
@@ -1397,10 +1438,8 @@ mod tests {
             nb_builder: &CardinalityBasedNetworkBoundaryBuilder,
         };
 
-        let annotated = _inject_network_boundaries(plan, None, &network_boundaries_ctx)
-            .await
-            .expect("failed to annotate plan");
-        debug_annotated(&annotated, 0, &network_boundaries_ctx)
+        let annotated = _inject_network_boundaries(plan, None, &network_boundaries_ctx).await?;
+        Ok(debug_annotated(&annotated, 0, &network_boundaries_ctx))
     }
 
     fn debug_annotated(

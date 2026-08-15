@@ -26,13 +26,11 @@ pub(crate) fn file_scan_config_desired_task_count(
         }
     }
 
-    let task_count = total_bytes
-        .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
-        .div_ceil(cfg.target_partitions());
+    let bytes_per_partition = d_cfg.file_scan_config_bytes_per_partition.max(1) as f64;
+    let target_partitions = cfg.target_partitions().max(1) as f64;
+    let task_count = total_bytes as f64 / bytes_per_partition / target_partitions;
 
-    Some(Ok(DesiredTaskCountEventResponse::desired(
-        task_count as f64,
-    )))
+    Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
 
 pub(crate) fn file_scan_config_scale_up_leaf_node(
