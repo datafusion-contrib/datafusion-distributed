@@ -290,7 +290,7 @@ mod tests {
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(RainToday@1, RainToday@1)], projection=[MinTemp@0, MaxTemp@2]
           CoalescePartitionsExec
             BroadcastExec: input_partitions=1, consumer_tasks=1, output_partitions=1
-              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000000.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
+              DataSourceExec: file_groups={1 group: [[/testdata/weather/result-000001.parquet]]}, projection=[MinTemp, RainToday], limit=50, file_type=parquet
           DataSourceExec: file_groups={3 groups: [[/testdata/weather/result-000000.parquet], [/testdata/weather/result-000001.parquet], [/testdata/weather/result-000002.parquet]]}, projection=[MaxTemp, RainToday], file_type=parquet, predicate=DynamicFilter [ empty ]
         ");
     }
