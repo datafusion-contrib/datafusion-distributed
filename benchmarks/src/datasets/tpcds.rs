@@ -57,7 +57,7 @@ fn unzip_benchmarks(
         return Ok(());
     }
 
-    let file = fs::File::open(zip_path)?;
+    let file = fs::File::open(&zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     let sf_marker = format!("tpcds/data/sf{}/", format_scale_factor(sf));
     let mut extracted = 0usize;
