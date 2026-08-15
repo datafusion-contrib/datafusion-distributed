@@ -16,8 +16,10 @@ pub fn settings() -> insta::Settings {
     unsafe { env::set_var("INSTA_WORKSPACE_ROOT", env!("CARGO_MANIFEST_DIR")) };
     let mut settings = insta::Settings::clone_current();
     let cwd = env::current_dir().unwrap();
-    let cwd = cwd.to_str().unwrap();
-    settings.add_filter(cwd.trim_start_matches("/"), "");
+    // Plans use forward slashes even on Windows. Escape the path so drive
+    // letters and backslashes are not treated as regex syntax.
+    let cwd = cwd.to_string_lossy().replace('\\', "/");
+    settings.add_filter(&regex_escape(cwd.trim_start_matches('/')), "");
     settings.add_filter(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
         "UUID",
@@ -31,4 +33,18 @@ pub fn settings() -> insta::Settings {
         "${1}<values>${2}",
     );
     settings
+}
+
+fn regex_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        if matches!(
+            c,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }

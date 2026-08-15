@@ -611,13 +611,17 @@ fn metrics_by_task_id(metrics: &MetricsSet) -> HashMap<usize, MetricsSet> {
 fn format_tasks_for_stage(n_tasks: usize, head: &Arc<dyn ExecutionPlan>) -> String {
     let partitioning = head.properties().output_partitioning();
     let input_partitions = partitioning.partition_count();
-    let hash_shuffle = matches!(partitioning, Partitioning::Hash(_, _));
-    // In a hash shuffle every task reads the same partition range, so the stage spans
-    // `input_partitions` distinct partitions. Otherwise each task owns its own slice, for a total
-    // of `n_tasks * input_partitions`.
-    let partitions = match hash_shuffle {
-        true => input_partitions,
-        false => n_tasks * input_partitions,
+    // Hash and Range both assign the same partition index to the same key across
+    // tasks, so the stage spans `input_partitions` distinct partitions. Otherwise
+    // each task owns its own slice, for a total of `n_tasks * input_partitions`.
+    let aligned_partitions = matches!(
+        partitioning,
+        Partitioning::Hash(_, _) | Partitioning::Range(_)
+    );
+    let partitions = if aligned_partitions {
+        input_partitions
+    } else {
+        n_tasks * input_partitions
     };
     format!("tasks={n_tasks}, partitions={partitions}")
 }
