@@ -14,7 +14,7 @@ use tpcdsgen::row::{
     CustomerAddressRowGenerator, CustomerDemographicsRowGenerator, CustomerRowGenerator,
     DateDimRowGenerator, HouseholdDemographicsRowGenerator, IncomeBandRowGenerator,
     InventoryRowGenerator, ItemRowGenerator, PromotionRowGenerator, ReasonRowGenerator,
-    RowGenerator, ShipModeRowGenerator, StoreRowGenerator, StoreSalesRowGenerator,
+    RowGenerator, ShipModeRowGenerator, StoreRowGenerator, StoreSalesRowGenerator, TableRow,
     TimeDimRowGenerator, WarehouseRowGenerator, WebPageRowGenerator, WebSalesRowGenerator,
     WebSiteRowGenerator,
 };
