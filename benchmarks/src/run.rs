@@ -131,7 +131,7 @@ pub struct RunOpt {
 
 fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusionError> {
     match dataset {
-        "tpch" => tpch::get_queries()
+        "tpch" | "tpch-sorted" => tpch::get_queries()
             .into_iter()
             .map(|id| Ok((id.clone(), tpch::get_query(&id)?)))
             .collect(),
