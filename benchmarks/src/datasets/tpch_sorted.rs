@@ -1,8 +1,6 @@
 use super::tpch;
-use arrow::array::{Array, AsArray, BooleanArray};
-use arrow::compute::kernels::cmp::{gt, lt};
+use arrow::array::AsArray;
 use arrow::datatypes::{DataType, Int64Type, Schema, UInt64Type};
-use arrow::record_batch::RecordBatch;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
@@ -10,10 +8,8 @@ use futures::TryStreamExt;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::metadata::SortingColumn;
 use parquet::file::properties::WriterProperties;
-use std::cmp::Ordering;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 /// TPC-H primary keys used as the physical sort order for each table.
 ///
@@ -160,7 +156,6 @@ async fn rewrite_table(
     // Drop readers before replacing the table directory. On Windows the
     // original parquet files can otherwise stay locked.
     drop(stream);
-    drop(df);
     drop(ctx);
 
     fs::remove_dir_all(table_dir)?;
@@ -236,69 +231,18 @@ fn count_parquet_files(dir: &Path) -> Result<usize, Box<dyn std::error::Error>> 
         .count())
 }
 
-/// Returns true when `left[left_row]` is strictly less than or equal to
-/// `right[right_row]` under `keys` with NULLS LAST.
-fn row_is_sorted_before(
-    left: &RecordBatch,
-    left_row: usize,
-    right: &RecordBatch,
-    right_row: usize,
-    keys: &[&str],
-) -> Result<bool, Box<dyn std::error::Error>> {
-    compare_sort_keys(left, left_row, right, right_row, keys).map(|ord| ord.is_le())
-}
-
-fn compare_sort_keys(
-    left: &RecordBatch,
-    left_row: usize,
-    right: &RecordBatch,
-    right_row: usize,
-    keys: &[&str],
-) -> Result<Ordering, Box<dyn std::error::Error>> {
-    for col_name in keys {
-        let l = left
-            .column_by_name(col_name)
-            .ok_or_else(|| format!("missing sort column {col_name}"))?;
-        let r = right
-            .column_by_name(col_name)
-            .ok_or_else(|| format!("missing sort column {col_name}"))?;
-
-        let l_null = l.is_null(left_row);
-        let r_null = r.is_null(right_row);
-        match (l_null, r_null) {
-            (true, true) => continue,
-            (false, true) => return Ok(Ordering::Less),
-            (true, false) => return Ok(Ordering::Greater),
-            (false, false) => {}
-        }
-
-        let l_slice = l.slice(left_row, 1);
-        let r_slice = r.slice(right_row, 1);
-        if bool_array_true(&lt(&l_slice, &r_slice)?)? {
-            return Ok(Ordering::Less);
-        }
-        if bool_array_true(&gt(&l_slice, &r_slice)?)? {
-            return Ok(Ordering::Greater);
-        }
-    }
-    Ok(Ordering::Equal)
-}
-
-fn bool_array_true(arr: &BooleanArray) -> Result<bool, Box<dyn std::error::Error>> {
-    if arr.is_empty() {
-        return Err("empty comparison result".into());
-    }
-    Ok(arr.value(0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{Array, BooleanArray, Int64Array};
+    use arrow::compute::kernels::cmp::{gt, lt};
     use arrow::datatypes::Field;
+    use arrow::record_batch::RecordBatch;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use parquet::file::reader::{FileReader, SerializedFileReader};
+    use std::cmp::Ordering;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn rewrites_tables_as_globally_sorted_files() -> Result<(), Box<dyn std::error::Error>> {
@@ -470,5 +414,60 @@ mod tests {
             assert!(!col.descending);
             assert!(!col.nulls_first);
         }
+    }
+
+    /// Returns true when `left[left_row]` is strictly less than or equal to
+    /// `right[right_row]` under `keys` with NULLS LAST.
+    fn row_is_sorted_before(
+        left: &RecordBatch,
+        left_row: usize,
+        right: &RecordBatch,
+        right_row: usize,
+        keys: &[&str],
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        compare_sort_keys(left, left_row, right, right_row, keys).map(|ord| ord.is_le())
+    }
+
+    fn compare_sort_keys(
+        left: &RecordBatch,
+        left_row: usize,
+        right: &RecordBatch,
+        right_row: usize,
+        keys: &[&str],
+    ) -> Result<Ordering, Box<dyn std::error::Error>> {
+        for col_name in keys {
+            let l = left
+                .column_by_name(col_name)
+                .ok_or_else(|| format!("missing sort column {col_name}"))?;
+            let r = right
+                .column_by_name(col_name)
+                .ok_or_else(|| format!("missing sort column {col_name}"))?;
+
+            let l_null = l.is_null(left_row);
+            let r_null = r.is_null(right_row);
+            match (l_null, r_null) {
+                (true, true) => continue,
+                (false, true) => return Ok(Ordering::Less),
+                (true, false) => return Ok(Ordering::Greater),
+                (false, false) => {}
+            }
+
+            let l_slice = l.slice(left_row, 1);
+            let r_slice = r.slice(right_row, 1);
+            if bool_array_true(&lt(&l_slice, &r_slice)?)? {
+                return Ok(Ordering::Less);
+            }
+            if bool_array_true(&gt(&l_slice, &r_slice)?)? {
+                return Ok(Ordering::Greater);
+            }
+        }
+        Ok(Ordering::Equal)
+    }
+
+    fn bool_array_true(arr: &BooleanArray) -> Result<bool, Box<dyn std::error::Error>> {
+        if arr.is_empty() {
+            return Err("empty comparison result".into());
+        }
+        Ok(arr.value(0))
     }
 }
