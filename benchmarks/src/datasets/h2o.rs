@@ -51,7 +51,7 @@ pub fn get_query(id: &str) -> Result<String, DataFusionError> {
 
 /// Number of rows for a scale factor. SF1 is 10 million rows.
 pub fn rows_for_scale_factor(sf: f64) -> Result<u64, DataFusionError> {
-    if !(sf > 0.0) {
+    if !sf.is_finite() || sf <= 0.0 {
         return Err(DataFusionError::Internal(format!(
             "scale factor must be > 0, got {sf}"
         )));
