@@ -24,7 +24,8 @@ pub enum TaskCountAnnotation {
 impl fmt::Debug for TaskCountAnnotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Desired(desired) => write!(f, "Desired({desired})"),
+            Desired(desired) if desired.fract() == 0.0 => write!(f, "Desired({desired})"),
+            Desired(desired) => write!(f, "Desired({desired:.2})"),
             Maximum(maximum) => write!(f, "Maximum({maximum})"),
         }
     }
