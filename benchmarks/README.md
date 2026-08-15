@@ -13,9 +13,17 @@ For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16 - override by setting these environment variables)
 ./gen-tpch.sh
 
-# TPC-DS (only SCALE_FACTOR=1 is supported)
+# TPC-DS (same scale-factor model; writes testdata/tpcds/sf<scale-factor>)
 ./gen-tpcds.sh
+
+# TPC-DS at SF10
+SCALE_FACTOR=10 ./gen-tpcds.sh
 ```
+
+`SCALE_FACTOR` for TPC-DS can be any value in `(0, 100000]`. SF1 uses the
+pre-built parquet from [datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks);
+other scale factors are generated with `tpcdsgen`. Use a small value such as
+`0.01` for a cheap smoke generation.
 
 ### Running Benchmarks in single-node mode
 

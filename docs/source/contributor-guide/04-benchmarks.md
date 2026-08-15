@@ -22,14 +22,16 @@ there are no performance regressions.
 
 ### Generating Test Data
 
-First, a TPCH dataset must be generated:
+First, a dataset must be generated:
 
 ```bash
 cd benchmarks
 SCALE_FACTOR=10 ./gen-tpch.sh
+SCALE_FACTOR=10 ./gen-tpcds.sh
 ```
 
-This might take a while.
+This might take a while. TPC-DS accepts the same `SCALE_FACTOR` model as TPC-H
+and writes `testdata/tpcds/sf<scale-factor>`.
 
 ### Running Benchmarks
 

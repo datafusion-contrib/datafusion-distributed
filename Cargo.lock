@@ -2175,6 +2175,7 @@ dependencies = [
  "sysinfo",
  "tokio",
  "tonic",
+ "tpcdsgen",
  "tpchgen",
  "tpchgen-arrow",
  "url",
@@ -6258,6 +6259,15 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tpcdsgen"
+version = "0.1.0"
+source = "git+https://github.com/clflushopt/tpchgen-rs?rev=438e9c2dbc25b2fff82c0efc08b3f13b5707874f#438e9c2dbc25b2fff82c0efc08b3f13b5707874f"
+dependencies = [
+ "chrono",
+ "clap 4.6.1",
+]
 
 [[package]]
 name = "tpchgen"

@@ -16,7 +16,11 @@ TPCDS_DIR="${DATA_DIR}/sf${SCALE_FACTOR}"
 
 echo "Creating tpcds dataset at Scale Factor ${SCALE_FACTOR} in ${TPCDS_DIR}..."
 
-# Ensure the target data directory exists
-mkdir -p "${TPCDS_DIR}"
-
-$CARGO_COMMAND -- prepare-tpcds --output "${TPCDS_DIR}" --partitions "$PARTITIONS"
+FILE="${TPCDS_DIR}/store_sales"
+if test -d "${FILE}"; then
+    echo " parquet files exist ($FILE exists)."
+else
+    echo " generating parquet files..."
+    mkdir -p "${TPCDS_DIR}"
+    $CARGO_COMMAND -- prepare-tpcds --output "${TPCDS_DIR}" --scale-factor "${SCALE_FACTOR}" --partitions "$PARTITIONS"
+fi

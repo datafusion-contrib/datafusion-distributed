@@ -47,10 +47,11 @@ async fn download_benchmarks(dest_path: PathBuf) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// Unzips the downloaded benchmarks zip file
+/// Unzips TPC-DS parquet files for `sf` from the downloaded benchmarks zip.
 fn unzip_benchmarks(
     zip_path: PathBuf,
     extract_to: PathBuf,
+    sf: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if extract_to.exists() {
         return Ok(());
@@ -58,11 +59,13 @@ fn unzip_benchmarks(
 
     let file = fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
+    let sf_marker = format!("tpcds/data/sf{}/", format_scale_factor(sf));
+    let mut extracted = 0usize;
 
     for i in 0..archive.len() {
         let mut zip_file = archive.by_index(i)?;
         let file_name = zip_file.name();
-        if !(file_name.contains("tpcds") && file_name.ends_with(".parquet")) {
+        if !(file_name.contains(&sf_marker) && file_name.ends_with(".parquet")) {
             continue;
         }
         let outpath = extract_to.join(zip_file.mangled_name().file_name().unwrap());
@@ -72,6 +75,17 @@ fn unzip_benchmarks(
         }
         let mut outfile = fs::File::create(&outpath)?;
         std::io::copy(&mut zip_file, &mut outfile)?;
+        extracted += 1;
+    }
+
+    if extracted == 0 {
+        fs::remove_dir_all(&extract_to).ok();
+        return Err(format!(
+            "No TPC-DS parquet files for scale factor {} in {}",
+            format_scale_factor(sf),
+            zip_path.display()
+        )
+        .into());
     }
 
     Ok(())
@@ -198,17 +212,81 @@ async fn prepare_tables(
     Ok(())
 }
 
+/// Directory suffix for a scale factor (`1.0` → `"1"`, `0.01` → `"0.01"`).
+pub fn format_scale_factor(sf: f64) -> String {
+    if sf.fract() == 0.0 && sf.is_finite() && sf.abs() <= i64::MAX as f64 {
+        format!("{}", sf as i64)
+    } else {
+        format!("{sf}")
+    }
+}
+
+/// TPC-DS scale factors supported by the generator: `(0, 100000]`.
+pub fn validate_scale_factor(sf: f64) -> Result<(), Box<dyn std::error::Error>> {
+    if !sf.is_finite() || sf <= 0.0 || sf > 100_000.0 {
+        Err(format!(
+            "TPC-DS scale factor must be in (0, 100000], got {sf}"
+        ))?;
+    }
+    Ok(())
+}
+
 pub async fn generate_data(
     dir: &Path,
     sf: f64,
     partitions: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if sf != 1.0 {
-        Err("Only scale factor 1.0 is supported for TPC-DS")?;
-    }
+    validate_scale_factor(sf)?;
+    fs::create_dir_all(dir)?;
     let base_path = dir.parent().unwrap();
-    download_benchmarks(base_path.join("main.zip")).await?;
-    unzip_benchmarks(base_path.join("main.zip"), base_path.join("downloaded"))?;
-    prepare_tables(base_path.join("downloaded"), dir.to_path_buf(), partitions).await?;
+    let raw = raw_table_dir(base_path, sf).await?;
+    prepare_tables(raw, dir.to_path_buf(), partitions).await?;
     Ok(())
+}
+
+async fn raw_table_dir(base_path: &Path, sf: f64) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // SF1 is shipped as pre-built parquet in datafusion-benchmarks.
+    if sf == 1.0 {
+        download_benchmarks(base_path.join("main.zip")).await?;
+        let extracted = base_path.join("downloaded");
+        unzip_benchmarks(base_path.join("main.zip"), extracted.clone(), sf)?;
+        return Ok(extracted);
+    }
+
+    let generated = base_path.join(format!("generated_sf{}", format_scale_factor(sf)));
+    super::tpcds_gen::generate_raw_parquet(&generated, sf).await?;
+    Ok(generated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_scale_factor_drops_trailing_integer_fraction() {
+        assert_eq!(format_scale_factor(1.0), "1");
+        assert_eq!(format_scale_factor(10.0), "10");
+        assert_eq!(format_scale_factor(0.01), "0.01");
+        // sf1/ must not be a prefix of sf10/
+        assert!(
+            !format!("tpcds/data/sf{}/", format_scale_factor(10.0))
+                .contains(&format!("tpcds/data/sf{}/", format_scale_factor(1.0)))
+        );
+    }
+
+    #[test]
+    fn validate_scale_factor_accepts_supported_range() {
+        validate_scale_factor(0.01).unwrap();
+        validate_scale_factor(1.0).unwrap();
+        validate_scale_factor(10.0).unwrap();
+        validate_scale_factor(100_000.0).unwrap();
+    }
+
+    #[test]
+    fn validate_scale_factor_rejects_out_of_range() {
+        assert!(validate_scale_factor(0.0).is_err());
+        assert!(validate_scale_factor(-1.0).is_err());
+        assert!(validate_scale_factor(100_000.1).is_err());
+        assert!(validate_scale_factor(f64::NAN).is_err());
+    }
 }
