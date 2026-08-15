@@ -140,7 +140,7 @@ fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusio
             .filter(|id| id != "q72") // 72 is terribly slow
             .map(|id| Ok((id.clone(), tpcds::get_query(&id)?)))
             .collect(),
-        "clickbench" => clickbench::get_queries()
+        "clickbench" | "clickbench-sorted" => clickbench::get_queries()
             .into_iter()
             .map(|id| Ok((id.clone(), clickbench::get_query(&id)?)))
             .collect(),

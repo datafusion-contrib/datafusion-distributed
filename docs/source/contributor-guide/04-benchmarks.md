@@ -29,6 +29,10 @@ cd benchmarks
 SCALE_FACTOR=10 ./gen-tpch.sh
 ```
 
+A globally sorted ClickBench variant is generated with `./gen-clickbench-sorted.sh`
+and run as `--dataset clickbench-sorted/0-100`. See
+`testdata/clickbench-sorted/README.md` for the documented sort key.
+
 This might take a while.
 
 ### Running Benchmarks

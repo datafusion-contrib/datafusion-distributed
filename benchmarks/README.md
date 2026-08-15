@@ -15,6 +15,10 @@ For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 
 # TPC-DS (only SCALE_FACTOR=1 is supported)
 ./gen-tpcds.sh
+
+# Sorted ClickBench (default: partitions 0-100 → testdata/clickbench-sorted/0-100)
+# Override with PARTITION_START / PARTITION_END. See testdata/clickbench-sorted/README.md.
+./gen-clickbench-sorted.sh
 ```
 
 ### Running Benchmarks in single-node mode
@@ -29,8 +33,9 @@ WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1
   binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
   individual process running queries, and simulate how adding throttled workers can speed up the
   queries.
-- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpcds/sf1`). It is
-  resolved to the corresponding `testdata/<suite>/<variant>` directory.
+- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpcds/sf1`,
+  `clickbench-sorted/0-100`). It is resolved to the corresponding
+  `testdata/<suite>/<variant>` directory.
 
 ### Running benchmarks with local workers
 
