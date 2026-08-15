@@ -7,5 +7,6 @@ testdata/tpcds/*
 !testdata/tpcds/README.md
 testdata/clickbench/*
 !testdata/clickbench/queries
+!testdata/clickbench/README.md
 codegen/target/*
 codegen/Cargo.lock

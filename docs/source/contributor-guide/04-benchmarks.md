@@ -22,14 +22,19 @@ there are no performance regressions.
 
 ### Generating Test Data
 
-First, a TPCH dataset must be generated:
+Generate a dataset under `testdata/<suite>/<variant>`. `--dataset` must include
+the variant (`tpch/sf10`, `clickbench/0-100`); the suite root is not a data
+directory.
 
 ```bash
 cd benchmarks
-SCALE_FACTOR=10 ./gen-tpch.sh
+SCALE_FACTOR=10 ./gen-tpch.sh          # testdata/tpch/sf10
+./gen-tpcds.sh                        # testdata/tpcds/sf1
+./gen-clickbench.sh                   # testdata/clickbench/0-100
 ```
 
-This might take a while.
+This might take a while. ClickBench downloads the official partitioned `hits`
+parquet files; use `PARTITION_START` / `PARTITION_END` for a smaller slice.
 
 ### Running Benchmarks
 
@@ -40,6 +45,7 @@ distributed system locally.
 
 ```bash
 WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset tpch/sf10
+WORKERS=8 ./benchmarks/run.sh --threads 2 --dataset clickbench/0-100
 ```
 
 Subsequent runs will compare results against the previous one, so a useful trick
