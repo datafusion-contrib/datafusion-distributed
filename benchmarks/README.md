@@ -15,6 +15,9 @@ For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 
 # TPC-DS (only SCALE_FACTOR=1 is supported)
 ./gen-tpcds.sh
+
+# IMDB / Join Order Benchmark (downloads ~1.2 GB, no scale factor)
+./gen-imdb.sh
 ```
 
 ### Running Benchmarks in single-node mode
@@ -29,7 +32,7 @@ WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1
   binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
   individual process running queries, and simulate how adding throttled workers can speed up the
   queries.
-- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpcds/sf1`). It is
+- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpcds/sf1`, `imdb`). It is
   resolved to the corresponding `testdata/<suite>/<variant>` directory.
 
 ### Running benchmarks with local workers

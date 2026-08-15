@@ -77,6 +77,11 @@ pub async fn register_tables(
         let path = entry?.path();
         if path.is_dir() {
             let table_name = path.file_name().unwrap().to_str().unwrap();
+            // Query SQL lives next to generated tables for datasets without a scale-factor
+            // subdirectory (e.g. `--dataset imdb`).
+            if table_name == "queries" {
+                continue;
+            }
             let _ = ctx
                 .register_parquet(
                     table_name,

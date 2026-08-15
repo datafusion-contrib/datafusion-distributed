@@ -27,9 +27,10 @@ First, a TPCH dataset must be generated:
 ```bash
 cd benchmarks
 SCALE_FACTOR=10 ./gen-tpch.sh
+./gen-imdb.sh
 ```
 
-This might take a while.
+This might take a while. IMDB is a fixed real-world snapshot (no scale factor).
 
 ### Running Benchmarks
 
