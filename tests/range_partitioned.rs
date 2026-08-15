@@ -22,7 +22,7 @@ mod tests {
     };
     use parquet::arrow::ArrowWriter;
     use std::fs::{self, File};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -108,7 +108,7 @@ mod tests {
     fn register_range_table(
         ctx: &SessionContext,
         name: &str,
-        table_dir: &PathBuf,
+        table_dir: &Path,
         range_partitions: usize,
     ) -> Result<()> {
         let table_path = ListingTableUrl::parse(format!(
