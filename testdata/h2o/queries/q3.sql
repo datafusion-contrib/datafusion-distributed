@@ -1,0 +1,1 @@
+SELECT id3, SUM(v1) AS v1, AVG(v3) AS v3 FROM x GROUP BY id3;

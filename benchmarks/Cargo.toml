@@ -31,6 +31,7 @@ sketches-ddsketch = "0.3"
 object_store = { version = "0.13", features = ["aws"] }
 openssl = { version = "0.10", features = ["vendored"] }
 mimalloc = "0.1"
+rand = "0.9"
 
 [dev-dependencies]
 criterion = "0.5"

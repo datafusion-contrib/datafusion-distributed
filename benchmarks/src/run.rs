@@ -36,7 +36,7 @@ use datafusion_distributed::{
     DistributedExt, DistributedMetricsFormat, NetworkBoundaryExt, SessionStateBuilderExt, Worker,
     display_plan_ascii, rewrite_distributed_plan_with_metrics,
 };
-use datafusion_distributed_benchmarks::datasets::{clickbench, register_tables, tpcds, tpch};
+use datafusion_distributed_benchmarks::datasets::{clickbench, h2o, register_tables, tpcds, tpch};
 use datafusion_distributed_benchmarks::stats::stats_estimation_q_error;
 use std::error::Error;
 use std::fs;
@@ -143,6 +143,10 @@ fn queries_for_dataset(dataset: &str) -> Result<Vec<(String, String)>, DataFusio
         "clickbench" => clickbench::get_queries()
             .into_iter()
             .map(|id| Ok((id.clone(), clickbench::get_query(&id)?)))
+            .collect(),
+        "h2o" => h2o::get_queries()
+            .into_iter()
+            .map(|id| Ok((id.clone(), h2o::get_query(&id)?)))
             .collect(),
         _ => not_impl_err!("Unknown benchmark dataset {dataset}"),
     }

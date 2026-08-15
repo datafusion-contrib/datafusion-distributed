@@ -22,14 +22,16 @@ there are no performance regressions.
 
 ### Generating Test Data
 
-First, a TPCH dataset must be generated:
+First, a dataset must be generated:
 
 ```bash
 cd benchmarks
 SCALE_FACTOR=10 ./gen-tpch.sh
+SCALE_FACTOR=1 ./gen-h2o.sh
 ```
 
-This might take a while.
+This might take a while. h2o SF1 is 10 million rows (the official "small"
+groupby size).
 
 ### Running Benchmarks
 

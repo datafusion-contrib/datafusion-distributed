@@ -1,0 +1,1 @@
+SELECT id1, SUM(v1) AS v1 FROM x GROUP BY id1;

@@ -1,6 +1,7 @@
 //! DataFusion Distributed benchmark runner
 mod compare;
 mod prepare_clickbench;
+mod prepare_h2o;
 mod prepare_tpcds;
 mod prepare_tpch;
 mod results;
@@ -19,6 +20,7 @@ enum Options {
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
+    PrepareH2o(prepare_h2o::PrepareH2oOpt),
 }
 
 // Main benchmark runner entrypoint
@@ -37,5 +39,6 @@ pub fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })
         }
+        Options::PrepareH2o(opt) => opt.run(),
     }
 }

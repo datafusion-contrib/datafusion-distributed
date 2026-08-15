@@ -15,6 +15,9 @@ For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 
 # TPC-DS (only SCALE_FACTOR=1 is supported)
 ./gen-tpcds.sh
+
+# h2o groupby (default: SCALE_FACTOR=1 = 10 million rows)
+./gen-h2o.sh
 ```
 
 ### Running Benchmarks in single-node mode
