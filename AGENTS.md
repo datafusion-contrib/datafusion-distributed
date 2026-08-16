@@ -88,3 +88,17 @@ documents the full validation matrix.
 
 Read the code-review guide and the closest scoped `AGENTS.md`. Report concrete
 correctness risks, not style issues covered by CI.
+
+### Publishing AI review drafts
+
+When explicitly authorized to publish GitHub PR review feedback, create a
+*pending* review only. Never submit, approve, request changes, or publish a
+review autonomously. Create the review with its event omitted and with no
+review-summary body, then confirm that GitHub reports its state as `PENDING`.
+
+Every finding must be an inline comment attached to one changed line or one
+contiguous range of changed lines. Do not use issue comments, PR conversation
+comments, standalone review-comment endpoints, or a review summary. Findings
+that cannot be attached to a changed line must remain in the local review
+report. Each inline comment must include a non-empty body, `path`, `line`, and
+`side`; ranges must also include both `start_line` and `start_side`.

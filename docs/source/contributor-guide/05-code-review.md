@@ -15,6 +15,26 @@ categories, and the review workflow changes depending on the category:
 - Docs and examples (PR prefixed with `docs:`)
 - Performance (PR prefixed with `perf:`)
 
+## AI-assisted reviews
+
+AI-assisted reviews may prepare feedback for a human reviewer, but must never
+submit, approve, or request changes on a pull request. When explicitly
+authorized to publish GitHub feedback, create one pending review containing all
+findings. Omit the review event and review-summary body, then verify that GitHub
+reports the review as `PENDING`; the authenticated human submits it later in
+GitHub.
+
+Every finding must be an inline comment on a changed diff line. Each comment
+needs a non-empty body plus `path`, `line`, and `side`. A multi-line comment
+also needs `start_line` and `start_side`; both endpoints and every intervening
+line must be changed lines. Do not publish issue comments, PR conversation
+comments, standalone review comments, or a review summary. Keep findings that
+cannot be attached to a changed line in the local review report.
+
+These rules are instructions, not a hard technical boundary. An environment
+that gives an agent unrestricted GitHub credentials must add an external hook
+or sandbox restriction if it needs to prevent an agent from bypassing them.
+
 ## Feature additions
 
 These PRs add a new capability or address an existing limitation. The proposed
