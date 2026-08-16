@@ -18,18 +18,22 @@ categories, and the review workflow changes depending on the category:
 ## AI-assisted reviews
 
 AI-assisted reviews may prepare feedback for a human reviewer, but must never
-submit, approve, or request changes on a pull request. When explicitly
-authorized to publish GitHub feedback, create one pending review containing all
-findings. Omit the review event and review-summary body, then verify that GitHub
-reports the review as `PENDING`; the authenticated human submits it later in
-GitHub.
+submit, approve, or request changes on a pull request. A request to review a
+GitHub PR authorizes the agent to create exactly one pending review, unless the
+user explicitly asks for a local-only review or says not to post it. The agent
+must create that draft before returning its review result. Omit the review event
+and review-summary body, then verify that GitHub reports the review as
+`PENDING`; the authenticated human submits it later in GitHub.
 
-Every finding must be an inline comment on a changed diff line. Each comment
-needs a non-empty body plus `path`, `line`, and `side`. A multi-line comment
-also needs `start_line` and `start_side`; both endpoints and every intervening
-line must be changed lines. Do not publish issue comments, PR conversation
-comments, standalone review comments, or a review summary. Keep findings that
-cannot be attached to a changed line in the local review report.
+Every publishable finding must be an inline comment on a line visible in the PR
+diff. Each comment needs a non-empty body plus `path`, `line`, and `side`. A
+multi-line comment also needs `start_line` and `start_side`; both endpoints and
+every intervening line must be visible in the PR diff. Do not publish issue
+comments, PR conversation comments, standalone review comments, or a review
+summary. Keep findings that cannot be attached to a PR-diff line in the local
+review report and state why they were not posted. Even when there are no
+findings, create an empty pending review so the human can submit the final
+decision.
 
 These rules are instructions, not a hard technical boundary. An environment
 that gives an agent unrestricted GitHub credentials must add an external hook

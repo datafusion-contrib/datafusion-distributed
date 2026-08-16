@@ -91,14 +91,18 @@ correctness risks, not style issues covered by CI.
 
 ### Publishing AI review drafts
 
-When explicitly authorized to publish GitHub PR review feedback, create a
-*pending* review only. Never submit, approve, request changes, or publish a
-review autonomously. Create the review with its event omitted and with no
-review-summary body, then confirm that GitHub reports its state as `PENDING`.
+When asked to review a GitHub PR, treat that request as authorization to create
+exactly one *pending* review, unless the user explicitly asks for a local-only
+review or says not to post it. Do this before returning the review result. Never
+submit, approve, or request changes autonomously. Create the review with its
+event omitted and with no review-summary body, then confirm that GitHub reports
+its state as `PENDING`.
 
-Every finding must be an inline comment attached to one changed line or one
-contiguous range of changed lines. Do not use issue comments, PR conversation
-comments, standalone review-comment endpoints, or a review summary. Findings
-that cannot be attached to a changed line must remain in the local review
-report. Each inline comment must include a non-empty body, `path`, `line`, and
-`side`; ranges must also include both `start_line` and `start_side`.
+Every publishable finding must be an inline comment attached to one PR-diff
+line or one contiguous range of PR-diff lines. Do not use issue comments, PR
+conversation comments, standalone review-comment endpoints, or a review
+summary. Each inline comment must include a non-empty body, `path`, `line`, and
+`side`; ranges must also include both `start_line` and `start_side`. If a
+finding cannot be attached to a PR-diff line, report it locally and say why it
+could not be posted. If there are no findings, still create the empty pending
+review so the human can submit its own final decision.
