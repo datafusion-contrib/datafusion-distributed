@@ -46,6 +46,7 @@ sketches-ddsketch = { version = "0.3", features = ["use_serde"] }
 num-traits = "0.2"
 bincode = "1"
 tonic-prost = { version = "0.14.2", optional = true }
+interprocess = { version = "2.4", features = ["tokio"] }
 
 # grpc-specific features
 arrow-flight = { version = "59", optional = true }
@@ -106,6 +107,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 hyper-util = "0.1.16"
 pretty_assertions = "1.4"
 test-case = "3.3.1"
+tempfile = "3"
 
 # Every example drives the gRPC transport, so a no-grpc build skips them.
 [[example]]

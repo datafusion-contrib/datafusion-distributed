@@ -1120,7 +1120,7 @@ async fn run_pumps(harness: Arc<QueryHarness>, token: CancellationToken) -> Resu
                     // frame sent before that point has been routed.
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         }
     });

@@ -31,18 +31,25 @@
 use std::ffi::c_void;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, HashMap, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use std::path::Path;
+use std::time::Duration;
+
 use super::dsm::{
-    compute_dsm_layout, leader_init, peer_proc_for_index, read_region_total, worker_attach,
+    compute_dsm_layout, leader_init, peer_proc_for_index, read_n_procs, read_region_total,
+    worker_attach,
 };
+use super::ipc::IpcMeshNotifier;
 use super::mesh::{DsmInboxReceiver, DsmInboxSender};
 use super::mpsc_ring::{DsmMpscSender, NO_RECEIVER_TOKEN, Wakeup};
+use super::notifier::{RingReceiverNotifier, RingSenderNotifier};
 use super::runtime::MppMesh;
 use super::transport::{
     BatchChannelSender, DrainHandle, ExecuteTaskRx, IncomingExecuteTaskRequest, Interrupt,
@@ -74,6 +81,17 @@ pub unsafe fn region_total(base: *const c_void) -> usize {
     unsafe { read_region_total(base) as usize }
 }
 
+/// Read `n_procs` out of the header a leader wrote, so a worker that just mapped the region
+/// can determine the total process count to initialize its signaling notifier without
+/// needing out-of-band sidechannels.
+///
+/// # Safety
+/// - `base` must point at the start of a region a leader initialized via [`leader_setup`].
+/// - `base` must be at least 8-byte aligned (the header holds `u64` fields).
+pub unsafe fn dsm_n_procs(base: *const c_void) -> u32 {
+    unsafe { read_n_procs(base) }
+}
+
 /// Wrap each peer-indexed `DsmMpscSender` into an outbound `MppSender` keyed by destination proc.
 /// The dispatcher `clone_with_header`s these per output partition before sending, so the
 /// placeholder header is never observed on the wire. Slot `this_proc` stays `None` because
@@ -83,13 +101,40 @@ pub unsafe fn region_total(base: *const c_void) -> usize {
 /// sibling onto each peer inbox, used by [`MppMesh::cancel_stream`]: a consumer reaches its producer
 /// without counting as one of that producer's data senders, so a held `Cancel` sender never masks
 /// the producer-gone `detached` signal.
+#[derive(Clone, Copy)]
+struct SendSyncRing(std::ptr::NonNull<super::mpsc_ring::DsmMpscRingHeader>);
+unsafe impl Send for SendSyncRing {}
+unsafe impl Sync for SendSyncRing {}
+
 fn build_outbound_senders(
     this_proc: u32,
     total_procs: u32,
     peer_senders: Vec<DsmMpscSender>,
+    ipc_notifier: &Arc<IpcMeshNotifier>,
 ) -> (Vec<Option<MppSender>>, Vec<Option<MppSender>>) {
     let mut senders: Vec<Option<MppSender>> = (0..total_procs).map(|_| None).collect();
     let mut cancel: Vec<Option<MppSender>> = (0..total_procs).map(|_| None).collect();
+    let mut rings_map = HashMap::new();
+    for (peer_idx, dsm_send) in peer_senders.iter().enumerate() {
+        let target_proc = peer_proc_for_index(this_proc, peer_idx as u32);
+        rings_map.insert(
+            target_proc,
+            (SendSyncRing(dsm_send.ring_header()), dsm_send.alive()),
+        );
+    }
+    let rings_map_arc = Arc::new(rings_map);
+    ipc_notifier.set_detachment_checker(Arc::new(move |proc_id| {
+        if let Some((ring, alive)) = rings_map_arc.get(&proc_id) {
+            if !alive.load(Ordering::Acquire) {
+                return true;
+            }
+            let header = unsafe { ring.0.as_ref() };
+            header.detached.load(Ordering::Acquire)
+        } else {
+            false
+        }
+    }));
+
     for (peer_idx, dsm_send) in peer_senders.into_iter().enumerate() {
         let target_proc = peer_proc_for_index(this_proc, peer_idx as u32);
         // Ensure peer index does not map onto this proc.
@@ -101,13 +146,23 @@ fn build_outbound_senders(
             target_proc < total_procs,
             "peer index {peer_idx} mapped to proc {target_proc} >= total {total_procs}"
         );
-        let control: Arc<dyn BatchChannelSender> =
-            Arc::new(DsmInboxSender::new(dsm_send.to_control()));
+        let ring = dsm_send.ring_header();
+        let alive = dsm_send.alive();
+        let tx_notif = Arc::new(RingSenderNotifier::new(
+            Arc::clone(ipc_notifier),
+            target_proc,
+            ring,
+            alive,
+        ));
+        let control: Arc<dyn BatchChannelSender> = Arc::new(DsmInboxSender::new(
+            dsm_send.to_control(),
+            Arc::clone(&tx_notif),
+        ));
         cancel[target_proc as usize] = Some(MppSender::with_header(
             control,
             MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), this_proc),
         ));
-        let shared: Arc<dyn BatchChannelSender> = Arc::new(DsmInboxSender::new(dsm_send));
+        let shared: Arc<dyn BatchChannelSender> = Arc::new(DsmInboxSender::new(dsm_send, tx_notif));
         senders[target_proc as usize] = Some(MppSender::with_header(
             shared,
             // Stamp `sender_proc = this_proc` so a stray frame that escapes the dispatcher's
@@ -131,6 +186,23 @@ pub struct LeaderSession {
     _outbound_senders: Vec<Option<MppSender>>,
 }
 
+impl LeaderSession {
+    /// Send in-band cancel frames to all worker inboxes to stop data production.
+    pub fn cancel_workers(&self) {
+        let cancel_key = MppDataStreamKey::new(u32::MAX, u32::MAX, u32::MAX);
+        for sender in self._outbound_senders.iter().flatten() {
+            sender.try_send_cancel(cancel_key);
+        }
+    }
+
+    /// Mark the leader mesh as detached and notify all peer worker inboxes via in-band DSM cancel frame.
+    pub fn mark_detached(&mut self) {
+        self.cancel_workers();
+        self._outbound_senders.clear();
+        self.mesh.mark_detached();
+    }
+}
+
 /// Initialize the shared region as the leader (`proc 0`) and return its session handle.
 ///
 /// Writes the region header, copies `plan_bytes` in, initializes the `n_procs` inboxes, and
@@ -142,7 +214,7 @@ pub struct LeaderSession {
 ///   queue_bytes, plan_bytes.len())` bytes.
 /// - `base` must be at least 8-byte (MAXALIGN) aligned; the ring headers hold atomics.
 /// - The region must not be concurrently accessed until this returns.
-#[allow(clippy::too_many_arguments)] // mirrors worker_setup; the args are the embedder's knobs
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn leader_setup(
     base: *mut c_void,
     n_procs: u32,
@@ -152,6 +224,7 @@ pub unsafe fn leader_setup(
     receiver_token: u64,
     interrupt: Arc<dyn Interrupt>,
     attach_senders: bool,
+    ipc_notifier: Arc<IpcMeshNotifier>,
 ) -> Result<LeaderSession> {
     if receiver_token == NO_RECEIVER_TOKEN {
         return Err(DataFusionError::Internal(
@@ -173,33 +246,117 @@ pub unsafe fn leader_setup(
     }
     .map_err(DataFusionError::Internal)?;
 
+    let rx_ring = attach.inbound_receiver.ring_header();
+    let rx_notif = Arc::new(RingReceiverNotifier::new(
+        Arc::clone(&ipc_notifier),
+        rx_ring,
+        Arc::clone(&attach.alive),
+    ));
     let inbox = DsmInboxReceiver::new(attach.inbound_receiver);
     inbox.set_receiver(receiver_token);
     let inbound = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
         inbox,
     ))]));
+    let reactor_task = inbound.start_inbound_reactor(Some(Arc::clone(&rx_notif)));
     // The leader hosts no producer fragments, but its senders carry the control plane:
     // work-unit frames (and later dynamic filters) flow leader -> worker through them. Empty
     // when the embedder did not opt in: a ring latches `detached` once its sender count hits
     // zero, so senders that might drop before every worker attached must never exist.
     let (outbound_senders, cancel_senders) =
-        build_outbound_senders(0, n_procs, attach.outbound_senders);
-    let mesh = Arc::new(MppMesh::new(0, n_procs, inbound, interrupt, attach.alive));
+        build_outbound_senders(0, n_procs, attach.outbound_senders, &ipc_notifier);
+    let mut mesh = MppMesh::new(0, n_procs, inbound, interrupt, attach.alive);
+    mesh.set_rx_notifier(Some(rx_notif));
+    mesh.set_reactor(reactor_task);
     mesh.set_cancel_senders(Arc::new(std::sync::Mutex::new(cancel_senders)));
     Ok(LeaderSession {
-        mesh,
+        mesh: Arc::new(mesh),
         _outbound_senders: outbound_senders,
     })
+}
+
+/// Forwarder for [`leader_setup`].
+///
+/// # Safety
+/// - Same requirements as [`leader_setup`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn leader_setup_with_notifier(
+    base: *mut c_void,
+    n_procs: u32,
+    queue_bytes: usize,
+    plan_bytes: &[u8],
+    wakeup: Arc<dyn Wakeup>,
+    receiver_token: u64,
+    interrupt: Arc<dyn Interrupt>,
+    attach_senders: bool,
+    ipc_notifier: Arc<IpcMeshNotifier>,
+) -> Result<LeaderSession> {
+    unsafe {
+        leader_setup(
+            base,
+            n_procs,
+            queue_bytes,
+            plan_bytes,
+            wakeup,
+            receiver_token,
+            interrupt,
+            attach_senders,
+            ipc_notifier,
+        )
+    }
+}
+
+/// Initialize DSM region and IPC signaling mesh for the leader in a single async step.
+#[allow(clippy::too_many_arguments)]
+pub async fn leader_setup_ipc(
+    base: *mut c_void,
+    n_procs: u32,
+    queue_bytes: usize,
+    plan_bytes: &[u8],
+    socket_dir: &Path,
+    query_id: &str,
+    wakeup: Arc<dyn Wakeup>,
+    interrupt: Arc<dyn Interrupt>,
+) -> Result<LeaderSession> {
+    let (notifier, listener) = IpcMeshNotifier::bind(socket_dir, query_id, 0, n_procs).await?;
+    notifier.start_listener_loop(listener);
+    let session = unsafe {
+        leader_setup(
+            base,
+            n_procs,
+            queue_bytes,
+            plan_bytes,
+            wakeup,
+            0,
+            interrupt,
+            true,
+            notifier.clone(),
+        )?
+    };
+    notifier
+        .connect_peers(socket_dir, query_id, Duration::from_secs(10))
+        .await?;
+    Ok(session)
 }
 
 /// Build one task's work-unit feed channels, install the receiving ends on `cfg` (where the
 /// deserialized plan's remote feed leaves look them up), and register the sending ends on
 /// `mesh`'s drain so inbound `WorkUnit` frames fill them. `feeds` lists the task's declared
 /// feeds as `(feed id, partitions)`, the same pairs the plan's `WorkUnitFeedDeclaration`s carry.
-///
-/// The caller must keep the proc draining (a consumer loop, a send spin, or an explicit
-/// [`crate::shm::CooperativeDrainSet::try_drain_pass`] pump) while a fragment waits on its
-/// feed, or the units sit in the inbox unread.
+pub fn install_work_unit_channels(
+    cfg: &mut datafusion::prelude::SessionConfig,
+    mesh: &MppMesh,
+    stage_id: u32,
+    task_number: u32,
+    feeds: &[(uuid::Uuid, usize)],
+) {
+    let mut channels = RemoteWorkUnitFeedRegistry::default();
+    for (id, partitions) in feeds {
+        channels.add(*id, *partitions);
+    }
+    cfg.set_extension(Arc::new(channels.receivers));
+    mesh.register_work_unit_senders(stage_id, task_number, channels.senders);
+}
+
 /// Build the [`TaskMetrics`] payload for one executed fragment, for embedders that run
 /// fragments outside the worker task registry (pg parallel workers). Pair it with
 /// [`super::transport::MppSender::send_task_metrics_best_effort`] after the fragment's streams
@@ -224,21 +381,6 @@ pub fn collect_task_metrics(
         ),
         task_metrics: Some(pb::MetricsSet::default()),
     }
-}
-
-pub fn install_work_unit_channels(
-    cfg: &mut datafusion::prelude::SessionConfig,
-    mesh: &MppMesh,
-    stage_id: u32,
-    task_number: u32,
-    feeds: &[(uuid::Uuid, usize)],
-) {
-    let mut channels = RemoteWorkUnitFeedRegistry::default();
-    for (id, partitions) in feeds {
-        channels.add(*id, *partitions);
-    }
-    cfg.set_extension(Arc::new(channels.receivers));
-    mesh.register_work_unit_senders(stage_id, task_number, channels.senders);
 }
 
 /// What [`worker_setup`] hands back to the embedder: the active worker session on the mesh.
@@ -278,6 +420,7 @@ pub unsafe fn worker_setup(
     wakeup: Arc<dyn Wakeup>,
     receiver_token: u64,
     interrupt: Arc<dyn Interrupt>,
+    ipc_notifier: Arc<IpcMeshNotifier>,
 ) -> Result<WorkerSession> {
     if receiver_token == NO_RECEIVER_TOKEN {
         return Err(DataFusionError::Internal(
@@ -291,29 +434,96 @@ pub unsafe fn worker_setup(
             .map_err(DataFusionError::Internal)?;
     let total_procs = header.n_procs;
 
-    let (outbound, cancel) = build_outbound_senders(proc_idx, total_procs, attach.outbound_senders);
+    let (outbound, cancel) = build_outbound_senders(
+        proc_idx,
+        total_procs,
+        attach.outbound_senders,
+        &ipc_notifier,
+    );
 
+    let rx_ring = attach.inbound_receiver.ring_header();
+    let rx_notif = Arc::new(RingReceiverNotifier::new(
+        Arc::clone(&ipc_notifier),
+        rx_ring,
+        Arc::clone(&attach.alive),
+    ));
     let inbox = DsmInboxReceiver::new(attach.inbound_receiver);
     inbox.set_receiver(receiver_token);
     let inbound = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
         inbox,
     ))]));
-    let mesh = Arc::new(MppMesh::new(
-        proc_idx,
-        total_procs,
-        inbound,
-        interrupt,
-        attach.alive,
-    ));
+    let reactor_task = inbound.start_inbound_reactor(Some(Arc::clone(&rx_notif)));
+    let mut mesh = MppMesh::new(proc_idx, total_procs, inbound, interrupt, attach.alive);
+    mesh.set_rx_notifier(Some(rx_notif));
+    mesh.set_reactor(reactor_task);
     // A worker consumes shuffle inputs, so it can be the consumer that stops a stream early. Give
     // its mesh the control-plane cancel senders; they drop with the mesh at the end of the worker's
     // run, well before the DSM unmaps, so no explicit release is needed.
     mesh.set_cancel_senders(Arc::new(std::sync::Mutex::new(cancel)));
     Ok(WorkerSession {
-        mesh,
+        mesh: Arc::new(mesh),
         plan_bytes,
         _outbound_senders: outbound,
     })
+}
+
+/// Forwarder for [`worker_setup`].
+///
+/// # Safety
+/// - Same requirements as [`worker_setup`].
+pub unsafe fn worker_setup_with_notifier(
+    base: *mut c_void,
+    region_total: usize,
+    proc_idx: u32,
+    wakeup: Arc<dyn Wakeup>,
+    receiver_token: u64,
+    interrupt: Arc<dyn Interrupt>,
+    ipc_notifier: Arc<IpcMeshNotifier>,
+) -> Result<WorkerSession> {
+    unsafe {
+        worker_setup(
+            base,
+            region_total,
+            proc_idx,
+            wakeup,
+            receiver_token,
+            interrupt,
+            ipc_notifier,
+        )
+    }
+}
+
+/// Attach to DSM region and IPC signaling mesh for a worker in a single async step.
+/// Automatically discovers `n_procs` and `region_total` from `base`.
+pub async fn worker_setup_ipc(
+    base: *mut c_void,
+    proc_idx: u32,
+    socket_dir: &Path,
+    query_id: &str,
+    wakeup: Arc<dyn Wakeup>,
+    receiver_token: u64,
+    interrupt: Arc<dyn Interrupt>,
+) -> Result<WorkerSession> {
+    let total_bytes = unsafe { region_total(base) };
+    let n_procs = unsafe { dsm_n_procs(base) };
+    let (notifier, listener) =
+        IpcMeshNotifier::bind(socket_dir, query_id, proc_idx, n_procs).await?;
+    notifier.start_listener_loop(listener);
+    let session = unsafe {
+        worker_setup(
+            base,
+            total_bytes,
+            proc_idx,
+            wakeup,
+            receiver_token,
+            interrupt,
+            notifier.clone(),
+        )?
+    };
+    notifier
+        .connect_peers(socket_dir, query_id, Duration::from_secs(10))
+        .await?;
+    Ok(session)
 }
 
 /// Run a producer fragment plan to exhaustion, pushing every output batch into the matching
@@ -350,7 +560,14 @@ pub async fn run_worker_fragment(
                     if batch.num_rows() == 0 {
                         continue;
                     }
-                    sink.send(&batch).await?;
+                    if let Err(e) = sink.send(&batch).await {
+                        let msg = e.to_string();
+                        if sink.cancelled() || msg.contains("detached") || msg.contains("Detached")
+                        {
+                            break;
+                        }
+                        return Err(e);
+                    }
                     // Consumer abandoned this stream. Stop pulling: dropping `stream` ends the
                     // upstream scan and cascades the cancel to its own producers.
                     if sink.cancelled() {
@@ -360,7 +577,18 @@ pub async fn run_worker_fragment(
                 Ok(())
             }
             .await;
-            let eof_result = sink.finish().await;
+            let is_cancelled = sink.cancelled();
+            let eof_result = match sink.finish().await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if is_cancelled || msg.contains("detached") || msg.contains("Detached") {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                }
+            };
             // Surface the stream error first, then any EOF-send error, so neither disappears.
             stream_result.and(eof_result)
         });
@@ -386,8 +614,8 @@ pub async fn run_worker_fragment(
 /// - **Cancellation & Early Termination Unwinding:** Selects on `token.cancelled()`. If the query is
 ///   cancelled or terminates early (e.g. satisfied by a `LIMIT` clause downstream), the request loop
 ///   breaks out immediately and drops active sub-futures.
-/// - **Cooperative Inbound Ring Flushing:** Periodically invokes the mesh's inbound receiver's drain pass
-///   while awaiting frame arrivals or stream completions.
+/// - **Async Inbound Ring Draining:** The mesh's background inbound reactor automatically
+///   demuxes incoming frames and handles reactive notifications while awaiting frame arrivals.
 /// - **Completion:** Exits cleanly once all `n_partitions` have been requested (or the channel closes) AND all
 ///   spawned stream futures in `spawn_range` have completed to EOF.
 ///
@@ -410,20 +638,21 @@ where
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
     let rx = mesh.take_execute_task_rx(stage_id, task_number)?;
-    let drain_pass = {
-        let inbound = Arc::clone(mesh.inbound_receiver());
-        move || inbound.try_drain_pass()
-    };
     let (res, failed_sender_proc) =
-        run_execute_task_loop_inner(rx, n_partitions, token, drain_pass, spawn_range).await;
-    // Only send TaskError if the loop returned an actual execution error or fragment panic.
-    // Healthy early termination (such as downstream LIMIT queries or cancellation token unwinding)
-    // completes cleanly and returns Ok(()), so no TaskError is published.
-    if let (Err(e), Some(sender)) = (
-        &res,
-        failed_sender_proc.and_then(|p| mesh.error_sender(p, stage_id, task_number)),
-    ) {
-        let _ = sender.send_task_error_best_effort(&e.to_string()).await;
+        run_execute_task_loop_inner(rx, n_partitions, token, spawn_range).await;
+    if let Err(e) = &res {
+        let err_msg = e.to_string();
+        if !err_msg.contains("detached") && !err_msg.contains("Detached") {
+            if let Some(sender) = mesh.error_sender(0, stage_id, task_number) {
+                let _ = sender.send_task_error_best_effort(&err_msg).await;
+            }
+            if let Some(target_proc) = failed_sender_proc
+                && target_proc != 0
+                && let Some(sender) = mesh.error_sender(target_proc, stage_id, task_number)
+            {
+                let _ = sender.send_task_error_best_effort(&err_msg).await;
+            }
+        }
     }
     res
 }
@@ -432,7 +661,6 @@ async fn run_execute_task_loop_inner<F, Fut>(
     rx: ExecuteTaskRx,
     n_partitions: usize,
     token: CancellationToken,
-    mut drain_pass: impl FnMut() -> Result<()>,
     mut spawn_range: F,
 ) -> (Result<()>, Option<u32>)
 where
@@ -513,7 +741,14 @@ where
                             rx_opt = None;
                         }
                     }
-                    Some(Err(e)) => return (Err(e), None),
+                    Some(Err(e)) => {
+                        let msg = e.to_string();
+                        if msg.contains("detached") || msg.contains("Detached") {
+                            rx_opt = None;
+                        } else {
+                            return (Err(e), None);
+                        }
+                    }
                     None => {
                         rx_opt = None;
                     }
@@ -522,13 +757,15 @@ where
             next_res = sub_futures.next(), if !sub_futures.is_empty() => {
                 match next_res {
                     Some(Ok(())) => {}
-                    Some(Err((sender_proc, e))) => return (Err(e), Some(sender_proc)),
+                    Some(Err((sender_proc, e))) => {
+                        let msg = e.to_string();
+                        if msg.contains("detached") || msg.contains("Detached") {
+                            // Detached sink or consumer is clean early termination
+                        } else {
+                            return (Err(e), Some(sender_proc));
+                        }
+                    }
                     None => unreachable!(),
-                }
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => {
-                if let Err(e) = drain_pass() {
-                    return (Err(e), None);
                 }
             }
         }
@@ -600,7 +837,6 @@ mod tests {
             rx,
             total_partitions,
             token,
-            || Ok(()),
             move |_request, _headers, range| {
                 let r_counter = Arc::clone(&ranges_counter);
                 let l_counter = Arc::clone(&len_counter);
@@ -625,14 +861,11 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel(); // Pre-cancelled token to simulate early query termination / LIMIT.
 
-        let (res, _) = run_execute_task_loop_inner(
-            rx,
-            4,
-            token,
-            || Ok(()),
-            |_request, _headers, _range| async { Ok(()) },
-        )
-        .await;
+        let (res, _) =
+            run_execute_task_loop_inner(rx, 4, token, |_request, _headers, _range| async {
+                Ok(())
+            })
+            .await;
 
         assert!(
             res.is_ok(),

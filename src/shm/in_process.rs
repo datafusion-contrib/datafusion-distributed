@@ -31,14 +31,13 @@
 //! standing in for a production source that serializes it with the embedder's codec.
 //!
 //! What's faithful vs. simplified relative to the Postgres path:
-//! - Faithful: the DSM ring mesh, the framing, the cooperative drain, `ShmWorkerChannel::execute_task`,
+//! - Faithful: the DSM ring mesh, the framing, the async inbound reactor, `ShmWorkerChannel::execute_task`,
 //!   the per-fragment routing (`collect_dispatched_stages`), `run_worker_fragment`, the leader
 //!   consuming via `DistributedExec::execute`, and the dispatch handoff through
 //!   `DispatchPlanSource`.
 //! - Simplified: the dispatched subplans are captured as `Arc`s rather than serialized through
 //!   the `SetPlan` frames the coordinator routes over the mesh (all roles live in one address
-//!   space), the wakeup is a no-op (the cooperative consumer yields rather than parking), and
-//!   there's no cancellation source.
+//!   space), and the IPC signaling mesh runs via in-memory direct channels.
 
 use std::alloc::Layout;
 use std::ffi::c_void;
@@ -64,12 +63,20 @@ use crate::{
     decode_task_metrics,
 };
 
+use datafusion::common::runtime::SpawnedTask;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+use super::ipc::IpcMeshNotifier;
 use super::mpsc_ring::Wakeup;
 use super::runtime::{InProcessWorkerResolver, MppMesh, ShmChannelResolver, proc_for_task};
-use super::setup::{collect_task_metrics, dsm_region_bytes, leader_setup, worker_setup};
-use super::transport::{
-    CooperativeDrainSet, MppDataStreamKey, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt,
+use super::setup::{
+    collect_task_metrics, dsm_region_bytes, leader_setup, run_execute_task_loop, worker_setup,
 };
+use super::transport::{
+    ExecuteTaskFrame, MppDataStreamKey, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt,
+};
+use crate::proto as pb;
 
 /// Per-inbox DSM ring size for the in-process mesh. Generous: the test ships a handful of tiny
 /// batches, so backpressure never kicks in. Production sizes this from `paradedb.mpp_queue_size`.
@@ -299,18 +306,21 @@ async fn captured_plan(
     stage_id: u32,
     task_idx: usize,
 ) -> Arc<dyn ExecutionPlan> {
-    for _ in 0..100_000 {
-        if let Some(plan) = captured
-            .lock()
-            .unwrap()
-            .get(&(stage_id as usize, task_idx))
-            .cloned()
-        {
-            return plan;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(plan) = captured
+                .lock()
+                .unwrap()
+                .get(&(stage_id as usize, task_idx))
+                .cloned()
+            {
+                return plan;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    panic!("no dispatched plan captured for stage {stage_id} task {task_idx}");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no dispatched plan captured for stage {stage_id} task {task_idx}"))
 }
 
 /// Expand the dispatched stages into the fragments `this_proc` owns under `proc_for_task`.
@@ -410,27 +420,6 @@ async fn run_worker_proc(
         prepared.push((fragment, plan, n_out, task_ctx));
     }
 
-    struct AbortOnDrop(tokio::task::JoinHandle<()>);
-    impl Drop for AbortOnDrop {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    let drain_mesh = Arc::clone(&mesh);
-    // `in_process.rs` is an in-process test harness running under a multi-threaded Tokio test
-    // runtime. Unlike production cooperative workers (which run single-threaded without tokio::spawn),
-    // spawning a background task here is acceptable to keep mock worker meshes drained during tests.
-    #[allow(clippy::disallowed_methods)]
-    let _drain_guard = AbortOnDrop(tokio::spawn(async move {
-        loop {
-            if drain_mesh.drain_all_inbound().is_err() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    }));
-
     let mut futures = Vec::with_capacity(prepared.len());
     let mut executed = Vec::with_capacity(prepared.len());
     for (fragment, plan, n_out, task_ctx) in prepared {
@@ -452,7 +441,7 @@ async fn run_worker_proc(
                 task_idx,
                 n_out,
                 tokio_util::sync::CancellationToken::new(),
-                |_request, _headers, range| {
+                move |_request, _headers, range| {
                     let plan = Arc::clone(&plan);
                     let task_ctx = Arc::clone(&task_ctx);
                     let worker_sink = Arc::clone(&worker_sink);
@@ -536,9 +525,7 @@ impl WorkerSink for ShmMqWorkerSink {
                 "run_worker_proc: no outbound sender for dest proc {dest_proc}"
             ))
         })?;
-        let sender = base
-            .clone_with_header(MppFrameHeader::batch(stream_key, self.mesh.this_proc))
-            .with_cooperative_drain(Arc::clone(&self.mesh) as Arc<dyn CooperativeDrainSet>);
+        let sender = base.clone_with_header(MppFrameHeader::batch(stream_key, self.mesh.this_proc));
         Ok(Box::new(MppPartitionSink::new(sender)))
     }
 }
@@ -686,8 +673,6 @@ mod tests {
     /// the stream cleanly, which `producer_send_ends_when_consumer_cancels_the_stream` covers.
     #[test]
     fn worker_consumer_cancels_its_producer() {
-        use crate::shm::transport::CooperativeDrainSet;
-
         // procs: leader 0, plus workers 1 and 2.
         let boot = bootstrap_mesh(3);
         let consumer = Arc::clone(&boot.workers[0].1); // proc 1
@@ -701,7 +686,7 @@ mod tests {
         consumer.cancel_stream(2, cancelled);
 
         // Proc 2 drains its inbox and sees the cancel its consumer sent.
-        producer.try_drain_pass().unwrap();
+        producer.inbound_receiver().try_drain_pass().unwrap();
         assert!(producer.stream_cancelled(cancelled));
         // Scoped to that one stream: a sibling task using the same stage and output partition
         // stays live.
@@ -805,6 +790,7 @@ mod tests {
 
         // One heap region stands in for the DSM segment; size it for n_procs = leader + workers.
         let n_procs = N_WORKERS + 1;
+        let notifiers = IpcMeshNotifier::in_memory_mesh(n_procs);
         let region_total = dsm_region_bytes(n_procs, IN_PROCESS_QUEUE_BYTES, 0).unwrap();
         let region = HeapRegion::new(region_total);
         let base = SharedBase(region.base());
@@ -822,6 +808,7 @@ mod tests {
                 receiver_token(0),
                 Arc::new(NoInterrupt),
                 /* attach_senders */ true,
+                Arc::clone(&notifiers[0]),
             )
         }
         .unwrap()
@@ -836,6 +823,7 @@ mod tests {
                     Arc::clone(&wakeup),
                     receiver_token(proc_idx),
                     Arc::new(NoInterrupt),
+                    Arc::clone(&notifiers[proc_idx as usize]),
                 )
             }
             .unwrap();
@@ -947,25 +935,26 @@ mod tests {
             .take_task_metrics_receiver()
             .expect("task metrics receiver");
         let mut inserted = 0usize;
-        for _ in 0..1_000 {
-            let _ = leader_mesh.try_drain_pass();
-            while let Ok((stage_id, task_number, metrics)) = rx.try_recv() {
-                let metrics = decode_task_metrics(metrics).expect("decode task metrics");
-                store.insert(
-                    TaskKey {
-                        query_id,
-                        stage_id: stage_id as usize,
-                        task_number: task_number as usize,
-                    },
-                    metrics,
-                );
-                inserted += 1;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while inserted < expected_reports {
+                if let Some((stage_id, task_number, metrics)) = rx.recv().await {
+                    let metrics = decode_task_metrics(metrics).expect("decode task metrics");
+                    store.insert(
+                        TaskKey {
+                            query_id,
+                            stage_id: stage_id as usize,
+                            task_number: task_number as usize,
+                        },
+                        metrics,
+                    );
+                    inserted += 1;
+                } else {
+                    break;
+                }
             }
-            if inserted >= expected_reports {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("timed out waiting for task metrics");
         assert_eq!(
             inserted, expected_reports,
             "every producer task reports metrics"
@@ -990,6 +979,7 @@ mod tests {
     }
 
     fn bootstrap_mesh_with_queue(n_procs: u32, queue_bytes: usize) -> Bootstrap {
+        let notifiers = IpcMeshNotifier::in_memory_mesh(n_procs);
         let region_total = dsm_region_bytes(n_procs, queue_bytes, 0).unwrap();
         let region = HeapRegion::new(region_total);
         let base = SharedBase(region.base());
@@ -1004,6 +994,7 @@ mod tests {
                 receiver_token(0),
                 Arc::new(NoInterrupt),
                 /* attach_senders */ true,
+                Arc::clone(&notifiers[0]),
             )
         }
         .unwrap()
@@ -1018,6 +1009,7 @@ mod tests {
                     Arc::clone(&wakeup),
                     receiver_token(proc_idx),
                     Arc::new(NoInterrupt),
+                    Arc::clone(&notifiers[proc_idx as usize]),
                 )
             }
             .unwrap();
@@ -1263,6 +1255,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let n_procs = 2; // Proc 0: leader / requester, Proc 1: worker
+        let notifiers = IpcMeshNotifier::in_memory_mesh(n_procs);
         let region_total = dsm_region_bytes(n_procs, IN_PROCESS_QUEUE_BYTES, 0).unwrap();
         let region = HeapRegion::new(region_total);
         let base = SharedBase(region.base());
@@ -1278,6 +1271,7 @@ mod tests {
                 receiver_token(0),
                 Arc::new(NoInterrupt),
                 /* attach_senders */ true,
+                Arc::clone(&notifiers[0]),
             )
         }
         .unwrap()
@@ -1291,6 +1285,7 @@ mod tests {
                 Arc::clone(&wakeup),
                 receiver_token(1),
                 Arc::new(NoInterrupt),
+                Arc::clone(&notifiers[1]),
             )
         }
         .unwrap();
@@ -1339,24 +1334,218 @@ mod tests {
 
         leader_mesh.send_execute_task(1, 0, request).await.unwrap();
 
-        // Drive drain passes on worker and leader until the TaskError arrives.
-        let mut item = None;
-        for _ in 0..20 {
-            let _ = worker_mesh.inbound_receiver().try_drain_pass();
-            let _ = leader_mesh.inbound_receiver().try_drain_pass();
-            item = channel.try_pop();
-            if item.is_some() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-
-        let item = item.expect("TaskError frame must arrive and mark channel failed");
+        let item = channel.pop().await;
         assert!(
             matches!(item, DrainItem::Failed(ref msg) if msg.contains("simulated worker fragment crash")),
             "Expected DrainItem::Failed with panic message, got: {item:?}"
         );
 
         let _ = worker_handle.join().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_process_distributed_query_with_async_ipc_signaling() {
+        const N_WORKERS: u32 = 3;
+        const N_TASKS: usize = 5;
+
+        let n_procs = N_WORKERS + 1;
+        let notifiers = IpcMeshNotifier::in_memory_mesh(n_procs);
+
+        let region_total = dsm_region_bytes(n_procs, IN_PROCESS_QUEUE_BYTES, 0).unwrap();
+        let region = HeapRegion::new(region_total);
+        let base = SharedBase(region.base());
+        let wakeup: Arc<dyn Wakeup> = Arc::new(NoopWakeup);
+
+        let leader_mesh = unsafe {
+            leader_setup(
+                base.0,
+                n_procs,
+                IN_PROCESS_QUEUE_BYTES,
+                &[],
+                Arc::clone(&wakeup),
+                receiver_token(0),
+                Arc::new(NoInterrupt),
+                /* attach_senders */ true,
+                Arc::clone(&notifiers[0]),
+            )
+        }
+        .unwrap()
+        .mesh;
+
+        let mut worker_setups = Vec::new();
+        for proc_idx in 1..n_procs {
+            let attach = unsafe {
+                worker_setup(
+                    base.0,
+                    region_total,
+                    proc_idx,
+                    Arc::clone(&wakeup),
+                    receiver_token(proc_idx),
+                    Arc::new(NoInterrupt),
+                    Arc::clone(&notifiers[proc_idx as usize]),
+                )
+            }
+            .unwrap();
+            worker_setups.push((
+                proc_idx,
+                Arc::clone(&attach.mesh),
+                attach.outbound_senders().to_vec(),
+            ));
+        }
+
+        let query = "SELECT id, val FROM t ORDER BY id";
+        let serial_ctx = SessionContext::new();
+        register_table_with_partitions(&serial_ctx, N_TASKS as i32);
+        let expected = serial_ctx
+            .sql(query)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let expected_ids = ids_of(&expected);
+
+        let captured = new_captured_plans();
+        let leader_ctx = build_session_with_worker_and_partitions(
+            Arc::clone(&leader_mesh),
+            Some(Arc::clone(&captured)),
+            N_TASKS,
+            N_TASKS,
+            N_TASKS as i32,
+        );
+        let physical = leader_ctx
+            .sql(query)
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+
+        let entries = collect_dispatched_stages(&physical, N_WORKERS);
+
+        let mut workers = JoinSet::new();
+        for (proc_idx, mesh, outbound) in worker_setups {
+            let fragments = fragments_for_proc(&entries, proc_idx, N_WORKERS);
+            let session = build_session_with_worker_and_partitions(
+                Arc::clone(&mesh),
+                None,
+                N_WORKERS as usize,
+                N_TASKS,
+                N_WORKERS as i32,
+            );
+            workers.spawn(run_worker_proc(
+                fragments,
+                outbound,
+                mesh,
+                session,
+                N_WORKERS,
+                Arc::clone(&captured),
+            ));
+        }
+
+        let leader_task_ctx = leader_ctx.task_ctx();
+        let stream = physical.execute(0, leader_task_ctx).unwrap();
+        let got: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+
+        while let Some(res) = workers.join_next().await {
+            res.expect("worker task panicked").expect("worker proc");
+        }
+
+        let got_ids = ids_of(&got);
+        assert_eq!(got_ids, expected_ids, "distributed gather != serial");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn early_termination_limit_unblocks_worker_execute_task_loop() {
+        let n_procs = 2; // Proc 0: leader, Proc 1: worker
+        let notifiers = IpcMeshNotifier::in_memory_mesh(n_procs);
+        let region_total = dsm_region_bytes(n_procs, IN_PROCESS_QUEUE_BYTES, 0).unwrap();
+        let region = HeapRegion::new(region_total);
+        let base = SharedBase(region.base());
+        let wakeup: Arc<dyn Wakeup> = Arc::new(NoopWakeup);
+
+        let mut leader_session = unsafe {
+            leader_setup(
+                base.0,
+                n_procs,
+                IN_PROCESS_QUEUE_BYTES,
+                &[],
+                Arc::clone(&wakeup),
+                receiver_token(0),
+                Arc::new(NoInterrupt),
+                /* attach_senders */ true,
+                Arc::clone(&notifiers[0]),
+            )
+        }
+        .unwrap();
+
+        let worker_session = unsafe {
+            worker_setup(
+                base.0,
+                region_total,
+                1,
+                Arc::clone(&wakeup),
+                receiver_token(1),
+                Arc::new(NoInterrupt),
+                Arc::clone(&notifiers[1]),
+            )
+        }
+        .unwrap();
+
+        let token = CancellationToken::new();
+        let worker_mesh = Arc::clone(&worker_session.mesh);
+        let loop_mesh = Arc::clone(&worker_mesh);
+        let worker_token = token.clone();
+
+        // Worker expects 4 partitions, but leader only requests partition 0 (simulating LIMIT / early termination).
+        let worker_handle = SpawnedTask::spawn(async move {
+            run_execute_task_loop(
+                &loop_mesh,
+                1, // stage_id 1
+                0, // task_number 0
+                4, // 4 total partitions expected
+                worker_token,
+                |_req, _hdr, range| async move {
+                    assert_eq!(range, 0..1);
+                    Ok(())
+                },
+            )
+            .await
+        });
+
+        let request = ExecuteTaskFrame::from_parts(
+            pb::ExecuteTaskRequest {
+                task_key: Some(pb::TaskKey {
+                    query_id: vec![1; 16],
+                    stage_id: 1,
+                    task_number: 0,
+                }),
+                target_partition_start: 0,
+                target_partition_end: 1,
+                producer_head: None,
+            },
+            &http::HeaderMap::new(),
+        )
+        .unwrap();
+
+        leader_session
+            .mesh
+            .send_execute_task(1, 0, request)
+            .await
+            .unwrap();
+
+        // Leader finishes query early and detaches leader senders in DSM
+        leader_session.mark_detached();
+
+        // Worker execute_task_loop MUST unblock and finish with Ok(())
+        let worker_res = tokio::time::timeout(Duration::from_millis(500), worker_handle.join())
+            .await
+            .expect("worker execute task loop timed out / deadlocked on early termination")
+            .unwrap();
+
+        assert!(
+            worker_res.is_ok(),
+            "Worker loop returned error: {worker_res:?}"
+        );
     }
 }

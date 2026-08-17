@@ -20,10 +20,13 @@
 
 use datafusion::common::DataFusionError;
 
+use std::sync::Arc;
+
 use super::mpsc_ring::{
     DsmMpscReceiver, DsmMpscSender, RecvOutcome as MpscRecvOutcome, SendError as MpscSendError,
 };
-use super::transport::{BatchChannelReceiver, BatchChannelSender, RecvOutcome};
+use super::notifier::RingSenderNotifier;
+use super::transport::{BatchChannelReceiver, BatchChannelSender, MppDataStreamKey, RecvOutcome};
 
 /// Postgres MAXALIGN. The DSM layout must agree between this crate (which computes the per-inbox
 /// offsets) and whatever shared buffer the embedder hands it. PG's `MAXIMUM_ALIGNOF` is 8 on every
@@ -55,6 +58,7 @@ pub(super) fn align_up_maxalign_checked(n: usize) -> Option<usize> {
 /// sees detach" guarantee.
 pub(super) struct DsmInboxSender {
     inner: DsmMpscSender,
+    notifier: Arc<RingSenderNotifier>,
     send_lock: tokio::sync::Mutex<()>,
 }
 
@@ -63,10 +67,11 @@ pub(super) struct DsmInboxSender {
 // auto-derive also surfaces a compile error if a future field is `!Send` / `!Sync`.
 
 impl DsmInboxSender {
-    /// Wrap a `DsmMpscSender` for use through the `BatchChannelSender` trait.
-    pub(super) fn new(inner: DsmMpscSender) -> Self {
+    /// Wrap a `DsmMpscSender` and an async `RingSenderNotifier`.
+    pub(super) fn new(inner: DsmMpscSender, notifier: Arc<RingSenderNotifier>) -> Self {
         Self {
             inner,
+            notifier,
             send_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -90,23 +95,37 @@ impl DsmInboxSender {
 
 impl BatchChannelSender for DsmInboxSender {
     fn send_bytes(&self, bytes: &[u8]) -> Result<(), DataFusionError> {
-        // Fallback for callers that didn't wire `with_cooperative_drain`. The real send
-        // path drives `try_send_bytes` through the cooperative spin in `transport.rs`;
-        // this loop just spins on `yield_now` and burns the backend core under a slow
-        // consumer. Hitting it in production means a missing `with_cooperative_drain`
-        // on the fragment, not a real backpressure path.
-        loop {
-            match self.inner.try_send(bytes) {
-                Ok(()) => return Ok(()),
-                Err(MpscSendError::Full) => std::thread::yield_now(),
-                Err(e) => return Err(Self::map_send_err(e)),
+        match self.inner.try_send(bytes) {
+            Ok(()) => {
+                self.notifier.notify_data_ready();
+                Ok(())
             }
+            Err(MpscSendError::Full) => Err(DataFusionError::Execution(
+                "mpp: DSM MPSC inbox full (synchronous send_bytes cannot block; use send_bytes_async)"
+                    .into(),
+            )),
+            Err(e) => Err(Self::map_send_err(e)),
         }
+    }
+
+    fn send_bytes_async<'a>(
+        &'a self,
+        bytes: &'a [u8],
+    ) -> futures::future::BoxFuture<'a, Result<(), DataFusionError>> {
+        Box::pin(async move {
+            self.inner
+                .send(&self.notifier, bytes)
+                .await
+                .map_err(Self::map_send_err)
+        })
     }
 
     fn try_send_bytes(&self, bytes: &[u8]) -> Result<bool, DataFusionError> {
         match self.inner.try_send(bytes) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                self.notifier.notify_data_ready();
+                Ok(true)
+            }
             Err(MpscSendError::Full) => Ok(false),
             Err(e) => Err(Self::map_send_err(e)),
         }
@@ -118,6 +137,15 @@ impl BatchChannelSender for DsmInboxSender {
 
     fn max_frame_bytes(&self) -> Option<usize> {
         Some(self.inner.max_frame_bytes())
+    }
+
+    fn is_stream_cancelled(&self, stream: &MppDataStreamKey) -> bool {
+        self.notifier.is_stream_cancelled(stream)
+    }
+
+    fn mark_target_detached(&self) {
+        self.inner.mark_target_detached();
+        self.notifier.notify_data_ready();
     }
 }
 
@@ -209,9 +237,17 @@ mod tests {
             unsafe { mpsc_ring::create_at(region.as_mut_ptr(), ring_size, slot_capacity) };
         let nn = std::ptr::NonNull::new(header_ptr).expect("create_at returned null");
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let sender = DsmInboxSender::new(unsafe {
-            DsmMpscSender::new(nn, test_wakeup(), std::sync::Arc::clone(&alive))
-        });
+        let notifiers = crate::shm::ipc::IpcMeshNotifier::in_memory_mesh(2);
+        let tx_notif = std::sync::Arc::new(crate::shm::notifier::RingSenderNotifier::new(
+            std::sync::Arc::clone(&notifiers[0]),
+            1,
+            nn,
+            std::sync::Arc::clone(&alive),
+        ));
+        let sender = DsmInboxSender::new(
+            unsafe { DsmMpscSender::new(nn, test_wakeup(), std::sync::Arc::clone(&alive)) },
+            tx_notif,
+        );
         let receiver = DsmInboxReceiver::new(unsafe { DsmMpscReceiver::new(nn, alive) });
         (region, sender, receiver)
     }

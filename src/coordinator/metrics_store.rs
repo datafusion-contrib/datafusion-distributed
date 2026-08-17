@@ -25,6 +25,18 @@ impl MetricsStore {
         });
     }
 
+    pub fn contains_key(&self, key: &TaskKey) -> bool {
+        self.rx.borrow().contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.rx.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rx.borrow().is_empty()
+    }
+
     pub(crate) fn get(&self, key: &TaskKey) -> Option<TaskMetrics> {
         self.rx.borrow().get(key).cloned()
     }

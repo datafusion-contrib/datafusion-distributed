@@ -28,7 +28,7 @@
 
 use async_trait::async_trait;
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use datafusion::common::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -290,12 +290,6 @@ const FRAME_SENDER_SHIFT: u32 = 16;
 /// Maximum `sender_proc` representable in the header. Asserted at construction time so an
 /// overflow becomes a hard error in the producer rather than silent flag corruption on the wire.
 pub const MPP_MAX_SENDER_PROC: u32 = 0xFFFF;
-
-/// Spin bound for landing a control or metrics frame on a peer inbox that may be momentarily full.
-/// A live peer drains its inbox within this many tries, so the frame lands well inside the bound;
-/// it only runs out if the peer already exited, where the leader's wait-for-workers surfaces the
-/// failure instead of hanging here.
-const MAX_CONTROL_SEND_SPINS: usize = 10_000;
 
 const _: () = {
     // shm_mq slot layout calculations depend on this being exact.
@@ -748,12 +742,11 @@ fn decode_frame(bytes: &[u8]) -> Result<(MppFrameHeader, FrameBody), DataFusionE
 /// [`DrainBuffer::notify_source_done`] is called. Once `sources_done >= num_sources` AND the
 /// queue is empty, `try_pop` returns [`DrainItem::Eof`].
 ///
-/// Pop side: cooperative consumers loop on `try_pop` + `yield_now`. The test-only `pop_front`
-/// blocks on the condvar.
+/// Pop side: async consumers await `pop().await`.
 #[derive(Debug)]
 pub(super) struct DrainBuffer {
     inner: Mutex<DrainBufferInner>,
-    cond: Condvar,
+    notify: tokio::sync::Notify,
 }
 
 #[derive(Debug)]
@@ -762,7 +755,7 @@ struct DrainBufferInner {
     num_sources: u32,
     sources_done: u32,
     /// Consumer-side cancel flag. When set (e.g., query cancelled or `DrainHandle` dropped),
-    /// `try_pop`/`pop_front` returns `Eof` even if `sources_done` hasn't reached `num_sources`.
+    /// `pop().await` / `try_pop` returns `Eof` even if `sources_done` hasn't reached `num_sources`.
     cancelled: bool,
     /// Set when the receiver feeding this channel detached (or errored) before the channel's
     /// `Eof` frame arrived. Distinct from `cancelled`: cancellation is a clean teardown and
@@ -771,7 +764,7 @@ struct DrainBufferInner {
     failed: Option<String>,
 }
 
-/// Yielded by [`DrainBuffer::pop_front`].
+/// Yielded by [`DrainBuffer::pop`].
 #[derive(Debug)]
 pub(super) enum DrainItem {
     /// A batch produced by one of the inbound shm_mqs.
@@ -795,7 +788,7 @@ impl DrainBuffer {
                 cancelled: false,
                 failed: None,
             }),
-            cond: Condvar::new(),
+            notify: tokio::sync::Notify::new(),
         })
     }
 
@@ -803,16 +796,16 @@ impl DrainBuffer {
     pub fn push_batch(&self, batch: RecordBatch) {
         let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
         guard.queue.push_back(batch);
-        self.cond.notify_one();
+        self.notify.notify_waiters();
     }
 
-    /// Mark one source queue as detached. Safe to call from the drain thread
-    /// after observing `SHM_MQ_DETACHED` on a given inbound queue.
+    /// Mark one source queue as detached. Safe to call from the drain
+    /// after observing detach on a given inbound queue.
     pub fn notify_source_done(&self) {
         let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
         guard.sources_done = guard.sources_done.saturating_add(1);
         if guard.sources_done >= guard.num_sources {
-            self.cond.notify_all();
+            self.notify.notify_waiters();
         }
     }
 
@@ -825,14 +818,14 @@ impl DrainBuffer {
             return;
         }
         guard.failed = Some(msg.to_string());
-        self.cond.notify_all();
+        self.notify.notify_waiters();
     }
 
     /// Cancel all further pushes and wake all consumers with EOF.
     pub fn cancel(&self) {
         let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
         guard.cancelled = true;
-        self.cond.notify_all();
+        self.notify.notify_waiters();
     }
 
     /// Whether this buffer has been cancelled.
@@ -845,12 +838,21 @@ impl DrainBuffer {
 
     /// Non-blocking variant. Returns the front item, or `DrainItem::Eof` if
     /// all sources have detached and the queue is drained, or `None` if more
-    /// data may yet arrive. Cooperative consumers loop on
-    /// `try_drain_pass` + `try_pop`, yielding to the executor between
-    /// iterations.
+    /// data may yet arrive.
     pub fn try_pop(&self) -> Option<DrainItem> {
         let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
         Self::try_pop_locked(&mut guard)
+    }
+
+    /// Pop the next batch or status asynchronously, suspending without polling until data arrives.
+    #[allow(dead_code)]
+    pub async fn pop(&self) -> DrainItem {
+        loop {
+            if let Some(item) = self.try_pop() {
+                return item;
+            }
+            self.notify.notified().await;
+        }
     }
 
     /// Shared body of [`try_pop`] and the test-only [`Self::pop_front`].
@@ -898,6 +900,14 @@ pub(super) trait BatchChannelReceiver: Send + Sync {
 pub(crate) trait BatchChannelSender: Send + Sync {
     fn send_bytes(&self, bytes: &[u8]) -> Result<(), DataFusionError>;
 
+    /// Asynchronous send variant. Default falls back to `send_bytes`.
+    fn send_bytes_async<'a>(
+        &'a self,
+        bytes: &'a [u8],
+    ) -> futures::future::BoxFuture<'a, Result<(), DataFusionError>> {
+        Box::pin(async move { self.send_bytes(bytes) })
+    }
+
     /// Non-blocking variant. Returns `Ok(true)` on success, `Ok(false)`
     /// when the channel is full (caller should retry), `Err` on detach /
     /// transport error. Default falls back to the blocking send — safe
@@ -906,12 +916,10 @@ pub(crate) trait BatchChannelSender: Send + Sync {
         self.send_bytes(bytes).map(|()| true)
     }
 
-    /// Async lock the send paths hold across the cooperative-drain spin so two tasks can't
-    /// interleave partial writes on the same handle. PG's `shm_mq_send` requires the same
-    /// `(nbytes, data)` on retry after `SHM_MQ_WOULD_BLOCK`. Multiple [`MppSender`] clones
-    /// multiplex onto one channel, and the spin's `yield_now().await` would otherwise let a
-    /// sibling task land a different payload mid-message and corrupt the queue. In-proc
-    /// channels return a per-instance mutex too, just to keep the call sites uniform.
+    /// Async lock the send paths hold across multi-chunk writes so two tasks can't
+    /// interleave partial writes on the same handle. Multiple [`MppSender`] clones
+    /// multiplex onto one channel, and the send lock prevents sibling tasks from interleaving
+    /// chunks mid-message and corrupting the queue.
     fn send_lock(&self) -> &tokio::sync::Mutex<()>;
 
     /// Largest single frame the channel accepts, when bounded. The batch send path splits
@@ -920,31 +928,17 @@ pub(crate) trait BatchChannelSender: Send + Sync {
     fn max_frame_bytes(&self) -> Option<usize> {
         None
     }
-}
 
-/// Pluggable "drain everything inbound" hook for [`MppSender`]'s cooperative send spin. The
-/// peer-mesh deadlock-breaking pattern needs the producer to pump ALL inbound queues (not just
-/// one) while waiting for a full outbound, so the implementation typically delegates to
-/// `MppMesh::drain_all_inbound()` which iterates every per-sender-proc drain.
-pub trait CooperativeDrainSet: Send + Sync {
-    fn try_drain_pass(&self) -> Result<(), DataFusionError>;
-
-    /// Checked in the send spin alongside `try_drain_pass`: returns `Err` (or aborts) if the
-    /// query should stop. Default is a no-op, for embedders with no external interrupt source; a
-    /// Postgres embedder overrides this to run `check_for_interrupts!`, which longjmps on cancel.
-    fn check_interrupt(&self) -> Result<(), DataFusionError> {
-        Ok(())
-    }
-
-    /// Whether a consumer cancelled the `(stage_id, task_id, partition)` stream (a `Cancel` frame arrived on
-    /// this proc's inbox). The send spin ends the producer's stream cleanly when it's set. Default
-    /// `false` for drains that don't carry inbound control frames (in-proc test channels).
-    fn stream_cancelled(&self, _stream: MppDataStreamKey) -> bool {
+    /// Check if the stream has been cancelled by its consumer.
+    fn is_stream_cancelled(&self, _stream: &MppDataStreamKey) -> bool {
         false
     }
+
+    /// Mark the target channel/ring as detached in shared memory and wake its consumer.
+    fn mark_target_detached(&self) {}
 }
 
-/// Cancellation extension point, checked at the transport's block points (the send spin and the consumer
+/// Cancellation extension point, checked at the transport's block points (the consumer
 /// pull loop). An in-process embedder uses the default no-op or a cancellation token; a Postgres
 /// embedder runs `check_for_interrupts!`, which longjmps out of the backend on cancel.
 pub trait Interrupt: Send + Sync {
@@ -959,31 +953,13 @@ impl Interrupt for NoInterrupt {
     }
 }
 
-impl CooperativeDrainSet for DrainHandle {
-    fn try_drain_pass(&self) -> Result<(), DataFusionError> {
-        DrainHandle::try_drain_pass(self)
-    }
-
-    fn stream_cancelled(&self, stream: MppDataStreamKey) -> bool {
-        DrainHandle::stream_cancelled(self, stream)
-    }
-}
-
 /// High-level sender: encodes a `RecordBatch` then pushes bytes through the underlying channel.
-///
-/// With `cooperative_drain` set, `send_batch` breaks the symmetric-send deadlock on a
-/// single-threaded tokio runtime by interleaving send-retries with
-/// `CooperativeDrainSet::try_drain_pass` on the same mesh's inbound side. Each proc's
-/// sender doing the same guarantees mutual progress: our drain pulls peer-shipped rows out of
-/// our inbound queues, which frees peers' outbound-to-us send space, which lets their sends
-/// un-stall.
 pub struct MppSender {
     /// Underlying byte channel. Held behind `Arc` so multiple `MppSender`s can share one
     /// `shm_mq` queue while tagging frames with different `(stage_id, task_id, partition)` headers, which
     /// is the multiplexed path's natural pattern. Clone the Arc, build a new `MppSender` with a
     /// different header, both write into the same queue.
     pub(super) channel: Arc<dyn BatchChannelSender>,
-    cooperative_drain: Option<Arc<dyn CooperativeDrainSet>>,
     /// Frame header prepended to every outgoing batch. Identifies the logical
     /// `(stage_id, task_id, partition)` channel the receiver demultiplexes on. Per-sender rather than
     /// per-call: each partition gets its own `MppSender` via `clone_with_header`, all sharing
@@ -1012,10 +988,14 @@ impl MppSender {
     ) -> Self {
         Self {
             channel,
-            cooperative_drain: None,
             header,
             scratch: std::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    /// Mark the target ring as detached in shared memory and wake its consumer.
+    pub fn mark_target_detached(&self) {
+        self.channel.mark_target_detached();
     }
 
     /// Build a new `MppSender` that shares this sender's underlying channel
@@ -1025,57 +1005,24 @@ impl MppSender {
     pub fn clone_with_header(&self, header: MppFrameHeader) -> Self {
         Self {
             channel: Arc::clone(&self.channel),
-            cooperative_drain: self.cooperative_drain.as_ref().map(Arc::clone),
             header,
             scratch: std::cell::RefCell::new(Vec::new()),
         }
     }
 
-    /// Whether the consumer of this sender's `(stage, task, partition)` stream cancelled it. Read by the
-    /// produce loop to stop pulling its input, not just skip the send. `false` without a drain
-    /// (in-proc test channels carry no inbound cancel).
-    pub(super) fn stream_cancelled(&self) -> bool {
-        // A data-stream cancel can numerically match a control address; control traffic is never
-        // cancelled by a stream-level cancel.
-        if !matches!(self.header.kind(), Ok(MppFrameKind::Batch)) {
-            return false;
-        }
-        self.cooperative_drain
-            .as_ref()
-            .is_some_and(|d| d.stream_cancelled(self.header.data_stream()))
+    /// Check if the stream has been cancelled by its consumer.
+    pub fn is_stream_cancelled(&self) -> bool {
+        self.channel.is_stream_cancelled(&self.header.data_stream())
     }
 
-    /// Attach a [`CooperativeDrainSet`] so `Self::send_batch_traced`'s spin
-    /// can drain inbound peer traffic while waiting for outbound space.
-    /// Required for peer-mesh fragments where every worker is both sender and
-    /// consumer; without it, symmetric full-queue stalls deadlock the
-    /// single-threaded Tokio runtime.
-    pub fn with_cooperative_drain(mut self, drain: Arc<dyn CooperativeDrainSet>) -> Self {
-        self.cooperative_drain = Some(drain);
-        self
-    }
-
-    /// `send_batch` variant that accumulates per-call timings and spin counts into `stats`.
+    /// `send_batch` variant that accumulates per-call timings into `stats`.
     /// Callers that report at EOF (e.g. `ShuffleStream`) use this to diagnose where time
     /// goes when the outbound queue is full.
-    ///
-    /// Async because the spin awaits the per-handle send lock and yields between
-    /// `try_send_bytes` retries; see `send_with_scratch`.
     pub(super) async fn send_batch_traced(
         &self,
         batch: &RecordBatch,
         stats: &mut SendBatchStats,
     ) -> Result<(), DataFusionError> {
-        // Take the scratch buffer out of the `RefCell` rather than
-        // holding a `RefMut` across the spin below. The spin contains
-        // the embedder's `Interrupt::check`, which may unwind or `longjmp` through
-        // Rust frames; a `longjmp` does not run `Drop`, so a `RefMut`
-        // held across it would leave the cell perpetually borrowed and
-        // panic the next caller. `replace` is atomic — the cell is
-        // never observed in a borrowed state — and we put the buffer
-        // back at the end so its heap allocation survives across calls.
-        // If the spin longjmps anyway, the cell holds the default empty
-        // `Vec` and the next call simply re-allocates.
         let mut scratch = self.scratch.replace(Vec::new());
         let result = self.send_with_scratch(batch, &mut scratch, stats).await;
         self.scratch.replace(scratch);
@@ -1086,21 +1033,8 @@ impl MppSender {
     /// channel buffer transitions to `Eof` and the consumer's pull loop terminates cleanly.
     ///
     /// Producer fragments must call this exactly once per `(stage_id, task_id, partition)` channel after
-    /// the local stream exhausts. Without it the multiplexed shm_mq queue stays attached (other
-    /// channels still flow) and the consumer channel buffer never reaches `sources_done == 1`. The
-    /// receive-side [`DrainHandle::try_drain_pass`] decodes the frame and calls
-    /// `notify_source_done` on the matching channel buffer.
-    ///
-    /// Uses the same cooperative-spin path as [`Self::send_batch_traced`] so a full outbound
-    /// queue doesn't deadlock the EOF send. `stats.spin_iters` / `send_wait` capture any
-    /// contention.
-    ///
-    /// Symmetric-EOF safety: when every peer reaches EOF simultaneously with full outbound
-    /// queues, each peer's cooperative [`CooperativeDrainSet::try_drain_pass`] inside the spin
-    /// pulls peer-sent frames out of its own inbound queues, freeing space the peers are blocked
-    /// on. Progress is monotone: at least one `try_send_bytes` succeeds per spin iteration
-    /// somewhere in the mesh, so symmetric stalls resolve within a few iterations rather than
-    /// deadlocking.
+    /// the local stream exhausts. Without it the multiplexed queue stays attached (other
+    /// channels still flow) and the consumer channel buffer never reaches `sources_done == 1`.
     pub(super) async fn send_eof_traced(
         &self,
         stats: &mut SendBatchStats,
@@ -1113,22 +1047,29 @@ impl MppSender {
 
     /// Bounded synchronous send of a `Cancel` frame for the `(stage_id, task_id, partition)` stream. The
     /// consumer calls it on the sender to the producing proc when it abandons that stream.
-    /// Synchronous so it can run from the consumer stream's drop, where `await` isn't available.
-    ///
-    /// The bound doesn't risk a stuck producer. A live producer drains its own inbox in its send
-    /// spin, so a slot frees and the frame lands well inside the bound even when the inbox is
-    /// backed up. The bound only runs out if the producer already exited or died, and a dead worker
-    /// makes the leader's wait-for-workers error out rather than hang.
+    /// Synchronous so it can run from the consumer stream's drop. If the ring is not
+    /// immediately ready, spawns an async timeout task if a Tokio handle is available.
     pub fn try_send_cancel(&self, stream: MppDataStreamKey) {
         let header = MppFrameHeader::cancel(stream, self.header.sender_proc());
         let mut buf = [0u8; MPP_FRAME_HEADER_SIZE];
         header.write_to(&mut buf);
-        for _ in 0..MAX_CONTROL_SEND_SPINS {
-            match self.channel.try_send_bytes(&buf) {
-                Ok(true) => return,
-                Ok(false) => std::thread::yield_now(),
-                Err(_) => return, // the producer's inbox is gone; nothing left to cancel
+        match self.channel.try_send_bytes(&buf) {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let channel = Arc::clone(&self.channel);
+                    let payload = buf.to_vec();
+                    handle.spawn(async move {
+                        let _send_guard = channel.send_lock().lock().await;
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(100),
+                            channel.send_bytes_async(&payload),
+                        )
+                        .await;
+                    });
+                }
             }
+            Err(_) => {}
         }
     }
 
@@ -1142,20 +1083,7 @@ impl MppSender {
             self.header.sender_proc(),
             scratch,
         )?;
-        self.spin_send_frame(scratch, stats).await.map(|_| ())
-    }
-
-    /// Spin-loop helper: call `channel.try_send_bytes(scratch)`.
-    async fn spin_try_send_bytes(&self, scratch: &[u8]) -> Result<bool, DataFusionError> {
-        self.channel.try_send_bytes(scratch)
-    }
-
-    /// Spin-loop helper: call `drain.try_drain_pass()`.
-    async fn spin_try_drain_pass(
-        &self,
-        drain: &Arc<dyn CooperativeDrainSet>,
-    ) -> Result<(), DataFusionError> {
-        drain.try_drain_pass()
+        self.send_frame(scratch, stats).await.map(|_| ())
     }
 
     async fn send_with_scratch(
@@ -1172,32 +1100,26 @@ impl MppSender {
             .max_frame_bytes()
             .is_none_or(|cap| scratch.len() <= cap)
         {
-            return self.spin_send_scratch(scratch, stats).await;
+            return self.send_frame_scratch(scratch, stats).await;
         }
-        // An over-cap frame usually means the batch carries offset slices of an upstream
-        // operator's accumulated state: arrow-ipc writes a sliced variable-length array's
-        // whole values buffer, so the frame balloons to the state's size no matter the row
-        // count. Compacting into fresh arrays drops the shared buffers. It's an
-        // optimization, not a bound: whatever stays over the cap streams through the ring
-        // in chunks.
         let compacted = compact_rows(batch, 0, batch.num_rows())?;
         let t_enc = Instant::now();
         encode_frame_into(self.header, &compacted, scratch)?;
         stats.encode += t_enc.elapsed();
-        self.spin_send_scratch(scratch, stats).await
+        self.send_frame_scratch(scratch, stats).await
     }
 
     /// Push an already-encoded frame through the channel, splitting it into `Chunk` frames
     /// first when it exceeds the channel's frame bound. Shared by every frame kind's send
     /// path, so an oversized `SetPlan` streams the same way an oversized batch does.
-    async fn spin_send_scratch(
+    async fn send_frame_scratch(
         &self,
         scratch: &[u8],
         stats: &mut SendBatchStats,
     ) -> Result<(), DataFusionError> {
         match self.channel.max_frame_bytes() {
             Some(cap) if scratch.len() > cap => self.send_chunked(scratch, cap, stats).await,
-            _ => self.spin_send_frame(scratch, stats).await.map(|_| ()),
+            _ => self.send_frame(scratch, stats).await.map(|_| ()),
         }
     }
 
@@ -1235,7 +1157,7 @@ impl MppSender {
                 &frame[offset..end],
                 &mut buf,
             );
-            if !self.spin_send_frame(&buf, stats).await? {
+            if !self.send_frame(&buf, stats).await? {
                 // The consumer cancelled the stream mid-frame; drop the rest.
                 return Ok(());
             }
@@ -1244,64 +1166,16 @@ impl MppSender {
         Ok(())
     }
 
-    /// Push one channel-bounded frame through the cooperative-drain spin (or the blocking
-    /// fallback when no drain is attached). Returns `false` when the spin ended because the
-    /// consumer cancelled this sender's stream, so multi-frame callers can stop early.
-    async fn spin_send_frame(
+    async fn send_frame(
         &self,
         scratch: &[u8],
         stats: &mut SendBatchStats,
     ) -> Result<bool, DataFusionError> {
-        let Some(drain) = self.cooperative_drain.as_ref() else {
-            // No drain attached (unit tests, in-proc channels): fall
-            // back to the blocking send path.
-            return self.channel.send_bytes(scratch).map(|()| true);
-        };
-        // Lock the channel before the spin so a sibling task can't interleave a different
-        // partial write through the shared shm_mq handle. See `BatchChannelSender::send_lock`.
-        // Long-term, switching shm_mq for an async-friendly ring buffer (cf. #4184) drops the
-        // partial-send invariant entirely and removes the need for this lock.
-        //
-        // Latent under the current-thread runtime: today every fragment owns its own
-        // `Arc<dyn BatchChannelSender>` (one sender per `Arc`), so the FIFO Mutex below
-        // is uncontended. A future multi-thread runtime that shares a sender across
-        // sibling fragment tasks (multi-partition fan-out) would let one task starve
-        // another for the duration of a large shuffle; the fix at that point is to move
-        // the entire spin off the compute thread.
         let _send_guard = self.channel.send_lock().lock().await;
-        let mut first_try = true;
         let t_wait_start = Instant::now();
-        // The spin runs inside a tokio task on the backend thread's current-thread runtime
-        // (DataFusion needs one to drive `Stream`s). The deadlock we're breaking is
-        // *cross-proc*: two peers each blocked on a full outbound. `try_drain_pass` pulls
-        // peer batches off our inbound on the same OS thread, freeing their slots so their
-        // sends advance. `yield_now().await` between iterations hands the runtime back to
-        // siblings if any are ready, mostly a no-op under today's linear MPP topology.
-        loop {
-            drain.check_interrupt()?;
-            // The consumer cancelled this stream, so end the send cleanly and let the producer
-            // fragment complete. Checked before the send so a cancel that landed mid-spin stops
-            // the next iteration.
-            if self.stream_cancelled() {
-                return Ok(false);
-            }
-            if self.spin_try_send_bytes(scratch).await? {
-                if !first_try {
-                    stats.send_wait += t_wait_start.elapsed();
-                }
-                return Ok(true);
-            }
-            first_try = false;
-            stats.spin_iters += 1;
-            // Would-block. Pull from our inbound so peers' outbound-to-us frees up and their
-            // sends to us unblock; without this, symmetric full-queue sends deadlock. Errors
-            // propagate so a peer detaching mid-spin doesn't leave us spinning on a closed
-            // mesh.
-            let t_drain = Instant::now();
-            self.spin_try_drain_pass(drain).await?;
-            stats.coop_drain_in_spin += t_drain.elapsed();
-            tokio::task::yield_now().await;
-        }
+        self.channel.send_bytes_async(scratch).await?;
+        stats.send_wait += t_wait_start.elapsed();
+        Ok(true)
     }
 
     /// Send one work unit for the task this sender's header names. The unit's hop stamps are the
@@ -1314,7 +1188,7 @@ impl MppSender {
         let mut scratch = self.scratch.replace(Vec::new());
         let result = async {
             encode_prost_frame_into(self.header, unit, &mut scratch)?;
-            self.spin_send_scratch(&scratch, stats).await
+            self.send_frame_scratch(&scratch, stats).await
         }
         .await;
         self.scratch.replace(scratch);
@@ -1331,14 +1205,14 @@ impl MppSender {
         let mut scratch = self.scratch.replace(Vec::new());
         let result = async {
             encode_prost_frame_into(self.header, frame, &mut scratch)?;
-            self.spin_send_scratch(&scratch, stats).await
+            self.send_frame_scratch(&scratch, stats).await
         }
         .await;
         self.scratch.replace(scratch);
         result
     }
 
-    /// Ship a task's execute-task request as an `ExecuteTask` frame.
+    /// Send an `ExecuteTask` frame to request remote task fragment execution.
     pub async fn send_execute_task_traced(
         &self,
         frame: &ExecuteTaskFrame,
@@ -1347,7 +1221,7 @@ impl MppSender {
         let mut scratch = self.scratch.replace(Vec::new());
         let result = async {
             encode_prost_frame_into(self.header, frame, &mut scratch)?;
-            self.spin_send_scratch(&scratch, stats).await
+            self.send_frame_scratch(&scratch, stats).await
         }
         .await;
         self.scratch.replace(scratch);
@@ -1370,19 +1244,16 @@ impl MppSender {
                 self.header.sender_proc(),
             )
             .write_to(&mut scratch[..MPP_FRAME_HEADER_SIZE]);
-            self.spin_send_scratch(&scratch, stats).await
+            self.send_frame_scratch(&scratch, stats).await
         }
         .await;
         self.scratch.replace(scratch);
         result
     }
 
-    /// Send the task's collected metrics without consulting the interrupt: this runs after the
-    /// query's cancellation token already fired (it fires on normal completion too), so the
-    /// cooperative spin would abort exactly when delivery matters. Best-effort like Flight's
-    /// metrics sends: a detached leader drops them. Retrying on a full ring is safe because the
-    /// receiving side keeps draining until every producer reported in.
-    pub async fn send_task_metrics_best_effort(
+    /// Send the task's collected metrics. Blocks asynchronously until ring space is available
+    /// or returns an error if the target process / DSM is detached.
+    pub async fn send_task_metrics(
         &self,
         metrics: &pb::TaskMetrics,
     ) -> Result<(), DataFusionError> {
@@ -1390,30 +1261,24 @@ impl MppSender {
         let result = async {
             encode_prost_frame_into(self.header, metrics, &mut scratch)?;
             let _send_guard = self.channel.send_lock().lock().await;
-            // The consumer stops reading the data path early but keeps draining at teardown to
-            // collect these metrics, so the frame lands once the data the cancel stopped drains out
-            // and a slot frees. Bounded so a leader that really went away can't wedge the worker on
-            // a full ring.
-            for _ in 0..MAX_CONTROL_SEND_SPINS {
-                match self.channel.try_send_bytes(&scratch) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => tokio::task::yield_now().await,
-                    Err(_) => return Ok(()), // receiver gone; metrics are best-effort
-                }
-            }
-            Ok(())
+            self.channel.send_bytes_async(&scratch).await
         }
         .await;
         self.scratch.replace(scratch);
         result
     }
 
-    /// Like `send_task_metrics_best_effort`, but for sending a task's fatal error message.
-    /// Sent explicitly by the producer (via `run_execute_task_loop`) on a panic.
-    pub(crate) async fn send_task_error_best_effort(
+    #[inline]
+    pub async fn send_task_metrics_best_effort(
         &self,
-        msg: &str,
+        metrics: &pb::TaskMetrics,
     ) -> Result<(), DataFusionError> {
+        self.send_task_metrics(metrics).await
+    }
+
+    /// Send a task's fatal error message. Blocks asynchronously until ring space is available
+    /// or returns an error if the target process / DSM is detached.
+    pub(crate) async fn send_task_error(&self, msg: &str) -> Result<(), DataFusionError> {
         let mut scratch = self.scratch.replace(Vec::new());
         let result = async {
             scratch.clear();
@@ -1435,18 +1300,19 @@ impl MppSender {
             scratch.extend_from_slice(msg_bytes);
 
             let _send_guard = self.channel.send_lock().lock().await;
-            for _ in 0..MAX_CONTROL_SEND_SPINS {
-                match self.channel.try_send_bytes(&scratch) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => tokio::task::yield_now().await,
-                    Err(_) => return Ok(()),
-                }
-            }
-            Ok(())
+            self.channel.send_bytes_async(&scratch).await
         }
         .await;
         self.scratch.replace(scratch);
         result
+    }
+
+    #[inline]
+    pub(crate) async fn send_task_error_best_effort(
+        &self,
+        msg: &str,
+    ) -> Result<(), DataFusionError> {
+        self.send_task_error(msg).await
     }
 }
 
@@ -1456,28 +1322,17 @@ impl Clone for MppSender {
     }
 }
 
-/// Per-call timing + spin metrics for [`MppSender::send_batch_traced`].
+/// Per-call timing metrics for [`MppSender::send_batch_traced`].
 /// All fields accumulate; callers zero or reuse as needed.
 #[derive(Default, Debug, Clone)]
 pub struct SendBatchStats {
     /// Cumulative time spent inside `encode_frame_into` (header + Arrow IPC serialization).
     pub encode: Duration,
-    /// Cumulative wall time in the send-retry spin after the first failed
-    /// `try_send_bytes`. Zero if the first try succeeded.
+    /// Cumulative wall time waiting for outbound send space.
     pub send_wait: Duration,
-    /// Cumulative time spent in `try_drain_pass` while spinning on a
-    /// full outbound. A subset of `send_wait`; the remainder is the
-    /// `tokio::task::yield_now()` await + the (small) cost of
-    /// `try_send_bytes` itself.
-    pub coop_drain_in_spin: Duration,
-    /// Count of `try_send_bytes` calls that returned `Ok(false)` (full).
-    pub spin_iters: u64,
 }
 
 /// A [`crate::PartitionSink`] over one [`MppSender`]: the produce loop's per-partition send end.
-/// `send` runs the cooperative-drain spin and `finish` flushes the channel EOF the same way, so a
-/// non-Flight embedder (the in-process harness, pg_search's worker loop) wraps each routed sender
-/// in one of these and pushes batches through the trait instead of touching `MppSender` directly.
 pub struct MppPartitionSink {
     sender: MppSender,
     stats: SendBatchStats,
@@ -1501,15 +1356,47 @@ impl MppPartitionSink {
 #[async_trait]
 impl crate::PartitionSink for MppPartitionSink {
     async fn send(&mut self, batch: &RecordBatch) -> datafusion::common::Result<()> {
-        self.sender.send_batch_traced(batch, &mut self.stats).await
+        if self.sender.is_stream_cancelled() {
+            return Ok(());
+        }
+        match self.sender.send_batch_traced(batch, &mut self.stats).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if self.sender.is_stream_cancelled()
+                    || msg.contains("detached")
+                    || msg.contains("Detached")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     async fn finish(mut self: Box<Self>) -> datafusion::common::Result<()> {
-        self.sender.send_eof_traced(&mut self.stats).await
+        if self.sender.is_stream_cancelled() {
+            return Ok(());
+        }
+        match self.sender.send_eof_traced(&mut self.stats).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if self.sender.is_stream_cancelled()
+                    || msg.contains("detached")
+                    || msg.contains("Detached")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     fn cancelled(&self) -> bool {
-        self.sender.stream_cancelled()
+        self.sender.is_stream_cancelled()
     }
 }
 
@@ -1570,17 +1457,24 @@ impl MppReceiver {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn try_recv_batch(&self) -> RecvBatchOutcome {
+        self.try_recv_batch_counted().1
+    }
+
+    pub(super) fn try_recv_batch_counted(&self) -> (usize, RecvBatchOutcome) {
+        let mut popped = 0;
         loop {
             match self.channel.try_recv() {
                 RecvOutcome::Bytes(bytes) => {
+                    popped += 1;
                     let complete = match self.ingest(bytes) {
                         Ok(Some(frame)) => frame,
                         // Absorbed one chunk of a larger frame; pull the next message.
                         Ok(None) => continue,
-                        Err(e) => return RecvBatchOutcome::TransportError(e),
+                        Err(e) => return (popped, RecvBatchOutcome::TransportError(e)),
                     };
-                    return match decode_frame(&complete) {
+                    let outcome = match decode_frame(&complete) {
                         Ok((header, FrameBody::Batch(batch))) => {
                             RecvBatchOutcome::Batch { header, batch }
                         }
@@ -1604,9 +1498,10 @@ impl MppReceiver {
                         }
                         Err(e) => RecvBatchOutcome::TransportError(e),
                     };
+                    return (popped, outcome);
                 }
-                RecvOutcome::Empty => return RecvBatchOutcome::Empty,
-                RecvOutcome::Detached => return RecvBatchOutcome::Detached,
+                RecvOutcome::Empty => return (popped, RecvBatchOutcome::Empty),
+                RecvOutcome::Detached => return (popped, RecvBatchOutcome::Detached),
             }
         }
     }
@@ -1739,7 +1634,7 @@ pub(super) enum RecvBatchOutcome {
     TransportError(DataFusionError),
 }
 
-/// Per-`(sender_proc, stage_id, task_id, partition)` channel buffer registry owned by a cooperative
+/// Per-`(sender_proc, stage_id, task_id, partition)` channel buffer registry owned by a
 /// [`DrainHandle`]. Demultiplexes frames by the [`MppFrameHeader`] prefix into `map`.
 /// `try_drain_pass` looks up the right channel buffer on every frame and pushes the payload into
 /// it. Consumers waiting on a given key only see frames matching that key.
@@ -1760,15 +1655,10 @@ struct ChannelBufferRegistry {
     dead_inbox: bool,
 }
 
-/// Per-sender-proc drain: stashes the receivers and polls them inline from the cooperative spin
-/// (no background thread), demuxing each frame into a per-`(stage_id, task_id, partition)` channel buffer.
+/// Inbound drain handle: stashes the receivers and demuxes each frame into its matching
+/// per-`(stage_id, task_id, partition)` channel buffer or control registry.
 ///
-/// Inline polling is the production requirement: pgrx's `check_active_thread` guard panics on any
-/// pg FFI call (including `shm_mq_receive`) from a non-backend thread, so the drain work has to
-/// run on the backend thread. Tests that need a true thread-backed drain use
-/// [`ThreadedDrainHandle`] instead.
-///
-/// On drop, the handle cancels every channel buffer so any consumer blocked on `try_pop` unblocks
+/// On drop, the handle cancels every channel buffer so any consumer blocked on `pop().await` unblocks
 /// with `Eof` — the drain can therefore never outlive its query, even on a panicked teardown.
 pub struct DrainHandle {
     /// Per-(stage_id, task_id, partition) channel buffer registry. Populated lazily on first frame for a
@@ -1908,6 +1798,53 @@ impl DrainHandle {
         }
     }
 
+    pub(super) fn start_inbound_reactor(
+        self: &Arc<Self>,
+        notifier: Option<Arc<super::notifier::RingReceiverNotifier>>,
+    ) -> Option<datafusion::common::runtime::SpawnedTask<()>> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return None;
+        }
+        let this = Arc::clone(self);
+        Some(datafusion::common::runtime::SpawnedTask::spawn(
+            async move {
+                loop {
+                    match this.try_drain_pass_counted() {
+                        Ok(count) => {
+                            if count > 0 {
+                                if let Some(rx_notif) = &notifier {
+                                    rx_notif.notify_space_ready();
+                                }
+                                continue;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                    if let Some(rx_notif) = &notifier {
+                        let notified = rx_notif.mesh_notifier().data_ready_notified();
+                        rx_notif.set_consumer_waiting(true);
+                        match this.try_drain_pass_counted() {
+                            Ok(count) if count > 0 => {
+                                rx_notif.set_consumer_waiting(false);
+                                rx_notif.notify_space_ready();
+                                continue;
+                            }
+                            Err(_) => {
+                                rx_notif.set_consumer_waiting(false);
+                                break;
+                            }
+                            _ => {}
+                        }
+                        let _ = tokio::time::timeout(Duration::from_millis(50), notified).await;
+                        rx_notif.set_consumer_waiting(false);
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }
+            },
+        ))
+    }
+
     /// Record a `Cancel` frame: the consumer abandoned this data stream, so this proc's producer
     /// of it stops. Idempotent.
     fn note_cancel(&self, stream: MppDataStreamKey) {
@@ -1918,6 +1855,21 @@ impl DrainHandle {
     /// stream cleanly when the consumer stopped reading.
     pub(super) fn stream_cancelled(&self, stream: MppDataStreamKey) -> bool {
         self.cancelled_streams.lock().unwrap().contains(&stream)
+    }
+
+    /// Drain any pending `TaskMetrics` frames from the channel into the provided callback.
+    pub(super) fn drain_task_metrics<F>(&self, mut callback: F)
+    where
+        F: FnMut(u32, u32, pb::TaskMetrics),
+    {
+        let _ = self.try_drain_pass();
+        if let Ok(mut guard) = self.task_metrics_rx.lock()
+            && let Some(rx) = guard.as_mut()
+        {
+            while let Ok((stage_id, task_number, metrics)) = rx.try_recv() {
+                callback(stage_id, task_number, metrics);
+            }
+        }
     }
 
     /// Take the receiving end of the `TaskMetrics` frame stream. The embedder (the leader)
@@ -2087,6 +2039,43 @@ impl DrainHandle {
         }
     }
 
+    /// Handle a remote peer process detaching / disconnecting.
+    pub fn handle_peer_detach(&self, proc_id: u32) {
+        let reason = format!("peer process {proc_id} detached");
+
+        // Drain any remaining in-flight frames (batches, EOFs) from the shared-memory ring
+        // that the peer pushed before closing its socket.
+        let _ = self.try_drain_pass();
+
+        if proc_id == 0 {
+            // Coordinator (leader proc 0) detached: the entire query execution is ending.
+            self.detach_data_scope(&reason);
+            let mut execs = self.execute_task_registry.lock().unwrap();
+            execs.dead = Some(reason);
+            for (_, slot) in execs.map.drain() {
+                drop(slot);
+            }
+        } else {
+            // An individual worker detached: fail only the channel buffers waiting
+            // on EOF from this specific sender_proc without marking dead_inbox = true.
+            let to_fail = {
+                let guard = self
+                    .channel_buffers
+                    .lock()
+                    .expect("DrainHandle channel_buffers mutex poisoned");
+                guard
+                    .map
+                    .iter()
+                    .filter(|(key, _)| key.sender_proc == proc_id)
+                    .map(|(_, buf)| buf.clone())
+                    .collect::<Vec<_>>()
+            };
+            for buf in to_fail {
+                buf.fail_pending(&reason);
+            }
+        }
+    }
+
     /// Hard scope death: [`Self::detach_data_scope`] plus the control-plane registries. For
     /// ring corruption and embedder-driven teardown, where no further frame of any kind can be
     /// trusted to arrive.
@@ -2146,10 +2135,14 @@ impl DrainHandle {
         task_number: u32,
     ) -> Result<ExecuteTaskRx, DataFusionError> {
         let mut guard = self.execute_task_registry.lock().unwrap();
-        if let Some(msg) = &guard.dead {
-            return Err(DataFusionError::Execution(msg.clone()));
-        }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Some(msg) = &guard.dead {
+            if msg.contains("detached") {
+                return Ok(rx);
+            }
+            let _ = tx.send(Err(DataFusionError::Execution(msg.clone())));
+            return Ok(rx);
+        }
         if let Some(slot) = guard.map.get_mut(&(stage_id, task_number)) {
             match slot {
                 ExecuteTaskSlot::Active(_) => {
@@ -2224,20 +2217,19 @@ impl DrainHandle {
         for buf in to_cancel {
             buf.cancel();
         }
+        let mut execs = self.execute_task_registry.lock().unwrap();
+        for (_, slot) in execs.map.drain() {
+            drop(slot);
+        }
     }
 
     /// Pull batches from each live receiver and demux them into the per-`(stage_id, task_id, partition)`
-    /// channel buffer registry. Called from `DrainGatherStream::poll_next` and from
-    /// `MppSender::send_batch`'s cooperative spin. Drain work happens on the backend thread
-    /// (pgrx-safe). No-op for thread-backed handles.
+    /// channel buffer registry.
     ///
-    /// Each pass drains *every available* batch from each receiver (up to a safety cap). Pulling
-    /// only one batch per source per call would mean that under steady producer pressure the
-    /// cooperative sender's spin-loop can't keep up: we'd fall N:1 behind peers' sends and the
-    /// mesh would stall once any queue fills. Draining until the receiver reports `Empty` bounds
-    /// each pass by queue depth rather than by spin-loop iteration count.
+    /// Each pass drains *every available* batch from each receiver (up to a safety cap). Draining
+    /// until the receiver reports `Empty` bounds each pass by queue depth.
     ///
-    /// Returns `Ok(())` once every cooperative receiver has been pulled until `Empty` (or
+    /// Returns `Ok(())` once every receiver has been pulled until `Empty` (or
     /// detached). Errors propagate as `Err` so a transport-level failure surfaces at the call
     /// site rather than getting silently dropped.
     ///
@@ -2253,11 +2245,17 @@ impl DrainHandle {
     /// - `Error`: queue-wide shutdown. Notify every registered channel buffer and
     ///   the control registries, mark the handle detached, and drop the slot.
     pub fn try_drain_pass(&self) -> Result<(), DataFusionError> {
+        self.try_drain_pass_counted().map(|_| ())
+    }
+
+    /// Pull batches from all receivers, returning the number of frames processed.
+    pub fn try_drain_pass_counted(&self) -> Result<usize, DataFusionError> {
         // Bound per-source pulls per call. The upper limit exists to give
         // the caller a chance to re-try its own send between drains —
         // otherwise a proc with a very fast peer could drain
         // indefinitely on one source and starve its own outbound.
         const MAX_BATCHES_PER_SOURCE_PER_PASS: usize = 256;
+        let mut total_drained = 0;
 
         let mut slots = self.coop_receivers.lock().unwrap();
         for slot in slots.iter_mut() {
@@ -2265,7 +2263,9 @@ impl DrainHandle {
                 continue;
             };
             for _ in 0..MAX_BATCHES_PER_SOURCE_PER_PASS {
-                match rx.try_recv_batch() {
+                let (popped, outcome) = rx.try_recv_batch_counted();
+                total_drained += popped;
+                match outcome {
                     RecvBatchOutcome::Batch { header, batch } => {
                         let buf =
                             self.register_data_channel(header.sender_proc(), header.data_stream());
@@ -2303,7 +2303,12 @@ impl DrainHandle {
                         );
                     }
                     RecvBatchOutcome::Cancel { header } => {
-                        self.note_cancel(header.data_stream());
+                        let stream = header.data_stream();
+                        if stream.stage_id == u32::MAX {
+                            self.fail_scope("coordinator detached");
+                        } else {
+                            self.note_cancel(stream);
+                        }
                     }
                     RecvBatchOutcome::TaskError { header, msg } => {
                         // The remote worker sent a crash message, but the transport is intact.
@@ -2316,16 +2321,6 @@ impl DrainHandle {
                     }
                     RecvBatchOutcome::Empty => break,
                     RecvBatchOutcome::Detached => {
-                        // Every data sender to this receiver is gone; that is also how a
-                        // peer's normal completion looks. Its EOFs were drained ahead of the
-                        // detach (the ring is FIFO), so failing only the channels still
-                        // waiting on their `Eof` hits exactly the work that depended on a
-                        // departed producer, which would otherwise spin on
-                        // `try_pop -> None` forever. Control senders stay out of the ring's
-                        // sender count and can still publish, so the slot stays live for the
-                        // leader-origin frames a fragment may still be waiting on (requests,
-                        // plans, feed units); `detach_data_scope` is idempotent, so the
-                        // passes that keep observing the latch cost one failed recv each.
                         self.detach_data_scope(
                             "transport receiver detached before this channel's EOF; the \
                              producer went away",
@@ -2343,7 +2338,7 @@ impl DrainHandle {
                 }
             }
         }
-        Ok(())
+        Ok(total_drained)
     }
 }
 
@@ -2358,14 +2353,10 @@ impl Drop for DrainHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{
-        Int32Array, Int64Array, StringArray, StringViewArray, UInt64Array,
-    };
+    use datafusion::arrow::array::{Int32Array, Int64Array, StringArray, StringViewArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::runtime::SpawnedTask;
     use std::sync::Arc as StdArc;
-    use std::thread;
-
-    use std::thread::JoinHandle;
 
     /// SPSC channel pair used in unit tests (bounded capacity, exercising backpressure).
     pub(super) fn in_proc_channel(capacity: usize) -> (InProcSender, InProcReceiver) {
@@ -2459,30 +2450,6 @@ mod tests {
         );
     }
 
-    impl DrainBuffer {
-        /// Block until a batch is available, EOF is reached, or the buffer is cancelled.
-        ///
-        /// INVARIANT: any already-buffered batch is returned *before* honoring either
-        /// cancellation or all-sources-done. Reordering the queue pop ahead of the cancel/eof
-        /// check would silently drop buffered data on an otherwise-clean shutdown; the
-        /// `drain_buffer_drains_buffered_before_eof` test locks this in.
-        fn pop_front(&self) -> DrainItem {
-            let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
-            loop {
-                if let Some(batch) = guard.queue.pop_front() {
-                    return DrainItem::Batch(batch);
-                }
-                if let Some(msg) = &guard.failed {
-                    return DrainItem::Failed(msg.clone());
-                }
-                if guard.cancelled || guard.sources_done >= guard.num_sources {
-                    return DrainItem::Eof;
-                }
-                guard = self.cond.wait(guard).expect("DrainBuffer mutex poisoned");
-            }
-        }
-    }
-
     impl MppSender {
         /// Construct a sender with the default `(stage_id=0, task_id=0, partition=0)` header. Used where
         /// the header carries no actionable routing info.
@@ -2496,147 +2463,13 @@ mod tests {
         /// Stats-less wrapper around `send_batch_traced`. Production call sites
         /// (`ShuffleStream::process_batch`) always pass a `SendBatchStats` so per-peer
         /// wall-time shows up in the EOF trace. Wraps the async send in a tiny current-thread
-        /// Tokio runtime so `#[test]` functions don't have to be `#[tokio::test]` and the
-        /// OS-thread-spawning test harnesses don't have to plumb an async runtime themselves.
+        /// Tokio runtime so `#[test]` functions don't have to be `#[tokio::test]`.
         fn send_batch(&self, batch: &RecordBatch) -> Result<(), DataFusionError> {
             let mut stats = SendBatchStats::default();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("test tokio runtime build");
             rt.block_on(self.send_batch_traced(batch, &mut stats))
-        }
-    }
-
-    /// Configuration for `spawn_drain_thread`. pgrx panics on any pg FFI call (including
-    /// `shm_mq_receive`) from a non-backend thread, so production never spawns a drain thread —
-    /// see [`DrainHandle::cooperative`] for the cooperative path.
-    struct DrainConfig {
-        /// Receivers to drain. Ownership moves into the spawned thread.
-        receivers: Vec<MppReceiver>,
-        /// Destination buffer.
-        buffer: Arc<DrainBuffer>,
-        /// How long to sleep when every receiver is empty but some are still attached. Tuning:
-        /// small values reduce end-of-batch latency but raise CPU; 1 ms is a safe default until
-        /// we integrate with WaitLatch.
-        idle_sleep: Duration,
-    }
-
-    impl DrainConfig {
-        fn new(receivers: Vec<MppReceiver>, buffer: Arc<DrainBuffer>) -> Self {
-            Self {
-                receivers,
-                buffer,
-                idle_sleep: Duration::from_millis(1),
-            }
-        }
-    }
-
-    /// Spawn the dedicated drain thread. The thread round-robins through every receiver with
-    /// non-blocking `try_recv`, pushes decoded batches into `buffer`, and marks each source done
-    /// as soon as it observes a detach or decode error. When every source is done, the thread
-    /// exits.
-    fn spawn_drain_thread(config: DrainConfig) -> JoinHandle<Result<(), DataFusionError>> {
-        thread::spawn(move || drain_loop(config))
-    }
-
-    /// RAII wrapper: owns the drain thread's `JoinHandle` and the buffer it writes into.
-    /// `Drop` cancels the buffer (unblocking the consumer) and joins the thread, so the thread
-    /// can never outlive the test scope even on a panic.
-    struct ThreadedDrainHandle {
-        buffer: Arc<DrainBuffer>,
-        join: Mutex<Option<JoinHandle<Result<(), DataFusionError>>>>,
-    }
-
-    impl ThreadedDrainHandle {
-        fn spawn(config: DrainConfig) -> Self {
-            let buffer = Arc::clone(&config.buffer);
-            let join = spawn_drain_thread(config);
-            Self {
-                buffer,
-                join: Mutex::new(Some(join)),
-            }
-        }
-    }
-
-    impl Drop for ThreadedDrainHandle {
-        fn drop(&mut self) {
-            self.buffer.cancel();
-            if let Some(join) = self.join.lock().unwrap().take() {
-                let _ = join.join();
-            }
-        }
-    }
-
-    /// Test-only thread-backed drain. Writes every observed frame into a single shared
-    /// [`DrainBuffer`] with `num_sources = N`. Per-channel `Eof` frames are treated as "this source
-    /// is done" rather than "this logical channel within the source is done"; sufficient for unit
-    /// tests that don't exercise per-channel demux. Production drains route through
-    /// [`DrainHandle::try_drain_pass`] (cooperative variant), which keys on the frame header. Tests
-    /// that need to validate production demux must use [`DrainHandle::cooperative`] and call
-    /// `try_drain_pass` directly.
-    fn drain_loop(config: DrainConfig) -> Result<(), DataFusionError> {
-        let DrainConfig {
-            receivers,
-            buffer,
-            idle_sleep,
-        } = config;
-
-        let mut done = vec![false; receivers.len()];
-        loop {
-            // Observe cancellation before each pass so a `DrainHandle::drop` with
-            // live peer senders tears down cleanly. Without this check, the drain
-            // thread would spin `try_recv` forever because no source has detached.
-            if buffer.is_cancelled() {
-                return Ok(());
-            }
-
-            let mut got_any = false;
-            let mut all_done = true;
-            for (i, rx) in receivers.iter().enumerate() {
-                if done[i] {
-                    continue;
-                }
-                all_done = false;
-                match rx.try_recv_batch() {
-                    RecvBatchOutcome::Batch { header: _, batch } => {
-                        got_any = true;
-                        buffer.push_batch(batch);
-                    }
-                    RecvBatchOutcome::Eof { header: _ } => {
-                        // Per-channel Eof frame: single-channel positional design
-                        // treats it as a source-done signal. See `try_drain_pass`.
-                        done[i] = true;
-                        buffer.notify_source_done();
-                    }
-                    // Control frames have no place in the test-only single-buffer path.
-                    RecvBatchOutcome::WorkUnit { .. }
-                    | RecvBatchOutcome::FeedEof { .. }
-                    | RecvBatchOutcome::TaskMetrics { .. }
-                    | RecvBatchOutcome::SetPlan { .. }
-                    | RecvBatchOutcome::ExecuteTask { .. }
-                    | RecvBatchOutcome::Cancel { .. }
-                    | RecvBatchOutcome::TaskError { .. } => {}
-                    RecvBatchOutcome::Empty => {}
-                    RecvBatchOutcome::Detached => {
-                        done[i] = true;
-                        buffer.notify_source_done();
-                    }
-                    RecvBatchOutcome::TransportError(e) => {
-                        // Treat a decode error as a fatal detach for this source
-                        // so the consumer can observe EOF and abort the query.
-                        done[i] = true;
-                        buffer.notify_source_done();
-                        return Err(e);
-                    }
-                }
-            }
-
-            if all_done {
-                return Ok(());
-            }
-            if !got_any {
-                thread::sleep(idle_sleep);
-            }
         }
     }
 
@@ -2718,55 +2551,15 @@ mod tests {
         // `(stage 7, task 0, partition 1)`.
         drain.note_cancel(MppDataStreamKey::new(7, 0, 1));
         let (tx, _rx) = in_proc_channel(1);
-        let sender = MppSender::with_header(Arc::new(tx), MppFrameHeader::task_metrics(7, 1, 0))
-            .with_cooperative_drain(drain as Arc<dyn CooperativeDrainSet>);
+        let sender = MppSender::with_header(Arc::new(tx), MppFrameHeader::task_metrics(7, 1, 0));
 
         let mut stats = SendBatchStats::default();
         assert!(
             sender
-                .spin_send_frame(&[0xCA, 0xFE], &mut stats)
+                .send_frame(&[0xCA, 0xFE], &mut stats)
                 .await
-                .expect("control frame must not observe data cancellation")
+                .expect("control frame must send cleanly")
         );
-    }
-
-    /// The producer-side half of the early-termination fix: a producer blocked on a full outbound
-    /// ends its send cleanly once a `Cancel` for its `(stage, task, partition)` stream lands on its inbox.
-    /// The test hangs if the spin doesn't observe the cancel.
-    #[tokio::test(flavor = "current_thread")]
-    async fn producer_send_ends_when_consumer_cancels_the_stream() {
-        // Outbound to a consumer that never drains: capacity 1, so the second send finds it full.
-        let (out_tx, _out_rx) = in_proc_channel(1);
-        // The producer's inbox, where the consumer's `Cancel` frame lands.
-        let (inbox_tx, inbox_rx) = in_proc_channel(4);
-        let drain = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
-            inbox_rx,
-        ))]));
-        // Producer of the `(stage 7, partition 0)` stream.
-        let sender = MppSender::with_header(
-            Arc::new(out_tx),
-            MppFrameHeader::batch(MppDataStreamKey::new(7, 0, 0), 1),
-        )
-        .with_cooperative_drain(Arc::clone(&drain) as Arc<dyn CooperativeDrainSet>);
-
-        // The consumer abandons that stream (it stopped reading before EOF): a `Cancel` reaches the
-        // inbox.
-        let mut buf = vec![0u8; MPP_FRAME_HEADER_SIZE];
-        MppFrameHeader::cancel(MppDataStreamKey::new(7, 0, 0), 0).write_to(&mut buf);
-        inbox_tx.send_bytes(&buf).unwrap();
-
-        let mut stats = SendBatchStats::default();
-        // First batch fills the one slot.
-        sender
-            .send_batch_traced(&sample_batch(1), &mut stats)
-            .await
-            .unwrap();
-        // The second batch would block forever on the full slot. Instead the spin drains the inbox,
-        // sees the cancel, and ends the send cleanly.
-        sender
-            .send_batch_traced(&sample_batch(1), &mut stats)
-            .await
-            .unwrap();
     }
 
     /// Tasks 0 and 3 can share one worker and output partition.
@@ -2781,18 +2574,16 @@ mod tests {
         let task_0_stream = MppDataStreamKey::new(7, 0, 0);
         let task_3_stream = MppDataStreamKey::new(7, 3, 0);
         let task_0 =
-            MppSender::with_header(Arc::clone(&out_tx), MppFrameHeader::batch(task_0_stream, 1))
-                .with_cooperative_drain(Arc::clone(&drain) as Arc<dyn CooperativeDrainSet>);
+            MppSender::with_header(Arc::clone(&out_tx), MppFrameHeader::batch(task_0_stream, 1));
         let task_3 =
-            MppSender::with_header(Arc::clone(&out_tx), MppFrameHeader::batch(task_3_stream, 1))
-                .with_cooperative_drain(Arc::clone(&drain) as Arc<dyn CooperativeDrainSet>);
+            MppSender::with_header(Arc::clone(&out_tx), MppFrameHeader::batch(task_3_stream, 1));
 
         let mut cancel = vec![0u8; MPP_FRAME_HEADER_SIZE];
         MppFrameHeader::cancel(task_0_stream, 0).write_to(&mut cancel);
         inbox_tx.send_bytes(&cancel).unwrap();
         drain.try_drain_pass().unwrap();
-        assert!(task_0.stream_cancelled());
-        assert!(!task_3.stream_cancelled());
+        assert!(drain.stream_cancelled(task_0_stream));
+        assert!(!drain.stream_cancelled(task_3_stream));
 
         let mut stats = SendBatchStats::default();
         task_0
@@ -2806,6 +2597,11 @@ mod tests {
         task_3.send_eof_traced(&mut stats).await.unwrap();
 
         let receiver = MppReceiver::new(Box::new(out_rx));
+        let RecvBatchOutcome::Batch { header, batch } = receiver.try_recv_batch() else {
+            panic!("task 0 batch must be delivered");
+        };
+        assert_eq!(header.data_stream(), task_0_stream);
+        assert_eq!(batch.num_rows(), 2);
         let RecvBatchOutcome::Batch { header, batch } = receiver.try_recv_batch() else {
             panic!("task 3 batch must be delivered");
         };
@@ -3122,6 +2918,128 @@ mod tests {
         assert!(matches!(dependent.try_pop(), Some(DrainItem::Failed(_))));
         let late = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 1));
         assert!(matches!(late.try_pop(), Some(DrainItem::Failed(_))));
+    }
+
+    #[test]
+    fn individual_worker_detach_does_not_fail_sibling_worker_streams() {
+        let drain = DrainHandle::cooperative(vec![]);
+
+        // Register channel 1 for worker 1 (sender_proc = 1) and channel 2 for worker 2 (sender_proc = 2)
+        let ch1 = drain.register_data_channel(1, MppDataStreamKey::new(1, 0, 0));
+        let ch2 = drain.register_data_channel(2, MppDataStreamKey::new(1, 1, 0));
+
+        // Worker 1 detaches
+        drain.handle_peer_detach(1);
+
+        // Worker 1's channel is failed
+        assert!(matches!(ch1.try_pop(), Some(DrainItem::Failed(_))));
+
+        // Worker 2's channel is completely unaffected and healthy
+        assert!(ch2.try_pop().is_none());
+
+        // Worker 2 pushes a batch and EOF
+        let batch = sample_batch(10);
+        ch2.push_batch(batch);
+        ch2.notify_source_done();
+
+        assert!(matches!(ch2.try_pop(), Some(DrainItem::Batch(_))));
+        assert!(matches!(ch2.try_pop(), Some(DrainItem::Eof)));
+
+        // A new channel registered for worker 2 is also healthy (dead_inbox was not set globally)
+        let ch2_later = drain.register_data_channel(2, MppDataStreamKey::new(1, 1, 1));
+        assert!(ch2_later.try_pop().is_none());
+    }
+
+    #[test]
+    fn peer_detach_race_drains_in_flight_eof_cleanly() {
+        let (_region, peer, _leader, drain) = detached_test_inbox();
+
+        let dependent = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 0));
+
+        // Worker 1 pushes batch and EOF into DSM ring
+        let mut batch_bytes = Vec::new();
+        encode_frame_into(
+            MppFrameHeader::batch(MppDataStreamKey::new(2, 1, 0), 1),
+            &sample_batch(10),
+            &mut batch_bytes,
+        )
+        .expect("encode batch");
+        peer.try_send(&batch_bytes).expect("send batch");
+
+        let mut eof = Vec::new();
+        encode_eof_frame_into(MppDataStreamKey::new(2, 1, 0), 1, &mut eof).expect("encode eof");
+        peer.try_send(&eof).expect("send eof");
+
+        // Worker 1 socket detaches immediately while EOF is still queued in DSM ring
+        drain.handle_peer_detach(1);
+
+        // Batch and clean EOF must be popped successfully without failure
+        assert!(matches!(dependent.try_pop(), Some(DrainItem::Batch(_))));
+        assert!(matches!(dependent.try_pop(), Some(DrainItem::Eof)));
+    }
+
+    #[test]
+    fn peer_ungraceful_detach_without_eof_fails() {
+        let (_region, peer, _leader, drain) = detached_test_inbox();
+
+        let dependent = drain.register_data_channel(1, MppDataStreamKey::new(2, 1, 0));
+
+        // Worker 1 pushes a batch but crashes without sending EOF
+        let mut batch_bytes = Vec::new();
+        encode_frame_into(
+            MppFrameHeader::batch(MppDataStreamKey::new(2, 1, 0), 1),
+            &sample_batch(10),
+            &mut batch_bytes,
+        )
+        .expect("encode batch");
+        peer.try_send(&batch_bytes).expect("send batch");
+
+        // Worker 1 disconnects abruptly
+        drain.handle_peer_detach(1);
+
+        // Buffered batch is preserved, followed by failure notification
+        assert!(matches!(dependent.try_pop(), Some(DrainItem::Batch(_))));
+        assert!(matches!(dependent.try_pop(), Some(DrainItem::Failed(_))));
+    }
+
+    struct MockCancelledSender {
+        send_lock: tokio::sync::Mutex<()>,
+        cancelled: std::sync::atomic::AtomicBool,
+    }
+
+    impl BatchChannelSender for MockCancelledSender {
+        fn send_bytes(&self, _bytes: &[u8]) -> Result<(), DataFusionError> {
+            Ok(())
+        }
+        fn send_lock(&self) -> &tokio::sync::Mutex<()> {
+            &self.send_lock
+        }
+        fn is_stream_cancelled(&self, _stream: &MppDataStreamKey) -> bool {
+            self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mpp_partition_sink_stream_cancellation() {
+        let channel = Arc::new(MockCancelledSender {
+            send_lock: tokio::sync::Mutex::new(()),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
+        });
+        let header = MppFrameHeader::batch(MppDataStreamKey::new(1, 0, 0), 1);
+        let sender = MppSender::with_header(channel.clone(), header);
+        let mut sink = MppPartitionSink::new(sender);
+
+        use crate::shm::PartitionSink;
+        assert!(!sink.cancelled());
+
+        channel
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(sink.cancelled());
+
+        let batch = sample_batch(10);
+        assert!(sink.send(&batch).await.is_ok());
+        assert!(Box::new(sink).finish().await.is_ok());
     }
 
     #[test]
@@ -3609,57 +3527,101 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn drain_buffer_pop_returns_pushed_batches_in_order() {
+    #[tokio::test]
+    async fn drain_buffer_pop_returns_pushed_batches_in_order() {
         let buf = DrainBuffer::new(1);
         buf.push_batch(sample_batch(3));
         buf.push_batch(sample_batch(5));
         buf.notify_source_done();
 
-        match buf.pop_front() {
+        match buf.pop().await {
             DrainItem::Batch(b) => assert_eq!(b.num_rows(), 3),
             DrainItem::Eof => panic!("expected batch"),
             DrainItem::Failed(msg) => panic!("unexpected failure: {msg}"),
         }
-        match buf.pop_front() {
+        match buf.pop().await {
             DrainItem::Batch(b) => assert_eq!(b.num_rows(), 5),
             DrainItem::Eof => panic!("expected batch"),
             DrainItem::Failed(msg) => panic!("unexpected failure: {msg}"),
         }
-        matches!(buf.pop_front(), DrainItem::Eof);
+        assert!(matches!(buf.pop().await, DrainItem::Eof));
     }
 
-    #[test]
-    fn drain_buffer_pop_blocks_until_push_then_eof() {
+    #[tokio::test]
+    async fn drain_buffer_pop_blocks_until_push_then_eof() {
         let buf = DrainBuffer::new(2);
-        let producer = StdArc::clone(&buf);
-        let handle = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
+        let producer = Arc::clone(&buf);
+        let handle = SpawnedTask::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
             producer.push_batch(sample_batch(2));
             producer.notify_source_done();
-            thread::sleep(Duration::from_millis(20));
+            tokio::time::sleep(Duration::from_millis(20)).await;
             producer.notify_source_done();
         });
 
-        match buf.pop_front() {
+        match buf.pop().await {
             DrainItem::Batch(b) => assert_eq!(b.num_rows(), 2),
             DrainItem::Eof => panic!("expected batch first"),
             DrainItem::Failed(msg) => panic!("unexpected failure: {msg}"),
         }
-        assert!(matches!(buf.pop_front(), DrainItem::Eof));
-        handle.join().unwrap();
+        assert!(matches!(buf.pop().await, DrainItem::Eof));
+        handle.join().await.unwrap();
     }
 
-    #[test]
-    fn drain_buffer_cancel_unblocks_waiter() {
+    #[tokio::test]
+    async fn drain_buffer_cancel_unblocks_waiter() {
         let buf = DrainBuffer::new(1);
-        let canceller = StdArc::clone(&buf);
-        let handle = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
+        let canceller = Arc::clone(&buf);
+        let handle = SpawnedTask::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
             canceller.cancel();
         });
-        assert!(matches!(buf.pop_front(), DrainItem::Eof));
-        handle.join().unwrap();
+        assert!(matches!(buf.pop().await, DrainItem::Eof));
+        handle.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_buffer_async_pop_wake() {
+        let buf = DrainBuffer::new(1);
+        let buf_clone = Arc::clone(&buf);
+
+        let pop_task =
+            datafusion::common::runtime::SpawnedTask::spawn(async move { buf_clone.pop().await });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        buf.push_batch(sample_batch(7));
+
+        let res = tokio::time::timeout(Duration::from_secs(1), pop_task.join()).await;
+        assert!(res.is_ok());
+        match res.unwrap().unwrap() {
+            DrainItem::Batch(b) => assert_eq!(b.num_rows(), 7),
+            other => panic!("expected batch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_reactor_async_delivery() {
+        let (tx, rx) = in_proc_channel(8);
+        let stream_key = MppDataStreamKey::new(1, 0, 0);
+        let header = MppFrameHeader::batch(stream_key, 1);
+        let sender = MppSender::with_header(Arc::new(tx), header);
+        let receiver = MppReceiver::new(Box::new(rx));
+        let drain = Arc::new(DrainHandle::cooperative(vec![receiver]));
+
+        let _reactor = drain.start_inbound_reactor(None);
+
+        let data_buf = drain.register_data_channel(1, stream_key);
+
+        let mut stats = SendBatchStats::default();
+        sender
+            .send_batch_traced(&sample_batch(10), &mut stats)
+            .await
+            .unwrap();
+
+        match data_buf.pop().await {
+            DrainItem::Batch(b) => assert_eq!(b.num_rows(), 10),
+            other => panic!("expected batch, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3682,124 +3644,6 @@ mod tests {
     }
 
     #[test]
-    fn drain_thread_drains_single_source() {
-        let (tx, rx) = in_proc_channel(4);
-        let sender = MppSender::new(Arc::new(tx));
-        let receiver = MppReceiver::new(Box::new(rx));
-        let buffer = DrainBuffer::new(1);
-
-        let join = spawn_drain_thread(DrainConfig::new(vec![receiver], StdArc::clone(&buffer)));
-
-        thread::spawn(move || {
-            for rows in [1, 2, 3, 4, 5] {
-                sender.send_batch(&sample_batch(rows)).unwrap();
-            }
-            // Drop sender to signal EOF
-        })
-        .join()
-        .unwrap();
-
-        let mut received = Vec::new();
-        while let DrainItem::Batch(b) = buffer.pop_front() {
-            received.push(b.num_rows());
-        }
-        assert_eq!(received, vec![1, 2, 3, 4, 5]);
-        join.join().unwrap().unwrap();
-    }
-
-    #[test]
-    fn drain_handle_shutdown_joins_cleanly() {
-        let (tx, rx) = in_proc_channel(4);
-        let sender = MppSender::new(Arc::new(tx));
-        let receiver = MppReceiver::new(Box::new(rx));
-        let buffer = DrainBuffer::new(1);
-        let handle =
-            ThreadedDrainHandle::spawn(DrainConfig::new(vec![receiver], StdArc::clone(&buffer)));
-
-        sender.send_batch(&sample_batch(2)).unwrap();
-        std::mem::drop(sender); // detach
-        // Pop the one batch
-        assert!(matches!(buffer.pop_front(), DrainItem::Batch(_)));
-        assert!(matches!(buffer.pop_front(), DrainItem::Eof));
-        // Drop drives production teardown (cancel + join). Test passes if
-        // this returns without hanging.
-        std::mem::drop(handle);
-    }
-
-    #[test]
-    fn drain_handle_drop_cancels_and_joins() {
-        // Build a drain that never detaches (we keep the sender alive), then
-        // drop the handle. The Drop impl must cancel the buffer and join the
-        // thread without hanging.
-        let (tx, rx) = in_proc_channel(4);
-        let _sender_kept_alive = MppSender::new(Arc::new(tx));
-        let receiver = MppReceiver::new(Box::new(rx));
-        let buffer = DrainBuffer::new(1);
-        let handle =
-            ThreadedDrainHandle::spawn(DrainConfig::new(vec![receiver], StdArc::clone(&buffer)));
-
-        // Simulate consumer path error: drop the handle without calling
-        // shutdown(). The drain thread must exit before drop returns.
-        let start = Instant::now();
-        drop(handle);
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "ThreadedDrainHandle::drop took too long: {elapsed:?}"
-        );
-        // Consumer observes EOF because cancel was called.
-        assert!(matches!(buffer.pop_front(), DrainItem::Eof));
-    }
-
-    #[test]
-    fn drain_thread_drains_n2_mesh_100k_batches() {
-        // Simulates a 2-proc mesh under load. Each of two producers
-        // pushes 50_000 small batches through a bounded channel; the drain
-        // thread interleaves and the consumer reads EOF exactly after
-        // receiving all 100_000 batches. Exercises backpressure (bounded
-        // capacity = 16) without deadlock.
-        const PER_SOURCE: usize = 50_000;
-        let (tx0, rx0) = in_proc_channel(16);
-        let (tx1, rx1) = in_proc_channel(16);
-        let receivers = vec![
-            MppReceiver::new(Box::new(rx0)),
-            MppReceiver::new(Box::new(rx1)),
-        ];
-        let buffer = DrainBuffer::new(2);
-        let drain_join = spawn_drain_thread(DrainConfig::new(receivers, StdArc::clone(&buffer)));
-
-        let tx0_send = MppSender::new(Arc::new(tx0));
-        let tx1_send = MppSender::new(Arc::new(tx1));
-        let batch_template = sample_batch(1);
-
-        let p0 = {
-            let b = batch_template.clone();
-            thread::spawn(move || {
-                for _ in 0..PER_SOURCE {
-                    tx0_send.send_batch(&b).unwrap();
-                }
-            })
-        };
-        let p1 = {
-            let b = batch_template.clone();
-            thread::spawn(move || {
-                for _ in 0..PER_SOURCE {
-                    tx1_send.send_batch(&b).unwrap();
-                }
-            })
-        };
-
-        let mut total = 0usize;
-        while let DrainItem::Batch(_) = buffer.pop_front() {
-            total += 1;
-        }
-        assert_eq!(total, 2 * PER_SOURCE);
-        p0.join().unwrap();
-        p1.join().unwrap();
-        drain_join.join().unwrap().unwrap();
-    }
-
-    #[test]
     fn drain_buffer_drains_buffered_before_eof() {
         // Even if all sources have finished and cancel fires, any already-
         // buffered batches must be observed before Eof.
@@ -3809,162 +3653,9 @@ mod tests {
         buf.notify_source_done();
         buf.cancel();
 
-        assert!(matches!(buf.pop_front(), DrainItem::Batch(_)));
-        assert!(matches!(buf.pop_front(), DrainItem::Batch(_)));
-        assert!(matches!(buf.pop_front(), DrainItem::Eof));
-    }
-
-    // ---------------------------------------------------------------------
-    // Throughput microbenches.
-    //
-    // These are `#[ignore]` by default because they spin for seconds and spam stdout. Run with:
-    //
-    //   cargo test --package pg_search --release \
-    //       postgres::customscan::mpp::transport::tests::throughput \
-    //       -- --ignored --nocapture
-    //
-    // They help us bound the transport layer's cost independently of DataFusion/Tantivy. All use
-    // the `in_proc_channel` backend (same `MppSender`/`MppReceiver` trait boundary as the shm_mq
-    // one), so numbers here are an optimistic ceiling. shm_mq adds the ring-buffer copy +
-    // cross-process notification cost on top. If these numbers are already below the row rate
-    // the real query needs, we know IPC encode + channel handoff is the bottleneck without
-    // needing CI data.
-    // ---------------------------------------------------------------------
-
-    /// Row shape matching the post-Partial shuffle in
-    /// `aggregate_join_groupby`: a grouping key (title string) plus two
-    /// partial-aggregate accumulators (COUNT u64, SUM i64).
-    fn postagg_shape_batch(rows: usize) -> RecordBatch {
-        let schema = StdArc::new(Schema::new(vec![
-            Field::new("title", DataType::Utf8, false),
-            Field::new("count_partial", DataType::UInt64, false),
-            Field::new("sum_partial", DataType::Int64, false),
-        ]));
-        // Titles averaging ~30 bytes, typical for the docs dataset.
-        let titles = StringArray::from_iter_values(
-            (0..rows).map(|i| format!("file_{i:012}_title_with_some_length")),
-        );
-        let counts = UInt64Array::from_iter_values((0..rows as u64).map(|i| i % 64 + 1));
-        let sums = Int64Array::from_iter_values((0..rows as i64).map(|i| i * 1024));
-        RecordBatch::try_new(
-            schema,
-            vec![StdArc::new(titles), StdArc::new(counts), StdArc::new(sums)],
-        )
-        .unwrap()
-    }
-
-    /// Row shape matching the probe-side shuffle in the same query:
-    /// `pages.fileId` (u64) plus `pages.sizeInBytes` (i64).
-    fn probe_shape_batch(rows: usize) -> RecordBatch {
-        let schema = StdArc::new(Schema::new(vec![
-            Field::new("fileId", DataType::UInt64, false),
-            Field::new("sizeInBytes", DataType::Int64, false),
-        ]));
-        let ids =
-            UInt64Array::from_iter_values((0..rows as u64).map(|i| i.wrapping_mul(2654435761)));
-        let sizes = Int64Array::from_iter_values((0..rows as i64).map(|i| i * 37));
-        RecordBatch::try_new(schema, vec![StdArc::new(ids), StdArc::new(sizes)]).unwrap()
-    }
-
-    fn bench_throughput(
-        label: &str,
-        make_batch: fn(usize) -> RecordBatch,
-        batch_rows: usize,
-        total_rows: usize,
-    ) {
-        let batches = total_rows.div_ceil(batch_rows);
-        let template = make_batch(batch_rows);
-        // Encode once up front so we also report pure-encode throughput
-        // separately. Real queries encode inside the hot path per batch.
-        let enc_start = Instant::now();
-        let mut enc_bytes = 0usize;
-        let mut enc_buf = Vec::with_capacity(1024);
-        for _ in 0..batches {
-            encode_frame_into(
-                MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), 0),
-                &template,
-                &mut enc_buf,
-            )
-            .expect("encode");
-            enc_bytes += enc_buf.len();
-        }
-        let enc_elapsed = enc_start.elapsed();
-
-        // N=2 mesh: two senders, one drain thread, one consumer. Matches
-        // the gb_postagg / gb_right topology in the real query.
-        let (tx0, rx0) = in_proc_channel(16);
-        let (tx1, rx1) = in_proc_channel(16);
-        let receivers = vec![
-            MppReceiver::new(Box::new(rx0)),
-            MppReceiver::new(Box::new(rx1)),
-        ];
-        let buffer = DrainBuffer::new(2);
-        let drain_join = spawn_drain_thread(DrainConfig::new(receivers, StdArc::clone(&buffer)));
-        let tx0_send = MppSender::new(Arc::new(tx0));
-        let tx1_send = MppSender::new(Arc::new(tx1));
-
-        let per_source = batches / 2;
-        let round_trip_start = Instant::now();
-        let p0 = {
-            let b = template.clone();
-            thread::spawn(move || {
-                for _ in 0..per_source {
-                    tx0_send.send_batch(&b).unwrap();
-                }
-            })
-        };
-        let p1 = {
-            let b = template.clone();
-            thread::spawn(move || {
-                for _ in 0..per_source {
-                    tx1_send.send_batch(&b).unwrap();
-                }
-            })
-        };
-
-        let mut got_rows = 0usize;
-        let mut got_batches = 0usize;
-        while let DrainItem::Batch(b) = buffer.pop_front() {
-            got_rows += b.num_rows();
-            got_batches += 1;
-        }
-        p0.join().unwrap();
-        p1.join().unwrap();
-        drain_join.join().unwrap().unwrap();
-        let rt_elapsed = round_trip_start.elapsed();
-
-        let enc_mb_per_s = (enc_bytes as f64 / (1024.0 * 1024.0)) / enc_elapsed.as_secs_f64();
-        let enc_rows_per_s = (batches * batch_rows) as f64 / enc_elapsed.as_secs_f64();
-        let rt_rows_per_s = got_rows as f64 / rt_elapsed.as_secs_f64();
-        let rt_bytes_total_mb = enc_bytes as f64 / (1024.0 * 1024.0);
-        let rt_mb_per_s = rt_bytes_total_mb / rt_elapsed.as_secs_f64();
-        let per_batch_us = rt_elapsed.as_micros() as f64 / got_batches as f64;
-
-        println!(
-            "[throughput] {label:<18} batch_rows={batch_rows:<5} batches={got_batches:<6} rows={got_rows} \
-             encode_only: {enc_rows_per_s:>11.0} rows/s {enc_mb_per_s:>7.1} MB/s | \
-             round_trip: {rt_rows_per_s:>11.0} rows/s {rt_mb_per_s:>7.1} MB/s ({per_batch_us:.1}us/batch)"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn throughput_postagg_shape() {
-        // Sweeps batch size to show per-batch fixed cost vs per-row cost.
-        // 1.25M total rows ≈ what one proc ships through gb_postagg at
-        // 25M scale. 625K per proc × 2 = 1.25M.
-        for batch_rows in [128, 512, 2048, 8192, 32_768] {
-            bench_throughput("postagg", postagg_shape_batch, batch_rows, 1_250_000);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn throughput_probe_shape() {
-        // 12.5M total rows ≈ what one proc ships through gb_right at 25M.
-        for batch_rows in [128, 512, 2048, 8192, 32_768] {
-            bench_throughput("probe", probe_shape_batch, batch_rows, 12_500_000);
-        }
+        assert!(matches!(buf.try_pop(), Some(DrainItem::Batch(_))));
+        assert!(matches!(buf.try_pop(), Some(DrainItem::Batch(_))));
+        assert!(matches!(buf.try_pop(), Some(DrainItem::Eof)));
     }
 
     // ---------------------------------------------------------------------

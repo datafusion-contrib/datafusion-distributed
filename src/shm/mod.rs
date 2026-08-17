@@ -19,9 +19,9 @@
 //!
 //! A non-gRPC [`ChannelResolver`] for co-located execution, where "workers" are tasks or
 //! parallel processes sharing one machine and communicating over a shared-memory mesh rather
-//! than gRPC. The transport-mechanism pieces (the MPSC ring, framing, routing, cooperative
-//! drain) live here as a reusable library; an embedder supplies the two platform primitives via
-//! small extension points: how to allocate the shared buffer, and how to wake a blocked consumer.
+//! than gRPC. The transport-mechanism pieces (the MPSC ring, framing, routing, async inbound
+//! reactor, IPC signaling mesh) live here as a reusable library; an embedder supplies the platform
+//! primitives via small extension points: how to allocate the shared buffer, and optional wakeup hooks.
 //!
 //! The shared-memory transport implements a demand-driven, pull-based RPC model: downstream
 //! consumers request partition execution on demand via [`ExecuteTaskFrame`], matching the
@@ -34,21 +34,20 @@
 //! [`ChannelResolver`]: crate::ChannelResolver
 //! [`ExecuteTaskFrame`]: transport::ExecuteTaskFrame
 //!
-//! Two assumptions an embedder signs up for:
-//! - Execution is cooperative on a current-thread runtime: consumers spin on
-//!   `try_pop` + `yield_now` and producers drain their own inbound while blocked, instead of
-//!   parking on the `Wakeup` extension point. On a multi-thread runtime each stream burns a core while
-//!   idle.
-//! - Inbound frames demux into unbounded per-channel buffers, so a consumer that falls behind
-//!   buffers the in-flight intermediate result in process memory. The rings in shared memory
-//!   stay bounded; the overflow lives on the consumer's heap.
+//! Two characteristics of the transport:
+//! - Execution is fully asynchronous: producers and consumers signal readiness across processes
+//!   via IPC sockets or event notifications rather than busy-waiting.
+//! - Inbound frames demux into per-channel buffers, so intermediate results flow through
+//!   reactively managed queues while the rings in shared memory stay bounded.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 mod dsm;
+mod ipc;
 mod mesh;
 mod mpsc_ring;
+mod notifier;
 mod runtime;
 // Deferred: the self-hosting default transport was built on the removed `WorkerTransport`/
 // `WorkerDispatch` dispatch umbrella, which the `ChannelResolver` model has no analog for; its
@@ -62,18 +61,19 @@ mod transport;
 
 // Curated public surface an embedder consumes. The embedder allocates the shared buffer and
 // supplies the two extension points (`Wakeup`, `Interrupt`); everything else is built here.
+pub use ipc::{IpcMeshNotifier, QuerySocketScope};
 pub use mpsc_ring::{NO_RECEIVER_TOKEN, Wakeup};
 pub use runtime::{InProcessWorkerResolver, MppMesh, ShmChannelResolver, proc_for_task};
 pub use setup::{
-    LeaderSession, WorkerSession, collect_task_metrics, dsm_region_bytes,
-    install_work_unit_channels, leader_setup, region_total, run_execute_task_loop,
-    run_worker_fragment, worker_setup,
+    LeaderSession, WorkerSession, collect_task_metrics, dsm_n_procs, dsm_region_bytes,
+    install_work_unit_channels, leader_setup, leader_setup_ipc, leader_setup_with_notifier,
+    region_total, run_execute_task_loop, run_worker_fragment, worker_setup, worker_setup_ipc,
+    worker_setup_with_notifier,
 };
 pub use sink::{PartitionSink, WorkerSink};
 pub use transport::{
-    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, LocalDrainPartitionSink,
-    MppDataStreamKey, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt, SendBatchStats,
-    SetPlanFrame,
+    ExecuteTaskFrame, ExecuteTaskRx, Interrupt, LocalDrainPartitionSink, MppDataStreamKey,
+    MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt, SendBatchStats, SetPlanFrame,
 };
 
 /// Out-of-DSM liveness flag shared by the ring handles from one attach. The embedder flips it to

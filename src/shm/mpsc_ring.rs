@@ -171,7 +171,9 @@ const MPSC_RING_MAGIC: u32 = u32::from_le_bytes(*b"MPCR");
 ///   `n_slots` on `First`, so frames bigger than
 ///   `slot_capacity - SLOT_HEADER_BYTES` can span N consecutive slots reserved
 ///   atomically by the producer.
-const MPSC_RING_VERSION: u32 = 2;
+/// - v3: `consumer_waiting` and `producers_waiting` atomic flags in `DsmMpscRingHeader`
+///   for zero-syscall fast-path async signaling.
+const MPSC_RING_VERSION: u32 = 3;
 
 /// Assumed cache line size for false-sharing avoidance. 64 bytes covers x86_64 and arm64;
 /// over-padding on smaller-cache-line targets costs a few bytes per ring, nothing more.
@@ -209,8 +211,12 @@ pub(super) struct DsmMpscRingHeader {
     sender_count: AtomicU32,
     /// Set by the consumer (or by the leader on query teardown) to tell producers to
     /// fail-fast on subsequent sends. Sticky.
-    detached: AtomicBool,
-    _pad_after_detached: [u8; 3],
+    pub detached: AtomicBool,
+    /// Flag indicating whether the consumer is actively waiting on an empty ring.
+    pub consumer_waiting: AtomicBool,
+    /// Flag indicating whether one or more producers are actively waiting for ring space.
+    pub producers_waiting: AtomicBool,
+    _pad_after_detached: [u8; 1],
     /// Packed `(pgprocno: i32, pid: i32)` of the registered receiver, or 0 (both
     /// Opaque receiver token, set by the consumer via `set_receiver` and handed to the
     /// embedder's `Wakeup` extension point on every post-publish wake. Initialized to
@@ -346,7 +352,9 @@ pub(super) unsafe fn create_at(
                 ring_size,
                 slot_capacity,
                 detached: AtomicBool::new(false),
-                _pad_after_detached: [0; 3],
+                consumer_waiting: AtomicBool::new(false),
+                producers_waiting: AtomicBool::new(false),
+                _pad_after_detached: [0; 1],
                 sender_count: AtomicU32::new(0),
                 receiver_packed: AtomicU64::new(NO_RECEIVER_TOKEN),
                 _pad_before_head: [0; CACHE_LINE - 32],
@@ -439,6 +447,12 @@ impl DsmMpscReceiver {
         }
         let header = unsafe { self.ring.as_ref() };
         header.receiver_packed.store(token, Ordering::Release);
+    }
+
+    /// Access the liveness flag for safe teardown.
+    #[allow(dead_code)]
+    pub(super) fn alive(&self) -> AliveFlag {
+        Arc::clone(&self.alive)
     }
 
     /// Try to read one frame into `out`. `Bytes`: `out` holds the payload. `Empty`:
@@ -624,6 +638,36 @@ impl DsmMpscReceiver {
             .store(head.wrapping_add(n_slots as u64), Ordering::Release);
         RecvOutcome::Bytes
     }
+
+    /// Receive a frame asynchronously, waiting on `notifier` when the ring is empty.
+    #[allow(dead_code)]
+    pub(super) async fn recv(
+        &mut self,
+        notifier: &super::notifier::RingReceiverNotifier,
+        out: &mut Vec<u8>,
+    ) -> RecvOutcome {
+        loop {
+            match self.try_recv(out) {
+                RecvOutcome::Bytes => {
+                    notifier.notify_space_ready();
+                    return RecvOutcome::Bytes;
+                }
+                RecvOutcome::Empty => {
+                    notifier.wait_for_data().await;
+                }
+                RecvOutcome::Detached => {
+                    notifier.notify_space_ready();
+                    return RecvOutcome::Detached;
+                }
+            }
+        }
+    }
+
+    /// Access the raw header pointer.
+    #[allow(dead_code)]
+    pub(super) fn ring_header(&self) -> NonNull<DsmMpscRingHeader> {
+        self.ring
+    }
 }
 
 impl DsmMpscSender {
@@ -699,6 +743,16 @@ impl DsmMpscSender {
         }
     }
 
+    /// Mark the target ring as detached in shared memory and wake the receiver.
+    pub fn mark_target_detached(&self) {
+        if !self.alive.load(Ordering::Acquire) {
+            return;
+        }
+        let header = unsafe { self.ring.as_ref() };
+        header.detached.store(true, Ordering::Release);
+        self.wake_receiver();
+    }
+
     /// Push one frame onto the ring. Returns immediately:
     /// - `Ok(())`: published; receiver's latch was set if installed.
     /// - `Err(Full)`: no slot run available right now; caller yields + retries.
@@ -741,6 +795,40 @@ impl DsmMpscSender {
         }
         let n_slots = n_slots_usize as u32;
         self.try_send_multi_slot(header, bytes, n_slots, payload_cap)
+    }
+
+    /// Push one frame onto the ring asynchronously, waiting on `notifier` when the ring is full.
+    #[allow(dead_code)]
+    pub(super) async fn send(
+        &self,
+        notifier: &super::notifier::RingSenderNotifier,
+        bytes: &[u8],
+    ) -> Result<(), SendError> {
+        loop {
+            match self.try_send(bytes) {
+                Ok(()) => {
+                    notifier.notify_data_ready();
+                    return Ok(());
+                }
+                Err(SendError::Full) => {
+                    if notifier.wait_for_space().await.is_err() {
+                        return Err(SendError::Detached);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Access the raw header pointer.
+    #[allow(dead_code)]
+    pub(super) fn ring_header(&self) -> NonNull<DsmMpscRingHeader> {
+        self.ring
+    }
+
+    /// Access the liveness flag for safe teardown.
+    pub(super) fn alive(&self) -> AliveFlag {
+        Arc::clone(&self.alive)
     }
 
     /// Single-slot path. Identical to the v1 layout's hot path with a `flags` write
@@ -935,6 +1023,15 @@ impl Drop for DsmMpscSender {
             // We were the last sender. Tell the consumer.
             header.detached.store(true, Ordering::Release);
             self.wake_receiver();
+        }
+    }
+}
+
+impl Drop for DsmMpscReceiver {
+    fn drop(&mut self) {
+        if self.alive.load(Ordering::Acquire) {
+            let header = unsafe { self.ring.as_ref() };
+            header.detached.store(true, Ordering::Release);
         }
     }
 }

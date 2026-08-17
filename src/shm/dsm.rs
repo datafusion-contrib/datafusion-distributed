@@ -272,6 +272,14 @@ pub(super) unsafe fn read_region_total(base: *const c_void) -> u64 {
     unsafe { std::ptr::read(base as *const MppDsmHeader).region_total }
 }
 
+/// Read `n_procs` out of the header at the start of an initialized region.
+///
+/// # Safety
+/// `base` must point at the start of a region a leader wrote via [`leader_init`].
+pub(super) unsafe fn read_n_procs(base: *const c_void) -> u32 {
+    unsafe { std::ptr::read(base as *const MppDsmHeader).n_procs }
+}
+
 /// Translate a peer index (`0..n_procs - 1`) into a process index
 /// (`0..n_procs`) by skipping the self-loop slot.
 #[inline]

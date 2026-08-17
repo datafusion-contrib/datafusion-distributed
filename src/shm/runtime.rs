@@ -46,6 +46,7 @@ use url::Url;
 
 use crate::common::serialize_uuid;
 use crate::proto as pb;
+use crate::shm::notifier::RingReceiverNotifier;
 use crate::work_unit_feed::RemoteWorkUnitFeedTxs;
 use crate::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
@@ -55,8 +56,8 @@ use crate::{
 
 use super::AliveFlag;
 use super::transport::{
-    CooperativeDrainSet, DrainHandle, DrainItem, Interrupt, LocalDrainPartitionSink,
-    MppDataStreamKey, MppFrameHeader, MppSender, SendBatchStats, SetPlanFrame,
+    DrainHandle, DrainItem, Interrupt, LocalDrainPartitionSink, MppDataStreamKey, MppFrameHeader,
+    MppSender, SendBatchStats, SetPlanFrame,
 };
 
 /// A proc's outbound senders to each peer inbox, shared between the mesh (for `Cancel` frames) and
@@ -90,19 +91,20 @@ pub struct MppMesh {
     /// Total proc count. Bounds the producer/consumer proc lookups in
     /// [`ShmWorkerChannel::execute_task`].
     pub n_procs: u32,
-    /// Single cooperative inbound handle pulling every frame addressed to this proc. The
+    /// Single inbound handle pulling every frame addressed to this proc. The
     /// DSM MPSC inbox feeds into this handle. Demux
     /// to per-`(sender_proc, stage_id, task_id, partition)` channel buffers happens inside via
     /// `DrainHandle::register_channel`.
     pub(super) inbound_receiver: Arc<DrainHandle>,
-    /// Cancellation hook, injected by the embedder, checked at the transport's block points (the
-    /// cooperative send spin and the consumer pull loop).
+    /// Cancellation hook, injected by the embedder, checked at the transport's block points.
     interrupt: Arc<dyn Interrupt>,
     /// This proc's outbound senders to each peer inbox, shared with the embedder that owns their
     /// lifetime (it clears the `Vec` before the DSM unmaps). Used by [`Self::cancel_stream`] to ship
     /// a `Cancel` frame to a producing proc when this proc abandons a stream. `None` until the
     /// embedder installs it.
     cancel_senders: Mutex<Option<PeerSenders>>,
+    rx_notifier: Option<Arc<RingReceiverNotifier>>,
+    _reactor: Mutex<Option<datafusion::common::runtime::SpawnedTask<()>>>,
     alive: AliveFlag,
 }
 
@@ -121,14 +123,39 @@ impl MppMesh {
             inbound_receiver,
             interrupt,
             cancel_senders: Mutex::new(None),
+            rx_notifier: None,
+            _reactor: Mutex::new(None),
             alive,
         }
+    }
+
+    /// Set the receiver notifier used to awaken inbound reactor.
+    pub fn set_rx_notifier(&mut self, notifier: Option<Arc<RingReceiverNotifier>>) {
+        self.rx_notifier = notifier;
+    }
+
+    /// Ensure the background inbound reactor is running, spawning it if not already started.
+    pub fn ensure_reactor_started(&self) {
+        let mut reactor_guard = self._reactor.lock().unwrap();
+        if reactor_guard.is_none() {
+            *reactor_guard = self
+                .inbound_receiver
+                .start_inbound_reactor(self.rx_notifier.clone());
+        }
+    }
+
+    /// Retain the background inbound reactor task for the lifetime of this mesh.
+    pub fn set_reactor(&self, task: Option<datafusion::common::runtime::SpawnedTask<()>>) {
+        *self._reactor.lock().unwrap() = task;
     }
 
     /// Mark this proc's DSM mesh detached so every ring handle's operations become no-ops.
     /// The embedder calls this from its dsm-detach callback, while the segment is still mapped,
     /// so handles dropped afterward (e.g. by a memory-context reset) never touch freed memory.
     pub fn mark_detached(&self) {
+        if let Some(rx_notif) = &self.rx_notifier {
+            rx_notif.mark_detached();
+        }
         self.alive.store(false, Ordering::Release);
         *self.cancel_senders.lock().unwrap() = None;
     }
@@ -176,7 +203,6 @@ impl MppMesh {
                 return internal_err!("shm mesh: no control sender for proc {dest_proc}");
             };
             base.clone_with_header(MppFrameHeader::set_plan(stage_id, task_number, 0))
-                .with_cooperative_drain(Arc::clone(self) as Arc<dyn CooperativeDrainSet>)
         };
         let mut stats = SendBatchStats::default();
         sender.send_set_plan_traced(&frame, &mut stats).await
@@ -212,18 +238,18 @@ impl MppMesh {
                 task_number,
                 self.this_proc,
             ))
-            .with_cooperative_drain(Arc::clone(self) as Arc<dyn CooperativeDrainSet>)
         };
         let mut stats = crate::shm::transport::SendBatchStats::default();
         sender.send_execute_task_traced(&frame, &mut stats).await
     }
 
     /// Obtains the channel receiver for incoming `ExecuteTask` requests targeting `(stage_id, task_number)`.
-    pub(crate) fn take_execute_task_rx(
-        self: &Arc<Self>,
+    pub fn take_execute_task_rx(
+        &self,
         stage_id: u32,
         task_number: u32,
     ) -> Result<crate::shm::transport::ExecuteTaskRx> {
+        self.ensure_reactor_started();
         self.inbound_receiver
             .take_execute_task_rx(stage_id, task_number)
     }
@@ -236,6 +262,9 @@ impl MppMesh {
     /// Stream-level so any consumer can cancel its own input: every `(producer_proc, stage, task,
     /// partition)` channel has a single consumer, so one stream's drop never cuts off a sibling's.
     pub fn cancel_stream(&self, producer_proc: u32, stream: MppDataStreamKey) {
+        if let Some(rx_notif) = &self.rx_notifier {
+            rx_notif.notify_stream_cancel(producer_proc, stream);
+        }
         let guard = self.cancel_senders.lock().unwrap();
         let Some(senders) = guard.as_ref() else {
             return;
@@ -288,9 +317,7 @@ impl MppMesh {
     /// Install the senders of one task's work-unit feed channels on this proc's drain, so
     /// inbound `WorkUnit` frames for `(stage_id, task_number)` flow into them. Units that
     /// arrived first are flushed; a `FeedEof` that already came through closes the channels
-    /// immediately. The drain only fills channels: something on this proc must keep draining
-    /// (a consumer pull loop, a producer send spin, or an explicit
-    /// [`CooperativeDrainSet::try_drain_pass`] pump) or a fragment blocked on its feed starves.
+    /// immediately.
     pub fn register_work_unit_senders(
         &self,
         stage_id: u32,
@@ -302,16 +329,24 @@ impl MppMesh {
     }
 
     /// Take the plan delivered for `(stage_id, task_number)` as a `SetPlan` frame on this proc's
-    /// inbox, waiting for it if it has not arrived yet. Something on this proc must keep
-    /// draining (a pump, a consumer pull loop, or a cooperative send spin) or the wait starves.
+    /// inbox, waiting for it if it has not arrived yet.
     pub async fn take_set_plan(
         &self,
         stage_id: u32,
         task_number: u32,
     ) -> Result<super::transport::SetPlanFrame> {
+        self.ensure_reactor_started();
         self.inbound_receiver
             .take_set_plan(stage_id, task_number)
             .await
+    }
+
+    /// Drain all available `TaskMetrics` frames arriving on this proc's inbox into a callback without consuming the receiver.
+    pub fn drain_task_metrics<F>(&self, callback: F)
+    where
+        F: FnMut(u32, u32, pb::TaskMetrics),
+    {
+        self.inbound_receiver.drain_task_metrics(callback)
     }
 
     /// Take the stream of `TaskMetrics` frames arriving on this proc's inbox:
@@ -340,27 +375,14 @@ impl MppMesh {
         self.n_procs - 1
     }
 
-    /// Pull from the single inbound handle. Called from
-    /// [`super::transport::MppSender`]'s cooperative-send spin so a
-    /// producer stalled on a full outbound can pull inbound peer data inline. That's what
-    /// prevents the symmetric-send deadlock when every peer is simultaneously stalled waiting
-    /// for space.
-    pub(super) fn drain_all_inbound(&self) -> Result<(), DataFusionError> {
-        self.inbound_receiver.try_drain_pass()
-    }
-}
-
-impl CooperativeDrainSet for MppMesh {
-    fn try_drain_pass(&self) -> Result<(), DataFusionError> {
-        self.drain_all_inbound()
-    }
-
-    fn check_interrupt(&self) -> Result<(), DataFusionError> {
-        self.interrupt.check()
-    }
-
-    fn stream_cancelled(&self, stream: MppDataStreamKey) -> bool {
+    /// Whether the consumer for `stream` cancelled it.
+    pub fn stream_cancelled(&self, stream: MppDataStreamKey) -> bool {
         self.inbound_receiver.stream_cancelled(stream)
+    }
+
+    /// Check if the query has been interrupted by an external cancellation source.
+    pub fn check_interrupt(&self) -> Result<(), DataFusionError> {
+        self.interrupt.check()
     }
 }
 
@@ -564,22 +586,19 @@ impl WorkerChannel for ShmWorkerChannel {
     }
 }
 
-/// Build the cooperative pull-loop stream for one `(producer_proc, stage_id, task_id, partition)` channel.
+/// Build the async stream for one `(producer_proc, stage_id, task_id, partition)` channel.
 ///
-/// The inbound drain runs inline on the consumer's thread. Each iteration checks for cancellation
-/// (via the injected interrupt extension point), drains the receiver into the registry, pops one
-/// batch to yield, then yields back to Tokio so sibling tasks (e.g. the leader's own producer
-/// subplan) advance. The send side runs the same interrupt check inside `MppSender`'s retry spin.
+/// Each iteration checks for cancellation (via the injected interrupt extension point),
+/// awaits the next batch from the channel's `DrainBuffer`, and yields it to the consumer.
 fn pull_partition_stream(
     mesh: Arc<MppMesh>,
     producer_proc: u32,
     stream: MppDataStreamKey,
 ) -> BoxStream<'static, Result<RecordBatch>> {
+    mesh.ensure_reactor_started();
     // One drain per process, shared across all sender_procs. The channel-buffer registry keys by
     // `(sender_proc, stage_id, task_id, partition)` so this consumer still sees only its named
-    // sender's slice
-    // even though the underlying inbox is shared with all peers.
-    let drain = Arc::clone(mesh.inbound_receiver());
+    // sender's slice even though the underlying inbox is shared with all peers.
     log::debug!(
         "shm transport execute: register channel sender_proc={producer_proc} \
          stage_id={} task_id={} partition={}",
@@ -587,7 +606,9 @@ fn pull_partition_stream(
         stream.task_id,
         stream.partition,
     );
-    let buffer = drain.register_data_channel(producer_proc, stream);
+    let buffer = mesh
+        .inbound_receiver()
+        .register_data_channel(producer_proc, stream);
     let stream = async_stream::stream! {
         // Any consumer cancels its own input stream when it drops early. The mesh no-ops the send
         // until the embedder wires this proc's outbound senders.
@@ -602,22 +623,16 @@ fn pull_partition_stream(
                 yield Err(e);
                 return;
             }
-            if let Err(e) = drain.try_drain_pass() {
-                yield Err(e);
-                return;
-            }
-            match buffer.try_pop() {
-                Some(DrainItem::Batch(batch)) => yield Ok(batch),
-                Some(DrainItem::Eof) => {
-                    // Clean end: the producer already EOF'd, so there's nothing to cancel.
+            match buffer.pop().await {
+                DrainItem::Batch(batch) => yield Ok(batch),
+                DrainItem::Eof => {
                     cancel_guard.armed = false;
                     break;
                 }
-                Some(DrainItem::Failed(msg)) => {
+                DrainItem::Failed(msg) => {
                     yield Err(DataFusionError::Execution(msg));
                     return;
                 }
-                None => tokio::task::yield_now().await,
             }
         }
     };
