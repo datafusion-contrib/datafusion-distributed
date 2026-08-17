@@ -88,3 +88,26 @@ documents the full validation matrix.
 
 Read the code-review guide and the closest scoped `AGENTS.md`. Report concrete
 correctness risks, not style issues covered by CI.
+
+### Publishing AI review drafts
+
+When asked to review a GitHub PR, first render every proposed review comment in
+the response, including its file and line or line range. Then ask the user if
+they want to create a pending review containing those exact comments. Do not
+make a GitHub write until the user answers affirmatively. If the user asks to
+revise the comments, render the revised set and ask again.
+
+After affirmative confirmation, create exactly one *pending* review. Never
+submit, approve, or request changes autonomously. Create the review with its
+event omitted and with no review-summary body, then confirm that GitHub reports
+its state as `PENDING`. If there are no findings, render that result and ask
+whether the user wants an empty pending review.
+
+Every publishable finding must be an inline comment attached to one PR-diff
+line or one contiguous range of PR-diff lines. Do not use issue comments, PR
+conversation comments, standalone review-comment endpoints, or a review
+summary. Each inline comment must include a non-empty body, `path`, `line`, and
+`side`; ranges must also include both `start_line` and `start_side`. If a
+finding cannot be attached to a PR-diff line, report it locally and say why it
+cannot be posted. After confirmation, publish only the rendered, attachable
+comments.
