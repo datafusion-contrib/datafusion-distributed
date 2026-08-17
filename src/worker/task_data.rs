@@ -103,7 +103,8 @@ fn max_latency_metric(name: &'static str, value: &MaxLatencyMetric) -> Arc<Metri
 impl TaskData {
     pub(crate) fn plan(&self, producer_head: ProducerHead) -> Result<Arc<dyn ExecutionPlan>> {
         let result = self.final_plan.get_or_init(|| {
-            let producer_head = producer_head.resolve(self.base_plan.schema(), &self.task_ctx)?;
+            let producer_head =
+                producer_head.ensure_decoded(self.base_plan.schema(), &self.task_ctx)?;
 
             Ok(producer_head.insert(Arc::clone(&self.base_plan))?)
         });

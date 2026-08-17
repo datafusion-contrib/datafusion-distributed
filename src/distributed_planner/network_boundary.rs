@@ -69,7 +69,7 @@ impl NetworkBoundaryExt for dyn ExecutionPlan {
 }
 
 impl ProducerHead {
-    pub(crate) fn resolve(self, schema: SchemaRef, ctx: &TaskContext) -> Result<Self> {
+    pub(crate) fn ensure_decoded(self, schema: SchemaRef, ctx: &TaskContext) -> Result<Self> {
         Ok(match self {
             Self::RepartitionExec { partitioning } => Self::RepartitionExec {
                 partitioning: MaybeEncoded::Decoded(partitioning.decode(schema, ctx)?),
