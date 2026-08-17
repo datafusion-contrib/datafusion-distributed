@@ -3,6 +3,7 @@ use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::Store;
 use crate::coordinator::latency_metric::LatencyMetric;
+use crate::coordinator::DynamicFilterRegistry;
 use crate::dynamic_filtering::maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships;
 use crate::events::{RouteTasksEvent, RouteTasksHandlers};
 use crate::execution_plans::{ChildrenIsolatorUnionExec, DistributedLeafExec};
@@ -50,6 +51,7 @@ pub(super) struct QueryCoordinator {
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    dynamic_filter_registry: Arc<DynamicFilterRegistry>,
     end_stream_notifier: Arc<Notify>,
     join_set: Mutex<JoinSet<Result<()>>>,
 }
@@ -67,6 +69,7 @@ impl QueryCoordinator {
             metrics: metrics_set.clone(),
             metrics_store,
             completed_dynamic_filter_store,
+            dynamic_filter_registry: Arc::new(DynamicFilterRegistry::new()),
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
             join_set: Mutex::new(JoinSet::new()),
@@ -86,6 +89,7 @@ impl QueryCoordinator {
             metrics: &self.coordinator_to_worker_metrics,
             metrics_store: &self.metrics_store,
             completed_dynamic_filter_store: &self.completed_dynamic_filter_store,
+            dynamic_filter_registry: &self.dynamic_filter_registry,
             end_stream_notifier: &self.end_stream_notifier,
             join_set: &self.join_set,
         }
@@ -132,6 +136,7 @@ pub(super) struct StageCoordinator<'a> {
     metrics: &'a CoordinatorToWorkerMetrics,
     metrics_store: &'a Option<Arc<Store<TaskMetrics>>>,
     completed_dynamic_filter_store: &'a Option<Arc<Store<TaskCompletedDynamicFilters>>>,
+    dynamic_filter_registry: &'a Arc<DynamicFilterRegistry>,
     end_stream_notifier: &'a Arc<Notify>,
     join_set: &'a Mutex<JoinSet<Result<()>>>,
 }
@@ -157,6 +162,9 @@ impl<'a> StageCoordinator<'a> {
             stage_id: self.stage_id,
             task_number: task_i,
         };
+        self.dynamic_filter_registry
+            .register_task(&specialized, task_key)?;
+
         let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
