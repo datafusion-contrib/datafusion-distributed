@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
 }
 
 /// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
@@ -158,7 +159,7 @@ pub(crate) fn discover_dynamic_filter_producers(
             };
             producers
                 .entry(id)
-                .or_insert(DiscoveredDynamicFilterProducer { id });
+                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
