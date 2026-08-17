@@ -1,0 +1,213 @@
+use crate::TaskKey;
+use crate::dynamic_filtering::{
+    discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
+};
+use datafusion::common::{HashMap, HashSet, Result};
+use datafusion::physical_plan::ExecutionPlan;
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+pub(super) struct PlannedDynamicFilter {
+    // Producer and consumer tasks for a dynamic filter.
+    //
+    // Note that it is not guaranteed that every task within a stage produces / consumes dynamic filters. For
+    // example, a distributed union may prevent a dynamic filter from appearing in all tasks. So, we
+    // store task keys rather than stage ids.
+    pub(super) producer_tasks: HashSet<TaskKey>,
+    pub(super) consumer_tasks: HashSet<TaskKey>,
+}
+
+#[derive(Default)]
+pub(super) struct DynamicFilterRegistryState {
+    pub(super) filters: HashMap<u64, PlannedDynamicFilter>,
+}
+
+/// Query-scoped hub for distributed dynamic filtering. It stores the locations
+/// of dynamic filters and runtime state, informing the coordinator where dynamic filter
+/// updates are coming from, how/if they should be merged, where they need to be forwarded.
+#[derive(Default)]
+pub(crate) struct DynamicFilterRegistry {
+    pub(super) state: Mutex<DynamicFilterRegistryState>,
+}
+
+impl DynamicFilterRegistry {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds any dynamic filter producers and consumers found in `plan` to the registry.
+    pub(crate) fn register_task(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        task_key: TaskKey,
+    ) -> Result<()> {
+        let producers = discover_dynamic_filter_producers(plan)?;
+        // We can safely ignore anchors because they are not evaluated by network boundaries. This
+        // means they do not need updates forwarded to them.
+        let consumers = discover_dynamic_filter_consumers(plan)?.consumers;
+
+        let mut state = self.state.lock().expect("dynamic filter registry poisoned");
+        for producer in producers {
+            state
+                .filters
+                .entry(producer.id)
+                .or_default()
+                .producer_tasks
+                .insert(task_key);
+        }
+        for consumer in consumers {
+            state
+                .filters
+                .entry(consumer.id)
+                .or_default()
+                .consumer_tasks
+                .insert(task_key);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_plans::NetworkShuffleExec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::TreeNodeRecursion;
+    use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+    use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr, lit};
+    use datafusion::physical_expr::{Partitioning, PhysicalExpr};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, PlanProperties, apply_expression_roots,
+    };
+    use std::fmt::Formatter;
+    use uuid::Uuid;
+
+    // Test that we correctly register producers and consumers while ignoring anchors.
+    #[test]
+    fn registers_dynamic_filters_by_expression_id() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("a", 0))],
+            lit(true),
+        )) as Arc<dyn PhysicalExpr>;
+        let id = dynamic_filter.expression_id().unwrap();
+
+        let producer_occurrence =
+            Arc::clone(&dynamic_filter).with_new_children(vec![Arc::new(Column::new("a", 0))])?;
+        assert!(!Arc::ptr_eq(&dynamic_filter, &producer_occurrence));
+
+        let input = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let repartition = Arc::new(RepartitionExec::try_new(
+            input,
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1),
+        )?) as Arc<dyn ExecutionPlan>;
+        let boundary = Arc::new(
+            NetworkShuffleExec::try_new(repartition, 1)?
+                .with_dynamic_filter_anchors(vec![Arc::clone(&dynamic_filter)]),
+        ) as Arc<dyn ExecutionPlan>;
+        let producer = Arc::new(ExpressionExec::new(
+            boundary,
+            producer_occurrence,
+            Some(Arc::clone(&dynamic_filter)),
+        )) as Arc<dyn ExecutionPlan>;
+        let producer_task = task_key(0);
+
+        let consumer = Arc::new(ExpressionExec::new(
+            Arc::new(EmptyExec::new(schema)),
+            dynamic_filter,
+            None,
+        )) as Arc<dyn ExecutionPlan>;
+        let consumer_task = task_key(1);
+
+        let registry = DynamicFilterRegistry::new();
+        registry.register_task(&producer, producer_task)?;
+        registry.register_task(&consumer, consumer_task)?;
+
+        let state = registry.state.lock().unwrap();
+        let filter = state.filters.get(&id).unwrap();
+        assert_eq!(filter.producer_tasks, HashSet::from([producer_task]));
+        assert_eq!(filter.consumer_tasks, HashSet::from([consumer_task]));
+        Ok(())
+    }
+
+    fn task_key(task_number: usize) -> TaskKey {
+        TaskKey {
+            query_id: Uuid::nil(),
+            stage_id: 3,
+            task_number,
+        }
+    }
+
+    #[derive(Debug)]
+    struct ExpressionExec {
+        input: Arc<dyn ExecutionPlan>,
+        expression: Arc<dyn PhysicalExpr>,
+        produced_expression: Option<Arc<dyn PhysicalExpr>>,
+    }
+
+    impl ExpressionExec {
+        fn new(
+            input: Arc<dyn ExecutionPlan>,
+            expression: Arc<dyn PhysicalExpr>,
+            produced_expression: Option<Arc<dyn PhysicalExpr>>,
+        ) -> Self {
+            Self {
+                input,
+                expression,
+                produced_expression,
+            }
+        }
+    }
+
+    impl DisplayAs for ExpressionExec {
+        fn fmt_as(&self, _: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+            write!(f, "ExpressionExec")
+        }
+    }
+
+    impl ExecutionPlan for ExpressionExec {
+        fn name(&self) -> &str {
+            "ExpressionExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.input.properties()
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![&self.input]
+        }
+
+        fn dynamic_expressions_produced(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+            self.produced_expression.iter().cloned().collect()
+        }
+
+        fn apply_expressions(
+            &self,
+            f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            apply_expression_roots([&self.expression], f)
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            mut children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(Self::new(
+                children.remove(0),
+                Arc::clone(&self.expression),
+                self.produced_expression.clone(),
+            )))
+        }
+
+        fn execute(
+            &self,
+            partition: usize,
+            context: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            self.input.execute(partition, context)
+        }
+    }
+}

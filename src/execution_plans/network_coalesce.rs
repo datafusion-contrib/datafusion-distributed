@@ -15,7 +15,8 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
-    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, internal_err,
+    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, apply_expression_roots,
+    internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -80,6 +81,7 @@ pub struct NetworkCoalesceExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl NetworkCoalesceExec {
@@ -98,7 +100,20 @@ impl NetworkCoalesceExec {
             properties: props,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            dynamic_filter_anchors: vec![],
         })
+    }
+
+    pub(crate) fn with_dynamic_filter_anchors(
+        mut self,
+        dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Self {
+        self.dynamic_filter_anchors = dynamic_filter_anchors;
+        self
+    }
+
+    pub(crate) fn dynamic_filter_anchors(&self) -> &[Arc<dyn PhysicalExpr>] {
+        &self.dynamic_filter_anchors
     }
 
     /// Creates a new [NetworkCoalesceExec] fed by the provided `input` plan.
@@ -241,9 +256,9 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        apply_expression_roots(self.dynamic_filter_anchors.iter(), f)
     }
 
     fn with_new_children(

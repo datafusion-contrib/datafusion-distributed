@@ -12,7 +12,7 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, Statistics,
-    StatisticsArgs,
+    StatisticsArgs, apply_expression_roots,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -122,6 +122,7 @@ pub struct NetworkBroadcastExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl NetworkBroadcastExec {
@@ -136,7 +137,20 @@ impl NetworkBroadcastExec {
             properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            dynamic_filter_anchors: vec![],
         }
+    }
+
+    pub(crate) fn with_dynamic_filter_anchors(
+        mut self,
+        dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Self {
+        self.dynamic_filter_anchors = dynamic_filter_anchors;
+        self
+    }
+
+    pub(crate) fn dynamic_filter_anchors(&self) -> &[Arc<dyn PhysicalExpr>] {
+        &self.dynamic_filter_anchors
     }
 
     /// Creates a new [NetworkBroadcastExec] fed by the provided [BroadcastExec]. The input plan
@@ -219,9 +233,9 @@ impl ExecutionPlan for NetworkBroadcastExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        apply_expression_roots(self.dynamic_filter_anchors.iter(), f)
     }
 
     fn with_new_children(

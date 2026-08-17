@@ -12,7 +12,13 @@ pub use display::rewrite_distributed_plan_with_dynamic_filters;
 pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
 
 // We must take care to avoid partial dynamic filter updates when sending an
-// in-memory plan.
+// in-memory plan. Because there's many failure modes, the safest option is
+// to roundtrip the plan when any dynamic filter is found.
+//
+// The purpose of this function is to sever any possible cross-task in-memory
+// dynamic filter relationships.
+//
+// Example 1: Producer-Consumer
 //
 // Consider this partitioned hash join topology where the consumer task is
 // collocated with one producer on worker A:
@@ -34,14 +40,53 @@ pub(crate) use display::sever_dynamic_filter_relationships_in_plan_for_display;
 // the consumer and mark it as completed, so the consumer incorrectly applies
 // (foo > 100) instead of (foo > 100 OR foo != 150).
 //
-// In this situation, we roundtrip Stage 1 Task 0 to sever the in-memory
-// relationship. The dynamic filter update from the producer must reach the
-// coordinator for merging prior to being forwarded to the consumer.
+// Example 2: Producer-Producer
+//
+// ```text
+// Worker A
+//
+// Stage 2 Task 0
+// HashJoinExec <- Dynamic Filter Produced: (foo > 100)
+//
+// Stage 2 Task 1
+// HashJoinExec <- Dynamic Filter Produced: (foo != 150)
+//
+// Stage 1 Task 0
+// DataSourceExec <- consumer
+// ```
+//
+// Both producers are collocated on worker A. In this situation, they both race to
+// update the dynamic filter, meaning the final expression will either be foo > 100
+// or foo != 150. The correct expression is (foo > 100 OR foo != 150).
+//
+// Example 3: Local Producer-Consumer
+//
+// ```text
+// Worker A
+//
+// Stage 2 Task 0
+// HashJoinExec <- Dynamic Filter Produced: (foo > 100)
+//   DataSourceExec <- consumer
+//
+// Stage 2 Task 1
+// HashJoinExec <- Dynamic Filter Produced: (foo != 150)
+//   DataSourceExec <- consumer
+// ```
+//
+// Since both producers and both consumers are located on the same worker, they all share
+// one in-memory dynamic filter. This ends up being a race between two writers and two readers.
+// For a partitioned hash join, a producer may update its task-local consumer in memory, but
+// updates must not cross task boundaries.
 pub(crate) fn maybe_roundtrip_plan_to_sever_in_memory_dynamic_filter_relationships(
     plan: Arc<dyn ExecutionPlan>,
     task_ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if has_nonlocal_dynamic_filter_relationships(&plan)? {
+    let has_producers = !discover_dynamic_filter_producers(&plan)?.is_empty();
+    let has_consumers = !discover_dynamic_filter_consumers(&plan)?
+        .consumers
+        .is_empty();
+
+    if has_producers || has_consumers {
         roundtrip_pb(plan, task_ctx)
     } else {
         Ok(plan)

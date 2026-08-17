@@ -14,6 +14,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, Statistics, StatisticsArgs,
+    apply_expression_roots,
 };
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -105,6 +106,7 @@ pub struct NetworkShuffleExec {
     pub(crate) properties: Arc<PlanProperties>,
     pub(crate) input_stage: Stage,
     pub(crate) worker_connections: WorkerConnectionPool,
+    pub(crate) dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl NetworkShuffleExec {
@@ -113,7 +115,20 @@ impl NetworkShuffleExec {
             properties: input_properties,
             worker_connections: WorkerConnectionPool::new(input_stage.task_count()),
             input_stage,
+            dynamic_filter_anchors: vec![],
         }
+    }
+
+    pub(crate) fn with_dynamic_filter_anchors(
+        mut self,
+        dynamic_filter_anchors: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Self {
+        self.dynamic_filter_anchors = dynamic_filter_anchors;
+        self
+    }
+
+    pub(crate) fn dynamic_filter_anchors(&self) -> &[Arc<dyn PhysicalExpr>] {
+        &self.dynamic_filter_anchors
     }
 
     /// Creates a new [NetworkShuffleExec] fed by the provided [RepartitionExec]. The input plan
@@ -195,9 +210,9 @@ impl ExecutionPlan for NetworkShuffleExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        apply_expression_roots(self.dynamic_filter_anchors.iter(), f)
     }
 
     fn with_new_children(
