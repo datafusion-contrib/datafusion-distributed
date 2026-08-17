@@ -5,6 +5,7 @@ use crate::distributed_planner::{
     InjectNetworkBoundaryContext, NetworkBoundaryBuilderResult, ProducerHead, calculate_cost,
     inject_network_boundaries,
 };
+use crate::dynamic_filtering::orphan_dynamic_filter_consumers;
 use crate::events::TaskCountAnnotation::{Desired, Maximum};
 use crate::execution_plans::SamplerExec;
 use crate::stage::{LocalStage, RemoteStage};
@@ -34,6 +35,7 @@ pub(super) async fn prepare_dynamic_plan(
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
         |mut input_stage: LocalStage, nb_type: TypeId, nb_ctx: &InjectNetworkBoundaryContext| {
+            let dynamic_filter_anchors = orphan_dynamic_filter_consumers(&input_stage.plan)?;
             let mut metrics = MetricsSet::new();
 
             // At this point, input_stage.plan has two kind of leaf nodes:
@@ -98,7 +100,6 @@ pub(super) async fn prepare_dynamic_plan(
                 });
                 stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
             }
-
             let plans_for_viz = Arc::clone(&plans_for_viz);
             Ok(async move {
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
@@ -127,6 +128,7 @@ pub(super) async fn prepare_dynamic_plan(
                         runtime_stats: stats,
                     }),
                     input_properties,
+                    dynamic_filter_anchors,
                 })
             })
         },
