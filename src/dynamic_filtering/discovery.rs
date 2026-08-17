@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
 }
 
 /// A dynamic-filter consumer discovered in an execution plan along with the schema it is evaluated
@@ -130,7 +131,7 @@ pub(crate) fn discover_dynamic_filter_producers(
             };
             producers
                 .entry(id)
-                .or_insert(DiscoveredDynamicFilterProducer { id });
+                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
@@ -138,6 +139,31 @@ pub(crate) fn discover_dynamic_filter_producers(
     let mut producers: Vec<_> = producers.into_values().collect();
     producers.sort_unstable_by_key(|producer| producer.id);
     Ok(producers)
+}
+
+/// Returns producer IDs with at least one remote consumer.
+///
+/// If a producer ID is present in the dynamic-filter anchors of any [`NetworkBoundary`], the plan
+/// contains at least one remote consumer and the producer's updates must be forwarded to the
+/// coordinator.
+///
+/// [`NetworkBoundary`]: crate::NetworkBoundary
+pub(crate) fn dynamic_filter_remote_producer_ids(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<Vec<u64>> {
+    let producer_ids: HashSet<_> = discover_dynamic_filter_producers(plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
+    let anchor_ids: HashSet<_> = discover_dynamic_filter_consumers(plan)?
+        .anchors
+        .into_iter()
+        .map(|anchor| anchor.id)
+        .collect();
+
+    let mut remote_producer_ids: Vec<_> = producer_ids.intersection(&anchor_ids).copied().collect();
+    remote_producer_ids.sort_unstable();
+    Ok(remote_producer_ids)
 }
 
 /// Finds consumers whose producer does not occur in `plan`. These consumers become orphaned
@@ -212,7 +238,7 @@ mod tests {
         )
         .await?;
         assert_snapshot!(display, @r"
-        Stage 5
+        Stage 5 remote_producers=[1]
           AggregateExec
             HashJoinExec producers=[1]
               NetworkShuffleExec
@@ -222,7 +248,7 @@ mod tests {
           RepartitionExec
             AggregateExec
               DataSourceExec consumers=[1]
-        Stage 3
+        Stage 3 remote_producers=[2]
           RepartitionExec
             HashJoinExec producers=[2]
               NetworkShuffleExec
@@ -262,7 +288,7 @@ mod tests {
         )
         .await?;
         assert_snapshot!(display, @r"
-        Stage 4
+        Stage 4 remote_producers=[1]
           AggregateExec
             HashJoinExec producers=[1]
               AggregateExec
@@ -432,8 +458,15 @@ mod tests {
         let mut output = String::new();
         let mut normalizer = IdNormalizer::default();
         for stage_id in plans.keys().sorted().rev() {
-            writeln!(output, "Stage {stage_id}").expect("writing to String cannot fail");
             let plan = &plans[stage_id];
+            let remote_producers = dynamic_filter_remote_producer_ids(plan)?
+                .into_iter()
+                .collect();
+            let remote_producers = normalizer
+                .annotation("remote_producers", remote_producers)
+                .map_or_else(String::new, |annotation| format!(" {annotation}"));
+            writeln!(output, "Stage {stage_id}{remote_producers}")
+                .expect("writing to String cannot fail");
             let consumers = discover_dynamic_filter_consumers(plan)?;
             let discovered = DynamicFilterIds {
                 consumers: consumers

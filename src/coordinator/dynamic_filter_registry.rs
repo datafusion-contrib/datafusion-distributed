@@ -3,7 +3,9 @@ use crate::dynamic_filtering::{
     discover_dynamic_filter_consumers, discover_dynamic_filter_producers,
 };
 use datafusion::common::{HashMap, HashSet, Result};
+use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::Count;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -28,14 +30,22 @@ pub(super) struct DynamicFilterRegistryState {
 /// - where dynamic filter updates are coming from
 /// - how/if dynamic filter updates should be merged
 /// - where dynamic filter updates should be forwarded
-#[derive(Default)]
 pub(crate) struct DynamicFilterRegistry {
     pub(super) state: Mutex<DynamicFilterRegistryState>,
+    dynamic_filter_updates_received: Count,
 }
 
 impl DynamicFilterRegistry {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self {
+            state: Mutex::new(DynamicFilterRegistryState::default()),
+            dynamic_filter_updates_received: MetricBuilder::new(metrics)
+                .global_counter("dynamic_filter_updates_received"),
+        }
+    }
+
+    pub(crate) fn record_update_received(&self) {
+        self.dynamic_filter_updates_received.add(1);
     }
 
     /// Adds any dynamic filter producers and consumers found in `plan` to the registry.
