@@ -99,11 +99,22 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
-        HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(id@0, id@0)]
-          CoalescePartitionsExec
-            DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet, /target/multi_task_collect_join_repros/build_side/part-1.parquet], [/target/multi_task_collect_join_repros/build_side/part-2.parquet, /target/multi_task_collect_join_repros/build_side/part-3.parquet]]}, projection=[id], file_type=parquet
-          DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet, /target/multi_task_collect_join_repros/probe_side/part-1.parquet], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet, /target/multi_task_collect_join_repros/probe_side/part-3.parquet]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ id@0 >= 0 AND id@0 <= 99 AND id@0 IN (SET) ([<values>]) ], pruning_predicate=id_null_count@1 != row_count@2 AND id_max@0 >= 0 AND id_null_count@1 != row_count@2 AND id_min@3 <= 99, required_guarantees=[id in (0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 5, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 6, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 7, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 8, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 9, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99)]
+        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @r"
+        ┌───── DistributedExec
+        │ CoalescePartitionsExec
+        │   HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(id@0, id@0)]
+        │     CoalescePartitionsExec
+        │       [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
+        │     DistributedLeafExec:
+        │       t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/probe_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/probe_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet, predicate=DynamicFilter [ id@0 >= 0 AND id@0 <= 99 AND id@0 IN (SET) ([<values>]) ], pruning_predicate=id_null_count@1 != row_count@2 AND id_max@0 >= 0 AND id_null_count@1 != row_count@2 AND id_min@3 <= 99, required_guarantees=[id in (0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 5, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 6, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 7, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 8, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 9, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99)]
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── tasks=4, partitions=8
+          │ DistributedLeafExec:
+          │   t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          └──────────────────────────────────────────────────
         ")
     }
 
@@ -220,16 +231,26 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @"
-        ProjectionExec: expr=[sum(b.id + p.id)@0 as pair_sum]
-          AggregateExec: mode=Final, gby=[], aggr=[sum(b.id + p.id)]
-            CoalescePartitionsExec
-              AggregateExec: mode=Partial, gby=[], aggr=[sum(b.id + p.id)]
-                RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
-                  CrossJoinExec
-                    CoalescePartitionsExec
-                      DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet, /target/multi_task_collect_join_repros/build_side/part-1.parquet], [/target/multi_task_collect_join_repros/build_side/part-2.parquet, /target/multi_task_collect_join_repros/build_side/part-3.parquet]]}, projection=[id], file_type=parquet
-                    DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet, /target/multi_task_collect_join_repros/probe_side/part-1.parquet], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet, /target/multi_task_collect_join_repros/probe_side/part-3.parquet]]}, projection=[id], file_type=parquet
+        assert_snapshot!(display_plan_ascii(plan.as_ref(), false), @r"
+        ┌───── DistributedExec
+        │ ProjectionExec: expr=[sum(b.id + p.id)@0 as pair_sum]
+        │   AggregateExec: mode=Final, gby=[], aggr=[sum(b.id + p.id)]
+        │     CoalescePartitionsExec
+        │       AggregateExec: mode=Partial, gby=[], aggr=[sum(b.id + p.id)]
+        │         RepartitionExec: partitioning=RoundRobinBatch(3), input_partitions=2
+        │           CrossJoinExec
+        │             CoalescePartitionsExec
+        │               [Stage 1] => NetworkCoalesceExec: output_partitions=8, input_tasks=4
+        │             DistributedLeafExec:
+        │               t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/probe_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/probe_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/probe_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/probe_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+        └──────────────────────────────────────────────────
+          ┌───── Stage 1 ── tasks=4, partitions=8
+          │ DistributedLeafExec:
+          │   t0: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t1: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-0.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t2: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          │   t3: DataSourceExec: file_groups={2 groups: [[/target/multi_task_collect_join_repros/build_side/part-1.parquet:<int>..<int>, /target/multi_task_collect_join_repros/build_side/part-2.parquet:<int>..<int>], [/target/multi_task_collect_join_repros/build_side/part-3.parquet:<int>..<int>]]}, projection=[id], file_type=parquet
+          └──────────────────────────────────────────────────
         ")
     }
 
