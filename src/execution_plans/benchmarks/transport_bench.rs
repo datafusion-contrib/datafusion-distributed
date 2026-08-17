@@ -280,6 +280,7 @@ impl TransportFixture {
                 worker_connections: crate::worker::WorkerConnectionPool::new(
                     self.bench.producer_tasks,
                 ),
+                dynamic_filter_anchors: vec![],
             };
             let task_ctx = Arc::new(task_ctx_with_extension(
                 &self.task_ctx,
