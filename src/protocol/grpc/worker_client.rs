@@ -6,11 +6,12 @@ use crate::common::serialize_uuid;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
-    FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
-    MaxLatencyMetric, MaybeEncoded, MinLatencyMetric, P50LatencyMetric, P95LatencyMetric,
-    ProducerHead, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration,
-    WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
+    GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -22,7 +23,7 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
-use datafusion::physical_expr_common::metrics::{Count, MetricBuilder, MetricValue, Time};
+use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
@@ -78,6 +79,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             .boxed();
 
         MetricBuilder::new(&metrics)
+            .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
             .bytes_counter("plan_bytes_sent")
             .add_bytes(plan_bytes_sent);
 
