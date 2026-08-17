@@ -79,6 +79,9 @@ pub struct SetPlanRequest {
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
     pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
+    /// Producer expression IDs whose consumers cross a task boundary. Workers observe and report
+    /// updates only for these IDs; task-local consumers are updated directly in memory.
+    pub dynamic_filter_report_ids: Vec<u64>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.
@@ -124,10 +127,23 @@ pub enum WorkerToCoordinatorMsg {
     /// Sends the final dynamic filters used by dynamic filter consumers back to the coorindator
     /// for displaying.
     TaskCompletedDynamicFilters(TaskCompletedDynamicFilters),
+    /// Sends an observed producer dynamic-filter state to the coordinator. Unlike
+    /// `TaskCompletedDynamicFilters`, this message participates in runtime filtering and is not
+    /// used to render the final plan.
+    ProducedDynamicFilter(Box<ProducedDynamicFilter>),
     /// Load information reported by a task. This information is used for dynamically
     /// sizing the number of workers involved in a query.
     LoadInfo(LoadInfo),
     LoadInfoEos,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProducedDynamicFilter {
+    /// DataFusion physical-expression ID. The source TaskKey is implicit from the channel.
+    pub expression_id: u64,
+    /// A potentially incomplete `DynamicFilterPhysicalExpr`, encoded only by the transport
+    /// boundary. Its serialized generation and completion state order reports from this task.
+    pub expression: PhysicalExprNode,
 }
 
 #[derive(Clone, Debug, Default)]

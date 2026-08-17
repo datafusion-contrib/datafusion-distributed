@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct DiscoveredDynamicFilterProducer {
     pub(crate) id: u64,
+    pub(crate) expression: Arc<dyn PhysicalExpr>,
 }
 
 #[derive(Clone)]
@@ -101,7 +102,7 @@ pub(crate) fn discover_dynamic_filter_producers(
             };
             producers
                 .entry(id)
-                .or_insert(DiscoveredDynamicFilterProducer { id });
+                .or_insert_with(|| DiscoveredDynamicFilterProducer { id, expression });
         }
         Ok(TreeNodeRecursion::Continue)
     })?;

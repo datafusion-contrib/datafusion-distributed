@@ -53,7 +53,16 @@ message WorkerToCoordinatorMsg {
     //
     // Another task in the same stage may report a different value for expression_id=10.
     TaskCompletedDynamicFilters task_completed_dynamic_filters = 4;
+
+    // An observed dynamic filter state produced by this task.
+    ProducedDynamicFilter produced_dynamic_filter = 5;
   }
+}
+
+message ProducedDynamicFilter {
+  uint64 expression_id = 1;
+  // Serialized datafusion.proto.PhysicalExprNode.
+  bytes expression_proto = 2;
 }
 
 message TaskCompletedDynamicFilters {
@@ -131,6 +140,8 @@ message SetPlanRequest {
   // Unix nanos when the query started as reported by the coordinator. Used for collecting temporal metrics
   // relative to when the query was fired in the coordinator.
   uint64 query_start_time_ns = 6;
+  // Producer IDs whose updates must be reported to the coordinator for remote consumers.
+  repeated uint64 dynamic_filter_report_ids = 8;
 }
 
 message WorkUnitBatch {
