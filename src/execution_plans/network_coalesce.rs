@@ -15,7 +15,8 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
-    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, internal_err,
+    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, apply_expression_roots,
+    internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -241,9 +242,9 @@ impl ExecutionPlan for NetworkCoalesceExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+        apply_expression_roots(self.input_stage.dynamic_filter_anchors().iter(), f)
     }
 
     fn with_new_children(
