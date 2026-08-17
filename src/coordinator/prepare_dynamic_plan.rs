@@ -1,4 +1,7 @@
-use crate::common::{TreeNodeExt, element_wise_sum, vec_avg_reduce, vec_div, vec_mul};
+use crate::common::{
+    TreeNodeExt, crossing_dynamic_filter_consumers, discover_dynamic_filter_producers,
+    element_wise_sum, vec_avg_reduce, vec_div, vec_mul,
+};
 use crate::coordinator::distributed::PreparedPlan;
 use crate::coordinator::query_coordinator::QueryCoordinator;
 use crate::distributed_planner::{
@@ -30,10 +33,16 @@ pub(super) async fn prepare_dynamic_plan(
     base_plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<PreparedPlan> {
     let plans_for_viz = Arc::new(PlanReconstructor::default());
+    let dynamic_filter_ids = discover_dynamic_filter_producers(base_plan)?
+        .into_iter()
+        .map(|producer| producer.id)
+        .collect();
 
     let head_stage = inject_network_boundaries(
         Arc::clone(base_plan),
         |mut input_stage: LocalStage, nb_type: TypeId, nb_ctx: &InjectNetworkBoundaryContext| {
+            let dynamic_filter_anchors =
+                crossing_dynamic_filter_consumers(&input_stage.plan, &dynamic_filter_ids)?;
             let mut metrics = MetricsSet::new();
 
             // At this point, input_stage.plan has two kind of leaf nodes:
@@ -98,7 +107,6 @@ pub(super) async fn prepare_dynamic_plan(
                 });
                 stage_coordinator.coordinator_to_worker_task(i, worker_tx)?;
             }
-
             let plans_for_viz = Arc::clone(&plans_for_viz);
             Ok(async move {
                 let (stats, consumer_tc) = if nb_type == TypeId::of::<NetworkCoalesceExec>() {
@@ -127,6 +135,7 @@ pub(super) async fn prepare_dynamic_plan(
                         runtime_stats: stats,
                     }),
                     input_properties,
+                    dynamic_filter_anchors,
                 })
             })
         },
