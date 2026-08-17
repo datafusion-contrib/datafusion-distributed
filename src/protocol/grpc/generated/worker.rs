@@ -24,7 +24,7 @@ pub mod coordinator_to_worker_msg {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerToCoordinatorMsg {
-    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "worker_to_coordinator_msg::Inner", tags = "1, 2, 3, 4, 5")]
     pub inner: ::core::option::Option<worker_to_coordinator_msg::Inner>,
 }
 /// Nested message and enum types in `WorkerToCoordinatorMsg`.
@@ -57,7 +57,18 @@ pub mod worker_to_coordinator_msg {
         /// Another task in the same stage may report a different value for expression_id=10.
         #[prost(message, tag = "4")]
         TaskCompletedDynamicFilters(super::TaskCompletedDynamicFilters),
+        /// An observed hash-join dynamic filter state produced by this task.
+        #[prost(message, tag = "5")]
+        ProducedDynamicFilter(super::ProducedDynamicFilter),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProducedDynamicFilter {
+    #[prost(uint64, tag = "1")]
+    pub expression_id: u64,
+    /// Serialized datafusion.proto.PhysicalExprNode.
+    #[prost(bytes = "vec", tag = "2")]
+    pub expression_proto: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskCompletedDynamicFilters {
@@ -149,6 +160,9 @@ pub struct SetPlanRequest {
     /// relative to when the query was fired in the coordinator.
     #[prost(uint64, tag = "6")]
     pub query_start_time_ns: u64,
+    /// Producer IDs whose updates must be reported to the coordinator for remote consumers.
+    #[prost(uint64, repeated, tag = "8")]
+    pub dynamic_filter_report_ids: ::prost::alloc::vec::Vec<u64>,
 }
 /// Nested message and enum types in `SetPlanRequest`.
 pub mod set_plan_request {
