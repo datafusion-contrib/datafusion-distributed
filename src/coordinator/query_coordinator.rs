@@ -9,10 +9,9 @@ use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    BytesCounterMetric, BytesMetricExt, CoordinatorToWorkerMsg,
-    DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, LoadInfo, SetPlanRequest, TaskKey, WorkUnitFeedDeclaration,
-    WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
+    DistributedWorkUnitFeedContext, LoadInfo, MaybeEncoded, SetPlanRequest, TaskKey,
+    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -23,10 +22,7 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::AsExecutionPlan;
-use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::{Stream, StreamExt, TryStreamExt};
-use prost::Message;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -46,6 +42,7 @@ const WORK_UNIT_FEED_CHUNK_SIZE: usize = 256;
 /// [StageCoordinator] scoped to each individual stage.
 pub(super) struct QueryCoordinator {
     task_ctx: Arc<TaskContext>,
+    metrics: ExecutionPlanMetricsSet,
     coordinator_to_worker_metrics: CoordinatorToWorkerMetrics,
     metrics_store: Option<Arc<MetricsStore>>,
     end_stream_notifier: Arc<Notify>,
@@ -61,6 +58,7 @@ impl QueryCoordinator {
     ) -> Self {
         Self {
             task_ctx,
+            metrics: metrics_set.clone(),
             metrics_store,
             coordinator_to_worker_metrics: CoordinatorToWorkerMetrics::new(metrics_set),
             end_stream_notifier: Arc::new(Notify::new()),
@@ -77,6 +75,7 @@ impl QueryCoordinator {
             stage_id: stage.num,
             task_count: stage.tasks,
             task_ctx: &self.task_ctx,
+            metrics_set: &self.metrics,
             metrics: &self.coordinator_to_worker_metrics,
             metrics_store: &self.metrics_store,
             end_stream_notifier: &self.end_stream_notifier,
@@ -121,6 +120,7 @@ pub(super) struct StageCoordinator<'a> {
     stage_id: usize,
     task_count: usize,
     task_ctx: &'a Arc<TaskContext>,
+    metrics_set: &'a ExecutionPlanMetricsSet,
     metrics: &'a CoordinatorToWorkerMetrics,
     metrics_store: &'a Option<Arc<MetricsStore>>,
     end_stream_notifier: &'a Arc<Notify>,
@@ -140,13 +140,8 @@ impl<'a> StageCoordinator<'a> {
         UnboundedReceiver<WorkerToCoordinatorMsg>,
     )> {
         let session_config = self.task_ctx.session_config();
-        let codec = DistributedCodec::new_combined_with_user(session_config);
 
         let (specialized, work_unit_feed_declarations) = self.task_specialized_plan(task_i)?;
-
-        let plan_proto =
-            PhysicalPlanNode::try_from_physical_plan(specialized, &codec)?.encode_to_vec();
-        let plan_size = plan_proto.len();
 
         let task_key = TaskKey {
             query_id: self.query_id,
@@ -154,14 +149,14 @@ impl<'a> StageCoordinator<'a> {
             task_number: task_i,
         };
 
-        let msg = CoordinatorToWorkerMsg::SetPlanRequest(SetPlanRequest {
+        let set_plan_request = SetPlanRequest {
             task_key,
             task_count: self.task_count,
-            plan_proto,
+            plan: MaybeEncoded::Decoded(specialized),
             work_unit_feed_declarations,
             target_worker_url: url.clone(),
             query_start_time_ns: self.metrics.instantiation_time,
-        });
+        };
 
         let (coordinator_to_worker_tx, coordinator_to_worker_rx) =
             tokio::sync::mpsc::unbounded_channel();
@@ -173,8 +168,7 @@ impl<'a> StageCoordinator<'a> {
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
 
-        let coordinator_to_worker_stream = futures::stream::once(async { msg })
-            .chain(UnboundedReceiverStream::new(coordinator_to_worker_rx))
+        let coordinator_to_worker_stream = UnboundedReceiverStream::new(coordinator_to_worker_rx)
             .map(set_work_unit_send_time)
             // Keep the request side of the channel open until the query ends: this tail emits
             // no messages and only completes, once the `Notify` fires. Workers interpret this
@@ -190,15 +184,22 @@ impl<'a> StageCoordinator<'a> {
             .boxed();
 
         let metrics = self.metrics.clone();
+        let metrics_set = self.metrics_set.clone();
+        let task_ctx = Arc::clone(self.task_ctx);
 
         self.join_set.lock().unwrap().spawn(async move {
             let start = Instant::now();
             let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
             let mut worker_to_coordinator_stream = client
-                .coordinator_channel(headers, coordinator_to_worker_stream)
+                .coordinator_channel(
+                    headers,
+                    set_plan_request,
+                    coordinator_to_worker_stream,
+                    metrics_set,
+                    &task_ctx,
+                )
                 .await?;
             metrics.plan_send_latency.record(&start);
-            metrics.plan_bytes_sent.add_bytes(plan_size);
             while let Some(msg) = worker_to_coordinator_stream.try_next().await? {
                 if worker_to_coordinator_tx.send(msg).is_err() {
                     break; // receiver dropped
@@ -409,7 +410,6 @@ impl Drop for NotifyGuard {
 /// Metrics that measure network details about communications between [DistributedExec] and a worker.
 #[derive(Clone)]
 pub(super) struct CoordinatorToWorkerMetrics {
-    pub(super) plan_bytes_sent: BytesCounterMetric,
     pub(super) plan_send_latency: Arc<LatencyMetric>,
     pub(super) instantiation_time: usize,
 }
@@ -424,10 +424,6 @@ fn with_task_id_label(builder: MetricBuilder) -> MetricBuilder {
 impl CoordinatorToWorkerMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
-            // Metric that measures to total sum of bytes worth of subplans sent.
-            plan_bytes_sent: MetricBuilder::new(metrics)
-                .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
-                .bytes_counter("plan_bytes_sent"),
             // Latency statistics about the network calls issued to the workers for feeding subplans.
             plan_send_latency: Arc::new(LatencyMetric::new(
                 "plan_send_latency",
@@ -457,8 +453,7 @@ mod tests {
     /// use-after-free that only reproduced in optimized abort builds. Passing
     /// the builder as a named `fn` ([`with_task_id_label`]) sidesteps it.
     ///
-    /// `CoordinatorToWorkerMetrics::new` registers three labeled metrics —
-    /// `plan_bytes_sent` and the latency `_max`/`_avg` pair — each of which
+    /// `CoordinatorToWorkerMetrics::new` registers the latency `_max`/`_avg` pair, each of which
     /// must own a distinct heap buffer holding exactly its single `task_id`
     /// label. The miscompile is observable as the `_avg` buffer aliasing the
     /// `_max` buffer with length 2.
@@ -485,9 +480,9 @@ mod tests {
 
             assert_eq!(
                 labeled.len(),
-                3,
-                "iteration {iteration}: expected 3 labeled metrics \
-                 (plan_bytes_sent, plan_send_latency_max, plan_send_latency_avg), \
+                2,
+                "iteration {iteration}: expected 2 labeled metrics \
+                 (plan_send_latency_max, plan_send_latency_avg), \
                  got {labeled:x?}"
             );
 

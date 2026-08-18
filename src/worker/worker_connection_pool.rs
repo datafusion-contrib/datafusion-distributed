@@ -89,7 +89,7 @@ impl WorkerConnectionPool {
             task_key,
             target_partition,
             &target_url,
-            &producer_head,
+            producer_head.clone(),
             ctx,
         )? {
             return Ok(result
@@ -125,7 +125,7 @@ impl WorkerConnectionPool {
                     task_key,
                     target_partition_start: target_partitions.start,
                     target_partition_end: target_partitions.end,
-                    producer_head_spec: producer_head.to_spec(ctx.session_config())?,
+                    producer_head,
                 };
                 let mut client = ch_resolver.get_worker_client_for_url(&target_url).await?;
                 let headers = get_passthrough_headers(ctx.session_config());
@@ -175,7 +175,7 @@ impl WorkerConnectionPool {
         task_key: TaskKey,
         target_partition: usize,
         target_url: &Url,
-        producer_head: &ProducerHead,
+        producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<Option<BoxStream<'static, Result<RecordBatch>>>> {
         let Some(task_data_entries) = ctx
@@ -196,7 +196,7 @@ impl WorkerConnectionPool {
             task_key,
             target_partition_start: target_partition,
             target_partition_end: target_partition + 1,
-            producer_head_spec: producer_head.to_spec(ctx.session_config())?,
+            producer_head,
         };
         // The relevant entry from `task_data_entries` needs to be eagerly retrieved, it cannot be
         // left for until someone decides to start polling the returned `BoxStream`, otherwise,

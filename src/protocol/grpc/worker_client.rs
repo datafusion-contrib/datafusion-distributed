@@ -6,11 +6,12 @@ use crate::common::serialize_uuid;
 use crate::grpc::generated::worker::FlightAppMetadata;
 use crate::grpc::on_drop_stream::on_drop_stream;
 use crate::{
-    BytesMetricExt, CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest,
-    FirstLatencyMetric, GetWorkerInfoRequest, GetWorkerInfoResponse, LatencyMetricExt, LoadInfo,
-    MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHeadSpec,
-    SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg,
-    WorkerChannel, WorkerToCoordinatorMsg,
+    BytesMetricExt, CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL,
+    DistributedConfig, ExecuteTaskRequest, FirstLatencyMetric, GetWorkerInfoRequest,
+    GetWorkerInfoResponse, LatencyMetricExt, LoadInfo, MaxLatencyMetric, MaybeEncoded,
+    MinLatencyMetric, P50LatencyMetric, P95LatencyMetric, ProducerHead, SetPlanRequest, TaskKey,
+    TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel,
+    WorkerToCoordinatorMsg,
 };
 use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -22,7 +23,7 @@ use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
-use datafusion::physical_expr_common::metrics::{Count, MetricBuilder, MetricValue, Time};
+use datafusion::physical_expr_common::metrics::{Count, Label, MetricBuilder, MetricValue, Time};
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
@@ -47,9 +48,21 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
+        metrics: ExecutionPlanMetricsSet,
+        ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>> {
-        let input_stream = c2w_stream.map(encode_coordinator_to_worker_msg);
+        let set_plan_request = encode_set_plan_request(set_plan_request, ctx)?;
+        let plan_bytes_sent = set_plan_request.plan_proto.len();
+        let input_stream = futures::stream::once(async move {
+            pb::CoordinatorToWorkerMsg {
+                inner: Some(pb::coordinator_to_worker_msg::Inner::SetPlanRequest(
+                    set_plan_request,
+                )),
+            }
+        })
+        .chain(c2w_stream.map(encode_coordinator_to_worker_msg));
 
         let output_stream = self
             .coordinator_channel(Request::from_parts(
@@ -64,6 +77,11 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             .map_err(map_status_to_datafusion_error)
             .map(|msg| decode_worker_to_coordinator_msg(msg?))
             .boxed();
+
+        MetricBuilder::new(&metrics)
+            .with_label(Label::new(DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, "0"))
+            .bytes_counter("plan_bytes_sent")
+            .add_bytes(plan_bytes_sent);
 
         Ok(output_stream)
     }
@@ -102,7 +120,7 @@ impl WorkerChannel for pb::worker_service_client::WorkerServiceClient<BoxCloneSy
             task_key: Some(encode_task_key(request.task_key)),
             target_partition_start: request.target_partition_start as u64,
             target_partition_end: request.target_partition_end as u64,
-            producer_head: Some(encode_producer_head_spec(request.producer_head_spec)),
+            producer_head: Some(encode_producer_head(request.producer_head, ctx)?),
         };
         let metadata = MetadataMap::from_headers(headers);
 
@@ -384,32 +402,28 @@ impl NetworkLatencyMetricValues {
     }
 }
 
-pub(super) fn encode_producer_head_spec(
-    head: ProducerHeadSpec,
-) -> pb::execute_task_request::ProducerHead {
-    match head {
-        ProducerHeadSpec::None => pb::execute_task_request::ProducerHead::None(pb::NoneHead {}),
-        ProducerHeadSpec::BroadcastExec { output_partitions } => {
+pub(super) fn encode_producer_head(
+    head: ProducerHead,
+    ctx: &Arc<TaskContext>,
+) -> Result<pb::execute_task_request::ProducerHead> {
+    Ok(match head {
+        ProducerHead::None => pb::execute_task_request::ProducerHead::None(pb::NoneHead {}),
+        ProducerHead::BroadcastExec { output_partitions } => {
             pb::execute_task_request::ProducerHead::Broadcast(pb::BroadcastExecHead {
                 output_partitions: output_partitions as u64,
             })
         }
-        ProducerHeadSpec::RepartitionExec { partitioning } => {
+        ProducerHead::RepartitionExec { partitioning } => {
             pb::execute_task_request::ProducerHead::Repartition(pb::RepartitionExecHead {
-                partitioning,
+                partitioning: partitioning.encode(ctx)?,
             })
         }
-    }
+    })
 }
 
 fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::CoordinatorToWorkerMsg {
     pb::CoordinatorToWorkerMsg {
         inner: Some(match msg {
-            CoordinatorToWorkerMsg::SetPlanRequest(request) => {
-                pb::coordinator_to_worker_msg::Inner::SetPlanRequest(encode_set_plan_request(
-                    request,
-                ))
-            }
             CoordinatorToWorkerMsg::WorkUnitBatch(batch) => {
                 pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(encode_work_unit_batch(batch))
             }
@@ -420,11 +434,15 @@ fn encode_coordinator_to_worker_msg(msg: CoordinatorToWorkerMsg) -> pb::Coordina
     }
 }
 
-fn encode_set_plan_request(request: SetPlanRequest) -> pb::SetPlanRequest {
-    pb::SetPlanRequest {
+fn encode_set_plan_request(
+    request: SetPlanRequest,
+    ctx: &Arc<TaskContext>,
+) -> Result<pb::SetPlanRequest> {
+    let plan_proto = request.plan.encode(ctx)?;
+    Ok(pb::SetPlanRequest {
         task_key: Some(encode_task_key(request.task_key)),
         task_count: request.task_count as u64,
-        plan_proto: request.plan_proto,
+        plan_proto,
         work_unit_feed_declarations: request
             .work_unit_feed_declarations
             .into_iter()
@@ -432,7 +450,7 @@ fn encode_set_plan_request(request: SetPlanRequest) -> pb::SetPlanRequest {
             .collect(),
         target_worker_url: request.target_worker_url.to_string(),
         query_start_time_ns: request.query_start_time_ns as u64,
-    }
+    })
 }
 
 fn encode_work_unit_batch(batch: WorkUnitBatch) -> pb::WorkUnitBatch {
@@ -445,7 +463,10 @@ fn encode_work_unit(work_unit: WorkUnitMsg) -> pb::WorkUnit {
     pb::WorkUnit {
         id: serialize_uuid(&work_unit.id),
         partition: work_unit.partition as u64,
-        body: work_unit.body,
+        body: match work_unit.body {
+            MaybeEncoded::Encoded(body) => body,
+            MaybeEncoded::Decoded(body) => body.encode_to_bytes(),
+        },
         created_timestamp_unix_nanos: work_unit.created_timestamp_unix_nanos as u64,
         sent_timestamp_unix_nanos: work_unit.sent_timestamp_unix_nanos as u64,
         received_timestamp_unix_nanos: work_unit.received_timestamp_unix_nanos as u64,

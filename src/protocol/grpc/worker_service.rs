@@ -4,12 +4,11 @@ use super::metrics_proto::df_metrics_set_to_proto;
 use super::spawn_select_all::spawn_select_all;
 
 use crate::common::{deserialize_uuid, now_ns};
-use crate::protocol::ProducerHeadSpec;
 use crate::protocol::grpc::{ObservabilityServiceImpl, ObservabilityServiceServer};
 use crate::{
-    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, SetPlanRequest,
-    TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, Worker,
-    WorkerResolver, WorkerToCoordinatorMsg,
+    CoordinatorToWorkerMsg, DistributedConfig, ExecuteTaskRequest, LoadInfo, MaybeEncoded,
+    ProducerHead, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch, WorkUnitFeedDeclaration,
+    WorkUnitMsg, Worker, WorkerResolver, WorkerToCoordinatorMsg,
 };
 
 use arrow_flight::FlightData;
@@ -93,7 +92,21 @@ impl pb::worker_service_server::WorkerService for Worker {
         &self,
         request: Request<Streaming<pb::CoordinatorToWorkerMsg>>,
     ) -> Result<Response<Self::CoordinatorChannelStream>, Status> {
-        let (metadata, _ext, body) = request.into_parts();
+        let (metadata, _ext, mut body) = request.into_parts();
+
+        let msg = body
+            .message()
+            .await?
+            .ok_or_else(empty("Coordinator stream"))?
+            .inner
+            .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?;
+        let pb::coordinator_to_worker_msg::Inner::SetPlanRequest(set_plan_request) = msg else {
+            return Err(Status::invalid_argument(
+                "First Coordinator to Worker message must be SetPlanRequest",
+            ));
+        };
+
+        let set_plan_request = decode_set_plan_request(set_plan_request)?;
 
         let input_stream = body
             .map_err(map_status_to_datafusion_error)
@@ -103,7 +116,7 @@ impl pb::worker_service_server::WorkerService for Worker {
             .boxed();
 
         let output_stream = self
-            .coordinator_channel(metadata.into_headers(), input_stream)
+            .coordinator_channel(metadata.into_headers(), set_plan_request, input_stream)
             .await
             .map_err(datafusion_error_to_tonic_status)?
             .map(|msg| match msg {
@@ -188,8 +201,10 @@ fn decode_coordinator_to_worker_msg(
             .inner
             .ok_or_else(missing("CoordinatorToWorkerMsg.inner"))?
         {
-            pb::coordinator_to_worker_msg::Inner::SetPlanRequest(request) => {
-                CoordinatorToWorkerMsg::SetPlanRequest(decode_set_plan_request(request)?)
+            pb::coordinator_to_worker_msg::Inner::SetPlanRequest(_) => {
+                return Err(Status::invalid_argument(
+                    "SetPlanRequest must be the first coordinator message",
+                ));
             }
             pb::coordinator_to_worker_msg::Inner::WorkUnitBatch(batch) => {
                 CoordinatorToWorkerMsg::WorkUnitBatch(decode_work_unit_batch(batch)?)
@@ -205,7 +220,7 @@ fn decode_set_plan_request(request: pb::SetPlanRequest) -> Result<SetPlanRequest
     Ok(SetPlanRequest {
         task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
         task_count: request.task_count as usize,
-        plan_proto: request.plan_proto,
+        plan: MaybeEncoded::Encoded(request.plan_proto),
         work_unit_feed_declarations: request
             .work_unit_feed_declarations
             .into_iter()
@@ -223,25 +238,21 @@ async fn decode_execute_task_request(
         task_key: decode_task_key(request.task_key.ok_or_else(missing("task_key"))?)?,
         target_partition_start: request.target_partition_start as usize,
         target_partition_end: request.target_partition_end as usize,
-        producer_head_spec: decode_producer_head_spec(
+        producer_head: decode_producer_head(
             request.producer_head.ok_or_else(missing("producer_head"))?,
         ),
     })
 }
 
-pub(super) fn decode_producer_head_spec(
-    proto: pb::execute_task_request::ProducerHead,
-) -> ProducerHeadSpec {
+pub(super) fn decode_producer_head(proto: pb::execute_task_request::ProducerHead) -> ProducerHead {
     match proto {
-        pb::execute_task_request::ProducerHead::None(_) => ProducerHeadSpec::None,
-        pb::execute_task_request::ProducerHead::Broadcast(v) => ProducerHeadSpec::BroadcastExec {
+        pb::execute_task_request::ProducerHead::None(_) => ProducerHead::None,
+        pb::execute_task_request::ProducerHead::Broadcast(v) => ProducerHead::BroadcastExec {
             output_partitions: v.output_partitions as usize,
         },
-        pb::execute_task_request::ProducerHead::Repartition(v) => {
-            ProducerHeadSpec::RepartitionExec {
-                partitioning: v.partitioning,
-            }
-        }
+        pb::execute_task_request::ProducerHead::Repartition(v) => ProducerHead::RepartitionExec {
+            partitioning: MaybeEncoded::Encoded(v.partitioning),
+        },
     }
 }
 
@@ -311,7 +322,7 @@ fn decode_work_unit(work_unit: pb::WorkUnit) -> Result<WorkUnitMsg, Status> {
     Ok(WorkUnitMsg {
         id: deserialize_uuid(&work_unit.id).map_err(datafusion_error_to_tonic_status)?,
         partition: work_unit.partition as usize,
-        body: work_unit.body,
+        body: MaybeEncoded::Encoded(work_unit.body),
         created_timestamp_unix_nanos: work_unit.created_timestamp_unix_nanos as usize,
         sent_timestamp_unix_nanos: work_unit.sent_timestamp_unix_nanos as usize,
         received_timestamp_unix_nanos: work_unit.received_timestamp_unix_nanos as usize,
@@ -339,6 +350,10 @@ fn decode_task_key(task_key: pb::TaskKey) -> Result<TaskKey, Status> {
 fn parse_url(value: &str, field: &'static str) -> Result<Url, Status> {
     Url::parse(value)
         .map_err(|err| Status::invalid_argument(format!("Invalid field '{field}': {err}")))
+}
+
+fn empty(stream_name: &'static str) -> impl FnOnce() -> Status {
+    move || Status::invalid_argument(format!("Empty {stream_name}"))
 }
 
 fn missing(field: &'static str) -> impl FnOnce() -> Status {

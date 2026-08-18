@@ -21,7 +21,7 @@ pub use arrow_ipc::CompressionType;
 pub use coordinator::DistributedExec;
 pub use distributed_ext::{DistributedExt, DistributedGetterExt};
 pub use distributed_planner::{
-    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, SessionStateBuilderExt,
+    DistributedConfig, NetworkBoundary, NetworkBoundaryExt, ProducerHead, SessionStateBuilderExt,
 };
 pub use events::{
     DesiredTaskCountEvent, DesiredTaskCountEventResponse, DesiredTaskCountHandler, RouteTasksEvent,
@@ -49,12 +49,13 @@ pub mod test_utils;
 pub use protocol::grpc;
 
 pub use codec::DistributedCodec;
+pub use common::MaybeEncoded;
 pub use worker_resolver::{WorkerResolver, get_distributed_worker_resolver};
 
 pub use protocol::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, LoadInfo, ProducerHeadSpec, SetPlanRequest, TaskKey, TaskMetrics,
-    WorkUnitBatch, WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
+    GetWorkerInfoResponse, LoadInfo, SetPlanRequest, TaskKey, TaskMetrics, WorkUnitBatch,
+    WorkUnitFeedDeclaration, WorkUnitMsg, WorkerChannel, WorkerToCoordinatorMsg,
     get_distributed_channel_resolver,
 };
 pub use stage::{

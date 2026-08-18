@@ -1,7 +1,9 @@
+use crate::{MaybeEncoded, ProducerHead, WorkUnit};
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use futures::stream::BoxStream;
 use http::HeaderMap;
@@ -21,7 +23,10 @@ pub trait WorkerChannel: Send + Sync {
     async fn coordinator_channel(
         &mut self,
         headers: HeaderMap,
+        set_plan_request: SetPlanRequest,
         c2w_stream: BoxStream<'static, CoordinatorToWorkerMsg>,
+        metrics: ExecutionPlanMetricsSet,
+        task_ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<WorkerToCoordinatorMsg>>>;
 
     /// Executes the requested partition range of a subplan previously sent by the coordinator channel.
@@ -41,9 +46,6 @@ pub trait WorkerChannel: Send + Sync {
 }
 
 pub enum CoordinatorToWorkerMsg {
-    /// Sends a subplan to a worker so that a future ExecuteTask call can actually execute it.
-    /// The plan is identified by a TaskKey.
-    SetPlanRequest(SetPlanRequest),
     /// A batch of messages from a work unit feed belonging to different partitions from one node from the plan set in
     /// set_plan_request. A work unit feed is a per-partition stream of information that tells the node what should
     /// be executed within a partition, for example, a stream of file addresses that should be read.
@@ -75,10 +77,7 @@ pub struct SetPlanRequest {
     /// The amount of tasks that share the same subplan. Necessary for building the DistributedTaskContext during execution.
     pub task_count: usize,
     /// The subplan the worker is expected to execute.
-    // TODO: this still forces implementations to pass a serialized plan. In-memory implementations
-    //  might want to omit the serde step, so there should be a way to pass here a normal plan, and
-    //  pass the serializer/deserialized separately instead of being coupled to protobuf serialization
-    pub plan_proto: Vec<u8>,
+    pub plan: MaybeEncoded<Arc<dyn ExecutionPlan>>,
     /// Information about all the work unit feeds that will be streamed from coordinator to worker.
     /// This information is needed here because at the moment of setting the plan, all the appropriate
     /// channels for the incoming work unit feeds need to be constructed.
@@ -104,7 +103,7 @@ pub struct WorkUnitMsg {
     /// The partition index within the node to which the work unit feed belongs to.
     pub partition: usize,
     /// Arbitrary user-defined data (e.g., a file address) necessary during execution.
-    pub body: Vec<u8>,
+    pub body: MaybeEncoded<Box<dyn WorkUnit>>,
     /// Unix timestamp in nanoseconds at which this message was created in the coordinator.
     pub created_timestamp_unix_nanos: usize,
     /// Unix timestamp in nanoseconds at which this message was sent by the coordinator.
@@ -173,17 +172,7 @@ pub struct ExecuteTaskRequest {
     /// - A RepartitionExecHead implies a RepartitionExec at the head of the task.
     /// - A BroadcastExecHead implies a BroadcastExec at the head of the task.
     /// - A NoneHead does not need any specific head.
-    pub producer_head_spec: ProducerHeadSpec,
-}
-
-#[derive(Clone)]
-pub enum ProducerHeadSpec {
-    /// No specific head node is necessary.
-    None,
-    /// The head node should be a [BroadcastExec].
-    BroadcastExec { output_partitions: usize },
-    /// The head node should be a [RepartitionExec].
-    RepartitionExec { partitioning: Vec<u8> },
+    pub producer_head: ProducerHead,
 }
 
 pub struct GetWorkerInfoRequest {}
