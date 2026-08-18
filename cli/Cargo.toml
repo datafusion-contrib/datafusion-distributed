@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 datafusion = { workspace = true }
 datafusion-distributed = { path = "..", features = ["avro", "integration"] }
-datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "46bd88a12538b8115209ad29252ee7aa94985966", default-features = false }
+datafusion-cli = { git = "https://github.com/apache/datafusion.git", rev = "d5552342012888b7d1a3ab88d92e3d292fc0cde0", default-features = false }
 tokio = { version = "1.48", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
