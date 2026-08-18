@@ -18,7 +18,9 @@ use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use futures::future::BoxFuture;
 use std::sync::Arc;
@@ -94,7 +96,10 @@ fn create_distributed_plan(
             let input = create_distributed_plan(Arc::clone(analyze.input()), session).await?;
             return match input.is::<DistributedExec>() {
                 true => Ok(Arc::new(DistributedAnalyzeExec::new(analyze, input))),
-                false => Arc::new(analyze.clone()).with_new_children(vec![input]),
+                false => Arc::new(analyze.clone()).replace_children(
+                    vec![input],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                ),
             };
         }
 

@@ -22,7 +22,9 @@ use datafusion::physical_plan::joins::{
 };
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
+};
 use datafusion::prelude::SessionConfig;
 use std::any::TypeId;
 use std::sync::Arc;
@@ -311,7 +313,10 @@ async fn _inject_network_boundaries(
         task_count
     };
 
-    let plan = plan.with_new_children(processed_children)?;
+    let plan = plan.replace_children(
+        processed_children,
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?;
     // Cap the reconciled task count by the configured max-per-stage budget.
     let task_count = task_count.limit(nb_ctx.max_tasks()?);
 
@@ -497,7 +502,10 @@ impl InjectNetworkBoundaryContext<'_> {
                     self.propagate_task_count_until_network_boundaries(child, Maximum(task_count))?,
                 );
             }
-            let c_i_union = Arc::new(c_i_union).with_new_children(new_children)?;
+            let c_i_union = Arc::new(c_i_union).replace_children(
+                new_children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             Ok(self.plan_with_task_count(c_i_union, task_count))
 
         // Handle middle nodes.
@@ -507,7 +515,10 @@ impl InjectNetworkBoundaryContext<'_> {
                 new_children
                     .push(self.propagate_task_count_until_network_boundaries(child, task_count)?);
             }
-            let plan = Arc::clone(plan).with_new_children(new_children)?;
+            let plan = Arc::clone(plan).replace_children(
+                new_children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             Ok(self.plan_with_task_count(plan, task_count))
         }
     }

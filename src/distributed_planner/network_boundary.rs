@@ -8,7 +8,9 @@ use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 use std::sync::Arc;
 
 /// This trait represents a node that introduces the necessity of a network boundary in the plan.
@@ -106,10 +108,16 @@ impl ProducerHead {
     pub(crate) fn insert_sampler(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
         if let Some(r_exec) = input.downcast_ref::<RepartitionExec>() {
             let child = Arc::clone(r_exec.input());
-            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            input.replace_children(
+                vec![Arc::new(SamplerExec::new(child))],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
         } else if let Some(b_exec) = input.downcast_ref::<BroadcastExec>() {
             let child = Arc::clone(b_exec.input());
-            input.with_new_children(vec![Arc::new(SamplerExec::new(child))])
+            input.replace_children(
+                vec![Arc::new(SamplerExec::new(child))],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
         } else {
             Ok(input)
         }

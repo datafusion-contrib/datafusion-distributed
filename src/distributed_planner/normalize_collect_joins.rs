@@ -8,7 +8,9 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 
 use super::DistributedConfig;
 use super::insert_broadcast::is_left_broadcast_safe;
@@ -138,12 +140,12 @@ pub(super) fn normalize_collect_joins(
                 && coalesce.fetch().is_none()
             {
                 Arc::clone(&node)
-                    .with_new_children(vec![
-                        Arc::clone(coalesce.input()),
-                        Arc::clone(join.right()),
-                    ])?
+                    .replace_children(
+                        vec![Arc::clone(coalesce.input()), Arc::clone(join.right())],
+                        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                    )?
                     .downcast_ref::<NestedLoopJoinExec>()
-                    .expect("with_new_children changed the node type")
+                    .expect("replace_children changed the node type")
                     .swap_inputs()?
             } else {
                 join.swap_inputs()?
