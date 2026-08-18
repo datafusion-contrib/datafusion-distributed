@@ -5,8 +5,10 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, PlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    ReplaceChildrenOptions,
+};
 use delegate::delegate;
 use std::fmt::{Debug, Formatter};
 
@@ -67,7 +69,10 @@ impl ExecutionPlan for MetricsWrapperExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(MetricsWrapperExec {
-            inner: Arc::clone(&self.inner).with_new_children(children.clone())?,
+            inner: Arc::clone(&self.inner).replace_children(
+                children.clone(),
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?,
             metrics: self.metrics.clone(),
         }))
     }

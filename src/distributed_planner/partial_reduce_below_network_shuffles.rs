@@ -5,10 +5,10 @@ use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::Partitioning;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use std::sync::Arc;
 
 /// Inserts [`AggregateMode::PartialReduce`] above the hash [`RepartitionExec`] in each
@@ -93,7 +93,10 @@ pub(crate) fn partial_reduce_below_network_shuffles(
             agg.input_schema(),
         )?);
 
-        let new_plan = plan.with_new_children(vec![partial_reduce])?;
+        let new_plan = plan.replace_children(
+            vec![partial_reduce],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
         Ok(Transformed::yes(new_plan))
     })?;
 

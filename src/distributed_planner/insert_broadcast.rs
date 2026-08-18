@@ -4,11 +4,11 @@ use datafusion::common::JoinType;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{
     CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
 };
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 
 use crate::BroadcastExec;
 
@@ -147,7 +147,10 @@ pub(super) fn insert_broadcast_execs(
 
         let mut new_children: Vec<Arc<dyn ExecutionPlan>> = children.into_iter().cloned().collect();
         new_children[0] = new_build_child;
-        Ok(Transformed::yes(node.with_new_children(new_children)?))
+        Ok(Transformed::yes(node.replace_children(
+            new_children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?))
     })
     .map(|transformed| transformed.data)
 }
