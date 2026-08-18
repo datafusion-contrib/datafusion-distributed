@@ -59,7 +59,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         // The sort comparators read every sort key on every row, so even a plain column key costs
         // its bytes (a wide UTF8 key is far costlier to compare than an int).
         for expr in node.expr() {
-            input = input.plus(hashed_or_sorted_key_complexity(&expr.expr))
+            input = input.plus(hash_or_comparison_key_complexity(&expr.expr))
         }
 
         if node.fetch().is_some() {
@@ -157,7 +157,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         // Additional: evaluate and hash group-by key expressions
         for (expr, _) in agg.group_expr().expr() {
-            c = c.plus(hashed_or_sorted_key_complexity(expr));
+            c = c.plus(hash_or_comparison_key_complexity(expr));
         }
         // Per-aggregate filter expressions (e.g. COUNT(*) FILTER (WHERE ...))
         for filter in agg.filter_expr().iter().flatten() {
@@ -172,7 +172,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         // Read all input data + evaluate/hash partition key expressions
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         for expr in node.partition_keys() {
-            c = c.plus(hashed_or_sorted_key_complexity(&expr));
+            c = c.plus(hash_or_comparison_key_complexity(&expr));
         }
         return c;
     }
@@ -180,7 +180,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
     if let Some(node) = node.downcast_ref::<BoundedWindowAggExec>() {
         let mut c = Complexity::Linear(LinearComplexity::AllColumns);
         for expr in node.partition_keys() {
-            c = c.plus(hashed_or_sorted_key_complexity(&expr));
+            c = c.plus(hash_or_comparison_key_complexity(&expr));
         }
         return c;
     }
@@ -193,7 +193,7 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         let mut n = Complexity::Linear(LinearComplexity::AllColumns);
         // and compare the sort keys on all of them; a plain column key still costs its bytes.
         for expr in node.expr() {
-            n = n.plus(hashed_or_sorted_key_complexity(&expr.expr))
+            n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
         }
         return n;
     }
@@ -232,12 +232,12 @@ pub(super) fn complexity_cpu(node: &Arc<dyn ExecutionPlan>) -> Complexity {
         match node.partitioning() {
             Partitioning::Hash(expressions, _) => {
                 for expr in expressions {
-                    n = n.plus(hashed_or_sorted_key_complexity(expr))
+                    n = n.plus(hash_or_comparison_key_complexity(expr))
                 }
             }
             Partitioning::Range(range) => {
                 for expr in range.ordering() {
-                    n = n.plus(hashed_or_sorted_key_complexity(&expr.expr))
+                    n = n.plus(hash_or_comparison_key_complexity(&expr.expr))
                 }
             }
             Partitioning::RoundRobinBatch(_) => {}
@@ -376,7 +376,7 @@ fn remap_filter_columns(c: Complexity, column_indices: &[ColumnIndex]) -> Comple
 /// The hashing/comparison itself is performed by the operator — hash-table build, partition
 /// hashing, sort comparators — not by any expression in the plan, and its cost scales with the
 /// key's byte width. Use it for group-by keys, hash-partition keys and sort keys.
-fn hashed_or_sorted_key_complexity(expression: &Arc<dyn PhysicalExpr>) -> Complexity {
+fn hash_or_comparison_key_complexity(expression: &Arc<dyn PhysicalExpr>) -> Complexity {
     let bpr = _expression_complexity(expression);
     let mut result: Option<Complexity> = None;
     for col_idx in &bpr.cols_read {
