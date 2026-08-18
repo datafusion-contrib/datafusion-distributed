@@ -20,11 +20,10 @@ use prost::Message;
 use std::{fmt::Formatter, sync::Arc};
 use tonic::async_trait;
 
-use crate::execution_plans::DistributedLeafExec;
-use crate::worker::LocalWorkerContext;
 use crate::{
-    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedTaskContext, RouteTasksEvent,
-    RouteTasksEventResponse, ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver,
+    DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedLeafExec,
+    DistributedTaskContext, LocalWorkerContext, RouteTasksEvent, RouteTasksEventResponse,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, WorkerResolver,
 };
 
 use crate::distributed_ext::DistributedGetterExt;

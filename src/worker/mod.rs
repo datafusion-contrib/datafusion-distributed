@@ -16,5 +16,4 @@ pub use session_builder::{
     WorkerQueryContext, WorkerSessionBuilder,
 };
 pub use task_data::TaskData;
-pub use worker_connection_pool::LocalWorkerContext;
 pub use worker_service::Worker;

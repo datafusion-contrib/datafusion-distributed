@@ -1,8 +1,8 @@
 use crate::common::TreeNodeExt;
 use crate::events::{WorkerPlanRewriteEvent, WorkerPlanRewriteHandlers};
 use crate::execution_plans::SamplerExec;
+use crate::protocol::LocalWorkerContext;
 use crate::work_unit_feed::{RemoteWorkUnitFeedRegistry, set_work_unit_received_time};
-use crate::worker::LocalWorkerContext;
 use crate::worker::task_data::TaskDataMetrics;
 use crate::{
     CoordinatorToWorkerMsg, DistributedConfig, DistributedExt, DistributedTaskContext,
@@ -50,7 +50,7 @@ impl Worker {
                     task_count: request.task_count,
                 }))
                 .with_extension(Arc::new(LocalWorkerContext {
-                    task_data_entries: Arc::clone(&self.task_data_entries),
+                    local_worker: self.clone(),
                     self_url: request.target_worker_url,
                 }))
                 .with_distributed_option_extension_from_headers::<DistributedConfig>(&headers)?;

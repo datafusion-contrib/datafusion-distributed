@@ -76,9 +76,27 @@ impl ExecutionPlan for MetricsWrapperExec {
     fn metrics(&self) -> Option<MetricsSet> {
         match self.inner.metrics() {
             None => Some(self.metrics.clone()),
-            Some(mut all_metrics) => {
-                for wrapped in self.metrics.iter() {
-                    all_metrics.push(Arc::clone(wrapped));
+            Some(local_metrics) => {
+                let mut all_metrics = self.metrics.clone();
+
+                for local_metric in local_metrics {
+                    // When a node is executed in an in-process worker, the ExecutionPlan might not
+                    // have suffered any [de]serialization. This means that execution metrics
+                    // collected at runtime in the Worker will be automatically visible in the
+                    // coordinator, as both happen to run in-process, and therefore, the pointer
+                    // that holds the ExecutionPlan MetricsSet is the same.
+                    //
+                    // This means that we need to dedupe the metrics here, otherwise, we might
+                    // double-count metrics:
+                    // 1. What was collected in the local worker
+                    // 2. What is automatically available in the coordiantor because of pointer
+                    //    equivalence.
+                    if !self.metrics.iter().any(|wrapped| {
+                        wrapped.value() == local_metric.value()
+                            && wrapped.partition() == local_metric.partition()
+                    }) {
+                        all_metrics.push(local_metric);
+                    }
                 }
                 Some(all_metrics)
             }

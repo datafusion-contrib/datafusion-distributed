@@ -1,10 +1,7 @@
 use crate::distributed_planner::ProducerHead;
 use crate::passthrough_headers::get_passthrough_headers;
 use crate::stage::RemoteStage;
-use crate::worker::worker_service::TaskDataEntries;
-use crate::{
-    ChannelResolver, ExecuteTaskRequest, TaskKey, Worker, get_distributed_channel_resolver,
-};
+use crate::{ExecuteTaskRequest, LocalWorkerContext, TaskKey, get_distributed_channel_resolver};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
@@ -17,21 +14,6 @@ use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
-use url::Url;
-
-/// Context set by [crate::Worker::coordinator_channel] in DataFusion's
-/// [datafusion::prelude::SessionConfig] that contains information about the local tasks the current
-/// [crate::Worker] owns.
-///
-/// This information can be used for executing tasks locally bypassing gRPC comms if the tasks that
-/// needs to be remotely executed happens to be owned by this same worker.
-pub struct LocalWorkerContext {
-    /// The registry of in-flight tasks the [crate::Worker] in the current scope owns.
-    pub(crate) task_data_entries: Arc<TaskDataEntries>,
-    /// The URL of the [crate::Worker] in scope. When trying to reach to a target URL that happens
-    /// to be the same as this one, local comms are preferred instead.
-    pub(crate) self_url: Url,
-}
 
 /// Manages connections to remote workers.
 /// - Handles a range of partitions at a time in other to give the chance to [crate::WorkerChannel]
@@ -70,8 +52,6 @@ impl WorkerConnectionPool {
         producer_head: ProducerHead,
         ctx: &Arc<TaskContext>,
     ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
-
         let Some(target_url) = input_stage.workers.get(target_task).cloned() else {
             internal_err!("input_stage.workers[{target_task}] out of range.")?
         };
@@ -80,25 +60,10 @@ impl WorkerConnectionPool {
             stage_id: input_stage.num,
             task_number: target_task,
         };
-        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(target_partition);
-        let output_rows = MetricBuilder::new(&self.metrics).output_rows(target_partition);
-
-        // If we are physically in the same worker, short circuit into a local connection without
-        // going through the `WorkerChannel`.
-        if let Some(result) = self.local_stream_short_circuit(
-            task_key,
-            target_partition,
-            &target_url,
-            producer_head.clone(),
-            ctx,
-        )? {
-            return Ok(result
-                .inspect_ok(move |batch| {
-                    output_bytes.add(logical_record_batch_size(batch));
-                    output_rows.add(batch.num_rows());
-                })
-                .boxed());
-        }
+        let bdr = || MetricBuilder::new(&self.metrics);
+        let output_bytes = bdr().output_bytes(target_partition);
+        let output_rows = bdr().output_rows(target_partition);
+        let local_connections_used = bdr().global_counter("local_connections_used");
 
         // Otherwise, we need to reach the remote worker through the `WorkerChannel`. Unlike local
         // connections, these remote connections span a range of partitions so that `WorkerChannel`
@@ -127,7 +92,16 @@ impl WorkerConnectionPool {
                     target_partition_end: target_partitions.end,
                     producer_head,
                 };
-                let mut client = ch_resolver.get_worker_client_for_url(&target_url).await?;
+                let mut client = match LocalWorkerContext::from_ctx(&ctx) {
+                    Some(lw) if lw.self_url == target_url => {
+                        local_connections_used.add(1);
+                        Ok(lw.to_worker_channel())
+                    }
+                    _ => {
+                        let ch_resolver = get_distributed_channel_resolver(ctx.as_ref());
+                        ch_resolver.get_worker_client_for_url(&target_url).await
+                    }
+                }?;
                 let headers = get_passthrough_headers(ctx.session_config());
                 let streams = client.execute_task(headers, request, metrics, &ctx).await?;
                 Ok(streams)
@@ -168,62 +142,6 @@ impl WorkerConnectionPool {
             output_rows.add(batch.num_rows());
         })
         .boxed())
-    }
-
-    fn local_stream_short_circuit(
-        &self,
-        task_key: TaskKey,
-        target_partition: usize,
-        target_url: &Url,
-        producer_head: ProducerHead,
-        ctx: &Arc<TaskContext>,
-    ) -> Result<Option<BoxStream<'static, Result<RecordBatch>>>> {
-        let Some(task_data_entries) = ctx
-            .session_config()
-            .get_extension::<LocalWorkerContext>()
-            .and_then(|lw_ctx| match &lw_ctx.self_url == target_url {
-                true => Some(Arc::clone(&lw_ctx.task_data_entries)),
-                false => None,
-            })
-        else {
-            return Ok(None);
-        };
-
-        MetricBuilder::new(&self.metrics)
-            .global_counter("local_connections_used")
-            .add(1);
-        let request = ExecuteTaskRequest {
-            task_key,
-            target_partition_start: target_partition,
-            target_partition_end: target_partition + 1,
-            producer_head,
-        };
-        // The relevant entry from `task_data_entries` needs to be eagerly retrieved, it cannot be
-        // left for until someone decides to start polling the returned `BoxStream`, otherwise,
-        // there's risk that the entry is evicted by Moka's TTL, and by the time the returned stream
-        // is polled, the entry might not be there.
-        //
-        // Note that this does not start polling the returned streams, it just instantiates them.
-        let stream_task = SpawnedTask::spawn(async move {
-            let (mut streams, _) = Worker::execute_task_static(task_data_entries, request).await?;
-            if streams.len() != 1 {
-                return internal_err!(
-                    "Expected exactly 1 stream out of Worker::execute_task_static, but got {}",
-                    streams.len()
-                );
-            }
-            Ok::<_, DataFusionError>(streams.swap_remove(0))
-        });
-
-        Ok(Some(
-            async move {
-                stream_task
-                    .await
-                    .map_err(|err| internal_datafusion_err!("{err}"))?
-            }
-            .try_flatten_stream()
-            .boxed(),
-        ))
     }
 }
 
