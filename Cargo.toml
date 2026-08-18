@@ -6,8 +6,8 @@ members = [
 ]
 
 [workspace.dependencies]
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "d5552342012888b7d1a3ab88d92e3d292fc0cde0", default-features = false }
-datafusion-proto = { git = "https://github.com/apache/datafusion.git", rev = "d5552342012888b7d1a3ab88d92e3d292fc0cde0", default-features = false }
+datafusion = { version = "55", default-features = false }
+datafusion-proto = { version = "55", default-features = false }
 
 [package]
 name = "datafusion-distributed"
