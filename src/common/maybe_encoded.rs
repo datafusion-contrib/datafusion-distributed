@@ -1,18 +1,11 @@
-use crate::DistributedCodec;
+use crate::codec::{
+    decode_execution_plan, decode_partitioning, encode_execution_plan, encode_partitioning,
+};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
-use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::{
-    AsExecutionPlan, DeduplicatingProtoConverter, DefaultPhysicalProtoConverter,
-    PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
-};
-use datafusion_proto::protobuf;
-use datafusion_proto::protobuf::proto_error;
-use prost::Message;
 use std::sync::Arc;
 
 /// A value that a transport may either leave encoded or materialize in memory.
@@ -58,12 +51,7 @@ impl MaybeEncoded<Arc<dyn ExecutionPlan>> {
     pub fn encode(self, ctx: &Arc<TaskContext>) -> Result<Vec<u8>> {
         match self {
             Self::Encoded(encoded) => Ok(encoded),
-            Self::Decoded(plan) => {
-                let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-                DeduplicatingProtoConverter::default()
-                    .execution_plan_to_proto(&plan, &codec)
-                    .map(|v| v.encode_to_vec())
-            }
+            Self::Decoded(plan) => encode_execution_plan(plan, ctx),
         }
     }
 
@@ -71,12 +59,7 @@ impl MaybeEncoded<Arc<dyn ExecutionPlan>> {
     /// - If in `Decoded` state, it just passes through the content.
     /// - If in `Encoded` state, it decodes it using the codecs registered in the [TaskContext].
     pub(crate) fn decode(self, task_ctx: &TaskContext) -> Result<Arc<dyn ExecutionPlan>> {
-        self.decode_with(|encoded| {
-            let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-            let proto_node = protobuf::PhysicalPlanNode::try_decode(encoded.as_ref())?;
-            let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &codec);
-            DeduplicatingProtoConverter::default().proto_to_execution_plan(&proto_node, &decode_ctx)
-        })
+        self.decode_with(|encoded| decode_execution_plan(&encoded, task_ctx))
     }
 }
 
@@ -87,17 +70,7 @@ impl MaybeEncoded<Partitioning> {
     pub fn encode(self, ctx: &Arc<TaskContext>) -> Result<Vec<u8>> {
         match self {
             Self::Encoded(encoded) => Ok(encoded),
-            Self::Decoded(partitioning) => {
-                let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-                Ok(serialize_partitioning(
-                    &partitioning,
-                    &codec,
-                    // I think nobody cares about this being the default PhysicalProtoConverter.
-                    // If someone does, please open an issue.
-                    &DefaultPhysicalProtoConverter {},
-                )?
-                .encode_to_vec())
-            }
+            Self::Decoded(partitioning) => encode_partitioning(&partitioning, ctx),
         }
     }
 
@@ -105,21 +78,7 @@ impl MaybeEncoded<Partitioning> {
     /// - If in `Decoded` state, it just passes through the content.
     /// - If in `Encoded` state, it decodes it using the codecs registered in the [TaskContext].
     pub fn decode(self, schema: SchemaRef, task_ctx: &TaskContext) -> Result<Partitioning> {
-        self.decode_with(|encoded| {
-            let proto_partitioning = protobuf::Partitioning::decode(encoded.as_slice())
-                .map_err(|err| proto_error(err.to_string()))?;
-            let codec = DistributedCodec::new_combined_with_user(task_ctx.session_config());
-            let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx, &codec);
-            parse_protobuf_partitioning(
-                Some(&proto_partitioning),
-                &decode_ctx,
-                &schema,
-                // I think nobody cares about this being the default PhysicalProtoConverter.
-                // If someone does, please open an issue.
-                &DefaultPhysicalProtoConverter {},
-            )?
-            .ok_or_else(|| proto_error("Could not parse partitioning"))
-        })
+        self.decode_with(|encoded| decode_partitioning(&encoded, schema, task_ctx))
     }
 }
 
@@ -161,6 +120,24 @@ mod tests {
 
         outer_filter.update(lit(false))?;
         assert_eq!(inner_filter.current()?.to_string(), "false");
+        Ok(())
+    }
+
+    #[test]
+    fn hash_partitioning_roundtrip() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let partitioning = Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4);
+        let task_ctx = SessionContext::new().task_ctx();
+
+        let encoded = MaybeEncoded::Decoded(partitioning).encode(&task_ctx)?;
+        let decoded = MaybeEncoded::<Partitioning>::Encoded(encoded).decode(schema, &task_ctx)?;
+
+        let Partitioning::Hash(expressions, partition_count) = decoded else {
+            panic!("expected hash partitioning");
+        };
+        assert_eq!(partition_count, 4);
+        assert_eq!(expressions.len(), 1);
+        assert_eq!(expressions[0].to_string(), "a@0");
         Ok(())
     }
 }

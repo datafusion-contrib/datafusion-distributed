@@ -552,6 +552,7 @@ fn new_network_broadcast_exec(
 
 #[cfg(test)]
 mod tests {
+    use super::super::physical_plan::new_proto_converter as default_proto_converter;
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field};
     use datafusion::physical_expr::LexOrdering;
@@ -561,11 +562,6 @@ mod tests {
         physical_expr::{Partitioning, PhysicalSortExpr, expressions::Column, expressions::col},
         physical_plan::{ExecutionPlan, displayable, sorts::sort::SortExec, union::UnionExec},
     };
-    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
-
-    fn default_proto_converter() -> DefaultPhysicalProtoConverter {
-        DefaultPhysicalProtoConverter {}
-    }
 
     fn empty_exec() -> Arc<dyn ExecutionPlan> {
         Arc::new(EmptyExec::new(SchemaRef::new(Schema::empty())))
