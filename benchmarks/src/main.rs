@@ -3,7 +3,6 @@ mod compare;
 mod prepare_clickbench;
 mod prepare_tpcds;
 mod prepare_tpch;
-mod prepare_tpch_sorted;
 mod results;
 mod run;
 
@@ -18,7 +17,6 @@ enum Options {
     Run(run::RunOpt),
     Compare(compare::CompareOpt),
     PrepareTpch(prepare_tpch::PrepareTpchOpt),
-    PrepareTpchSorted(prepare_tpch_sorted::PrepareTpchSortedOpt),
     PrepareTpcds(prepare_tpcds::PrepareTpcdsOpt),
     PrepareClickbench(prepare_clickbench::PrepareClickBenchOpt),
 }
@@ -31,10 +29,6 @@ pub fn main() -> Result<()> {
         Options::Run(opt) => opt.run(),
         Options::Compare(opt) => opt.run(),
         Options::PrepareTpch(opt) => opt.run(),
-        Options::PrepareTpchSorted(opt) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { opt.run().await })
-        }
         Options::PrepareTpcds(opt) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { opt.run().await })

@@ -16,7 +16,9 @@
 // under the License.
 
 use datafusion::error::Result;
-use datafusion_distributed_benchmarks::datasets::tpch::generate_tpch_data;
+use datafusion_distributed_benchmarks::datasets::tpch::{
+    generate_sorted_tpch_data, generate_tpch_data,
+};
 use std::path::PathBuf;
 use structopt::StructOpt;
 
@@ -34,19 +36,28 @@ pub struct PrepareTpchOpt {
     /// Number of partitions (parquet files per table)
     #[structopt(short = "n", long = "partitions", default_value = "16")]
     partitions: usize,
+
+    /// Write Parquet `sorting_columns` metadata for the order tpchgen already emits
+    #[structopt(long)]
+    sorted: bool,
 }
 
 impl PrepareTpchOpt {
     pub fn run(self) -> Result<()> {
+        let label = if self.sorted { "sorted TPC-H" } else { "TPC-H" };
         println!(
-            "Generating TPC-H data at scale factor {} with {} partitions in '{}'",
+            "Generating {label} data at scale factor {} with {} partitions in '{}'",
             self.scale_factor,
             self.partitions,
             self.output_path.display()
         );
-        generate_tpch_data(&self.output_path, self.scale_factor, self.partitions)
-            .map_err(|e| datafusion::error::DataFusionError::Internal(format!("{e:?}")))?;
-        println!("TPC-H data generation complete.");
+        let result = if self.sorted {
+            generate_sorted_tpch_data(&self.output_path, self.scale_factor, self.partitions)
+        } else {
+            generate_tpch_data(&self.output_path, self.scale_factor, self.partitions)
+        };
+        result.map_err(|e| datafusion::error::DataFusionError::Internal(format!("{e:?}")))?;
+        println!("{label} data generation complete.");
         Ok(())
     }
 }

@@ -13,17 +13,18 @@ For example, `tpch/sf1` is stored in `testdata/tpch/sf1`.
 # TPC-H (default: SCALE_FACTOR=1, PARTITIONS=16 - override by setting these environment variables)
 ./gen-tpch.sh
 
-# Sorted TPC-H (same scale-factor model, tables globally sorted by TPC-H primary keys)
+# Sorted TPC-H (same generators, Parquet sorting_columns metadata)
 ./gen-tpch-sorted.sh
 
 # TPC-DS (only SCALE_FACTOR=1 is supported)
 ./gen-tpcds.sh
 ```
 
-`tpch-sorted` is written to `testdata/tpch-sorted/sf<scale-factor>`. Use a small
-`SCALE_FACTOR` (for example `0.01`) for a cheap smoke generation; SF1 is the
-default and can take a few minutes. Sort keys are documented in
-`testdata/tpch-sorted/README.md`.
+`tpch/sorted_sf1` is written to `testdata/tpch/sorted_sf<scale-factor>`. Use a
+small `SCALE_FACTOR` (for example `0.01`) for a cheap smoke generation; SF1 is
+the default. Files record the columns tpchgen already emits in order:
+`r_regionkey`, `n_nationkey`, `c_custkey`, `s_suppkey`, `p_partkey`,
+`ps_partkey`, `o_orderkey`, and `(l_orderkey, l_linenumber)`.
 
 ### Running Benchmarks in single-node mode
 
@@ -37,7 +38,7 @@ WORKERS=0 ./benchmarks/run.sh --threads 2 --dataset tpch/sf1
   binary. It's recommended to set `--threads` to something small, like `2`, for throttling each
   individual process running queries, and simulate how adding throttled workers can speed up the
   queries.
-- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpch-sorted/sf1`,
+- `--dataset`: Logical dataset name (e.g. `tpch/sf1`, `tpch/sorted_sf1`,
   `tpcds/sf1`). It is resolved to the corresponding
   `testdata/<suite>/<variant>` directory.
 
