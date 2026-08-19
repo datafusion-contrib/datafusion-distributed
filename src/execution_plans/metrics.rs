@@ -64,17 +64,25 @@ impl ExecutionPlan for MetricsWrapperExec {
         self.inner.apply_expressions(f)
     }
 
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(MetricsWrapperExec {
+            inner: Arc::clone(&self.inner).replace_children(children, options)?,
+            metrics: self.metrics.clone(),
+        }))
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(MetricsWrapperExec {
-            inner: Arc::clone(&self.inner).replace_children(
-                children.clone(),
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?,
-            metrics: self.metrics.clone(),
-        }))
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(

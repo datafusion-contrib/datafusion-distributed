@@ -246,9 +246,10 @@ impl ExecutionPlan for NetworkCoalesceExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
@@ -262,6 +263,16 @@ impl ExecutionPlan for NetworkCoalesceExec {
             }
         }
         Ok(Arc::new(self_clone))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
