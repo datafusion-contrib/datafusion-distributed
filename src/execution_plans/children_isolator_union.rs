@@ -171,11 +171,15 @@ impl ChildrenIsolatorUnionExec {
                 partition_counts[t] += children[*child_idx].output_partitioning().partition_count();
             }
         }
-        let Some(partition_count) = partition_counts.iter().max() else {
-            return internal_err!(
-                "ChildrenIsolatorUnionExec built an empty task_idx_map. This is a bug in the distributed planning logic, please report it"
-            );
-        };
+        // A `Desired(0)` union (every leaf empty) produces an empty task map. Advertise the
+        // children's partition counts so the node stays a valid empty stage rather than erroring.
+        let partition_count = partition_counts.iter().copied().max().unwrap_or_else(|| {
+            children
+                .iter()
+                .map(|c| c.output_partitioning().partition_count())
+                .max()
+                .unwrap_or(0)
+        });
 
         // It's not supper efficient to build a UnionExec just to get the properties out, but the
         // other solution is to copy-paste a bunch of code from upstream for computing the properties
@@ -184,7 +188,7 @@ impl ChildrenIsolatorUnionExec {
             .properties()
             .as_ref()
             .clone();
-        properties.partitioning = Partitioning::UnknownPartitioning(*partition_count);
+        properties.partitioning = Partitioning::UnknownPartitioning(partition_count);
         Ok(Self {
             properties: Arc::new(properties),
             metrics: ExecutionPlanMetricsSet::default(),
@@ -210,7 +214,7 @@ impl ChildrenIsolatorUnionExec {
     /// task index. These children are replaced by [EmptyExec] as placeholders.
     pub(crate) fn to_task_specialized(&self, task_i: usize) -> Self {
         let mut children_to_keep = vec![];
-        for (child_i, _) in &self.task_idx_map[task_i] {
+        for (child_i, _) in self.task_idx_map.get(task_i).into_iter().flatten() {
             children_to_keep.push(*child_i);
         }
         let new_children = self
@@ -317,7 +321,11 @@ impl ExecutionPlan for ChildrenIsolatorUnionExec {
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         let d_ctx = DistributedTaskContext::from_ctx(&context);
 
-        let children = self.task_idx_map[d_ctx.task_index].clone();
+        let children = self
+            .task_idx_map
+            .get(d_ctx.task_index)
+            .cloned()
+            .unwrap_or_default();
 
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
 
@@ -457,11 +465,6 @@ fn split_children(
     >,
     DataFusionError,
 > {
-    if task_count_budget == 0 {
-        return internal_err!(
-            "ChildrenIsolatorUnionExec had a task count {task_count_budget}. This is a bug in the distributed planning logic, please report it"
-        );
-    }
     if children.is_empty() {
         return internal_err!(
             "ChildrenIsolatorUnionExec built with no children. This is a bug in the distributed planning logic, please report it"
@@ -485,6 +488,12 @@ fn split_children(
                 weight.weight
             );
         }
+    }
+
+    // `Desired(0)` is a valid planning outcome (e.g. every leaf dataset is empty).
+    // An empty task map is an empty stage, not an internal error.
+    if task_count_budget == 0 {
+        return Ok(vec![]);
     }
 
     // Two running examples (A and B) traced through every step below.
@@ -804,6 +813,20 @@ mod tests {
                 vec![(1, ctx(0, 1))],
                 vec![(2, ctx(0, 1))],
             ]
+        );
+        Ok(())
+    }
+
+    /// A zero task budget is a valid empty stage (every leaf dataset empty).
+    #[test]
+    fn split_children_zero_budget_is_empty() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            split_children(&[des(0.0), des(0.0)], 0)?,
+            Vec::<Vec<(usize, DistributedTaskContext)>>::new()
+        );
+        assert_eq!(
+            split_children(&[des(1.0), des(1.0)], 0)?,
+            Vec::<Vec<(usize, DistributedTaskContext)>>::new()
         );
         Ok(())
     }

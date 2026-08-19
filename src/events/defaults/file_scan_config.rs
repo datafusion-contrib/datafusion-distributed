@@ -38,6 +38,10 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
+    // Empty stages have nothing to split across tasks.
+    if ev.task_count == 0 {
+        return None;
+    }
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let rebalanced = if file_scan.output_partitioning.is_some() {
