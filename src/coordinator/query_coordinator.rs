@@ -1,3 +1,4 @@
+use crate::codec::{decode_execution_plan, encode_execution_plan};
 use crate::common::{TreeNodeExt, now_ns, task_ctx_with_extension};
 use crate::config_extension_ext::get_config_extension_propagation_headers;
 use crate::coordinator::MetricsStore;
@@ -9,10 +10,9 @@ use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec,
-    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
-    MaybeEncoded, SetPlanRequest, TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
-    get_distributed_channel_resolver,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
+    DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext, MaybeEncoded, SetPlanRequest,
+    TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -24,8 +24,6 @@ use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, 
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::{AsExecutionPlan, DefaultPhysicalProtoConverter};
-use datafusion_proto::protobuf;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
@@ -423,14 +421,8 @@ fn roundtrip_pb(
     plan: Arc<dyn ExecutionPlan>,
     ctx: &Arc<TaskContext>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
-
-    protobuf::PhysicalPlanNode::try_from_physical_plan_with_converter(
-        plan,
-        &codec,
-        &DefaultPhysicalProtoConverter {},
-    )?
-    .try_into_physical_plan(ctx, &codec)
+    let encoded = encode_execution_plan(plan, ctx)?;
+    decode_execution_plan(&encoded, ctx)
 }
 
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
