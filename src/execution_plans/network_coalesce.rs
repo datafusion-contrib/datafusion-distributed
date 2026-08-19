@@ -13,8 +13,8 @@ use datafusion::physical_expr_common::metrics::MetricsSet;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, PlanProperties,
-    Statistics, StatisticsArgs, internal_err,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+    PlanProperties, ReplaceChildrenOptions, Statistics, StatisticsArgs, internal_err,
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -221,9 +221,10 @@ impl ExecutionPlan for NetworkCoalesceExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut self_clone = self.as_ref().clone();
         match &mut self_clone.input_stage {
@@ -237,6 +238,16 @@ impl ExecutionPlan for NetworkCoalesceExec {
             }
         }
         Ok(Arc::new(self_clone))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(

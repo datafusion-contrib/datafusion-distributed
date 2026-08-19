@@ -11,8 +11,8 @@ use datafusion::{
     execution::TaskContext,
     physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-        stream::RecordBatchStreamAdapter,
+        ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        ReplaceChildrenOptions, stream::RecordBatchStreamAdapter,
     },
     prelude::Expr,
 };
@@ -191,11 +191,22 @@ impl ExecutionPlan for URLEmitterExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn ExecutionPlan>>,
+        _: ReplaceChildrenOptions,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(self.as_ref().clone()))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(

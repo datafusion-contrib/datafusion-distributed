@@ -9,7 +9,8 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, internal_err,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, ReplaceChildrenOptions, internal_err,
 };
 use futures::{Stream, StreamExt};
 use std::fmt::Formatter;
@@ -145,14 +146,25 @@ impl ExecutionPlan for BroadcastExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self::new(
             require_one_child(children)?,
             self.consumer_task_count,
         )))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
@@ -335,6 +347,28 @@ mod tests {
         for (idx, expected_value) in expected.iter().enumerate() {
             assert_eq!(values.value(idx), *expected_value);
         }
+    }
+
+    fn mock_plan(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
+        Arc::new(MockExec::new(vec![], Arc::clone(schema)))
+    }
+
+    #[test]
+    fn replace_children_swaps_input() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let original = mock_plan(&schema);
+        let replacement = mock_plan(&schema);
+        let exec = Arc::new(BroadcastExec::new(Arc::clone(&original), 2));
+
+        let replaced = exec.replace_children(
+            vec![Arc::clone(&replacement)],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+
+        assert_eq!(replaced.name(), "BroadcastExec");
+        assert!(Arc::ptr_eq(&replaced.children()[0], &replacement));
+        assert!(!Arc::ptr_eq(&replaced.children()[0], &original));
+        Ok(())
     }
 
     #[tokio::test]
