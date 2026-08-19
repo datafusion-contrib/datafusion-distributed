@@ -161,7 +161,6 @@ impl ProducerHead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::InProcessChannelResolver;
     use crate::{DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, WorkerResolver};
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::error::DataFusionError;
@@ -203,7 +202,6 @@ mod tests {
             .with_config(SessionConfig::new().with_target_partitions(4))
             .with_distributed_planner()
             .with_distributed_worker_resolver(Workers(4))
-            .with_distributed_channel_resolver(InProcessChannelResolver::default())
             .with_distributed_file_scan_config_bytes_per_partition(1)
             .unwrap()
             .build();

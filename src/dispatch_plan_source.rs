@@ -54,9 +54,8 @@ pub fn get_distributed_dispatch_plan_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::InProcessChannelResolver;
     use crate::{
-        DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Stage, WorkerResolver,
+        DistributedExt, NetworkBoundaryExt, SessionStateBuilderExt, Stage, Worker, WorkerResolver,
     };
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::common::{DataFusionError, Result};
@@ -70,14 +69,11 @@ mod tests {
     use std::sync::Mutex;
     use url::Url;
 
-    struct Workers(usize);
+    struct Workers(usize, Url);
 
     impl WorkerResolver for Workers {
         fn get_urls(&self) -> Result<Vec<Url>> {
-            (0..self.0)
-                .map(|i| Url::parse(&format!("http://worker-{i}")))
-                .collect::<Result<_, _>>()
-                .map_err(|err| DataFusionError::External(Box::new(err)))
+            Ok(vec![self.1.clone(); self.0])
         }
     }
 
@@ -119,12 +115,14 @@ mod tests {
         }
         drop(file);
 
+        let worker_url = Url::parse("http://worker-0").unwrap();
+        let worker = Worker::default();
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(SessionConfig::new().with_target_partitions(4))
             .with_distributed_planner()
-            .with_distributed_worker_resolver(Workers(4))
-            .with_distributed_channel_resolver(InProcessChannelResolver::default())
+            .with_distributed_worker_resolver(Workers(4, worker_url.clone()))
+            .with_distributed_local_worker_context(worker.to_local_worker_context(worker_url))
             .with_distributed_dispatch_plan_source(source)
             .with_distributed_file_scan_config_bytes_per_partition(1)
             .unwrap()

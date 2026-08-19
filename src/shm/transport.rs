@@ -242,7 +242,7 @@ impl MppDataStreamKey {
 
 /// One data stream as it appears on a receiver's shared inbox.
 ///
-/// `sender_proc` distinguishes producers sharing an inbox, including the self-loop.
+/// `sender_proc` distinguishes producers sharing an inbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PhysicalStreamKey {
     sender_proc: u32,
@@ -833,6 +833,14 @@ impl DrainBuffer {
         let mut guard = self.inner.lock().expect("DrainBuffer mutex poisoned");
         guard.cancelled = true;
         self.cond.notify_all();
+    }
+
+    /// Whether this buffer has been cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("DrainBuffer mutex poisoned")
+            .cancelled
     }
 
     /// Non-blocking variant. Returns the front item, or `DrainItem::Eof` if
@@ -1505,6 +1513,36 @@ impl crate::PartitionSink for MppPartitionSink {
     }
 }
 
+/// A [`PartitionSink`] that pushes batches directly into a local in-memory [`DrainBuffer`].
+/// Used for self-loops on a worker process when a fragment's output partition is consumed
+/// by another fragment on the same worker process.
+pub struct LocalDrainPartitionSink {
+    buffer: Arc<DrainBuffer>,
+}
+
+impl LocalDrainPartitionSink {
+    pub(super) fn new(buffer: Arc<DrainBuffer>) -> Self {
+        Self { buffer }
+    }
+}
+
+#[async_trait]
+impl crate::PartitionSink for LocalDrainPartitionSink {
+    async fn send(&mut self, batch: &RecordBatch) -> datafusion::common::Result<()> {
+        self.buffer.push_batch(batch.clone());
+        Ok(())
+    }
+
+    async fn finish(self: Box<Self>) -> datafusion::common::Result<()> {
+        self.buffer.notify_source_done();
+        Ok(())
+    }
+
+    fn cancelled(&self) -> bool {
+        self.buffer.is_cancelled()
+    }
+}
+
 /// High-level receiver: pulls bytes via the underlying channel and decodes them
 /// into `RecordBatch`. Used by the drain thread.
 pub(super) struct MppReceiver {
@@ -1702,8 +1740,7 @@ pub(super) enum RecvBatchOutcome {
 }
 
 /// Per-`(sender_proc, stage_id, task_id, partition)` channel buffer registry owned by a cooperative
-/// [`DrainHandle`]. The handle may host several cooperative receivers (DSM MPSC inbox + self-loop
-/// in-proc), each demultiplexed by the [`MppFrameHeader`] prefix into the same `map`.
+/// [`DrainHandle`]. Demultiplexes frames by the [`MppFrameHeader`] prefix into `map`.
 /// `try_drain_pass` looks up the right channel buffer on every frame and pushes the payload into
 /// it. Consumers waiting on a given key only see frames matching that key.
 ///
@@ -1717,20 +1754,10 @@ struct ChannelBufferRegistry {
     /// buffer. This preserves the implicit "one stream per sender" semantics that
     /// `WorkerConnection::execute` consumers rely on.
     map: HashMap<PhysicalStreamKey, Arc<DrainBuffer>>,
-    /// Scopes whose receiver detached (or errored) before draining cleanly. Channels fed by a
-    /// dead scope fail at registration time too, so a consumer that registers after the detach
+    /// Whether the receiver detached (or errored) before draining cleanly. Channels
+    /// fail at registration time too, so a consumer that registers after the detach
     /// does not wait on a channel nothing will ever fill.
     dead_inbox: bool,
-    dead_self_loop: bool,
-}
-
-/// Which frames a receiver carries, so a detach can fail exactly the channels it feeds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum ReceiverScope {
-    /// The proc's DSM inbox: frames from every peer proc.
-    Inbox,
-    /// The in-proc self-loop: frames this proc sends itself.
-    SelfLoop,
 }
 
 /// Per-sender-proc drain: stashes the receivers and polls them inline from the cooperative spin
@@ -1757,10 +1784,7 @@ pub struct DrainHandle {
     /// that detached receivers get polled once per pass (fast-returning `Detached`). The lock
     /// is uncontended in production (single backend thread) so the marginal cost is in the
     /// type system, not the runtime.
-    coop_receivers: Mutex<Vec<Option<(ReceiverScope, MppReceiver)>>>,
-    /// This proc's index, used to map a channel's `sender_proc` to the receiver scope that
-    /// feeds it (`SelfLoop` iff `sender_proc == this_proc`).
-    this_proc: u32,
+    coop_receivers: Mutex<Vec<Option<MppReceiver>>>,
     /// Worker-side destination of `WorkUnit` frames, keyed `(stage_id, task_number)`. Frames
     /// arriving before the embedder registers a task's channels buffer in `Pending`; `FeedEof`
     /// drops the senders so the consuming feed streams end, the wire analog of Flight closing
@@ -1869,16 +1893,12 @@ impl DrainHandle {
     /// Construct a cooperative drain handle. Channel buffers are populated lazily by
     /// [`Self::try_drain_pass`] when a frame arrives, or up-front by [`Self::register_channel`]
     /// when a consumer needs a buffer to wait on before any frame has come in.
-    pub(super) fn cooperative(
-        this_proc: u32,
-        receivers: Vec<(ReceiverScope, MppReceiver)>,
-    ) -> Self {
+    pub(super) fn cooperative(receivers: Vec<MppReceiver>) -> Self {
         let wrapped = receivers.into_iter().map(Some).collect();
         let (task_metrics_tx, task_metrics_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             channel_buffers: Mutex::new(ChannelBufferRegistry::default()),
             coop_receivers: Mutex::new(wrapped),
-            this_proc,
             feed_registry: Mutex::new(FeedRegistry::default()),
             task_metrics_tx,
             task_metrics_rx: Mutex::new(Some(task_metrics_rx)),
@@ -1983,7 +2003,7 @@ impl DrainHandle {
 
     /// Route one decoded `SetPlan` frame to whoever asked for `(stage_id, task_number)`, or
     /// buffer it until they do. A duplicate for an already-buffered slot keeps the first frame.
-    fn route_set_plan(&self, stage_id: u32, task_number: u32, frame: SetPlanFrame) {
+    pub(super) fn route_set_plan(&self, stage_id: u32, task_number: u32, frame: SetPlanFrame) {
         let mut registry = self.set_plan_registry.lock().unwrap();
         match registry.map.remove(&(stage_id, task_number)) {
             Some(SetPlanSlot::Waiting(tx)) => {
@@ -2041,16 +2061,8 @@ impl DrainHandle {
         })?
     }
 
-    fn scope_for_sender(&self, sender_proc: u32) -> ReceiverScope {
-        if sender_proc == self.this_proc {
-            ReceiverScope::SelfLoop
-        } else {
-            ReceiverScope::Inbox
-        }
-    }
-
-    /// Mark `scope`'s data plane as departed: fail every registered channel still waiting on
-    /// its `Eof`, and remember the scope so later data registrations fail immediately.
+    /// Mark the data plane as departed: fail every registered channel still waiting on
+    /// its `Eof`, and remember that the inbox is dead so later data registrations fail immediately.
     /// Channels whose `Eof` already arrived are untouched: a detach after a clean drain is the
     /// normal end of life for a ring. Idempotent.
     ///
@@ -2058,26 +2070,17 @@ impl DrainHandle {
     /// senders, which never join a ring's `sender_count`, so "the last data sender dropped"
     /// says nothing about them: a peer that completed normally has EOF'd everything it served,
     /// while this proc may still owe the leader work it has not been asked for yet.
-    fn detach_data_scope(&self, scope: ReceiverScope, reason: &str) {
+    fn detach_data_scope(&self, reason: &str) {
         let to_fail = {
             let mut guard = self
                 .channel_buffers
                 .lock()
                 .expect("DrainHandle channel_buffers mutex poisoned");
-            let dead = match scope {
-                ReceiverScope::Inbox => &mut guard.dead_inbox,
-                ReceiverScope::SelfLoop => &mut guard.dead_self_loop,
-            };
-            if *dead {
+            if guard.dead_inbox {
                 return;
             }
-            *dead = true;
-            guard
-                .map
-                .iter()
-                .filter(|(key, _)| self.scope_for_sender(key.sender_proc) == scope)
-                .map(|(_, buf)| buf.clone())
-                .collect::<Vec<_>>()
+            guard.dead_inbox = true;
+            guard.map.values().cloned().collect::<Vec<_>>()
         };
         for buf in to_fail {
             buf.fail_pending(reason);
@@ -2087,30 +2090,28 @@ impl DrainHandle {
     /// Hard scope death: [`Self::detach_data_scope`] plus the control-plane registries. For
     /// ring corruption and embedder-driven teardown, where no further frame of any kind can be
     /// trusted to arrive.
-    fn fail_scope(&self, scope: ReceiverScope, reason: &str) {
-        self.detach_data_scope(scope, reason);
-        if scope == ReceiverScope::Inbox {
-            let mut registry = self.feed_registry.lock().unwrap();
-            registry.dead = Some(reason.to_string());
-            for (_, slot) in registry.map.drain() {
-                if let FeedSlot::Active(senders) = slot {
-                    fail_feed_senders(&senders, reason);
-                }
+    fn fail_scope(&self, reason: &str) {
+        self.detach_data_scope(reason);
+        let mut registry = self.feed_registry.lock().unwrap();
+        registry.dead = Some(reason.to_string());
+        for (_, slot) in registry.map.drain() {
+            if let FeedSlot::Active(senders) = slot {
+                fail_feed_senders(&senders, reason);
             }
-            drop(registry);
-            let mut plans = self.set_plan_registry.lock().unwrap();
-            plans.dead = Some(reason.to_string());
-            for (_, slot) in plans.map.drain() {
-                if let SetPlanSlot::Waiting(tx) = slot {
-                    let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
-                }
+        }
+        drop(registry);
+        let mut plans = self.set_plan_registry.lock().unwrap();
+        plans.dead = Some(reason.to_string());
+        for (_, slot) in plans.map.drain() {
+            if let SetPlanSlot::Waiting(tx) = slot {
+                let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
             }
-            let mut execs = self.execute_task_registry.lock().unwrap();
-            execs.dead = Some(reason.to_string());
-            for (_, slot) in execs.map.drain() {
-                if let ExecuteTaskSlot::Active(tx) = slot {
-                    let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
-                }
+        }
+        let mut execs = self.execute_task_registry.lock().unwrap();
+        execs.dead = Some(reason.to_string());
+        for (_, slot) in execs.map.drain() {
+            if let ExecuteTaskSlot::Active(tx) = slot {
+                let _ = tx.send(Err(DataFusionError::Execution(reason.to_string())));
             }
         }
     }
@@ -2184,10 +2185,7 @@ impl DrainHandle {
             .channel_buffers
             .lock()
             .expect("DrainHandle channel_buffers mutex poisoned");
-        let scope_dead = match self.scope_for_sender(sender_proc) {
-            ReceiverScope::Inbox => guard.dead_inbox,
-            ReceiverScope::SelfLoop => guard.dead_self_loop,
-        };
+        let scope_dead = guard.dead_inbox;
         let buf = guard
             .map
             .entry(PhysicalStreamKey::new(sender_proc, stream))
@@ -2263,10 +2261,9 @@ impl DrainHandle {
 
         let mut slots = self.coop_receivers.lock().unwrap();
         for slot in slots.iter_mut() {
-            let Some((scope, rx)) = slot.as_ref() else {
+            let Some(rx) = slot.as_mut() else {
                 continue;
             };
-            let scope = *scope;
             for _ in 0..MAX_BATCHES_PER_SOURCE_PER_PASS {
                 match rx.try_recv_batch() {
                     RecvBatchOutcome::Batch { header, batch } => {
@@ -2312,13 +2309,10 @@ impl DrainHandle {
                         // The remote worker sent a crash message, but the transport is intact.
                         // Fail the scope to unblock waiters, but leave this receiver in the slot:
                         // the worker will likely close the channel next, yielding `Detached`.
-                        self.fail_scope(
-                            scope,
-                            &format!(
-                                "remote task {}.{} failed: {}",
-                                header.stage_id, header.partition, msg
-                            ),
-                        );
+                        self.fail_scope(&format!(
+                            "remote task {}.{} failed: {}",
+                            header.stage_id, header.partition, msg
+                        ));
                     }
                     RecvBatchOutcome::Empty => break,
                     RecvBatchOutcome::Detached => {
@@ -2333,7 +2327,6 @@ impl DrainHandle {
                         // plans, feed units); `detach_data_scope` is idempotent, so the
                         // passes that keep observing the latch cost one failed recv each.
                         self.detach_data_scope(
-                            scope,
                             "transport receiver detached before this channel's EOF; the \
                              producer went away",
                         );
@@ -2342,13 +2335,9 @@ impl DrainHandle {
                     RecvBatchOutcome::TransportError(e) => {
                         // The channel is corrupted or broken. Polling it again is dangerous.
                         // We evict this receiver (`*slot = None`) to prevent future polls.
-                        // Same scoping as Detached, but the ring reported corruption (or the
-                        // receiver poisoned itself), so even completed siblings can't be
-                        // trusted to have been the last word. Still scope-limited: the other
-                        // receiver is an independent transport. The error also propagates to
-                        // this caller directly.
+                        // The error also propagates to this caller directly.
                         *slot = None;
-                        self.fail_scope(scope, &format!("transport receiver failed: {e}"));
+                        self.fail_scope(&format!("transport receiver failed: {e}"));
                         return Err(e);
                     }
                 }
@@ -2365,88 +2354,6 @@ impl Drop for DrainHandle {
         self.cancel_channel_buffers();
     }
 }
-/// SPSC channel pair for two use cases:
-/// - Unit tests (bounded capacity, exercising backpressure).
-/// - Production self-loop slots: when a worker's fragment emits a partition destined for
-///   its OWN proc (e.g. peer-mesh hash routing where consumer task t lands on the same
-///   worker as producer task t), the DSM layout has no self-pair inbox: a process is
-///   not its own peer. The dispatcher routes those self-loops through this in-proc
-///   channel, which exposes the same `BatchChannelSender` / `BatchChannelReceiver`
-///   surface as the DSM ring so the drain and channel-buffer registry don't need a
-///   special case.
-///
-/// Production callers pass a very large `capacity` so the channel is effectively unbounded under
-/// steady state. The current-thread Tokio runtime interleaves producer and consumer fragments
-/// via `yield_now().await`, so backpressure would be benign anyway, but unbounded rules out any
-/// chance of self-deadlock if the producer never yields.
-pub(super) fn in_proc_channel(capacity: usize) -> (InProcSender, InProcReceiver) {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(capacity);
-    (
-        InProcSender {
-            tx,
-            send_lock: tokio::sync::Mutex::new(()),
-        },
-        InProcReceiver { rx: Mutex::new(rx) },
-    )
-}
-
-pub(super) struct InProcSender {
-    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
-    /// Per-instance lock so the [`BatchChannelSender::send_lock`] contract holds even when an
-    /// in-proc channel ends up in a code path that would otherwise need serialization. In-proc
-    /// `send_bytes` is already atomic (each call pushes a complete `Vec<u8>`), so the lock is
-    /// effectively a no-op here; keeping it uniform with `DsmInboxSender` avoids
-    /// special-casing the caller.
-    send_lock: tokio::sync::Mutex<()>,
-}
-
-pub(super) struct InProcReceiver {
-    // The std::sync::mpsc receiver is !Sync; wrap in a Mutex so the drain
-    // thread can hold it behind a `Box<dyn BatchChannelReceiver>` (which is
-    // `Send + Sync`-relaxed by design, but we only need Send for the thread
-    // hand-off). Tests only ever access from one thread so the Mutex is
-    // uncontended.
-    rx: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
-}
-
-impl BatchChannelSender for InProcSender {
-    fn send_bytes(&self, bytes: &[u8]) -> Result<(), DataFusionError> {
-        self.tx.send(bytes.to_vec()).map_err(|_| {
-            DataFusionError::Execution("mpp: in-proc channel detached during send".into())
-        })
-    }
-
-    fn try_send_bytes(&self, bytes: &[u8]) -> Result<bool, DataFusionError> {
-        match self.tx.try_send(bytes.to_vec()) {
-            Ok(()) => Ok(true),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(false),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(DataFusionError::Execution(
-                "mpp: in-proc channel detached during try_send".into(),
-            )),
-        }
-    }
-
-    fn send_lock(&self) -> &tokio::sync::Mutex<()> {
-        &self.send_lock
-    }
-}
-
-impl BatchChannelReceiver for InProcReceiver {
-    fn try_recv(&self) -> RecvOutcome {
-        let rx = self.rx.lock().expect("InProcReceiver mutex poisoned");
-        match rx.try_recv() {
-            Ok(bytes) => RecvOutcome::Bytes(bytes),
-            Err(std::sync::mpsc::TryRecvError::Empty) => RecvOutcome::Empty,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => RecvOutcome::Detached,
-        }
-    }
-}
-
-/// Effectively unbounded capacity for self-loop in-proc channels. The
-/// `std::sync::mpsc::sync_channel` API requires a numeric capacity; this constant picks one large
-/// enough that production workloads won't reach it but small enough that a runaway producer
-/// (e.g. infinite-loop bug) won't allocate billions of `Vec<u8>` before OOM.
-pub(super) const SELF_LOOP_CAPACITY: usize = 1 << 20;
 
 #[cfg(test)]
 mod tests {
@@ -2460,9 +2367,65 @@ mod tests {
 
     use std::thread::JoinHandle;
 
+    /// SPSC channel pair used in unit tests (bounded capacity, exercising backpressure).
+    pub(super) fn in_proc_channel(capacity: usize) -> (InProcSender, InProcReceiver) {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(capacity);
+        (
+            InProcSender {
+                tx,
+                send_lock: tokio::sync::Mutex::new(()),
+            },
+            InProcReceiver { rx: Mutex::new(rx) },
+        )
+    }
+
+    pub(super) struct InProcSender {
+        tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+        send_lock: tokio::sync::Mutex<()>,
+    }
+
+    pub(super) struct InProcReceiver {
+        rx: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
+    }
+
+    impl BatchChannelSender for InProcSender {
+        fn send_bytes(&self, bytes: &[u8]) -> Result<(), DataFusionError> {
+            self.tx.send(bytes.to_vec()).map_err(|_| {
+                DataFusionError::Execution("mpp: in-proc channel detached during send".into())
+            })
+        }
+
+        fn try_send_bytes(&self, bytes: &[u8]) -> Result<bool, DataFusionError> {
+            match self.tx.try_send(bytes.to_vec()) {
+                Ok(()) => Ok(true),
+                Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(false),
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    Err(DataFusionError::Execution(
+                        "mpp: in-proc channel detached during try_send".into(),
+                    ))
+                }
+            }
+        }
+
+        fn send_lock(&self) -> &tokio::sync::Mutex<()> {
+            &self.send_lock
+        }
+    }
+
+    impl BatchChannelReceiver for InProcReceiver {
+        fn try_recv(&self) -> RecvOutcome {
+            let rx = self.rx.lock().expect("InProcReceiver mutex poisoned");
+            match rx.try_recv() {
+                Ok(bytes) => RecvOutcome::Bytes(bytes),
+                Err(std::sync::mpsc::TryRecvError::Empty) => RecvOutcome::Empty,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => RecvOutcome::Detached,
+            }
+        }
+    }
+
     #[test]
     fn take_execute_task_rx_second_take_errors() {
-        let drain = DrainHandle::cooperative(0, vec![]);
+        let drain = DrainHandle::cooperative(vec![]);
         let rx1 = drain.take_execute_task_rx(1, 0);
         assert!(rx1.is_ok());
         let rx2 = drain.take_execute_task_rx(1, 0);
@@ -2476,7 +2439,7 @@ mod tests {
         let header = MppFrameHeader::task_metrics(1, 0, 1);
         let sender = MppSender::new(Arc::new(tx)).clone_with_header(header);
         let receiver = MppReceiver::new(Box::new(rx));
-        let drain = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let drain = DrainHandle::cooperative(vec![receiver]);
 
         let mut task_rx = drain.take_execute_task_rx(1, 0).unwrap();
 
@@ -2517,16 +2480,6 @@ mod tests {
                 }
                 guard = self.cond.wait(guard).expect("DrainBuffer mutex poisoned");
             }
-        }
-
-        /// True if `cancel` has been called. The local `drain_loop` consults this; the
-        /// cooperative production path watches the flag through `notify_source_done` fan-out
-        /// instead.
-        fn is_cancelled(&self) -> bool {
-            self.inner
-                .lock()
-                .expect("DrainBuffer mutex poisoned")
-                .cancelled
         }
     }
 
@@ -2749,7 +2702,7 @@ mod tests {
 
     #[test]
     fn drain_records_cancel_scoped_to_its_stream() {
-        let drain = DrainHandle::cooperative(0, Vec::new());
+        let drain = DrainHandle::cooperative(Vec::new());
         let cancelled = MppDataStreamKey::new(7, 0, 1);
         assert!(!drain.stream_cancelled(cancelled));
         drain.note_cancel(cancelled);
@@ -2760,7 +2713,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn control_sender_ignores_matching_data_stream_cancel() {
-        let drain = Arc::new(DrainHandle::cooperative(0, Vec::new()));
+        let drain = Arc::new(DrainHandle::cooperative(Vec::new()));
         // Control frames encode their target task in `partition`, so task 1 overlaps data
         // `(stage 7, task 0, partition 1)`.
         drain.note_cancel(MppDataStreamKey::new(7, 0, 1));
@@ -2786,10 +2739,9 @@ mod tests {
         let (out_tx, _out_rx) = in_proc_channel(1);
         // The producer's inbox, where the consumer's `Cancel` frame lands.
         let (inbox_tx, inbox_rx) = in_proc_channel(4);
-        let drain = Arc::new(DrainHandle::cooperative(
-            1,
-            vec![(ReceiverScope::Inbox, MppReceiver::new(Box::new(inbox_rx)))],
-        ));
+        let drain = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
+            inbox_rx,
+        ))]));
         // Producer of the `(stage 7, partition 0)` stream.
         let sender = MppSender::with_header(
             Arc::new(out_tx),
@@ -2823,10 +2775,9 @@ mod tests {
         let (out_tx, out_rx) = in_proc_channel(4);
         let out_tx: Arc<dyn BatchChannelSender> = Arc::new(out_tx);
         let (inbox_tx, inbox_rx) = in_proc_channel(4);
-        let drain = Arc::new(DrainHandle::cooperative(
-            1,
-            vec![(ReceiverScope::Inbox, MppReceiver::new(Box::new(inbox_rx)))],
-        ));
+        let drain = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
+            inbox_rx,
+        ))]));
         let task_0_stream = MppDataStreamKey::new(7, 0, 0);
         let task_3_stream = MppDataStreamKey::new(7, 3, 0);
         let task_0 =
@@ -2922,7 +2873,7 @@ mod tests {
                 processed_timestamp_unix_nanos: 0,
             }
         }
-        let drain = DrainHandle::cooperative(1, vec![]);
+        let drain = DrainHandle::cooperative(vec![]);
 
         // Units arriving before registration must buffer, not drop.
         drain.route_work_unit(5, 0, unit(0));
@@ -3007,7 +2958,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_plan_serves_taker_in_either_arrival_order() {
-        let drain = DrainHandle::cooperative(1, vec![]);
+        let drain = DrainHandle::cooperative(vec![]);
 
         // Frame first: the take resolves from the pending slot.
         drain.route_set_plan(7, 0, sample_set_plan_frame(vec![1]));
@@ -3025,11 +2976,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_plan_take_fails_when_the_inbox_dies() {
-        let drain = DrainHandle::cooperative(1, vec![]);
+        let drain = DrainHandle::cooperative(vec![]);
         let take = drain.take_set_plan(9, 0);
         futures::pin_mut!(take);
         assert!(futures::poll!(take.as_mut()).is_pending());
-        drain.fail_scope(ReceiverScope::Inbox, "producer went away");
+        drain.fail_scope("producer went away");
         let err = take.await.expect_err("dead inbox must fail the take");
         assert!(format!("{err}").contains("producer went away"));
         // Later takers fail immediately.
@@ -3092,13 +3043,9 @@ mod tests {
             DsmMpscSender::new_control(nn, StdArc::clone(&wakeup), StdArc::clone(&alive))
         };
         let receiver = unsafe { DsmMpscReceiver::new(nn, alive) };
-        let drain = DrainHandle::cooperative(
-            2,
-            vec![(
-                ReceiverScope::Inbox,
-                MppReceiver::new(Box::new(DsmInboxReceiver::new(receiver))),
-            )],
-        );
+        let drain = DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
+            DsmInboxReceiver::new(receiver),
+        ))]);
         (region, peer, leader, drain)
     }
 
@@ -4054,7 +4001,7 @@ mod tests {
         let s00 = base.clone_with_header(MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), 0));
         let s01 = base.clone_with_header(MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 1), 0));
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         s00.send_batch(&sample_batch(2)).unwrap();
         s01.send_batch(&sample_batch(7)).unwrap();
@@ -4097,7 +4044,7 @@ mod tests {
             MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 1), 0),
         );
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         s00.send_batch(&sample_batch(4)).unwrap();
         let mut eof_buf = Vec::new();
@@ -4123,9 +4070,7 @@ mod tests {
             Some(DrainItem::Batch(b)) => assert_eq!(b.num_rows(), 6),
             other => panic!("expected (0,1) batch, got {other:?}"),
         }
-        assert!(buf01.try_pop().is_none());
-        drop(handle);
-        assert!(matches!(buf01.try_pop(), Some(DrainItem::Eof)));
+        assert!(matches!(buf01.try_pop(), Some(DrainItem::Failed(_))));
     }
 
     #[test]
@@ -4144,7 +4089,7 @@ mod tests {
             MppFrameHeader::batch(MppDataStreamKey::new(7, 3, 0), 1),
         );
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         task_0.send_batch(&sample_batch(2)).unwrap();
         task_3.send_batch(&sample_batch(3)).unwrap();
@@ -4179,7 +4124,7 @@ mod tests {
         // DrainBuffer instance.
         let (_tx, rx) = in_proc_channel(8);
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         let stream = MppDataStreamKey::new(2, 0, 3);
         let first = handle.register_data_channel(0, stream);
@@ -4202,7 +4147,7 @@ mod tests {
             MppFrameHeader::batch(MppDataStreamKey::new(1, 0, 0), 0),
         );
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         s_stage0.send_batch(&sample_batch(2)).unwrap();
         s_stage1.send_batch(&sample_batch(9)).unwrap();
@@ -4235,7 +4180,7 @@ mod tests {
         // leave a consumer blocked on a buffer that will never see EOF.
         let (_tx, rx) = in_proc_channel(8);
         let receiver = MppReceiver::new(Box::new(rx));
-        let handle = DrainHandle::cooperative(0, vec![(ReceiverScope::Inbox, receiver)]);
+        let handle = DrainHandle::cooperative(vec![receiver]);
 
         let buf_a = handle.register_data_channel(0, MppDataStreamKey::new(0, 0, 0));
         let buf_b = handle.register_data_channel(0, MppDataStreamKey::new(7, 0, 3));

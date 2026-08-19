@@ -52,7 +52,7 @@ mod mpsc_ring;
 mod runtime;
 // Deferred: the self-hosting default transport was built on the removed `WorkerTransport`/
 // `WorkerDispatch` dispatch umbrella, which the `ChannelResolver` model has no analog for; its
-// no-gRPC-default role is now served by `InProcessChannelResolver` and its ring-exercising role by
+// no-gRPC-default role is now served by `LocalWorkerContext` and its ring-exercising role by
 // the `in_process` test, so it stays gated out until reimplemented on `coordinator_channel`.
 #[cfg(any())]
 mod self_hosted;
@@ -71,8 +71,9 @@ pub use setup::{
 };
 pub use sink::{PartitionSink, WorkerSink};
 pub use transport::{
-    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, MppDataStreamKey,
-    MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt, SendBatchStats, SetPlanFrame,
+    CooperativeDrainSet, ExecuteTaskFrame, ExecuteTaskRx, Interrupt, LocalDrainPartitionSink,
+    MppDataStreamKey, MppFrameHeader, MppPartitionSink, MppSender, NoInterrupt, SendBatchStats,
+    SetPlanFrame,
 };
 
 /// Out-of-DSM liveness flag shared by the ring handles from one attach. The embedder flips it to

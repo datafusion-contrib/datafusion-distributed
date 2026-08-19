@@ -52,7 +52,9 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, HashMap, Result};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::{
@@ -280,7 +282,10 @@ fn reinstantiate(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         Arc::clone(plan)
     } else {
         Arc::clone(plan)
-            .with_new_children(children)
+            .replace_children(
+                children,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
             .expect("with_new_children with the same arity")
     }
 }
@@ -514,24 +519,25 @@ impl WorkerSink for ShmMqWorkerSink {
                 proc_for_task(self.n_workers, consumer_task[partition])
             }
         };
+        let stream_key = MppDataStreamKey::new(
+            stage as u32,
+            u32::try_from(task).map_err(|_| {
+                DataFusionError::Internal(format!(
+                    "run_worker_proc: task {task} exceeds transport u32"
+                ))
+            })?,
+            partition as u32,
+        );
+        if dest_proc == self.mesh.this_proc {
+            return Ok(self.mesh.open_local_partition_sink(stream_key));
+        }
         let base = self.outbound[dest_proc as usize].as_ref().ok_or_else(|| {
             DataFusionError::Internal(format!(
                 "run_worker_proc: no outbound sender for dest proc {dest_proc}"
             ))
         })?;
         let sender = base
-            .clone_with_header(MppFrameHeader::batch(
-                MppDataStreamKey::new(
-                    stage as u32,
-                    u32::try_from(task).map_err(|_| {
-                        DataFusionError::Internal(format!(
-                            "run_worker_proc: task {task} exceeds transport u32"
-                        ))
-                    })?,
-                    partition as u32,
-                ),
-                self.mesh.this_proc,
-            ))
+            .clone_with_header(MppFrameHeader::batch(stream_key, self.mesh.this_proc))
             .with_cooperative_drain(Arc::clone(&self.mesh) as Arc<dyn CooperativeDrainSet>);
         Ok(Box::new(MppPartitionSink::new(sender)))
     }
@@ -1093,9 +1099,9 @@ mod tests {
             let session = build_session_with_worker_and_partitions(
                 Arc::clone(&mesh),
                 None,
-                N_WORKERS as usize,
                 N_TASKS,
-                N_WORKERS as i32,
+                N_TASKS,
+                N_TASKS as i32,
             );
             workers.spawn(run_worker_proc(
                 fragments,
@@ -1160,6 +1166,7 @@ mod tests {
         for (proc_idx, mesh, outbound) in boot.workers {
             let fragments = fragments_for_proc(&entries, proc_idx, N_WORKERS);
             let session = build_session(Arc::clone(&mesh), None);
+            register_wide_table(&session);
             workers.spawn(run_worker_proc(
                 fragments,
                 outbound,

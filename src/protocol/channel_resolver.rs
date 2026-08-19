@@ -70,8 +70,7 @@ pub fn get_distributed_channel_resolver(
 
     #[cfg(not(feature = "grpc"))]
     {
-        // With `grpc` off there is no built-in default. A co-located deployment can register
-        // [`crate::InProcessChannelResolver`] (or another transport) via
+        // With `grpc` off there is no built-in default. A custom transport can be registered via
         // `with_distributed_channel_resolver`.
         panic!(
             "gRPC feature is not enabled, and no channel resolver was provided, so no default ChannelResolver can be provided"

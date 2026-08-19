@@ -14,7 +14,7 @@ mod worker_channel;
 
 pub(crate) use channel_resolver::set_distributed_channel_resolver;
 pub use channel_resolver::{ChannelResolver, get_distributed_channel_resolver};
-pub use in_process::{InProcessChannelResolver, LocalWorkerContext};
+pub use in_process::LocalWorkerContext;
 pub use metrics_proto::decode_task_metrics;
 pub use worker_channel::{
     CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest, GetWorkerInfoResponse,

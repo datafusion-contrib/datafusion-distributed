@@ -46,8 +46,7 @@ use super::mpsc_ring::{DsmMpscSender, NO_RECEIVER_TOKEN, Wakeup};
 use super::runtime::MppMesh;
 use super::transport::{
     BatchChannelSender, DrainHandle, ExecuteTaskRx, IncomingExecuteTaskRequest, Interrupt,
-    MppDataStreamKey, MppFrameHeader, MppReceiver, MppSender, ReceiverScope, SELF_LOOP_CAPACITY,
-    in_proc_channel,
+    MppDataStreamKey, MppFrameHeader, MppReceiver, MppSender,
 };
 use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedRegistry;
@@ -77,8 +76,8 @@ pub unsafe fn region_total(base: *const c_void) -> usize {
 
 /// Wrap each peer-indexed `DsmMpscSender` into an outbound `MppSender` keyed by destination proc.
 /// The dispatcher `clone_with_header`s these per output partition before sending, so the
-/// placeholder header is never observed on the wire. Slot `this_proc` stays `None` until the
-/// self-loop install.
+/// placeholder header is never observed on the wire. Slot `this_proc` stays `None` because
+/// local communication routes in-process via `LocalWorkerContext`.
 ///
 /// Returns `(data, cancel)`. `data` is the producer's output senders. `cancel` is a control-plane
 /// sibling onto each peer inbox, used by [`MppMesh::cancel_stream`]: a consumer reaches its producer
@@ -93,9 +92,7 @@ fn build_outbound_senders(
     let mut cancel: Vec<Option<MppSender>> = (0..total_procs).map(|_| None).collect();
     for (peer_idx, dsm_send) in peer_senders.into_iter().enumerate() {
         let target_proc = peer_proc_for_index(this_proc, peer_idx as u32);
-        // A `peer_proc_for_index` regression that maps a peer onto the self slot would be
-        // silently overwritten by the self-loop install and only surface later as a missing
-        // sender at dispatch; name the bug at its source.
+        // Ensure peer index does not map onto this proc.
         debug_assert!(
             target_proc != this_proc,
             "peer index {peer_idx} mapped to the self proc {this_proc}"
@@ -178,10 +175,9 @@ pub unsafe fn leader_setup(
 
     let inbox = DsmInboxReceiver::new(attach.inbound_receiver);
     inbox.set_receiver(receiver_token);
-    let inbound = Arc::new(DrainHandle::cooperative(
-        0,
-        vec![(ReceiverScope::Inbox, MppReceiver::new(Box::new(inbox)))],
-    ));
+    let inbound = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
+        inbox,
+    ))]));
     // The leader hosts no producer fragments, but its senders carry the control plane:
     // work-unit frames (and later dynamic filters) flow leader -> worker through them. Empty
     // when the embedder did not opt in: a ring latches `detached` once its sender count hits
@@ -295,32 +291,13 @@ pub unsafe fn worker_setup(
             .map_err(DataFusionError::Internal)?;
     let total_procs = header.n_procs;
 
-    let (mut outbound, mut cancel) =
-        build_outbound_senders(proc_idx, total_procs, attach.outbound_senders);
-
-    // Self-loop in-proc channel: peer-mesh routing can land a producer and its consumer on the same
-    // proc, and an MPSC inbox has no slot for a proc sending to itself. The unified drain pulls from
-    // both the inbox and this channel.
-    let (self_tx, self_rx) = in_proc_channel(SELF_LOOP_CAPACITY);
-    let self_tx_arc: Arc<dyn BatchChannelSender> = Arc::new(self_tx);
-    outbound[proc_idx as usize] = Some(MppSender::with_header(
-        Arc::clone(&self_tx_arc),
-        MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), proc_idx),
-    ));
-    cancel[proc_idx as usize] = Some(MppSender::with_header(
-        Arc::clone(&self_tx_arc),
-        MppFrameHeader::batch(MppDataStreamKey::new(0, 0, 0), proc_idx),
-    ));
+    let (outbound, cancel) = build_outbound_senders(proc_idx, total_procs, attach.outbound_senders);
 
     let inbox = DsmInboxReceiver::new(attach.inbound_receiver);
     inbox.set_receiver(receiver_token);
-    let inbound = Arc::new(DrainHandle::cooperative(
-        proc_idx,
-        vec![
-            (ReceiverScope::Inbox, MppReceiver::new(Box::new(inbox))),
-            (ReceiverScope::SelfLoop, MppReceiver::new(Box::new(self_rx))),
-        ],
-    ));
+    let inbound = Arc::new(DrainHandle::cooperative(vec![MppReceiver::new(Box::new(
+        inbox,
+    ))]));
     let mesh = Arc::new(MppMesh::new(
         proc_idx,
         total_procs,

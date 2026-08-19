@@ -18,7 +18,7 @@
 //! Deferred: `mod self_hosted` is gated out (`#[cfg(any())]`) in `shm/mod.rs`. This file still
 //! targets the removed `WorkerTransport`/`WorkerDispatch` dispatch umbrella, which the
 //! `ChannelResolver`/`WorkerChannel` protocol has no analog for. Its no-gRPC-default role is now
-//! served by `InProcessChannelResolver`, and the in-crate ring safety net by the `in_process` test,
+//! served by `LocalWorkerContext`, and the in-crate ring safety net by the `in_process` test,
 //! so it stays unported until reimplemented as a `ChannelResolver` driving produce over
 //! `coordinator_channel`. Kept for reference; it does not compile against this branch.
 //!

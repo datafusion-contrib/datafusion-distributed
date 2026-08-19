@@ -19,7 +19,7 @@
 //!
 //! [`MppMesh`] is the runtime handle the leader builds at DSM-init time. It holds the
 //! single [`super::transport::DrainHandle`] (the
-//! `inbound_receiver`) that consolidates this proc's DSM inbox and self-loop, and gets
+//! `inbound_receiver`) that receives frames from this proc's DSM inbox, and gets
 //! installed on the leader's `SessionConfig` extensions before plan execution.
 //!
 //! [`ShmChannelResolver`] implements [`ChannelResolver`], consulted by
@@ -49,13 +49,14 @@ use crate::proto as pb;
 use crate::work_unit_feed::RemoteWorkUnitFeedTxs;
 use crate::{
     ChannelResolver, CoordinatorToWorkerMsg, ExecuteTaskRequest, GetWorkerInfoRequest,
-    GetWorkerInfoResponse, SetPlanRequest, WorkerChannel, WorkerResolver, WorkerToCoordinatorMsg,
+    GetWorkerInfoResponse, PartitionSink, SetPlanRequest, WorkerChannel, WorkerResolver,
+    WorkerToCoordinatorMsg,
 };
 
 use super::AliveFlag;
 use super::transport::{
-    CooperativeDrainSet, DrainHandle, DrainItem, Interrupt, MppDataStreamKey, MppFrameHeader,
-    MppSender, SendBatchStats, SetPlanFrame,
+    CooperativeDrainSet, DrainHandle, DrainItem, Interrupt, LocalDrainPartitionSink,
+    MppDataStreamKey, MppFrameHeader, MppSender, SendBatchStats, SetPlanFrame,
 };
 
 /// A proc's outbound senders to each peer inbox, shared between the mesh (for `Cancel` frames) and
@@ -77,8 +78,7 @@ pub fn proc_for_task(n_workers: u32, task_idx: u32) -> u32 {
 /// Runtime handle the customscan populates at DSM-init time.
 ///
 /// Each process owns one MPSC inbox in DSM that receives frames from every peer.
-/// `inbound_receiver` consolidates that inbox plus the in-proc self-loop channel (for
-/// producer-and-consumer-on-same-worker fragments) into a single `DrainHandle`. Frames
+/// `inbound_receiver` consolidates that inbox into a single `DrainHandle`. Frames
 /// carry `(sender_proc, stage_id, task_id, partition)` in their header so the routing registry
 /// inside the handle delivers each frame to the matching consumer.
 ///
@@ -91,7 +91,7 @@ pub struct MppMesh {
     /// [`ShmWorkerChannel::execute_task`].
     pub n_procs: u32,
     /// Single cooperative inbound handle pulling every frame addressed to this proc. The
-    /// DSM MPSC inbox and an in-proc self-loop receiver both feed into this handle. Demux
+    /// DSM MPSC inbox feeds into this handle. Demux
     /// to per-`(sender_proc, stage_id, task_id, partition)` channel buffers happens inside via
     /// `DrainHandle::register_channel`.
     pub(super) inbound_receiver: Arc<DrainHandle>,
@@ -159,6 +159,11 @@ impl MppMesh {
         frame: SetPlanFrame,
     ) -> Result<()> {
         let dest_proc = proc_for_task(self.n_workers(), task_number);
+        if dest_proc == self.this_proc {
+            self.inbound_receiver
+                .route_set_plan(stage_id, task_number, frame);
+            return Ok(());
+        }
         let sender = {
             let guard = self.cancel_senders.lock().unwrap();
             let Some(senders) = guard.as_ref() else {
@@ -186,6 +191,11 @@ impl MppMesh {
         frame: crate::shm::transport::ExecuteTaskFrame,
     ) -> Result<()> {
         let dest_proc = proc_for_task(self.n_workers(), task_number);
+        if dest_proc == self.this_proc {
+            self.inbound_receiver
+                .route_execute_task(stage_id, task_number, self.this_proc, frame);
+            return Ok(());
+        }
         let sender = {
             let guard = self.cancel_senders.lock().unwrap();
             let Some(senders) = guard.as_ref() else {
@@ -261,10 +271,18 @@ impl MppMesh {
         )
     }
 
-    /// The single cooperative inbound handle that pulls frames from every peer (and the
-    /// self-loop) into per-`(sender_proc, stage_id, task_id, partition)` channel buffers.
+    /// The single cooperative inbound handle that pulls frames from peer inboxes into
+    /// per-`(sender_proc, stage_id, task_id, partition)` channel buffers.
     pub fn inbound_receiver(&self) -> &Arc<DrainHandle> {
         &self.inbound_receiver
+    }
+
+    /// Opens a [`PartitionSink`] for a local in-process data stream (self-loop).
+    pub fn open_local_partition_sink(&self, stream: MppDataStreamKey) -> Box<dyn PartitionSink> {
+        let buffer = self
+            .inbound_receiver
+            .register_data_channel(self.this_proc, stream);
+        Box::new(LocalDrainPartitionSink::new(buffer))
     }
 
     /// Install the senders of one task's work-unit feed channels on this proc's drain, so
