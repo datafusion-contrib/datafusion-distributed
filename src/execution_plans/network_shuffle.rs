@@ -155,13 +155,13 @@ impl NetworkBoundary for NetworkShuffleExec {
         Ok(Arc::new(self_clone))
     }
 
-    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
-        ProducerHead::RepartitionExec {
+    fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
+        Ok(ProducerHead::RepartitionExec {
             partitioning: MaybeEncoded::Decoded(scale_partitioning(
                 &self.properties.partitioning,
                 |prev| prev * consumer_task_count,
-            )),
-        }
+            )?),
+        })
     }
 }
 
@@ -239,7 +239,7 @@ impl ExecutionPlan for NetworkShuffleExec {
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 off + partition,
-                self.producer_head(task_context.task_count),
+                self.producer_head(task_context.task_count)?,
                 &context,
             )?);
         }
