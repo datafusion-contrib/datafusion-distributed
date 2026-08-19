@@ -256,7 +256,7 @@ impl PartitionSampler {
                 // The input produced nothing at all: the stream is exhausted, so this partition
                 // reached EOS with zero rows.
                 reporter.load_info.reached_eos = true;
-                drop(reporter);
+                reporter.report(&peek);
                 return Ok(peek.chain(input_stream).boxed());
             };
             let _guard = elapsed_compute.timer();
