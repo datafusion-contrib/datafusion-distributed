@@ -1,4 +1,5 @@
-use crate::worker::{LocalWorkerContext, SingleWriteMultiRead, WorkerSessionBuilder};
+use crate::protocol::LocalWorkerContext;
+use crate::worker::{SingleWriteMultiRead, WorkerSessionBuilder};
 use crate::{DefaultSessionBuilder, TaskData, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -89,7 +90,7 @@ impl Worker {
     /// unnecessary network hops.
     pub fn to_local_worker_context(&self, self_url: Url) -> LocalWorkerContext {
         LocalWorkerContext {
-            task_data_entries: Arc::clone(&self.task_data_entries),
+            local_worker: self.clone(),
             self_url,
         }
     }

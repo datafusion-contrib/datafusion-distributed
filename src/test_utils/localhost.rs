@@ -61,7 +61,7 @@ where
         });
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let first_worker_url = Url::parse(&format!("http://127.0.0.1:{}", ports[0])).unwrap();
+    let first_worker_url = Url::parse(&format!("http://localhost:{}", ports[0])).unwrap();
 
     let worker_resolver = LocalHostWorkerResolver::new(ports);
     let state = SessionStateBuilder::new()

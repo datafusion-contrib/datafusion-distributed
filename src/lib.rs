@@ -39,7 +39,7 @@ pub use metrics::{
     MaxLatencyMetric, MinLatencyMetric, P50LatencyMetric, P75LatencyMetric, P95LatencyMetric,
     P99LatencyMetric, rewrite_distributed_plan_with_metrics,
 };
-pub use worker::LocalWorkerContext;
+pub use protocol::LocalWorkerContext;
 
 mod events;
 #[cfg(any(feature = "integration", test))]

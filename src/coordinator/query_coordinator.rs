@@ -9,9 +9,10 @@ use crate::stage::LocalStage;
 use crate::work_unit_feed::WorkUnitFeedRegistry;
 use crate::work_unit_feed::{build_work_unit_batch_msg, set_work_unit_send_time};
 use crate::{
-    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedTaskContext,
-    DistributedWorkUnitFeedContext, LoadInfo, MaybeEncoded, SetPlanRequest, TaskKey,
-    WorkUnitFeedDeclaration, WorkerToCoordinatorMsg, get_distributed_channel_resolver,
+    CoordinatorToWorkerMsg, DISTRIBUTED_DATAFUSION_TASK_ID_LABEL, DistributedCodec,
+    DistributedTaskContext, DistributedWorkUnitFeedContext, LoadInfo, LocalWorkerContext,
+    MaybeEncoded, SetPlanRequest, TaskKey, WorkUnitFeedDeclaration, WorkerToCoordinatorMsg,
+    get_distributed_channel_resolver,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::instant::Instant;
@@ -21,7 +22,10 @@ use datafusion::common::{Result, exec_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, Label, MetricBuilder};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::Count;
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::physical_plan::{AsExecutionPlan, DefaultPhysicalProtoConverter};
+use datafusion_proto::protobuf;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
@@ -163,8 +167,6 @@ impl<'a> StageCoordinator<'a> {
         let (worker_to_coordinator_tx, worker_to_coordinator_rx) =
             tokio::sync::mpsc::unbounded_channel();
 
-        let channel_resolver = get_distributed_channel_resolver(self.task_ctx.as_ref());
-
         let mut headers = get_config_extension_propagation_headers(session_config)?;
         headers.extend(get_passthrough_headers(session_config));
 
@@ -189,7 +191,18 @@ impl<'a> StageCoordinator<'a> {
 
         self.join_set.lock().unwrap().spawn(async move {
             let start = Instant::now();
-            let mut client = channel_resolver.get_worker_client_for_url(&url).await?;
+
+            let mut client = match LocalWorkerContext::from_ctx(&task_ctx) {
+                Some(lw) if lw.self_url == url => {
+                    metrics.local_coordinator_channels.add(1);
+                    Ok(lw.to_worker_channel())
+                }
+                _ => {
+                    metrics.remote_coordinator_channels.add(1);
+                    let ch_resolver = get_distributed_channel_resolver(task_ctx.as_ref());
+                    ch_resolver.get_worker_client_for_url(&url).await
+                }
+            }?;
             let mut worker_to_coordinator_stream = client
                 .coordinator_channel(
                     headers,
@@ -352,6 +365,16 @@ impl<'a> StageCoordinator<'a> {
                     id: wuf.id(),
                     partitions: plan.properties().partitioning.partition_count(),
                 });
+
+                // WorkUnitFeeds are transitioned to remote mode during proto conversion.
+                // Right now, there's no other way for a WorkUnitFeed to be transitioned to
+                // remote mode so that it can pull WorkUnits over the WorkerChannel.
+                //
+                // Doing this roundtrip here is not super clean, but it actually does the trick in
+                // very few LOC, and performance overhead is negligible, as the roundtrip does not
+                // even imply serialization.
+                let plan = roundtrip_pb(plan, self.task_ctx)?;
+                return Ok(Transformed::yes(plan));
             };
 
             if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
@@ -395,6 +418,21 @@ impl<'a> StageCoordinator<'a> {
     }
 }
 
+/// Round-trips a plan converting it to a protobuf message and back to an [ExecutionPlan].
+fn roundtrip_pb(
+    plan: Arc<dyn ExecutionPlan>,
+    ctx: &Arc<TaskContext>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let codec = DistributedCodec::new_combined_with_user(ctx.session_config());
+
+    protobuf::PhysicalPlanNode::try_from_physical_plan_with_converter(
+        plan,
+        &codec,
+        &DefaultPhysicalProtoConverter {},
+    )?
+    .try_into_physical_plan(ctx, &codec)
+}
+
 fn keep_stream_alive<T: 'static>(notify: Arc<Notify>) -> impl Stream<Item = T> + 'static {
     futures::stream::once(notify.notified_owned()).filter_map(|()| futures::future::ready(None))
 }
@@ -410,6 +448,8 @@ impl Drop for NotifyGuard {
 /// Metrics that measure network details about communications between [DistributedExec] and a worker.
 #[derive(Clone)]
 pub(super) struct CoordinatorToWorkerMetrics {
+    pub(super) local_coordinator_channels: Count,
+    pub(super) remote_coordinator_channels: Count,
     pub(super) plan_send_latency: Arc<LatencyMetric>,
     pub(super) instantiation_time: usize,
 }
@@ -424,6 +464,10 @@ fn with_task_id_label(builder: MetricBuilder) -> MetricBuilder {
 impl CoordinatorToWorkerMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
+            local_coordinator_channels: MetricBuilder::new(metrics)
+                .global_counter("local_coordinator_channels"),
+            remote_coordinator_channels: MetricBuilder::new(metrics)
+                .global_counter("remote_coordinator_channels"),
             // Latency statistics about the network calls issued to the workers for feeding subplans.
             plan_send_latency: Arc::new(LatencyMetric::new(
                 "plan_send_latency",
