@@ -440,6 +440,10 @@ impl InjectNetworkBoundaryContext<'_> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Handle leaf nodes.
         if plan.children().is_empty() {
+            // A zero-task stage (empty datasets) has nothing to distribute.
+            if task_count.as_usize() == 0 {
+                return Ok(self.plan_with_task_count(Arc::clone(plan), task_count));
+            }
             let ev = ScaleUpLeafNodeEvent {
                 plan,
                 task_count: task_count.as_usize(),
@@ -915,17 +919,19 @@ mod tests {
             .distributed_planner(false)
             .broadcast_joins(false)
             .desired_task_count_handler(zero_leaf_desired_task_count_handler);
-        // Two 0.0 leaf hints sum to Desired(0) before rounding. The isolator
-        // then rejects a zero-task union as an internal planning error rather
-        // than silently collapsing to a single task.
-        let err = annotate_test_plan_result(test_plan_builder, query)
-            .await
-            .expect_err("zero-task union should fail planning");
-        assert!(
-            err.to_string()
-                .contains("ChildrenIsolatorUnionExec had a task count 0"),
-            "unexpected error: {err}"
-        );
+        let annotated = annotate_test_plan(test_plan_builder, query).await;
+        // Two 0.0 leaf hints sum to Desired(0). That is a valid empty stage
+        // (every dataset under the union is empty), not a planning error.
+        assert_snapshot!(annotated, @r"
+        ChildrenIsolatorUnionExec: task_count=Desired(0)
+          FilterExec: task_count=Maximum(0)
+            RepartitionExec: task_count=Maximum(0)
+              DataSourceExec: task_count=Maximum(0)
+          ProjectionExec: task_count=Maximum(0)
+            FilterExec: task_count=Maximum(0)
+              RepartitionExec: task_count=Maximum(0)
+                DataSourceExec: task_count=Maximum(0)
+        ")
     }
 
     #[tokio::test]
@@ -1408,22 +1414,16 @@ mod tests {
     }
 
     async fn annotate_test_plan(test_plan_builder: TestPlanBuilder, query: &str) -> String {
-        annotate_test_plan_result(test_plan_builder, query)
-            .await
-            .expect("failed to annotate plan")
-    }
-
-    async fn annotate_test_plan_result(
-        test_plan_builder: TestPlanBuilder,
-        query: &str,
-    ) -> datafusion::error::Result<String> {
         let test_plan = test_plan_builder.build().await;
         let plan = test_plan.physical_plan(query).await;
         let session_config = test_plan.get_ctx().copied_config();
 
-        let plan = normalize_collect_joins(plan, session_config.options())?;
-        let plan = insert_broadcast_execs(plan, session_config.options())?;
-        let plan = insert_children_isolator_unions(plan, session_config.options())?;
+        let plan = normalize_collect_joins(plan, session_config.options())
+            .expect("failed to normalize collect joins");
+        let plan = insert_broadcast_execs(plan, session_config.options())
+            .expect("failed to insert broadcasts");
+        let plan = insert_children_isolator_unions(plan, session_config.options())
+            .expect("failed to insert children isolator unions");
         let network_boundaries_ctx = InjectNetworkBoundaryContext {
             cfg: &session_config,
             d_cfg: DistributedConfig::from_config_options(session_config.options()).unwrap(),
@@ -1434,8 +1434,10 @@ mod tests {
             nb_builder: &CardinalityBasedNetworkBoundaryBuilder,
         };
 
-        let annotated = _inject_network_boundaries(plan, None, &network_boundaries_ctx).await?;
-        Ok(debug_annotated(&annotated, 0, &network_boundaries_ctx))
+        let annotated = _inject_network_boundaries(plan, None, &network_boundaries_ctx)
+            .await
+            .expect("failed to annotate plan");
+        debug_annotated(&annotated, 0, &network_boundaries_ctx)
     }
 
     fn debug_annotated(
