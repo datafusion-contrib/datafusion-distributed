@@ -28,8 +28,9 @@ pub trait NetworkBoundary: ExecutionPlan {
 
     /// Defines what head node should the producer stage feeding this [NetworkBoundary]
     /// implementation have. This information is used during planning an executing for ensuring
-    /// the head of a stage has the appropriate shape for consumption.
-    fn producer_head(&self, consumer_tasks: usize) -> ProducerHead;
+    /// the head of a stage has the appropriate shape for consumption. Returns an error when that
+    /// shape cannot be constructed from the boundary's partitioning.
+    fn producer_head(&self, consumer_tasks: usize) -> Result<ProducerHead>;
 }
 
 /// Defines what shape should the head node of a stage have upon getting executed. Depending

@@ -175,7 +175,7 @@ impl PlanReconstructor {
             };
             let (plan_for_viz, metrics_set) = entry;
 
-            let plan_for_viz = nb.producer_head(tc).insert(plan_for_viz)?;
+            let plan_for_viz = nb.producer_head(tc)?.insert(plan_for_viz)?;
 
             let nb = nb.with_input_stage(Stage::Local(LocalStage {
                 query_id: input_stage.query_id(),

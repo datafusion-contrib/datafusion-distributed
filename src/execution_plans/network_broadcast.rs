@@ -175,11 +175,11 @@ impl NetworkBoundary for NetworkBroadcastExec {
         &self.input_stage
     }
 
-    fn producer_head(&self, consumer_task_count: usize) -> ProducerHead {
+    fn producer_head(&self, consumer_task_count: usize) -> Result<ProducerHead> {
         let partition_count = self.properties.output_partitioning().partition_count();
-        ProducerHead::BroadcastExec {
+        Ok(ProducerHead::BroadcastExec {
             output_partitions: partition_count * consumer_task_count,
-        }
+        })
     }
 }
 
@@ -263,7 +263,7 @@ impl ExecutionPlan for NetworkBroadcastExec {
                 off..(off + self.properties.partitioning.partition_count()),
                 input_task_index,
                 off + partition,
-                self.producer_head(task_context.task_count),
+                self.producer_head(task_context.task_count)?,
                 &context,
             )?);
         }
