@@ -26,9 +26,9 @@ pub(crate) fn file_scan_config_desired_task_count(
         }
     }
 
-    let task_count = total_bytes
-        .div_ceil(d_cfg.file_scan_config_bytes_per_partition)
-        .div_ceil(cfg.target_partitions());
+    let bytes_per_partition = d_cfg.file_scan_config_bytes_per_partition.max(1) as f64;
+    let target_partitions = cfg.target_partitions().max(1) as f64;
+    let task_count = total_bytes as f64 / bytes_per_partition / target_partitions;
 
     Some(Ok(DesiredTaskCountEventResponse::desired(task_count)))
 }
@@ -38,6 +38,10 @@ pub(crate) fn file_scan_config_scale_up_leaf_node(
 ) -> Option<Result<ScaleUpLeafNodeEventResponse>> {
     let dse = ev.plan.downcast_ref::<DataSourceExec>()?;
     let file_scan = dse.data_source().downcast_ref::<FileScanConfig>()?;
+    // Empty stages have nothing to split across tasks.
+    if ev.task_count == 0 {
+        return None;
+    }
     let partition_count = ev.plan.output_partitioning().partition_count();
 
     let rebalanced = if file_scan.partitioned_by_file_group {
@@ -200,11 +204,11 @@ mod tests {
     }
 
     fn desired_ten(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(10)))
+        Some(Ok(DesiredTaskCountEventResponse::desired(10.0)))
     }
 
     fn desired_twenty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(20)))
+        Some(Ok(DesiredTaskCountEventResponse::desired(20.0)))
     }
 
     fn no_desired_task_count(
@@ -214,6 +218,6 @@ mod tests {
     }
 
     fn desired_thirty(_: DesiredTaskCountEvent) -> Option<Result<DesiredTaskCountEventResponse>> {
-        Some(Ok(DesiredTaskCountEventResponse::desired(30)))
+        Some(Ok(DesiredTaskCountEventResponse::desired(30.0)))
     }
 }

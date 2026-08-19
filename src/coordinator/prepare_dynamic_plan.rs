@@ -67,7 +67,7 @@ pub(super) async fn prepare_dynamic_plan(
                 .clamp(1, nb_ctx.max_tasks()?);
             let task_count = nb_ctx
                 .task_count(&input_stage.plan)?
-                .merge(Desired(compute_based_task_count));
+                .merge(Desired(compute_based_task_count as f64));
 
             // Propagate the final task_count inferred based on runtime statistics and compute cost.
             // Here is where leaf nodes are scaled up by ScaleUpLeafNodeHandler, and the
@@ -106,10 +106,13 @@ pub(super) async fn prepare_dynamic_plan(
                     let (stats, new_metrics) =
                         gather_runtime_statistics(load_info_rxs, &input_stage.plan).await?;
                     metrics.extend(new_metrics);
-                    // returning Desired(1) here is our way to tell the planner that we don't care
+                    // returning Desired(0) here is our way to tell the planner that we don't care
                     // about the task count assigned to the network boundary in the consumer stage,
-                    // and we don't want it to affect other task count decisions.
-                    (Some(Arc::new(stats)), Desired(1))
+                    // and we don't want it to affect other task count decisions. A 0.0 hint does
+                    // not mask smaller fractional values via max-merge, and does not inflate
+                    // UNION sums when this boundary sits under a child of a
+                    // ChildrenIsolatorUnionExec.
+                    (Some(Arc::new(stats)), Desired(0.0))
                 };
 
                 // Capture the output partitioning of the (rescaled, sampler-wrapped) input plan

@@ -117,10 +117,15 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             f(plan, ctx)?.visit_children(|| {
                 if let Some(ciu) = plan.downcast_ref::<ChildrenIsolatorUnionExec>() {
                     // Just recurse to children that will actually get executed by this
-                    // ChildrenIsolatorUnionExec.
-                    ciu.task_idx_map[ctx.task_index].iter().apply_until_stop(
-                        |(child_i, child_ctx)| recurse(&ciu.children[*child_i], *child_ctx, f),
-                    )
+                    // ChildrenIsolatorUnionExec. A zero-task (empty) stage has no slots.
+                    ciu.task_idx_map
+                        .get(ctx.task_index)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .apply_until_stop(|(child_i, child_ctx)| {
+                            recurse(&ciu.children[*child_i], *child_ctx, f)
+                        })
                 } else if plan.is_network_boundary() {
                     Ok(TreeNodeRecursion::Continue)
                 } else {
@@ -194,8 +199,10 @@ impl TreeNodeExt for Arc<dyn ExecutionPlan> {
             let node = &transformed.data;
             if let Some(ciu) = node.downcast_ref::<ChildrenIsolatorUnionExec>() {
                 let mut child_ctxs = vec![None; ciu.children.len()];
-                for (child_idx, child_ctx) in &ciu.task_idx_map[dt_ctx.task_index] {
-                    child_ctxs[*child_idx] = Some(*child_ctx);
+                if let Some(children_in_task) = ciu.task_idx_map.get(dt_ctx.task_index) {
+                    for (child_idx, child_ctx) in children_in_task {
+                        child_ctxs[*child_idx] = Some(*child_ctx);
+                    }
                 }
                 stack.extend(child_ctxs.into_iter().rev());
             } else {

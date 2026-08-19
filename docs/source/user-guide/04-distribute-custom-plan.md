@@ -115,15 +115,18 @@ fn sharded_scan_desired_task_count(
     // Only handle our own node; returning None lets other handlers try.
     let scan = event.plan.downcast_ref::<ShardedScanExec>()?;
     // One task per shard — the planner caps this at the number of workers.
-    Some(Ok(DesiredTaskCountEventResponse::desired(scan.shards.len())))
+    Some(Ok(DesiredTaskCountEventResponse::desired(
+        scan.shards.len() as f64,
+    )))
 }
 ```
 
 What the return value means:
 
-- `DesiredTaskCountEventResponse::desired(n)` — a **soft** hint. The planner may land on a
-  different number: within a stage the largest `desired` wins, and the count is
-  capped at the number of available workers.
+- `DesiredTaskCountEventResponse::desired(n)` — a **soft** `f64` hint. Fractional hints stay
+  fractional while the planner combines them, then the final stage task count is rounded up.
+  Within a stage the largest `desired` wins, and the count is capped at the number of
+  available workers.
 - `DesiredTaskCountEventResponse::maximum(n)` — a **hard** cap. `maximum(1)` means "this node
   cannot be distributed."
 - `None` — defer to the other registered handlers (and finally the built-in
