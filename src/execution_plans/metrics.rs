@@ -89,7 +89,7 @@ impl ExecutionPlan for MetricsWrapperExec {
                     // This means that we need to dedupe the metrics here, otherwise, we might
                     // double-count metrics:
                     // 1. What was collected in the local worker
-                    // 2. What is automatically available in the coordiantor because of pointer
+                    // 2. What is automatically available in the coordinator because of pointer
                     //    equivalence.
                     if !self.metrics.iter().any(|wrapped| {
                         wrapped.value() == local_metric.value()
