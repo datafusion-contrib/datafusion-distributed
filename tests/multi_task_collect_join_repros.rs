@@ -377,8 +377,15 @@ mod tests {
     }
 
     /// A build-side `LIMIT` is carried by the `CoalescePartitionsExec` that a
-    /// broadcast rewrite replaces. The replacement must preserve that fetch or
-    /// the join observes every build row instead of the requested 50.
+    /// broadcast rewrite keeps below `BroadcastExec`. The fetch must run in a
+    /// single coalesced producer task before fan-out; otherwise each producer
+    /// task applies `fetch=50` locally and the broadcast receives 50 * tasks
+    /// rows. Every build id has 50 probe matches, so `count(*)` is 2500 for any
+    /// unordered 50 ids.
+    ///
+    /// The product-sum query is only used to assert the stage topology. File
+    /// parts selected by unordered `LIMIT` are not stable across platforms, so
+    /// this is not a full plan snapshot.
     #[tokio::test]
     async fn build_side_fetch_is_preserved_by_broadcast() {
         assert_distributed_matches_single_node(
@@ -388,6 +395,50 @@ mod tests {
         )
         .await
         .unwrap();
+
+        ensure_data().await;
+        let d_ctx = make_distributed_ctx(true).await.unwrap();
+        let (plan, _) = run(
+            &d_ctx,
+            "SELECT sum(b.id * b.id * p.id * p.id) FROM (SELECT id FROM build_side LIMIT 50) b \
+             CROSS JOIN probe_side p",
+        )
+        .await
+        .unwrap();
+        let plan = display_plan_ascii(plan.as_ref(), false);
+        assert!(
+            plan.lines()
+                .any(|line| line.contains("Stage 2") && line.contains("tasks=1")),
+            "expected Stage 2 with tasks=1:\n{plan}"
+        );
+        assert!(
+            plan.contains("BroadcastExec"),
+            "expected BroadcastExec:\n{plan}"
+        );
+        assert!(
+            plan.contains("CoalescePartitionsExec: fetch=50"),
+            "expected CoalescePartitionsExec: fetch=50:\n{plan}"
+        );
+        let after_fetch = plan
+            .split_once("CoalescePartitionsExec: fetch=50")
+            .map(|(_, rest)| rest)
+            .unwrap_or("");
+        assert!(
+            after_fetch.lines().any(|line| {
+                line.contains("NetworkCoalesceExec") && line.contains("input_tasks=4")
+            }),
+            "expected NetworkCoalesceExec with input_tasks=4 under fetch:\n{plan}"
+        );
+        assert!(
+            plan.contains("LocalLimitExec: fetch=50"),
+            "expected LocalLimitExec: fetch=50:\n{plan}"
+        );
+        assert!(
+            plan.lines().any(|line| {
+                line.contains("NetworkBroadcastExec") && line.contains("input_tasks=1")
+            }),
+            "expected NetworkBroadcastExec with input_tasks=1:\n{plan}"
+        );
     }
 
     fn data_dir() -> PathBuf {
